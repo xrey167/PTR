@@ -922,6 +922,12 @@ mod failpoints {
                 .append(&[entry_at(11)])
                 .as_ref()
                 .is_err_and(is_poisoned_refusal));
+            // The poisoned refusal takes precedence over the unaccounted-snapshot preflight.
+            let recorded = storage.wl().record_snapshot(10, Vec::new());
+            assert!(
+                recorded.as_ref().is_err_and(is_poisoned_refusal),
+                "{point}: {recorded:?}"
+            );
             drop(storage);
             let mut node = RaftNode::open(&temp.dir(), 1, &[1])
                 .unwrap_or_else(|error| panic!("{point}: {error}"));

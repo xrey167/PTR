@@ -1,4 +1,4 @@
-# 41 — Pod data plane: a fenced zero-copy fabric in five stages
+# 42 — Pod data plane: a fenced zero-copy fabric in five stages
 
 Status: **plan, nothing implemented.** Companion of [40](40-pod-rack.md). Doc 40 asks where Pods
 may be placed; this document asks how tensors move between them once they are placed, and plans

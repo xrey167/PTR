@@ -1,11 +1,11 @@
 //! The preregistered parameters of R011, compiled in.
 //!
-//! The constants of the first section mirror every key of `[pinned_thresholds]` in the
-//! experiment's `config.toml`, which is read at compile time; the drift test fails when a
-//! constant differs from the file, and when the file holds a key no constant mirrors. The
-//! second section holds the values this harness chose where the file is silent (the corpus
-//! selection digest, the fan-out size, the labels that seed the orders). R011 is `planned`:
-//! nothing here is frozen.
+//! The constants of the first section mirror every key of `[pinned_thresholds]` in the experiment's
+//! `config.toml`, which is read at compile time; the drift test fails when a constant differs from
+//! the file, and when the file holds a key no constant mirrors. The second section holds the values
+//! this harness chose where the file is silent (the corpus selection digest, the fan-out size, the
+//! labels that seed the orders). R011 is frozen at its preregistration and has completed; the file
+//! is frozen with it.
 
 // The thresholds complete the compiled table the drift test compares with the file; the
 // harness evaluates most of them in `metrics`, and the rest only echo the table.

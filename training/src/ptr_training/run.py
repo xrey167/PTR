@@ -12,6 +12,7 @@ from pathlib import Path
 
 from ptr_training import checkpoint as checkpoint_seal
 from ptr_training import codebook as codebook_artifact
+from ptr_training import preflight as preflight_record
 
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -206,6 +207,60 @@ def write_manifest(path: Path, manifest: dict) -> None:
         handle.write("\n")
 
 
+def require_preflight_for(
+    manifest: dict,
+    *,
+    device: str,
+    evidence_class: str,
+    allow_missing: bool,
+    directory: Path | None = None,
+) -> dict | None:
+    """The preflight record this run is bound to; refuses (SystemExit) when none matches."""
+    try:
+        return preflight_record.require_preflight(
+            protocol_sha256=manifest["config_sha256"],
+            runner_sha256=preflight_record.runner_sha256(),
+            device=device,
+            evidence_class=evidence_class,
+            allow_missing=allow_missing,
+            directory=directory or preflight_record.PREFLIGHT_DIR,
+        )
+    except preflight_record.PreflightError as error:
+        raise SystemExit(f"refusing training execution: {error}") from error
+
+
+def resolve_trl_moe_preflight(
+    manifest: dict, config_path: Path, *, allow_missing: bool
+) -> dict:
+    """The preflight binding recorded in the manifest for a `trl-moe` execution.
+
+    Refuses (SystemExit) when no record matches, before any manifest is written. When the
+    `moe` extra is missing the device cannot be identified; the binding says so and
+    `_execute_trl_moe` then reports the missing extra.
+    """
+    from ptr_training.moe import config as moe_config
+    from ptr_training.moe import pipeline
+
+    try:
+        pipeline.require_extra()
+    except pipeline.MissingExtraError:
+        return {"status": "unavailable", "reason": "the moe extra is not installed"}
+    device = preflight_record.current_device_identity(moe_config.load(config_path).model.device)
+    record = require_preflight_for(
+        manifest,
+        device=device,
+        evidence_class=pipeline.EVIDENCE_CLASS,
+        allow_missing=allow_missing,
+    )
+    if record is None:
+        return {
+            "status": "waived",
+            "reason": "--allow-missing-preflight on a pipeline-smoke run",
+            "device": device,
+        }
+    return {"status": "matched", "record_sha256": record["record_sha256"], "device": device}
+
+
 def _execute_trl_moe(manifest: dict, config_path: Path) -> int | str:
     """Dispatch the `trl-moe` backend; heavy dependencies are imported lazily."""
     from ptr_training.moe import pipeline
@@ -214,6 +269,8 @@ def _execute_trl_moe(manifest: dict, config_path: Path) -> int | str:
         pipeline.require_extra()
     except pipeline.MissingExtraError as error:
         return str(error)
+    if (manifest.get("preflight") or {}).get("status") not in {"matched", "waived"}:
+        raise SystemExit("refusing training execution: the manifest carries no preflight binding")
     metrics_path = pipeline.run(manifest, config_path)
     try:
         print(metrics_path.relative_to(ROOT))
@@ -231,9 +288,29 @@ def main() -> None:
     )
     parser.add_argument("--out", type=Path)
     parser.add_argument("--execute", action="store_true")
+    parser.add_argument(
+        "--memory-report",
+        action="store_true",
+        help="print the GPU memory estimate of a trl-moe config (ptr_training.moe.memory) and "
+        "exit; writes no manifest and trains nothing",
+    )
+    parser.add_argument(
+        "--allow-missing-preflight",
+        action="store_true",
+        help="run without a matching preflight record; only for evidence_class pipeline-smoke",
+    )
     args = parser.parse_args()
 
     config_path = args.config if args.config.is_absolute() else ROOT / args.config
+    if args.memory_report:
+        if args.execute:
+            raise SystemExit("--memory-report and --execute are exclusive")
+        backend = load(config_path).get("training", {}).get("backend")
+        if backend != "trl-moe":
+            raise SystemExit(f"--memory-report covers backend 'trl-moe' only, not {backend!r}")
+        from ptr_training.moe import memory
+
+        raise SystemExit(memory.main(["--config", str(config_path)]))
     manifest = build_manifest(config_path)
     out = args.out
     if out is None:
@@ -251,6 +328,19 @@ def main() -> None:
             "candidate": "trl-peft",
             "note": "unselected backend, pipeline evidence only",
         }
+
+    manifest["preflight"] = {"status": "not_executed", "reason": "not executed"}
+    if (
+        args.execute
+        and manifest["config"]["training"].get("backend") == "trl-moe"
+        and not manifest["git_dirty"]
+        and manifest["config"]["training"].get("allow_unselected_backend") is True
+    ):
+        # Resolved before the manifest is written, so the file carries the binding. With no
+        # matching record the run is refused and no manifest is written.
+        manifest["preflight"] = resolve_trl_moe_preflight(
+            manifest, config_path, allow_missing=args.allow_missing_preflight
+        )
 
     write_manifest(out, manifest)
     print(out.relative_to(ROOT))

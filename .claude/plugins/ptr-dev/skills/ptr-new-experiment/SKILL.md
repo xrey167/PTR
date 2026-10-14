@@ -48,8 +48,8 @@ Other runner subcommands: `list`, `show <id>`, `prepare <id>`, `run <id>`, `aggr
 
 ## Examples
 
-- Planned manifest with pinned-later preregistration: `experiments/model/M008-fast-weight-memory/` (`experiment.toml`, `config.toml`).
-- M011 (routed PEFT on OLMoE): `experiments/model/M011-routed-peft/` exists on branch `claude/experiments-kv-moe`, not on every branch. Its training entrypoint is on `claude/m011-routed-peft`.
+- Planned manifest whose preregistration is still to be pinned: `experiments/model/M011-routed-peft/` (`experiment.toml`, `config.toml`; empty `entrypoint`). A frozen and run one for comparison: `experiments/model/M008-fast-weight-memory/` (registry `prepared`, outcome in `results/OUTCOME.md`).
+- M011 (routed PEFT on OLMoE): the manifest is `experiments/model/M011-routed-peft/` and its training entrypoint module is `training/src/ptr_training/moe/m011.py` (not yet named in the manifest).
 - Status counts: `python3 -c "import tomllib,collections;print(collections.Counter(e['status'] for e in tomllib.load(open('experiments/registry.toml','rb'))['experiment']))"`.
 
 Write up outcomes with the `ptr-results` skill; run GPU jobs with `experiment-run`.

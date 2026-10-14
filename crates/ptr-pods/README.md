@@ -9,8 +9,8 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-10-10  
-**Code footprint:** 39 Rust source files · 18462 nonblank source lines · 26 integration-test files · 322 test markers (`#[test]`, `#[tokio::test]`)
+**Last reviewed:** 2026-10-13  
+**Code footprint:** 39 Rust source files · 18480 nonblank source lines · 26 integration-test files · 323 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -65,10 +65,11 @@
 - Qwen2PagedStack stage execution for a pipeline (layer) split: stage_kv_schema gives the cache schema of a layer span (layer k of the cache is stack layer span.start + k), embed_tokens the first stage's input rows, run_stage_in_regime runs a span over residual rows one row at a time through the same per-layer path as the whole stack (forward_token is now the embedding, forward_layers over the whole span, and the head) and appends that span's K/V, and logits_from_residual is the tail of the last stage; two stages run in turn are the whole stack bit for bit in logits and in each stage's KV bytes (tests/qwen_stage.rs), and a bad span, a mis-shaped input, a decode of several rows and a cache of another layer count are typed errors (Qwen2StackError::InvalidLayerSpan, StageInputShape)
 - run_stage_in_regime takes a StageRun (span, residual, rows, StageRows::Prefill or DecodeStep, optional frame positions) instead of positional parameters; the frame's positions must be the next positions of the cache (Qwen2StackError::StagePositions), and a row that fails truncates the cache back to where the run started, so a failed run leaves the cache unchanged (the rollback helper is unit-tested with a position-offset cache and a revoked cache; a fault in the middle of a row is not injected).
 - A stage run that fails part-way is rolled back to the cache's sequence length before the run (not to its next position, which differs for a cache restored at a position offset), and a rollback that itself fails is reported together with the failed run's own error as Qwen2StackError::RollbackFailed (the cache then holds the rows of the failed run and must be discarded); a unit test with a position-offset cache and one with a revoked cache (the injected rollback fault) cover both; the position arithmetic of the admission is checked (an offset that overflows is a typed refusal, not a wrap or a panic).
+- QwenCpuStats counts decode_steps (single-token forward passes after prefill) directly, and decode_tokens_per_second divides them by decode time instead of generated_tokens minus requests, which an immediate end-of-turn request understated (unit test in src/qwen_cpu/generator.rs, feature qwen-cpu)
 
 ### Missing for the target architecture
 
-- Workspace: no Pod invokes it yet (the finding router of package B and the end-to-end experiment are separate work), slot content is not committed to the ledger, and no experiment has measured whether a workspace or displacement helps; determinism assumes a pure host verifier and registry, and submit-time bounds (PendingFull) depend on arrival order; the host must bound verifier wall-clock time and a panicking AuthorRegistry is not caught
+- Workspace: only ptr-runtime's VcwLoop drives it (one workspace per request, simulated or test experts), slot content is not committed to the ledger, and no experiment shows that a workspace or displacement helps a model (F007 measured the workspace only as an implementation check in a world that declares a broadcast reader); determinism assumes a pure host verifier and registry, and submit-time bounds (PendingFull) depend on arrival order; the host must bound verifier wall-clock time and a panicking AuthorRegistry is not caught
 - Adapters and MoE are not yet wired into ptr-runtime's KvSession/backend: nothing there binds an adapter or expert dependency to a session, re-resolves the binding at restart or tags batch-variant routing Approximate; the catalog and fork paths still have no layer scope or cross-adapter prefix sharing; the MoE has no capacity-free load balancing loss and no trained weights, and the MLP-only adapter is a block-output correction, not a gate/up/down LoRA
 - Async invocation and PodContext
 - Process-isolated, remote-Iroh and GPU/DLPack adapters
@@ -84,7 +85,7 @@
 ### Next milestones
 
 - Extend registry with lifecycle/backpressure and remote/process adapters
-- Implement registry and one native reference Pod
+- Wire a real model (the qwen-cpu generator or another) into this crate's paged-KV executors, leases and taint; the registry and native Pods exist (PodRegistry, NeuralPodAdapter, and the VCW expert Pods in ptr-runtime)
 - Run unseen-Pod semantic generalization experiment R002
 
 ### Linked experiments
@@ -133,8 +134,8 @@ flowchart LR
 
 Dedicated diagram source: [`docs/diagrams/components/ptr-pods.mmd`](../../docs/diagrams/components/ptr-pods.mmd)
 
-**Upstream:** ptr-exec, ptr-router  
-**Downstream:** ptr-verifier, ptr-semdb
+**Upstream:** ptr-protocol, ptr-storage, ptr-types, ptr-verifier  
+**Downstream:** ptr-runtime, ptr-router, ptr-state, ptr-podwire, ptr-server, ptrd, ptr-worker, ptr-bench
 
 ## Mission
 

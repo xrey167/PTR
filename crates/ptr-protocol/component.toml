@@ -1,7 +1,7 @@
 version = 1
 id = "ptr-protocol"
 maturity = "scaffold"
-last_reviewed = "2026-10-10"
+last_reviewed = "2026-10-13"
 
 implemented = [
   "PodWire v1 semantic version constant",

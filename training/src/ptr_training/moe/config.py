@@ -69,7 +69,7 @@ _RL_KEYS = {
     "algorithms", "steps", "num_generations", "mini_steps", "beta", "epsilon", "epsilon_high",
     "gspo_epsilon", "gspo_epsilon_high", "sapo_temperature_pos", "sapo_temperature_neg", "lr",
     "prompts_per_step", "max_prompt_length", "max_completion_length", "temperature",
-    "min_verification_level",
+    "min_verification_level", "gradient_checkpointing",
 }
 _LORA_KEYS = {"enabled", "rank", "alpha", "dropout", "target_modules", "target_parameters"}
 _OUTPUT_KEYS = {"dir", "probe_tokens"}
@@ -228,6 +228,9 @@ class RlConfig:
     max_completion_length: int
     temperature: float = 1.0
     min_verification_level: str = LEVEL
+    # Passed to GRPOConfig explicitly. TRL 1.14.1 defaults it to True (grpo_config.py), which is
+    # what every RL arm used before the key existed, so the default stays True.
+    gradient_checkpointing: bool = True
 
 
 @dataclass(frozen=True)
@@ -426,6 +429,7 @@ def parse(raw: dict, source_path: str | None = None) -> MoeConfig:
         ),
         temperature=_positive(_get(r, "temperature", float, "moe.rl", 1.0), "moe.rl.temperature"),
         min_verification_level=_get(r, "min_verification_level", str, "moe.rl", LEVEL),
+        gradient_checkpointing=_get(r, "gradient_checkpointing", bool, "moe.rl", True),
     )
     if rl.min_verification_level not in LEVELS:
         raise ConfigError(

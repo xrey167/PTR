@@ -1,7 +1,7 @@
 version = 1
 id = "ptr-podwire"
 maturity = "prototype"
-last_reviewed = "2026-10-10"
+last_reviewed = "2026-10-13"
 
 implemented = [
   "PodHost and PodClient carry one Pod invocation and its answer over ALPN_PODWIRE, composing ptr-pods' registry with ptr-net's transport so neither has to know about the other",
@@ -42,10 +42,10 @@ implemented = [
 missing = [
   "The key-to-connection binding of a principal and the binding of a principal to one stage identity are registered by the deployment; nothing here derives them from a connection. The assembler is not carried by PodHost/PodClient yet.",
   "Authentication: the peer key is the one ptr-net reports the connection authenticated, and this crate takes the host's word that it passed that rather than something else",
-  "Signed answers, and therefore any third-party evidence: inside one exchange the connection vouches for an answer's author and outside it nothing does",
-  "A journaled access policy: the scope table is in memory, so it does not survive a restart and nothing records who was admitted to which project when",
-  "Discovery: which address belongs to an id nobody told you is a mechanism choice with its own trust question, recorded as the owner's rather than invented",
-  "An accept loop a deployment would run, including backpressure toward a peer that asks faster than the host can answer",
+  "Signed answers, and therefore any third-party evidence: inside one exchange the connection vouches for an answer's author and outside it nothing does; ADR-0022 decides to sign Pod answers with the same SigningDomain as receipts and split-Pod chunks (D2, spec S2, deferred)",
+  "A journaled access policy: the scope table is in memory, so it does not survive a restart and nothing records who was admitted to which project when (re-specified in ADR-0022 as spec S7, PodScopeAdmitted and PodScopeWithdrawn on ledger tags 35 and 36, after S4)",
+  "Discovery: which address belongs to an id nobody told you is a mechanism choice with its own trust question; ADR-0022 decides against it (peers are configured through ptr-net's PeerBook)",
+  "An accept loop a deployment would run, including backpressure toward a peer that asks faster than the host can answer (ADR-0022, D4: in ptrd under a ServePolicy, spec S3, deferred)",
   "Session reuse by default: PodClient::request and request_v2 still open a connection per request; reuse is opt-in through PodSession, and the in-flight bound's Backpressure error is not exercised by any test in this crate",
   "Streaming, cancellation and partial answers: one request, one bounded answer",
   "Any claim about latency, throughput or behaviour under load; the tests establish protocol and isolation properties on localhost",
@@ -58,8 +58,8 @@ missing = [
 ]
 
 next = [
-  "Decide whether the access policy and the execution admission policy share one durability story before journaling either",
-  "Decide where the accept loop belongs before adding one, since a loop in the wrong place makes the scheduling implicit again",
+  "Journal the access policy per ADR-0022 spec S7 (decided with D5: history governs membership, the host still supplies authority), after the admission journal of spec S4",
+  "Build the accept loop in ptrd under ptr-net's ServePolicy (ADR-0022, spec S3) once a multi-host deployment exists",
 ]
 
 experiments = ["E007"]

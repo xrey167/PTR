@@ -18,7 +18,7 @@ the figures preliminary). The figures themselves (transistor counts, bandwidth, 
 role here; only the **structure** does. PTR's hardware is PCIe only: the owner has two PCs with
 one card each, an RTX 3090 and an RTX 4090 (`hardware/rtx3090.toml`, `hardware/rtx4090.toml`;
 the owner inventory of 2026-10-13, which supersedes the earlier two-3090 desktop, see
-[41](41-pod-data-plane.md) section 0a).
+[42](42-pod-data-plane.md) section 0a).
 So every "rack" in this document is a **logical** construct whose first instance is one
 workstation.
 
@@ -84,7 +84,7 @@ within itself.
 - **Pipeline-split stages** (doc 36, `ActivationFrame`) require at most `ScaleUpFabric` by
   default: a stage boundary may cross hosts inside a rack and never crosses a rack. A split whose
   admitted profile declares `ScaleOut` instead is **remote-capable**: its frames go chunked and
-  signed over PodWire ([41](41-pod-data-plane.md) S5), and only such a split may cross racks. The
+  signed over PodWire ([42](42-pod-data-plane.md) S5), and only such a split may cross racks. The
   bound comes from the admitted profile and a request can only narrow it. Today E007 covers an
   in-process split only; E008 (loopback) runs under the default rule, and E013 (the owner's two
   PCs, two racks) runs a split admitted as `ScaleOut`.
@@ -136,7 +136,7 @@ the placement of every member is revoked (removed) in the same controller step. 
 placement on device disappearance, device failure, node failure and node replacement is a
 **prerequisite** that is not in `main` today (`mark_node_failed` calls `revoke_for_node`, which
 removes leases and leaves `self.placements` untouched); it is the device-fence package of wave 1
-of [41](41-pod-data-plane.md), and tray revocation builds on it. With the placements removed, `split_stage`, which
+of [42](42-pod-data-plane.md), and tray revocation builds on it. With the placements removed, `split_stage`, which
 reads only `Placement.epoch`, refuses a frame of any surviving member at once; a tray token in
 the leases alone would not reach activation frames. In the same step every member's state and
 KV leases are removed and its open uses cancelled, because `validate_lease` consults the lease
@@ -277,13 +277,13 @@ end, not a field of the frame.
 Each follows `docs/architecture/19-research-method.md` and AGENTS.md section 3: a baseline, an
 ablation, a sensitivity control and a refutation rule, registered with `scripts/new_experiment.py`. None is registered yet, and none has an id:
 the names below are working titles, and an id is assigned at registration (`L002`, `L003`
-are taken; `E009` to `E013` are reserved by [41](41-pod-data-plane.md) for its experiments).
+are taken; `E009` to `E013` are reserved by [42](42-pod-data-plane.md) for its experiments).
 
 | Id (proposed) | Claim | Baseline / ablation | Refuted if | CPU or GPU |
 |---|---|---|---|---|
 | locality-refusal (mechanism) | An L1 expert or a pipeline stage with a locality requirement can never be placed, routed or fed a frame across a link farther than its requirement, including after a rack re-declaration, a node failure and a replay | the same controller with locality enforcement disabled by a dedicated mutation (every locality check admits), since `locality = None` would still give a pipeline stage the `ScaleUpFabric` default (ablation); sensitivity: a planted too-far case at each of the three checks (a placement, a directory route and an activation frame), each attempted a nonzero number of times in the re-declaration, failure and replay scenarios and each detected independently, must be refused | any placement, route or frame admission across the bound succeeds in any seed; or the refusal depends on a measured value | CPU |
 | tray-fence (mechanism, extends L001-v2) | A tray is never partially fenced: after a member device fails, whether between `assign_tray` and the first use or while another member already holds a lease or is computing, no member's lease, KV page or frame of the old epoch is admitted and no output of an in-flight use of the old epoch is released | per-Pod placement of the same members (ablation); sensitivity: a planted surviving member must be detected by the harness when tray revocation is disabled; race arm: one member fails after another acquired its lease or began computing and before its output release, and that active use and its output must be refused | a surviving member serves a request of the old epoch in any seed | CPU |
-| link-classes (calibration, descriptive; the data-plane counterpart is E011 in [41](41-pod-data-plane.md)) | The declared classes order the measured activation-frame round trip on the owner's hardware: in-process < same-device < same-host (loopback QUIC) < LAN, each by a preregistered factor | baseline: the `Bytes` carrier over the same link; ablation: class-based carrier selection overridden, every class forced to the same carrier, so any ordering that remains comes from distance alone and not from the classification; sensitivity: an injected fixed delay on one class must reorder it measurably | the order is violated, or two classes are within the measurement noise (then only the cost model is revised; classes are typed eligibility boundaries and are never merged or widened by a measurement, section 2.4) | CPU and one GPU |
+| link-classes (calibration, descriptive; the data-plane counterpart is E011 in [42](42-pod-data-plane.md)) | The declared classes order the measured activation-frame round trip on the owner's hardware: in-process < same-device < same-host (loopback QUIC) < LAN, each by a preregistered factor | baseline: the `Bytes` carrier over the same link; ablation: class-based carrier selection overridden, every class forced to the same carrier, so any ordering that remains comes from distance alone and not from the classification; sensitivity: an injected fixed delay on one class must reorder it measurably | the order is violated, or two classes are within the measurement noise (then only the cost model is revised; classes are typed eligibility boundaries and are never merged or widened by a measurement, section 2.4) | CPU and one GPU |
 | rack-kv-scope (mechanism) | Rack-scoped prefix sharing admits exactly the cross-request hits of the global scope for requests in one rack and none across racks, with the fencing and dependency rules of doc 36 unchanged | global sharing (ablation); sensitivity: a planted cross-rack request must be refused | a cross-rack hit, a lost in-rack hit, or any doc 36 safety counter above 0 (stale-entry admissions, cross-principal or cross-project hits, hits after a dependency invalidation); doc 36 coverage counters must instead be above 0 for the run to be valid | CPU |
 
 In every row the "Refuted if" column applies to the **unperturbed claim cells** only. Each

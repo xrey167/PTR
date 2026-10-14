@@ -264,6 +264,21 @@ impl PyWorkspace {
         Ok(id.get())
     }
 
+    /// End a subscription: its mailbox is dropped and its place counts against the subscriber
+    /// limit no longer, so the same Pod can subscribe again.
+    ///
+    /// Raises PtrWorkspaceError for an unknown subscriber.
+    fn unsubscribe(&self, subscriber: u64) -> PyResult<()> {
+        let mut inner = self.inner();
+        let id = *inner
+            .subscribers
+            .get(&subscriber)
+            .ok_or_else(|| workspace_error(format!("unknown subscriber {subscriber}")))?;
+        inner.workspace.unsubscribe(id).map_err(workspace_error)?;
+        inner.subscribers.remove(&subscriber);
+        Ok(())
+    }
+
     /// Run one cycle: judge every pending proposal with the fixed verifier, admit up to
     /// `slots`, and broadcast one snapshot. Returns the snapshot as a dict: `revision`,
     /// `digest`, `occupied`, `slots` (with `author`, `candidate`, `bid`), `admitted`,

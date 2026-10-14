@@ -1,4 +1,4 @@
-//! The cases C1 to C9 of the draft preregistration, each driving the PUBLIC runtime API on a
+//! The cases C1 to C9 of the preregistration, each driving the PUBLIC runtime API on a
 //! [`fixture::Rt`] (a `PtrRuntime` over a durable `FileLedger` in a temporary directory), and
 //! the counting they share.
 //!

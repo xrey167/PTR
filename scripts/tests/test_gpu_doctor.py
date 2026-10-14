@@ -37,6 +37,12 @@ version = "0.21.2"
 [[package]]
 name = "trl"
 version = "1.14.1"
+[[package]]
+name = "datasets"
+version = "5.0.1"
+[[package]]
+name = "accelerate"
+version = "1.15.0"
 """
 GOOD_PROBE = {
     "python": "3.11.15",
@@ -49,6 +55,8 @@ GOOD_PROBE = {
     "transformers": "5.18.0",
     "peft": "0.21.2",
     "trl": "1.14.1",
+    "datasets": "5.0.1",
+    "accelerate": "1.15.0",
     "ptr_py": "0.1.0",
 }
 
@@ -83,10 +91,13 @@ class Fixture:
         return gd.Options(root=self.root, offline=True, **kw)
 
 
-def fake_run(smi=(0, SMI_OK, ""), probe=None, rustup="stable-x86_64-unknown-linux-gnu (default)\n1.99.0-x86_64-unknown-linux-gnu\n"):
+def fake_run(smi=(0, SMI_OK, ""), probe=None, rustup="stable-x86_64-unknown-linux-gnu (default)\n1.99.0-x86_64-unknown-linux-gnu\n",
+             bwrap=(0, "", "")):
     def _run(cmd, timeout=60, cwd=None):
         if cmd[0] == "nvidia-smi":
             return smi
+        if cmd[0].endswith("bwrap"):
+            return bwrap
         if cmd[0] == "rustup":
             return 0, rustup, ""
         if cmd[0].endswith("python"):
@@ -162,6 +173,102 @@ def device(index, name="NVIDIA GeForce RTX 3090", cap=(8, 6), **kw):
 
 def probe_for(*devices):
     return dict(GOOD_PROBE, device_name=devices[0]["name"], device_count=len(devices), devices=list(devices))
+
+
+class RunNeeds(unittest.TestCase):
+    """What the OLMoE and M011 runs need beyond a visible GPU: the M011 HumanEval sandbox
+    (bubblewrap), the datasets/accelerate pins, a 24 GiB-class card and free memory on it."""
+
+    def test_missing_bubblewrap_fails_when_gpus_are_required(self):
+        fx = Fixture()
+        got = collect(fx, fx.options(require_gpu=True), which_missing=("bwrap",), probe=GOOD_PROBE)
+        self.assertEqual(got["bubblewrap"].status, gd.FAIL)
+        self.assertIn("apt install bubblewrap", got["bubblewrap"].hint)
+        got = collect(fx, fx.options(), which_missing=("bwrap",), probe=GOOD_PROBE)
+        self.assertEqual(got["bubblewrap"].status, gd.WARN)
+
+    def test_bubblewrap_that_cannot_create_a_sandbox_fails(self):
+        fx = Fixture()
+        got = collect(fx, fx.options(require_gpu=True), probe=GOOD_PROBE,
+                      bwrap=(1, "", "bwrap: setting up uid map: Permission denied\n"))
+        self.assertEqual(got["bubblewrap"].status, gd.FAIL)
+        self.assertIn("Permission denied", got["bubblewrap"].detail)
+
+    def test_datasets_and_accelerate_are_checked_against_the_lock(self):
+        fx = Fixture()
+        got = collect(fx, fx.options(), probe=dict(GOOD_PROBE, datasets=None, accelerate="1.0.0"))
+        self.assertEqual(got["datasets"].status, gd.FAIL)
+        self.assertEqual(got["accelerate"].status, gd.WARN)
+        self.assertIn("1.15.0", got["accelerate"].detail)
+
+    def test_small_card_fails_when_gpus_are_required(self):
+        fx = Fixture()
+        got = collect(fx, fx.options(require_gpu=True),
+                      smi=(0, "NVIDIA GeForce RTX 3090, 580.65.06, 12288, 8.6\n", ""), probe=GOOD_PROBE)
+        self.assertEqual(got["gpu 0"].status, gd.FAIL)
+
+    def test_occupied_card_warns_with_its_index(self):
+        fx = Fixture()
+        busy = device(1, free_mib=6000)
+        got = collect(fx, fx.options(require_gpu=True), smi=(0, SMI_DUAL_3090, ""),
+                      probe=probe_for(device(0, free_mib=23000), busy))
+        self.assertEqual(got["free vram"].status, gd.WARN)
+        self.assertIn("cuda:1", got["free vram"].detail)
+        got = collect(fx, fx.options(require_gpu=True), smi=(0, SMI_DUAL_3090, ""),
+                      probe=probe_for(device(0, free_mib=23000), device(1, free_mib=23500)))
+        self.assertEqual(got["free vram"].status, gd.OK)
+
+
+TWO_VERSION_LOCK = LOCK + """
+[[package]]
+name = "datasets"
+version = "4.8.4"
+[[package]]
+name = "accelerate"
+version = "1.13.0"
+[[package]]
+name = "ptr-training"
+version = "0.1.0"
+source = { editable = "." }
+
+[package.optional-dependencies]
+moe = [
+    { name = "accelerate", version = "1.15.0", source = { registry = "https://pypi.org/simple" } },
+    { name = "datasets", version = "5.0.1", source = { registry = "https://pypi.org/simple" } },
+    { name = "peft" },
+    { name = "torch", version = "2.14.1", source = { registry = "https://pypi.org/simple" } },
+    { name = "transformers", version = "5.18.0", source = { registry = "https://pypi.org/simple" } },
+    { name = "trl", version = "1.14.1", source = { registry = "https://pypi.org/simple" } },
+]
+"""
+
+
+class MoeExtraLockResolution(unittest.TestCase):
+    """Codex P2: uv.lock holds several versions of a package (the cpt and moe extras fork the
+    resolution); the doctor accepted any of them, e.g. datasets 4.8.4 and accelerate 1.13.0,
+    although the moe extra resolves to 5.0.1 and 1.15.0. Only the moe extra's resolution of
+    the root package counts now."""
+
+    def fixture(self):
+        fx = Fixture()
+        (fx.root / "training" / "uv.lock").write_text(TWO_VERSION_LOCK)
+        return fx
+
+    def test_other_extras_versions_are_not_accepted(self):
+        fx = self.fixture()
+        got = collect(fx, fx.options(), probe=dict(GOOD_PROBE, datasets="4.8.4", accelerate="1.13.0"))
+        self.assertEqual(got["datasets"].status, gd.WARN)
+        self.assertEqual(got["accelerate"].status, gd.WARN)
+        self.assertTrue(got["datasets"].detail.endswith("lock has 5.0.1"), got["datasets"].detail)
+        self.assertTrue(got["accelerate"].detail.endswith("lock has 1.15.0"), got["accelerate"].detail)
+
+    def test_moe_versions_pass_and_unversioned_entries_use_the_single_lock_version(self):
+        fx = self.fixture()
+        got = collect(fx, fx.options(), probe=GOOD_PROBE)
+        for name in ("transformers", "peft", "trl", "datasets", "accelerate"):
+            self.assertEqual(got[name].status, gd.OK, (name, got[name].detail))
+        self.assertEqual(gd.lock_versions(fx.root)["datasets"], ["5.0.1"])
+        self.assertEqual(gd.lock_versions(fx.root)["peft"], ["0.21.2"])
 
 
 class HardwareProfiles(unittest.TestCase):

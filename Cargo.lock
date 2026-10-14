@@ -4501,6 +4501,7 @@ name = "ptr-cluster"
 version = "0.1.0"
 dependencies = [
  "ptr-config",
+ "ptr-core",
  "ptr-ledger",
  "ptr-net",
  "ptr-runtime",

@@ -92,7 +92,7 @@ experiment's config.toml, never retyped; aggregate once; finish with
 scripts/freeze/finish_experiment.py status + stale and three commits with explicit paths), each ending with a results write-up (ptr-results skill) and a welfare_check line
 where GPU_HANDOVER section 10.3 asks for it:
 M011, M012, M014, M010, M013, M015 (flag: the 30B teacher does not fit 24 GiB, OD-4; defer unless a
-conservative reversible pin is possible), R008, M016 (only after R006 is completed; flag its
+conservative reversible pin is possible), R008, M016 (R006, its prerequisite, is completed; flag its
 rtx5090 profile), R004, E006, then the VCW-MoE GPU runs of GPU_HANDOVER section 10 (V1 to V8,
 docs/VCW_MOE_GPU_PLAN.md). For each experiment record the decision on the hardware profile
 question: section 5 is resolved for the 3090 PC (the M010 to M015 and E006 manifests name
@@ -120,8 +120,8 @@ NEW preregistered experiment (for example websearch_to_tsquery or OR semantics);
 Q003-v3 or its records.
 
 STAGE 4. Docs pass (STATUS.md, docs/components via make docs, GPU_HANDOVER status), integration
-green (Stage 0 list again), bundle for transfer (ptr_bundle.py create) or GitLab push (only on my
-word; scripts/publish_remote.py --dry-run first), final report in German.
+green (Stage 0 list again), bundle for transfer (ptr_bundle.py create) or a push to GitHub (origin) or
+GitLab (only on my word; for GitLab scripts/publish_remote.py --dry-run first), final report in German.
 
 RULES (compressed; AGENTS.md wins on conflict).
 Freeze procedure (docs/FREEZE_PROCEDURE.md, tools in scripts/freeze/): freeze_sign.py --dry-run
@@ -160,7 +160,7 @@ and reuse. OD-4 M015 teacher: defer. OD-5 M011 unpinned choices: pin optimizer, 
 OD-6 E006/M016 driver and CUDA pins: compare nvidia-smi, edit the pin before freezing if it differs.
 OD-7 M010 separate engine: define before the freeze or drop the two arms. OD-8 R004: name the
 backbone first, then pin both permille keys. OD-9 to OD-11 backbone, E005, R003 dual-3090 (no owner machine matches it now): defer.
-OD-12 M016 after R006.
+OD-12 M016 after R006: resolved, R006 is completed.
 ```
 
 ## 3. Channel brief template (the head pastes this when spawning a ptr-channel)

@@ -1,7 +1,7 @@
 version = 1
 id = "ptr-py"
 maturity = "prototype"
-last_reviewed = "2026-10-11"
+last_reviewed = "2026-10-13"
 
 implemented = [
   "PyO3 (abi3-py311) extension module ptr_py over ptr-lineage, built by maturin in its own excluded Cargo workspace: aimer_score, rank_experts_for_pruning, subspace_overlap, chance_overlap, measure_interference, ties_merge and forgetting_gate_evaluate, taking and returning plain Python types (lists, nested row-major lists, tuples, dicts)",
@@ -11,6 +11,8 @@ implemented = [
   "BoundedWorkspace wraps the ptr-pods workspace with a verifier and level fixed at construction (submit, subscribe, run_cycle, receive; texts capped at 64 KiB, texts not held by a slot evicted after each cycle; author is an unauthenticated label; the GIL is released during verify_code, the cycle and the simulation); simulate_vcw_run runs one VcwLoop request in-process with seeded simulated experts and returns outcome, trace, budget use and per-step routes",
   "Errors raise PtrVerifierError, PtrRouterError, PtrWorkspaceError (and its subclass PtrWorkspaceCapacityError) or PtrVcwError (ValueErrors); tests assert the public surface has no setter for gates, thresholds, verifiers or eligibility",
   "The gate decides: forgetting_gate_evaluate returns the ForgettingGate verdict, violations and accuracy-matrix metrics unchanged, and the bindings add no thresholds or logic of their own",
+  "Follow-ups of #134: BoundedWorkspace.unsubscribe(id) ends a subscription so subscriber churn never exhausts the limit of 8 (test: 20 rounds of 8 subscribe/unsubscribe); FindingRouter.route checks the pending capacity (one decision per distinct hard code, one for a fallback, none for an accept) before the router samples, holding the state lock across routing, so a refused route spends no nonce (test: a refused route followed by a settle gives the same nonce as the same sequence without the refusal)",
+  "The route capacity bound counts only decisions that can be left pending: hard codes with a registered repair Pod and a fallback with a registered proposer; reports that route to no Pod (Unroutable, Escalate) are still answered when the pending map is full (test: test_a_full_pending_map_still_answers_reports_that_route_to_no_pod)",
 ]
 
 missing = [
@@ -18,11 +20,11 @@ missing = [
   "Parser for the server's /v1/vcw/traces/{id} JSON (not needed: the loop runs in-process)",
   "Lineage registry (register, gate, serve, retire) and replay pool from Python",
   "Published wheels; the module is built locally by make py-bindings",
-  "Caller in training/src/ptr_training/moe/gates.py (guarded import) is owned by the training package",
+  "Changes to its caller, training/src/ptr_training/moe/gates.py (guarded import), belong to the training package, not to this crate",
 ]
 
 next = [
-  "Wire the guarded import in the MoE gates and compare its results with the pure-Python fallback",
+  "Run the MoE gates on a real OLMoE model (the guarded import in training/src/ptr_training/moe/gates.py is wired and ran in the WP8 CPU smoke; there is deliberately no pure-Python fallback: a missing binding reports the gates as skipped)",
 ]
 
 experiments = [

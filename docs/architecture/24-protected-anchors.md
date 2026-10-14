@@ -301,6 +301,16 @@ offset size field
        32   digest                 SHA-256 over all preceding bytes
 ```
 
+The table shows the layout as this section introduced it. The header and the three sections
+keep these offsets, but the magic has moved on with the expert lifecycle (`ptr-runtime`
+`compacted.rs`): the runtime now writes `PTRCS006` (lifecycle section `PTRLC004`, with an
+evidence block), `PTRCS007` (`PTRLC005`, adds a fence block, only when a fence cause or memo
+exists), `PTRCS008` (`PTRLC006`, adds the expert dependency index, only when it holds
+anything) and `PTRCS009` (`PTRLC007`, adds the authority block, only after an
+`ExpertAuthorityChanged` event), each byte for byte the earlier layout when its addition is
+empty. `PTRCS003`, `PTRCS004` and `PTRCS005` are still read and never written; `PTRCS001` and
+`PTRCS002` are refused. The next free magics are `PTRCS010` and `PTRLC008` (ADR-0022).
+
 Two decisions carry the design.
 
 **The snapshot does not embed the records above its floor.** Those live in the

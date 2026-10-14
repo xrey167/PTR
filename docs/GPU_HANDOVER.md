@@ -39,7 +39,7 @@ Conventions used throughout:
 | 8 | M013 expert lifecycle | none | pinned manifest | lifecycle operations, L3 policy, entrypoint |
 | 9 | M015 RLVR vs distillation | none | pinned manifest | 30B teacher does not fit (OD-4) |
 | 10 | R008 lossy KV tier | none | pinned manifest | tier mechanism, harness |
-| 11 | M016 approximate chunk reuse | none | manifest | R006 completed first, harness, OD-1 |
+| 11 | M016 approximate chunk reuse | none | manifest | harness, OD-1 (R006 is completed) |
 | 12 | R004 adapter lineage | none | manifest, `ptr-lineage` | two placeholders, backbone, harness |
 | 13 | E006 engine prefix reuse | none | manifest | vLLM and SGLang environment, harness |
 | 14 | R003, E001 to E005 | none | stubs | pinned backbone (ADR-0021) |
@@ -70,7 +70,8 @@ Work top to bottom. Each item has a check; do not continue past a failed one.
    pin before freezing those two (OD-6).
 4. **Base tools and clone.** `sudo apt install -y git curl build-essential pkg-config`, set
    `git config --global user.name/user.email`, clone the repository (DESKTOP_SETUP step 3).
-   GitHub is suspended; use the GitLab remote or a git bundle (HOSTING.md, section 6 here).
+   GitHub (`origin`) is the primary remote; the GitLab remote or a git bundle also work
+   (HOSTING.md, section 6 here).
 5. **`make desktop-setup`** (idempotent, never runs `sudo`; `--dry-run` prints the steps). It
    installs rustup with the pinned 1.99.0 toolchain, `uv`, the training venv
    (`uv sync --project training --python 3.11 --extra moe --locked`, CUDA torch wheel from
@@ -479,9 +480,8 @@ commands.
 - **Prerequisite.** R006 must be completed first. `docs/architecture/36-kv-reuse.md`: the
   only proven Exact positional-reuse case is a single-layer model "only once R006 has passed";
   M016's multi-layer shifted reuse goes through the secondary index and the shift admission
-  rules that R006 establishes. R006 is `planned` (CPU, `hardware/default.toml`); its
-  secondary index (WP1), config pins and harness skeleton are merged, but it has not been
-  preregistered or run.
+  rules that R006 establishes. R006 has since completed (preregistered at `r006-prereg`,
+  5 seeds, verdict COMPLETED; `STATUS.md`), so this prerequisite is met (OD-12).
 - **Exists.** `experiments/model/M016-approximate-chunk-reuse/` (`planned`,
   `hardware/rtx5090.toml`): position shifts 16, 64, 256; recompute candidates k in {4, 7, 10,
   13} per 64-token chunk; top-1 agreement at least 0.99 and median prefill speedup at least
@@ -609,7 +609,8 @@ run record (the profile files ask for it).
 
 ## 6. Hand results back
 
-Neither route needs GitHub (suspended; HOSTING.md).
+Besides a push to GitHub (`origin`, the primary remote), two routes need no GitHub access
+(HOSTING.md).
 
 - **Git bundle (works offline).** From the desktop checkout, on a branch that holds the
   committed run records and any config you derived:
@@ -702,7 +703,7 @@ placeholder.
 | OD-9 | R003, E001, E002, E003, E004, E005 | pinned open backbone (ADR-0021, "separate later decision"); ADR-0015 coding backbone; `model.toml` fields; strong_rag revisions (`dense.revision`, `reranker.revision`, `answer.generator`, `answer.revision`) | gap | choose backbone and revisions / keep deferring | keep deferring until steps 4 to 13 have run |
 | OD-10 | E005 | `token_budget`, `full_context_baseline`, `agent_memory_baselines`, `baseline_strong_rag_sha256` | placeholder | pin each | after OD-9 |
 | OD-11 | R003 | declared `dual-rtx3090` profile (2 x 24 GiB) matches **no** owner machine since the inventory of 2026-10-13 (two PCs with one card each); the earlier blocker, the missing backbone and multi-GPU trainer, also remains (original wording: vs a single 4090) | gap | external matching hardware / a successor with a single-card profile / defer | defer with OD-9 |
-| OD-12 | M016 | start only after R006 is completed (R006 itself is CPU and needs its own preregistration and 5 seeds) | gap | complete R006 first / change M016's design | complete R006 first |
+| OD-12 | M016 | start only after R006 is completed (R006 itself is CPU and needs its own preregistration and 5 seeds) | gap | complete R006 first / change M016's design | resolved: R006 is completed (`r006-prereg`, verdict COMPLETED) |
 
 Placeholders found in the GPU-phase manifests: only R004 (two keys) and E005 (four keys) hold
 `must-be-pinned-...` strings. The manifests of M010 to M016 and R008 and E006 contain no
@@ -831,9 +832,8 @@ loop simulation (`make py-bindings`); a Python RLVR trainer gets its propensitie
 `FindingRouter.route` and its rewards from `settle(decision_id, candidate)`, which verifies the
 candidate inside Rust; Python also chooses which decisions it settles, the routed report's task
 and the candidate text (the log keeps digests of report and candidate; estimates are only as honest
-as the harness), but cannot state or forge a reward, and cannot change a gate, threshold, verifier, eligibility or the required level. C007 and C008 are the CPU stage-A experiments of C002 and C003 as registered on their own branches; E008 is the split-pod
-extension of E007. C007, C008 and E008 are not in the registry of this branch, so read their
-status from the merged registry.
+as the harness), but cannot state or forge a reward, and cannot change a gate, threshold, verifier, eligibility or the required level. C007 and C008 are the CPU stage-A experiments of C002 and C003 (registry `failed`, both
+FALSIFIED; `STATUS.md`); E008 is the split-pod extension of E007 (registry `planned`).
 
 **Needs the GPU.** OLMoE-1B-7B L1 experts; PERFT-R (M011) and the S0 to S2 stages; RLVR router
 training against verifier rewards; stage B of C002 and C003; C005 and C006; F004 to F006; E008

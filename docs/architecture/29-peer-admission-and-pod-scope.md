@@ -135,8 +135,9 @@ Negative, one per route back in:
   that a host doing it correctly now exists: `crates/ptr-execwire` passes the key a
   QUIC connection authenticated and nothing else (`32-execution-wire.md`). Making
   the identity unforgeable **at the type level** — so that no host could pass an
-  unproven one — would still require the runtime to depend on the transport, and
-  that decision is open.
+  unproven one — would still require the runtime to depend on the transport; ADR-0022 decides it
+  (D1, spec S1: `admit_peer` takes `ptr-net`'s `AuthenticatedPeer`) and defers it to
+  the first multi-host deployment.
 - **The wire protocol is no longer missing, and it is three protocols rather than
   five.** `ALPN_EXEC` carries execution requests with a defined request format, a
   receipt bound to the bytes that arrived and a bounded replay window
@@ -145,8 +146,9 @@ Negative, one per route back in:
   (`33-pod-wire.md`), which is where the project scope below reaches across a
   network boundary — a requester cannot name a project, because the format has
   nowhere to put one, so the project comes from the same kind of host policy this
-  document describes for principals. `ALPN_MODEL`, `ALPN_BLOB` and `ALPN_EVENTS`
-  still carry nothing.
+  document describes for principals. The model, blob and events ALPNs, which
+  carried nothing, have been removed rather than left declared
+  (`07-network-protocol.md`).
 - **Pod project membership is declared, not proven.** A Pod says which project it
   serves in its own manifest. Whoever registers it decides that, exactly as
   whoever installs a grant decides its scope.
@@ -166,3 +168,6 @@ Negative, one per route back in:
 - **The policy is in memory.** It is not journaled, so it does not survive a
   restart and a replayed history does not describe who was admitted when. The
   audit records the principal an effect ran under, which is a different question.
+  ADR-0022 (D5) decides that history governs membership while the host still
+  supplies authority: spec S4 adds `PeerAdmitted` and `PeerWithdrawn` (ledger tags
+  32 and 33), deferred with D1.

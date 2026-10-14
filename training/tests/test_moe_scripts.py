@@ -115,7 +115,9 @@ class UnselectedBackendGateTests(unittest.TestCase):
                 run, "build_manifest", return_value=manifest
             ), mock.patch.object(run, "ROOT", Path(tmp)), mock.patch.object(
                 run, "_execute_trl_moe", return_value=0
-            ) as execute_mock:
+            ) as execute_mock, mock.patch.object(
+                run, "resolve_trl_moe_preflight", return_value={"status": "matched"}
+            ):
                 try:
                     run.main()
                     code = None

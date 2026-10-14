@@ -31,6 +31,7 @@ from __future__ import annotations
 import math
 import tempfile
 
+from ptr_training.integrity import assert_step_count
 from ptr_training.moe.config import RlConfig
 from ptr_training.moe.reward import (
     LEVEL,
@@ -88,6 +89,9 @@ def build_grpo_config(
         disable_tqdm=True,
         seed=seed,
         bf16=bf16,
+        # Explicit: TRL 1.14.1 defaults gradient_checkpointing to True, so leaving it out meant
+        # every arm was checkpointed without the config or the metrics saying so.
+        gradient_checkpointing=cfg.gradient_checkpointing,
         # trl 1.14.1: GRPOConfig.disable_dropout (grpo_config.py ~452, default False) is applied
         # in GRPOTrainer.__init__ (grpo_trainer.py ~988: disable_dropout_in_model). Policy and
         # reference must be deterministic for the logprob ratio / KL to mean anything.
@@ -266,6 +270,7 @@ def run_rl(model, tokenizer, tasks: list[Task], algorithm: str, cfg: RlConfig, s
             model.config._name_or_path = original_name_or_path  # undo the reference-dir redirect
             if is_peft and "ref" in model.peft_config:
                 model.delete_adapter("ref")
+        global_step = assert_step_count(trainer.state, cfg.steps, f"RL {algorithm}")
         history = [
             {k: _clean(v) for k, v in entry.items()} for entry in trainer.state.log_history
         ]
@@ -275,7 +280,9 @@ def run_rl(model, tokenizer, tasks: list[Task], algorithm: str, cfg: RlConfig, s
     keys = sorted({k for h in merged.values() for k in h if isinstance(h[k], (int, float))})
     out = {
         "algorithm": algorithm,
+        "global_step": global_step,
         "grpo_overrides": grpo_overrides(algorithm, cfg),
+        "gradient_checkpointing": bool(args.gradient_checkpointing),
         "log_history": history,
         "logged_metric_keys": keys,
         "nan": any(math.isnan(v) or math.isinf(v) for v in numeric),

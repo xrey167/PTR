@@ -38,7 +38,7 @@
 
 - Extend typed config to backend-specific adapter sections without leaking secrets
 - Generate config schema and example profiles
-- Wire ptr-config into ptr-runtime and ptrd
+- Wire a consumer for each refused-unless-default setting into ptr-runtime and the observability setup, then lift its refusal (ptr-runtime and ptrd already load PtrConfig)
 
 ### Linked experiments
 

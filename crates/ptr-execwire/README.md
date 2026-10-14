@@ -9,7 +9,7 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-09-27  
+**Last reviewed:** 2026-10-13  
 **Code footprint:** 5 Rust source files · 1597 nonblank source lines · 3 integration-test files · 36 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
@@ -35,20 +35,20 @@
 
 ### Missing for the target architecture
 
-- Signed receipts, and therefore any third-party evidence: inside one exchange the connection vouches for a receipt's author and outside it nothing does, so this crate offers no way to verify one rather than producing an artifact that looks like evidence and is not
-- A peer identity that is unforgeable at the type level, constructible only from an authenticated connection the way VerifiedDispatch is constructible only inside the runtime; that needs a ptr-runtime dependency on ptr-net and is recorded as an open decision
-- Detached work over the wire: a detached grant is audited by an attempt that stays unsettled until the adapter reports back, and there is no channel here for that report, so it is refused before the attempt is committed
+- Signed receipts, and therefore any third-party evidence: inside one exchange the connection vouches for a receipt's author and outside it nothing does, so this crate offers no way to verify one rather than producing an artifact that looks like evidence and is not; ADR-0022 decides to sign receipts (D2) after authenticated peer identity, with one SigningDomain shared with the split-Pod chunk signature (spec S2, deferred)
+- A peer identity that is unforgeable at the type level, constructible only from an authenticated connection the way VerifiedDispatch is constructible only inside the runtime; that needs a ptr-runtime dependency on ptr-net; ADR-0022 decides it (D1, spec S1: AuthenticatedPeer with no public constructor) and defers it to the first multi-host deployment
+- Detached work over the wire: a detached grant is audited by an attempt that stays unsettled until the adapter reports back, and there is no channel here for that report, so it is refused before the attempt is committed (re-specified as S6 in ADR-0022, after S5)
 - At-most-once keys scoped per principal or project: they are one namespace per host runtime, so a peer refused under a key it sent learns that another principal spent that key, and a principal that spends a key first makes it refused to every other; a requester has to choose keys nobody else can guess
-- Reconciliation: an uncertain outcome is reported and then belongs to the host's operator, because a remote peer must not be able to declare what happened to an effect
-- An accept loop a deployment would run, including backpressure toward a peer that asks faster than the runtime can answer
+- Reconciliation: an uncertain outcome is reported and then belongs to the host's operator, because a remote peer must not be able to declare what happened to an effect (ADR-0022, D6: a host-only ReconciliationAuthority capability that never crosses the wire, spec S5)
+- An accept loop a deployment would run, including backpressure toward a peer that asks faster than the runtime can answer (ADR-0022, D4: in ptrd under a ServePolicy, spec S3, deferred)
 - Session reuse: every request opens a connection, which is correct and wasteful
-- Discovery: which address belongs to an id nobody told you is a mechanism choice with its own trust question, recorded as the owner's rather than invented
+- Discovery: which address belongs to an id nobody told you is a mechanism choice with its own trust question; ADR-0022 decides against it (peers are configured through ptr-net's PeerBook)
 - Any claim about latency, throughput or behaviour under load; the tests establish protocol and identity properties on localhost
 
 ### Next milestones
 
-- Decide whether a receipt should be signed, and if so what it attests to, before anything treats one as evidence
-- Decide where the accept loop belongs before adding one, since a loop in the wrong place makes the scheduling implicit again
+- Sign receipts per ADR-0022 spec S2 (decided: yes, after S1), before anything treats one as evidence
+- Build the accept loop in ptrd under ptr-net's ServePolicy (ADR-0022, spec S3) once a multi-host deployment exists
 
 ### Linked experiments
 

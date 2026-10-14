@@ -1,16 +1,16 @@
 # Desktop setup: Ubuntu 24.04 on two single-GPU PCs (one RTX 3090, one RTX 4090)
 
-**Kurzfassung (Deutsch).** Dieses Runbook richtet einen frisch installierten Desktop (Ubuntu
-24.04 LTS, native, kein WSL2; je PC eine Karte mit 24 GB, RTX 3090 oder RTX 4090) für
-PTR-Experimente mit Claude Code ein. Reihenfolge: Ubuntu installieren (Secure Boot:
-MOK-Schlüssel beim Neustart bestätigen; mindestens 200 GB frei), Treiber
-`nvidia-driver-580-open` installieren und mit `nvidia-smi` prüfen, `git` und Repository klonen,
-`make desktop-setup`, danach `make gpu-doctor`, Hugging-Face-Login und OLMoE-Download (ca. 14
-GB, fester Revisions-Hash), dann `make smoke-gpu`, `make olmoe-sft-smoke` und zuletzt M011 (nur auf dem 3090-PC).
-Claude Code startet man im Repo-Verzeichnis; der Skill `experiment-run` führt Läufe im
-Hintergrund aus und überwacht sie. Die Smoke-Läufe sind **Pipeline-Belege, keine Evidenz**: ohne
-Falsifikationskriterien, Seeds und Baselines des jeweiligen Experiments wird kein
-Forschungsergebnis behauptet. Der Rest dieses Dokuments ist auf Englisch, wie die übrigen Docs.
+**Summary.** This runbook sets up a freshly installed desktop (Ubuntu 24.04 LTS, native, not
+WSL2) for PTR experiments with Claude Code. It was written for one NVIDIA RTX 4090 (24 GB); the
+owner has two PCs with one 24 GB card each, an RTX 3090 and an RTX 4090, and the paragraph below
+says what applies to which. Order: install Ubuntu (Secure Boot: confirm the MOK key at reboot; at
+least 200 GB free), install the driver `nvidia-driver-580-open` and check it with `nvidia-smi`,
+install `git` and clone the repository, `make desktop-setup`, then `make gpu-doctor`, the Hugging
+Face login and the OLMoE download (about 14 GB, pinned revision hash), then `make smoke-gpu`,
+`make olmoe-sft-smoke` and finally M011 (3090 PC only). Start Claude Code in the repository
+directory; the skill `experiment-run` runs and monitors runs in the background. The smoke runs
+are **pipeline evidence, not research evidence**: without the experiment's falsification
+criteria, seeds and baselines no research result is claimed.
 
 Target: a fresh Ubuntu 24.04 LTS desktop (native, not WSL2) with one NVIDIA RTX 4090
 (24 GiB, Ada, sm_89). The hardware profile is `hardware/rtx4090.toml`. Nothing here
@@ -221,8 +221,9 @@ instead of the ad-hoc requests above when a head session drives the work.
 The ordered GPU run plan after the smoke runs, the per-experiment gaps and the open owner decisions are in
 [`docs/GPU_HANDOVER.md`](GPU_HANDOVER.md).
 
-GitHub is currently suspended: for the GitLab remote, the `ptr-gitlab` skill and registering this
-desktop as a GitLab runner tagged `ptr-gpu`, see `docs/HOSTING.md`.
+GitHub (`origin`) is the primary remote; GitLab is the alternative. For the GitLab remote, the
+`ptr-gitlab` skill and registering this desktop as a GitLab runner tagged `ptr-gpu`, see
+`docs/HOSTING.md`.
 
 ## 9. Troubleshooting
 

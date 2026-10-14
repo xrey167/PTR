@@ -71,8 +71,8 @@ flowchart LR
 
 Dedicated diagram source: [`docs/diagrams/components/ptr-events.mmd`](../../docs/diagrams/components/ptr-events.mmd)
 
-**Upstream:** ptr-ledger, ptr-observe  
-**Downstream:** training collectors, analytics, materializers
+**Upstream:** ptr-types  
+**Downstream:** ptr-runtime (no stream consumer such as a training collector or materializer exists yet)
 
 ## Mission
 

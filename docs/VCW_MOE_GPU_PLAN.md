@@ -755,8 +755,8 @@ it.
 ## 10. Final state (2026-10-11)
 
 Status words below come from `experiments/registry.toml` and `STATUS.md` of the integration line
-this document was finalised on. **C007, C008 and E008 are not in that registry**: they were created
-on other package branches, so their status is not stated here and must be read from the merged
+this document was finalised on (2026-10-11). C007, C008 and E008 were created on other package
+branches and have since been merged; their rows below were updated on 2026-10-13 from the merged
 registry. No GPU result exists for any experiment in this document.
 
 ### 10.1 What runs on CPU today
@@ -764,11 +764,12 @@ registry. No GPU result exists for any experiment in this document.
 | Item | State |
 |---|---|
 | C001 global workspace (learned-attention workspace, one synthetic modular task) | `prepared`; verdict **NOT_SHOWN** (preregistered at `c001-prereg`, 20 seeds, mutation check 38 of 38). The C006 prerequisite P9 is therefore met, with a result that neither supports nor refutes |
-| C007, C008 | the CPU stage-A experiments of C002 and C003 respectively, as registered on their own branches (their status is to be read from the registry after merge); the GPU part of each stays stage B below |
-| E007 split-pod KV (CPU reference) | `planned` in the registry; E008 is its split-pod extension, with part C (split parity on `candle-cuda`) the only GPU part |
+| C007, C008 | the CPU stage-A experiments of C002 and C003 respectively: registry `failed`, both verdict **FALSIFIED** (`STATUS.md`); the GPU part of each stays stage B below |
+| E007 split-pod KV (CPU reference) | `completed`, verdict COMPLETED (CPU part; `STATUS.md`); E008 is its split-pod extension (registry `planned`), with part C (split parity on `candle-cuda`) the only GPU part |
 | `ptr_py` VCW surface | built and tested by `make py-bindings` (verifiers, router with propensity log and OPE estimators, bounded workspace, loop simulation). It is a measurement harness: no function changes a gate, threshold, verifier, eligibility or the required level (roster, generations and level are fixed at construction), and a test enforces the public surface |
 | `ptr_training.vcw` | configs, guard, budget and plan (45 tests, no torch) |
 | Rust `VcwLoop`, router, workspace, verifiers | implemented and tested on CPU with simulated experts (`make vcw-demo`) |
+| F007 vcw-loop (whole loop, simulated experts) | `completed`, verdict **COMPLETED** as a mechanism check on declared per-Pod skill tables (`f007-prereg`, 5 seeds; `STATUS.md`); it says nothing about any model's experts |
 
 ### 10.2 What needs a GPU, exactly
 

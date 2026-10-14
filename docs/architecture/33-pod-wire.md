@@ -223,12 +223,14 @@ and the peer the decision runs under.
 - **Nothing here authenticates a peer.** The key is the one `ptr-net` reports the
   QUIC connection authenticated, and this crate takes the host's word that it passed
   that rather than something else. The same boundary `29-peer-admission-and-pod-scope.md`
-  states, and the same open decision behind it (D1 in issue #23): a `ptr-runtime`
-  dependency on `ptr-net` would make the identity unforgeable at the type level.
+  states, and the same decision behind it (D1 in issue #23, decided in ADR-0022 as spec S1
+  and deferred to the first multi-host deployment): a `ptr-runtime` dependency on
+  `ptr-net` would make the identity unforgeable at the type level.
 - **An answer is not signed.** Inside one exchange the connection vouches for its
   author; once the bytes are stored or forwarded, nothing does. This crate offers no
   way to verify a stored answer rather than producing an artifact that looks like
-  evidence and is not — D2's question, with the same answer for now.
+  evidence and is not — D2's question. ADR-0022 decides to sign answers with the same
+  `SigningDomain` as receipts (spec S2), which is not built.
 - **Pod project membership is still declared, not proven.** A Pod says which project
   it serves in its own manifest, and whoever registers it decides that.
 - **The access policy is in memory.** It is not journaled, so it does not survive a
@@ -237,9 +239,11 @@ and the peer the decision runs under.
   difference worth stating: a `PodScope` holds only data, so unlike an
   `ExecutionGrant` it *could* be rebuilt from history. That makes it a smaller
   problem, not a closed one, and taking it separately would leave two policies with
-  two durability stories.
+  two durability stories. ADR-0022 re-specifies it as S7 (`PodScopeAdmitted` and
+  `PodScopeWithdrawn` on ledger tags 35 and 36, after the admission journal of S4).
 - **No discovery.** Which address belongs to an id nobody told you is a mechanism
-  choice with its own trust question, and it is the owner's.
+  choice with its own trust question; ADR-0022 decides against it, so peers are
+  configured through `PeerBook`.
 
   **Address authority is no longer missing.** This bullet said *no discovery and no
   address authority*, and that a wrong address gets a refusal only because the
@@ -248,13 +252,16 @@ and the peer the decision runs under.
   installed can produce, and a wrong address fails on the authenticated key before
   the host is asked anything. See `34-address-authority.md`.
 - **No accept loop, and no backpressure.** `serve_once` answers one connection. A
-  peer that asks faster than the host can answer is the deployment's problem, and
-  where the loop belongs is D4.
-- **Session reuse.** Every request opens a connection, which is correct and wasteful
-  — the same sentence `31-cluster-integrity.md` and `32-execution-wire.md` already
-  carry.
+  peer that asks faster than the host can answer is the deployment's problem. Where
+  the loop belongs is D4, decided in ADR-0022: in `ptrd` under a `ServePolicy`
+  (spec S3, not built).
+- **Session reuse is opt-in.** `PodClient::request` and `request_v2` open a connection
+  per request, which is correct and wasteful — the same sentence
+  `31-cluster-integrity.md` and `32-execution-wire.md` carry. With `podwire-backend`,
+  `PodClient::connect_session` reuses one authenticated connection for bounded V2
+  streams (`crates/ptr-podwire/README.md`, "Reusable V2 sessions").
 - **Nothing about latency, throughput or behaviour under load.** The tests establish
   protocol and isolation properties on localhost.
-- **The other three ALPNs still carry nothing.** `ALPN_MODEL`, `ALPN_BLOB` and
-  `ALPN_EVENTS` remain declared and unspoken. This document closes one of the four
-  C3 named, and says so rather than letting "Pod access" stand in for all of them.
+- **No other ALPN carries model, blob or event traffic.** `ALPN_MODEL`, `ALPN_BLOB` and
+  `ALPN_EVENTS` named protocols nobody specified and were removed (ADR-0022); this
+  document closes the one of C3's four that has a protocol, Pod access.

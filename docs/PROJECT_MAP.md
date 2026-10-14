@@ -7,7 +7,15 @@
 > resolution) and `ptr-server` (now an effect path with idempotency keys).
 > For the current state of each crate read its `component.toml` and the
 > generated [`components/STATUS.md`](components/STATUS.md), which are checked
-> in CI.
+> in CI. Identifiers in §8 and §10 that have moved since, as of 2026-10-13:
+> `ptr-net` declares three ALPNs (`ALPN_RAFT`, `ALPN_PODWIRE`, `ALPN_EXEC`;
+> `ALPN_MODEL`, `ALPN_BLOB` and `ALPN_EVENTS` were removed by ADR-0022) and pins
+> iroh 1.3 on the workspace's Rust 1.99; the workspace MSRV is 1.99, not 1.85;
+> `LedgerEvent` tags run to 31 (27–31 are the expert, taint, input-invalidation
+> and authority events; the next free tag is 32); the compacted snapshot is
+> written as `PTRCS006` to `PTRCS009` with lifecycle sections `PTRLC004` to
+> `PTRLC007`; the raft state file is `PTRRST03`. ADR-0022 lists the next free
+> numbers for new layouts (`PTRCS010`, `PTRLC008`, `PTRRST04`).
 
 This is a map of the whole repository for someone who has not seen it before. It
 says what each part is, where it lives, how the parts connect, and — most
@@ -403,7 +411,6 @@ projection > cache > transient model state. No layer promotes itself upward.
 | `ptr-raft/1` | `ptr-cluster` | `PTRRAFTW` batches carrying raft-rs protobuf messages | Library-level three-member group on loopback; 9 wire tests |
 | `ptr-exec/1` | `ptr-execwire` | `PTREXREQ` / `PTREXRCP` | Implemented; 13 wire tests |
 | `ptr-podwire/1` | `ptr-podwire` | `PTRPWREQ` / `PTRPWANS` | Implemented; 9 wire + 10 access tests |
-| `ptr-model/1`, `ptr-blob/1`, `ptr-events/1` | — | — | Declared constants; no protocol |
 
 - **Common properties:** the sender is always the QUIC-authenticated key, never a
   payload field. Frames are hand-written, bounded and versioned. The protobuf
@@ -809,7 +816,7 @@ The graft commit `55b5379` already contains the full 24-crate scaffold.
 | Step 01 | First cognitive increment (confidence contract) | doc 20 |
 | Gate 1–4 | Requirement blocks of issues #15/#20 (execution/network trust, cluster integrity, neural lifecycle, dependency retirement) | GitHub issues |
 | A1–A6, B1–B5, C1–C9 | Tiers of the open-items plan: done fixes, owner decisions, separate gates | `docs/OPEN_ITEMS_PLAN_20260921.md` |
-| G1, G2; D1–D6 | Issue #23's renumbering: G1 = semantic payloads to the model (**open**), G2 = durable cross-node fencing (closed in code; its only tests, `raft_fence.rs`, are run by no CI job; *in CI from this branch*); D1–D6 = owner decisions (all undecided) | issue #23 |
+| G1, G2; D1–D6 | Issue #23's renumbering: G1 = semantic payloads to the model (open; deferred until an A0 study passes, spec S8), G2 = durable cross-node fencing (closed; `raft_fence.rs` runs in CI job ledger-raft-rs); D1–D6 = owner decisions, all decided in ADR-0022 (D3 no signature, D1/D2/D4/D5 deferred to the first multi-host deployment with specs S1–S4, D6 spec S5) | issue #23, `research/decisions/ADR-0022-issue-23-respecification.md` |
 | M/S/R/L/Q/F/E + 3 digits | Experiment ids: model, SemDB, runtime/Pods, lifecycle, retrieval, feedback, end-to-end system | `experiments/registry.toml` |
 | ADR-00NN | Architecture decision records | `research/decisions/` |
 | Phase A–G | Target roadmap phases | `docs/ROADMAP.md` |
