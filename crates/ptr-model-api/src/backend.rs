@@ -17,6 +17,8 @@ pub enum ModelErrorKind {
     Revoked,
     /// The backend was shut down.
     Closed,
+    /// A resume was presented under a scope other than the one its answer was produced under.
+    ScopeMismatch,
     /// The backend failed for a reason that is not the request's (a panic, a malformed batch
     /// answer, an unreachable replica).
     BackendFailure,
@@ -86,6 +88,18 @@ impl ModelError {
 
     pub fn closed() -> Self {
         Self::with_kind(ModelErrorKind::Closed, "model backend closed")
+    }
+
+    /// A resume named a scope (or a request) other than the one its answer is bound to.
+    pub fn scope_mismatch() -> Self {
+        Self::with_kind(
+            ModelErrorKind::ScopeMismatch,
+            "resume scope differs from the scope its answer was produced under",
+        )
+    }
+
+    pub fn is_scope_mismatch(&self) -> bool {
+        self.kind == ModelErrorKind::ScopeMismatch
     }
 
     pub fn backend_failure() -> Self {

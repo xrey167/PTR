@@ -5,7 +5,7 @@ mod common;
 use common::{eventually, request, Latch, RecordingBackend};
 use ptr_model_api::{
     AdaptiveBatcher, BatchAdmission, BatchClock, BatchError, BatchGate, BatchKey, BatchPolicy,
-    CancelFlag, InferenceBackend, ModelError, ModelEvent, SystemClock,
+    CancelFlag, InferenceBackend, ModelError, ModelEvent, ResumeBinding, SystemClock,
 };
 use ptr_types::{Generation, Timestamp};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -441,31 +441,6 @@ fn echo_batcher(gate: Arc<dyn BatchGate>) -> AdaptiveBatcher<ptr_model_api::Refe
     .expect("built")
 }
 
-#[test]
-fn resume_with_asks_the_gate_about_exactly_the_given_key() {
-    let gate = Arc::new(RevocableProject {
-        revoked: AtomicBool::new(true),
-        project: "p",
-    });
-    let batcher = echo_batcher(gate as Arc<dyn BatchGate>);
-    let request = common::resume_request("r");
-    let live = BatchKey {
-        project: Some("q".into()),
-        adapter: Some("coder".into()),
-        principal: None,
-        generation: Generation(1),
-    };
-    let revoked = BatchKey {
-        project: Some("p".into()),
-        ..live.clone()
-    };
-    assert!(batcher.resume_with(&request, &live).is_ok());
-    assert_eq!(
-        batcher.resume_with(&request, &revoked),
-        Err(ModelError::revoked())
-    );
-}
-
 /// A gate that holds the dispatching worker until the test lets it go.
 struct HeldGate {
     entered: AtomicBool,
@@ -584,111 +559,6 @@ impl ptr_model_api::ResumableInferenceBackend for PanickingResume {
 }
 
 #[test]
-fn a_backend_panic_in_resume_fails_that_call_and_the_batcher_keeps_serving() {
-    let batcher = AdaptiveBatcher::with_parts(
-        Arc::new(PanickingResume),
-        policy(1, 0, 4),
-        Arc::new(SystemClock),
-        Some(Arc::new(OpenGate) as Arc<dyn BatchGate>),
-    )
-    .expect("built");
-    assert_eq!(
-        batcher.resume_with(&common::resume_request("r"), &BatchKey::unscoped()),
-        Err(ModelError::backend_failure())
-    );
-    assert_eq!(batcher.stats().backend_errors, 1);
-    assert!(batcher.infer(&request("after")).is_ok());
-}
-
-#[test]
-fn a_resume_is_stopped_by_a_closed_gate() {
-    let gate = Arc::new(SwitchGate(AtomicBool::new(true)));
-    let batcher = echo_batcher(Arc::clone(&gate) as Arc<dyn BatchGate>);
-    let scoped = key("coder");
-    assert!(batcher
-        .resume_with(&common::resume_request("r"), &scoped)
-        .is_ok());
-    gate.0.store(false, Ordering::SeqCst);
-    assert_eq!(
-        batcher.resume_with(&common::resume_request("r"), &scoped),
-        Err(ModelError::revoked())
-    );
-}
-
-#[test]
-fn a_resume_is_judged_under_the_key_the_caller_holds_and_never_under_a_request_id() {
-    use ptr_model_api::ResumableInferenceBackend;
-    let gate = Arc::new(RevocableProject {
-        revoked: AtomicBool::new(false),
-        project: "p",
-    });
-    let batcher = echo_batcher(Arc::clone(&gate) as Arc<dyn BatchGate>);
-    let scope_p = BatchKey {
-        project: Some("p".into()),
-        adapter: Some("coder".into()),
-        principal: None,
-        generation: Generation(1),
-    };
-    batcher
-        .infer_with(&request("r1"), keyed("p", "coder"))
-        .expect("served");
-    assert!(batcher
-        .resume_with(&common::resume_request("r1"), &scope_p)
-        .is_ok());
-    gate.revoked.store(true, Ordering::SeqCst);
-    assert_eq!(
-        batcher.resume_with(&common::resume_request("r1"), &scope_p),
-        Err(ModelError::revoked()),
-        "the revoked generation is refused at this use"
-    );
-    // The unscoped form carries no scope and a gate is configured: refused, even for a project
-    // that is not revoked and even though the unscoped key itself would be admitted.
-    assert_eq!(
-        batcher.resume(&common::resume_request("r1")),
-        Err(ModelError::revoked())
-    );
-}
-
-#[test]
-fn reusing_or_evicting_request_ids_cannot_redirect_a_resume_to_another_scope() {
-    let gate = Arc::new(RevocableProject {
-        revoked: AtomicBool::new(false),
-        project: "p",
-    });
-    let batcher = echo_batcher(Arc::clone(&gate) as Arc<dyn BatchGate>);
-    let live = BatchKey {
-        project: Some("q".into()),
-        adapter: Some("coder".into()),
-        principal: None,
-        generation: Generation(1),
-    };
-    let doomed = BatchKey {
-        project: Some("p".into()),
-        ..live.clone()
-    };
-    // Many requests, one id reused under both scopes: the batcher keeps no id-to-scope table to
-    // fill, evict or overwrite.
-    for n in 0..5000 {
-        batcher
-            .infer_with(&request(&format!("r-{n}")), keyed("q", "coder"))
-            .expect("served");
-    }
-    batcher
-        .infer_with(&request("shared-id"), keyed("p", "coder"))
-        .expect("served");
-    batcher
-        .infer_with(&request("shared-id"), keyed("q", "coder"))
-        .expect("the same id under another scope is simply another request");
-    gate.revoked.store(true, Ordering::SeqCst);
-    let resume = common::resume_request("shared-id");
-    assert_eq!(
-        batcher.resume_with(&resume, &doomed),
-        Err(ModelError::revoked())
-    );
-    assert!(batcher.resume_with(&resume, &live).is_ok());
-}
-
-#[test]
 fn the_unscoped_resume_serves_only_a_batcher_without_a_gate() {
     use ptr_model_api::{ReferenceEchoBackend, ResumableInferenceBackend};
     let ungated =
@@ -701,30 +571,181 @@ fn the_unscoped_resume_serves_only_a_batcher_without_a_gate() {
     );
 }
 
-/// A gate that panics when asked.
-struct PanickingGate;
+/// Answer `id` under `key` and return the binding of the answer.
+fn bind<B: ptr_model_api::BatchInferenceBackend + 'static>(
+    batcher: &AdaptiveBatcher<B>,
+    id: &str,
+    key: &BatchKey,
+) -> ResumeBinding {
+    batcher
+        .infer_scoped(
+            &request(id),
+            BatchAdmission {
+                key: key.clone(),
+                deadline: None,
+                cancel: None,
+            },
+        )
+        .expect("served")
+        .binding
+}
 
-impl BatchGate for PanickingGate {
-    fn admits(&self, _key: &BatchKey) -> bool {
-        panic!("gate panics on purpose");
+fn scope(project: &str, generation: u64) -> BatchKey {
+    BatchKey {
+        project: Some(project.into()),
+        adapter: Some("coder".into()),
+        principal: None,
+        generation: Generation(generation),
+    }
+}
+
+/// Admits every generation except the ones listed as revoked.
+struct RevokedGenerations(std::sync::Mutex<Vec<u64>>);
+
+impl BatchGate for RevokedGenerations {
+    fn admits(&self, key: &BatchKey) -> bool {
+        !self.0.lock().unwrap().contains(&key.generation.0)
     }
 }
 
 #[test]
-fn a_gate_that_panics_refuses_the_batch_and_the_worker_keeps_serving() {
-    let batcher = echo_batcher(Arc::new(PanickingGate));
+fn a_continuation_is_bound_to_the_scope_it_was_produced_under() {
+    let gate = Arc::new(RevokedGenerations(std::sync::Mutex::new(Vec::new())));
+    let batcher = echo_batcher(Arc::clone(&gate) as Arc<dyn BatchGate>);
+    let gen2 = scope("p", 2);
+    let gen3 = scope("p", 3);
+    let binding = bind(&batcher, "r", &gen2);
+    let resume = common::resume_request("r");
+    // Valid: the right key, the generation live.
+    assert!(batcher.resume_with(&resume, &binding, &gen2).is_ok());
+    // Generation 2 is revoked; generation 3 lives.
+    gate.0.lock().unwrap().push(2);
+    // The caller holds a key for the live generation 3 and presents the generation 2
+    // observation under it: a scope mismatch, nothing runs, the gate is not consulted.
+    assert_eq!(
+        batcher.resume_with(&resume, &binding, &gen3),
+        Err(ModelError::scope_mismatch())
+    );
+    // Another project's key does not fit either.
+    assert_eq!(
+        batcher.resume_with(&resume, &binding, &scope("q", 2)),
+        Err(ModelError::scope_mismatch())
+    );
+    // The right key for the revoked generation reaches the gate with the bound key: revoked.
+    assert_eq!(
+        batcher.resume_with(&resume, &binding, &gen2),
+        Err(ModelError::revoked())
+    );
+    // A binding of another request does not carry over.
+    let other = bind(&batcher, "other", &gen3);
+    assert_eq!(
+        batcher.resume_with(&resume, &other, &gen3),
+        Err(ModelError::scope_mismatch())
+    );
+}
+
+#[test]
+fn a_resume_is_stopped_by_a_closed_gate() {
+    let gate = Arc::new(SwitchGate(AtomicBool::new(true)));
+    let batcher = echo_batcher(Arc::clone(&gate) as Arc<dyn BatchGate>);
+    let scoped = key("coder");
+    let binding = bind(&batcher, "r", &scoped);
+    assert!(batcher
+        .resume_with(&common::resume_request("r"), &binding, &scoped)
+        .is_ok());
+    gate.0.store(false, Ordering::SeqCst);
+    assert_eq!(
+        batcher.resume_with(&common::resume_request("r"), &binding, &scoped),
+        Err(ModelError::revoked())
+    );
+}
+
+#[test]
+fn reusing_or_evicting_request_ids_cannot_redirect_a_resume_to_another_scope() {
+    let gate = Arc::new(RevocableProject {
+        revoked: AtomicBool::new(false),
+        project: "p",
+    });
+    let batcher = echo_batcher(Arc::clone(&gate) as Arc<dyn BatchGate>);
+    let live = scope("q", 1);
+    let doomed = scope("p", 1);
+    // Thousands of requests and one id used under both scopes: the batcher keeps no id table,
+    // and each answer carries its own binding.
+    for n in 0..5000 {
+        batcher
+            .infer_with(&request(&format!("r-{n}")), keyed("q", "coder"))
+            .expect("served");
+    }
+    let doomed_binding = bind(&batcher, "shared-id", &doomed);
+    let live_binding = bind(&batcher, "shared-id", &live);
+    gate.revoked.store(true, Ordering::SeqCst);
+    let resume = common::resume_request("shared-id");
+    assert_eq!(
+        batcher.resume_with(&resume, &doomed_binding, &doomed),
+        Err(ModelError::revoked())
+    );
+    // The live key cannot be used to carry the doomed observation.
+    assert_eq!(
+        batcher.resume_with(&resume, &doomed_binding, &live),
+        Err(ModelError::scope_mismatch())
+    );
+    assert!(batcher.resume_with(&resume, &live_binding, &live).is_ok());
+}
+
+#[test]
+fn a_backend_panic_in_resume_fails_that_call_and_the_batcher_keeps_serving() {
+    let batcher = AdaptiveBatcher::with_parts(
+        Arc::new(PanickingResume),
+        policy(1, 0, 4),
+        Arc::new(SystemClock),
+        Some(Arc::new(OpenGate) as Arc<dyn BatchGate>),
+    )
+    .expect("built");
+    let binding = bind(&batcher, "r", &BatchKey::unscoped());
+    assert_eq!(
+        batcher.resume_with(
+            &common::resume_request("r"),
+            &binding,
+            &BatchKey::unscoped()
+        ),
+        Err(ModelError::backend_failure())
+    );
+    assert_eq!(batcher.stats().backend_errors, 1);
+    assert!(batcher.infer(&request("after")).is_ok());
+}
+
+/// A gate that panics once armed.
+struct PanickingGate(AtomicBool);
+
+impl BatchGate for PanickingGate {
+    fn admits(&self, _key: &BatchKey) -> bool {
+        if self.0.load(Ordering::SeqCst) {
+            panic!("gate panics on purpose");
+        }
+        true
+    }
+}
+
+#[test]
+fn a_gate_that_panics_refuses_the_batch_and_the_resume_and_the_worker_keeps_serving() {
+    let gate = Arc::new(PanickingGate(AtomicBool::new(false)));
+    let batcher = echo_batcher(Arc::clone(&gate) as Arc<dyn BatchGate>);
+    let binding = bind(&batcher, "r", &key("coder"));
+    gate.0.store(true, Ordering::SeqCst);
     for n in 0..3 {
         assert_eq!(
             batcher.infer_with(&request(&format!("r{n}")), keyed("p", "coder")),
             Err(ModelError::revoked())
         );
     }
-    assert_eq!(batcher.stats().dispatched, 0);
-    assert_eq!(batcher.stats().revoked, 4 - 1);
+    assert_eq!(batcher.stats().dispatched, 1);
+    assert_eq!(batcher.stats().revoked, 3);
     assert_eq!(
-        batcher.resume_with(&common::resume_request("r"), &key("coder")),
+        batcher.resume_with(&common::resume_request("r"), &binding, &key("coder")),
         Err(ModelError::revoked())
     );
+    gate.0.store(false, Ordering::SeqCst);
+    assert!(batcher.infer(&request("after")).is_ok());
 }
 
 /// A clock that panics on the batcher's worker thread once armed.

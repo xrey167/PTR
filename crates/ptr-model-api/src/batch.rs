@@ -31,7 +31,7 @@ use crate::{
     InferenceBackend, ModelError, ModelEvent, ModelRequest, ModelResumeRequest,
     ResumableInferenceBackend,
 };
-use ptr_types::{Generation, Timestamp};
+use ptr_types::{Generation, RequestId, Timestamp};
 use std::fmt;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -131,6 +131,35 @@ impl fmt::Display for BatchError {
 }
 
 impl std::error::Error for BatchError {}
+
+/// The scope an answer was produced under, handed back with it by
+/// [`AdaptiveBatcher::infer_scoped`] and presented again to
+/// [`AdaptiveBatcher::resume_with`]. It is the continuation's own scope: the key and the request
+/// it belongs to. It has no public constructor, so a scope can only come from an answer the
+/// batcher produced; a caller holding the key of a live generation cannot make an observation
+/// that came from a revoked one pass as its own.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResumeBinding {
+    request_id: RequestId,
+    key: BatchKey,
+}
+
+impl ResumeBinding {
+    pub fn key(&self) -> &BatchKey {
+        &self.key
+    }
+
+    pub fn request_id(&self) -> &RequestId {
+        &self.request_id
+    }
+}
+
+/// What a scoped call returns: the events and the binding a later resume must present.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScopedAnswer {
+    pub events: Vec<ModelEvent>,
+    pub binding: ResumeBinding,
+}
 
 /// A flag a caller sets to withdraw a request that has not reached the model yet.
 #[derive(Clone, Debug, Default)]
@@ -360,6 +389,25 @@ impl<B: BatchInferenceBackend + 'static> AdaptiveBatcher<B> {
         request: &ModelRequest,
         admission: BatchAdmission,
     ) -> Result<Vec<ModelEvent>, ModelError> {
+        self.infer_scoped(request, admission)
+            .map(|answer| answer.events)
+    }
+
+    /// Like [`AdaptiveBatcher::infer_with`], and also returns the [`ResumeBinding`] of the
+    /// answer: the key and request id it was produced under, for a later
+    /// [`AdaptiveBatcher::resume_with`].
+    ///
+    /// # Errors
+    /// As [`AdaptiveBatcher::infer_with`].
+    pub fn infer_scoped(
+        &self,
+        request: &ModelRequest,
+        admission: BatchAdmission,
+    ) -> Result<ScopedAnswer, ModelError> {
+        let binding = ResumeBinding {
+            request_id: request.request_id.clone(),
+            key: admission.key.clone(),
+        };
         let counters = &self.shared.counters;
         if admission.key.adapter.is_some() && self.shared.gate.is_none() {
             bump(&counters.revoked, 1);
@@ -401,27 +449,35 @@ impl<B: BatchInferenceBackend + 'static> AdaptiveBatcher<B> {
             }
         }
         self.shared.wake.notify_one();
-        answer_rx
+        let events = answer_rx
             .recv()
-            .unwrap_or_else(|_| Err(ModelError::closed()))
+            .unwrap_or_else(|_| Err(ModelError::closed()))?;
+        Ok(ScopedAnswer { events, binding })
     }
 
-    /// Resume a request under an explicit key, for a caller that knows the scope its request was
-    /// admitted under. The gate is asked about exactly this key; a key that names an adapter is
-    /// refused when there is no gate.
+    /// Resume the continuation of an answer. The scope is the continuation's own: `binding`
+    /// is what [`AdaptiveBatcher::infer_scoped`] returned with it, and `key` is the scope the
+    /// caller now claims. A `key` that differs from the bound one, or a `binding` of another
+    /// request, is [`ModelError::scope_mismatch`] and nothing runs. Otherwise the gate is asked
+    /// about the bound key, so an observation produced under a revoked generation is refused
+    /// whatever key the caller holds for a live one.
     ///
     /// # Errors
-    /// [`ModelError::revoked`] when the gate does not admit the key, and whatever the backend
-    /// returns.
+    /// [`ModelError::scope_mismatch`], [`ModelError::revoked`] when the gate does not admit the
+    /// bound key (or a key naming an adapter has no gate), and whatever the backend returns.
     pub fn resume_with(
         &self,
         request: &ModelResumeRequest,
+        binding: &ResumeBinding,
         key: &BatchKey,
     ) -> Result<Vec<ModelEvent>, ModelError>
     where
         B: ResumableInferenceBackend,
     {
-        if !gate_admits(&self.shared, key) {
+        if binding.request_id != request.request_id || &binding.key != key {
+            return Err(ModelError::scope_mismatch());
+        }
+        if !gate_admits(&self.shared, &binding.key) {
             bump(&self.shared.counters.revoked, 1);
             return Err(ModelError::revoked());
         }
@@ -487,17 +543,22 @@ impl<B: BatchInferenceBackend + 'static> InferenceBackend for AdaptiveBatcher<B>
 impl<B: BatchInferenceBackend + ResumableInferenceBackend + 'static> ResumableInferenceBackend
     for AdaptiveBatcher<B>
 {
-    /// A resume without a scope. A request id says nothing about the scope it was admitted
-    /// under, and the batcher keeps no such binding, so this form is only for a batcher built
-    /// without a gate (which serves no adapter at all): it runs the unscoped key. With a gate
-    /// configured it is refused with [`ModelError::revoked`]; a caller that serves adapters
-    /// resumes through [`AdaptiveBatcher::resume_with`] with the key it holds.
+    /// A resume without a bound scope. A request id says nothing about the scope it was
+    /// admitted under, and the batcher keeps no such binding, so this form is only for a
+    /// batcher built without a gate (which serves no adapter at all), where every answer is
+    /// unscoped. With a gate configured it is refused with [`ModelError::revoked`]; a caller
+    /// that serves adapters resumes through [`AdaptiveBatcher::resume_with`] with the binding
+    /// of the answer.
     fn resume(&self, request: &ModelResumeRequest) -> Result<Vec<ModelEvent>, ModelError> {
         if self.shared.gate.is_some() {
             bump(&self.shared.counters.revoked, 1);
             return Err(ModelError::revoked());
         }
-        self.resume_with(request, &BatchKey::unscoped())
+        let binding = ResumeBinding {
+            request_id: request.request_id.clone(),
+            key: BatchKey::unscoped(),
+        };
+        self.resume_with(request, &binding, &BatchKey::unscoped())
     }
 }
 

@@ -154,8 +154,12 @@ simulator training happens in PTR until `predictive` has been true on a real gen
 - **Generation at use (invariant 3).** A `BatchGate` is asked about the key of every batch immediately before the model
   runs; a revoked generation is refused at that use (`ModelError::revoked()`), not only when it was queued. A key that
   names an adapter is refused when the batcher was built without a gate (there is no admit-all default). A resume
-  passes the gate under the key the caller holds (`resume_with(request, key)`); the batcher keeps no request-id-to-scope
-  table, because an id is not a credential and a bounded table can be filled, evicted or overwritten. The unscoped
+  is bound to the scope of the answer it continues: `infer_scoped` returns the answer with a `ResumeBinding` (request id and
+  `BatchKey`, no public constructor) and `resume_with(request, binding, key)` refuses a key or request that differs
+  from the bound one (`ModelErrorKind::ScopeMismatch`) before anything runs, then asks the gate about the bound key, so an
+  observation made under a revoked generation is refused whatever key the caller holds for a live generation or another
+  project. The batcher keeps no request-id-to-scope table, because an id is not a credential and a bounded table can be
+  filled, evicted or overwritten. The unscoped
   `resume` of the trait is served only by a batcher built without a gate (which serves no adapter) and is refused when a
   gate is configured. A gate that panics has not admitted the key (refused as revoked, counted); a worker that ends for
   any reason closes the batcher and answers every queued caller with `closed`. Resume has the same panic containment as a batch. Deadlines and cancellations are checked again after the gate, immediately before the backend call.
