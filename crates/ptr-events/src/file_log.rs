@@ -45,6 +45,10 @@ pub enum FsyncPolicy {
     Never,
 }
 
+/// Hard upper bound on [`FileLogConfig::max_unacked_records`], the same ceiling the in-memory bus
+/// clamps its capacity to.
+pub const MAX_FILE_LOG_UNACKED_RECORDS: usize = crate::bus::MAX_BUS_RECORD_CAPACITY;
+
 /// Configuration of a [`FileEventLog`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FileLogConfig {
@@ -53,6 +57,8 @@ pub struct FileLogConfig {
     pub segment_max_bytes: u64,
     pub fsync: FsyncPolicy,
     /// Bound on records some registered consumer has not acknowledged.
+    /// At most [`MAX_FILE_LOG_UNACKED_RECORDS`]; larger values are refused by
+    /// [`FileEventLog::open`] with [`PolicyViolation::LimitTooLarge`].
     pub max_unacked_records: usize,
     /// Bound on one record's payload.
     pub max_record_bytes: usize,
@@ -80,16 +86,17 @@ impl FileLogConfig {
                 violation: PolicyViolation::ZeroBound,
             });
         }
+        if self.max_unacked_records > MAX_FILE_LOG_UNACKED_RECORDS {
+            return Err(BusError::InvalidPolicy {
+                violation: PolicyViolation::LimitTooLarge,
+            });
+        }
         if max_body(self.max_record_bytes).is_none() {
             return Err(BusError::InvalidPolicy {
                 violation: PolicyViolation::RecordLimitTooLarge,
             });
         }
-        if self.retention.is_unbounded() {
-            return Err(BusError::InvalidPolicy {
-                violation: PolicyViolation::UnboundedRetention,
-            });
-        }
+        self.retention.validate()?;
         if self.policies.telemetry() == BackpressurePolicy::DropOldestTelemetry {
             return Err(BusError::InvalidPolicy {
                 violation: PolicyViolation::DropUnsupportedByBackend,
@@ -284,11 +291,31 @@ fn scan_segment(
     }
 }
 
-fn sync_dir(dir: &Path) {
-    // Directory fsync is how a rename or create becomes durable; it is not supported everywhere.
-    if let Ok(handle) = File::open(dir) {
-        let _ = handle.sync_all();
+/// Make a create, rename or delete in `dir` durable. Directory fsync is how that happens on
+/// Unix, and a failure there means the entry may vanish on a crash, so it is returned. Windows
+/// cannot open a directory through `std::fs`, so there it is a documented no-op.
+#[cfg(unix)]
+fn sync_dir(dir: &Path) -> Result<(), BusError> {
+    #[cfg(test)]
+    if DIR_SYNC_FAULT.with(std::cell::Cell::get) {
+        return Err(BusError::io(
+            "sync directory",
+            &std::io::Error::other("injected directory sync failure"),
+        ));
     }
+    File::open(dir)
+        .and_then(|handle| handle.sync_all())
+        .map_err(|e| BusError::io("sync directory", &e))
+}
+
+#[cfg(not(unix))]
+fn sync_dir(_dir: &Path) -> Result<(), BusError> {
+    Ok(())
+}
+
+#[cfg(all(test, unix))]
+thread_local! {
+    static DIR_SYNC_FAULT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 fn write_atomic(dir: &Path, bytes: &[u8], sync: bool) -> Result<(), BusError> {
@@ -303,7 +330,7 @@ fn write_atomic(dir: &Path, bytes: &[u8], sync: bool) -> Result<(), BusError> {
     drop(file);
     fs::rename(&temp, dir.join(OFFSETS_FILE)).map_err(|e| BusError::io("rename offsets", &e))?;
     if sync {
-        sync_dir(dir);
+        sync_dir(dir)?;
     }
     Ok(())
 }
@@ -373,6 +400,8 @@ fn decode_offsets(bytes: &[u8]) -> Result<BTreeMap<String, Offset>, BusError> {
 struct Faults {
     sync: bool,
     truncate: bool,
+    /// Make syncing the rollback truncation fail.
+    rollback_sync: bool,
     /// Make deleting an expired segment fail.
     delete: bool,
 }
@@ -666,7 +695,7 @@ impl FileEventLog {
             removed_segments += 1;
         }
         if removed_segments > 0 && self.config.fsync != FsyncPolicy::Never {
-            sync_dir(&self.dir);
+            sync_dir(&self.dir)?;
         }
         Ok(Compaction {
             removed_records,
@@ -718,7 +747,13 @@ impl FileEventLog {
             .open(&path)
             .map_err(|e| BusError::io("create segment", &e))?;
         if self.config.fsync != FsyncPolicy::Never {
-            sync_dir(&self.dir);
+            if let Err(error) = sync_dir(&self.dir) {
+                // The new segment's directory entry is not durable; do not keep a file the log
+                // does not track (a retry would collide with it).
+                drop(file);
+                let _ = fs::remove_file(&path);
+                return Err(error);
+            }
         }
         self.segments.push(Segment {
             path,
@@ -787,12 +822,28 @@ impl FileEventLog {
         // `self.active`: that handle is opened append-only, and on Windows an append-only handle
         // lacks FILE_WRITE_DATA, so `set_len` (SetEndOfFile) on it fails and the writer would be
         // poisoned although the cut is possible.
+        // The truncation is synced through the same handle: without it a crash could recover the
+        // frame whose publish returned an error.
+        #[cfg(test)]
+        let forced_sync_failure = self.faults.rollback_sync;
+        #[cfg(not(test))]
+        let forced_sync_failure = false;
+        let sync_cut = self.config.fsync != FsyncPolicy::Never;
         let cut = !forced_failure
             && self.segments.last().is_some_and(|segment| {
                 OpenOptions::new()
                     .write(true)
                     .open(&segment.path)
-                    .and_then(|file| file.set_len(good_len))
+                    .and_then(|file| {
+                        file.set_len(good_len)?;
+                        if forced_sync_failure {
+                            return Err(std::io::Error::other("injected rollback sync failure"));
+                        }
+                        if sync_cut {
+                            file.sync_data()?;
+                        }
+                        Ok(())
+                    })
                     .is_ok()
             });
         if !cut {
@@ -1135,6 +1186,61 @@ mod tests {
         let next = reopened.publish(rec("c")).unwrap();
         assert!(next.0 >= 2);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_failed_rollback_sync_poisons_the_writer() {
+        let dir = unit_dir("rollback-sync");
+        let mut log = FileEventLog::open(&dir, FileLogConfig::new(8)).unwrap();
+        log.publish(rec("a")).unwrap();
+        log.faults.sync = true;
+        log.faults.rollback_sync = true;
+        assert!(log.publish(rec("b")).is_err());
+        log.faults.sync = false;
+        log.faults.rollback_sync = false;
+        assert_eq!(log.publish(rec("c")), Err(BusError::WriterPoisoned));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_directory_sync_fails_segment_creation_and_offsets_without_leaving_a_stray_file() {
+        let dir = unit_dir("dir-sync");
+        let mut log = FileEventLog::open(&dir, FileLogConfig::new(8)).unwrap();
+        DIR_SYNC_FAULT.with(|f| f.set(true));
+        let first = log.publish(rec("a"));
+        let register = log.register("c", Offset(0));
+        DIR_SYNC_FAULT.with(|f| f.set(false));
+        assert!(matches!(
+            first,
+            Err(BusError::Io {
+                operation: "sync directory",
+                ..
+            })
+        ));
+        assert!(matches!(
+            register,
+            Err(BusError::Io {
+                operation: "sync directory",
+                ..
+            })
+        ));
+        // The untracked segment file was removed, so a retry can create it again.
+        assert_eq!(log.publish(rec("a")).unwrap(), Offset(1));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn config_refuses_oversized_backlog_and_retention() {
+        let mut config = FileLogConfig::new(usize::MAX);
+        let too_large = Err(BusError::InvalidPolicy {
+            violation: PolicyViolation::LimitTooLarge,
+        });
+        assert_eq!(config.validate(), too_large);
+        config.max_unacked_records = MAX_FILE_LOG_UNACKED_RECORDS;
+        assert_eq!(config.validate(), Ok(()));
+        config.retention = RetentionPolicy::with_max_bytes(usize::MAX);
+        assert_eq!(config.validate(), too_large);
     }
 
     #[test]

@@ -14,10 +14,11 @@ pub use bus::{
 };
 pub use file_log::{
     FileEventLog, FileLogConfig, FsyncPolicy, RecoveryReport, TornTail, DEFAULT_SEGMENT_BYTES,
+    MAX_FILE_LOG_UNACKED_RECORDS,
 };
 pub use policy::{
     Authority, BackpressurePolicy, ClassPolicies, Compaction, ConsumerLag, Limit, PolicyViolation,
-    RetentionPolicy,
+    RetentionPolicy, MAX_RETENTION_BYTES, MAX_RETENTION_RECORDS,
 };
 
 use ptr_types::{CandidateId, CommitIndex, RequestId, Revision, ScopeId, ScopeLifecycleKind};

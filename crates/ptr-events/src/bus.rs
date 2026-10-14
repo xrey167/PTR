@@ -5,7 +5,7 @@ use std::io;
 use crate::codec::MAX_FIELD_BYTES;
 use crate::policy::{
     slowest, Authority, BackpressurePolicy, ClassPolicies, Compaction, ConsumerLag, Limit,
-    PolicyViolation, RetentionPolicy,
+    PolicyViolation, RetentionPolicy, MAX_RETENTION_BYTES, MAX_RETENTION_RECORDS,
 };
 
 /// Largest consumer count a bus accepts (Invariant 8: bounded everything).
@@ -436,6 +436,14 @@ impl InMemoryBus {
             config.retention = RetentionPolicy::acked_only();
         }
         config.capacity_records = config.capacity_records.clamp(1, MAX_BUS_RECORD_CAPACITY);
+        config.retention.max_records = config
+            .retention
+            .max_records
+            .map(|m| m.min(MAX_RETENTION_RECORDS));
+        config.retention.max_bytes = config
+            .retention
+            .max_bytes
+            .map(|m| m.min(MAX_RETENTION_BYTES));
         Self {
             config,
             records: VecDeque::new(),
@@ -455,11 +463,7 @@ impl InMemoryBus {
     /// `InvalidPolicy` with [`PolicyViolation::UnboundedRetention`] if the retention policy
     /// has no limit in any dimension.
     pub fn try_with_config(config: BusConfig) -> Result<Self, BusError> {
-        if config.retention.is_unbounded() {
-            return Err(BusError::InvalidPolicy {
-                violation: PolicyViolation::UnboundedRetention,
-            });
-        }
+        config.retention.validate()?;
         Ok(Self::with_config(config))
     }
 
@@ -899,5 +903,22 @@ mod tests {
             bus.publish(rec(EventClass::Projection, "d")),
             Err(BusError::Full { .. })
         ));
+    }
+
+    #[test]
+    fn oversized_retention_is_refused_by_try_with_config_and_clamped_by_with_config() {
+        let mut config = BusConfig::new(4);
+        config.retention = RetentionPolicy::with_max_records(usize::MAX);
+        assert_eq!(
+            InMemoryBus::try_with_config(config).err(),
+            Some(BusError::InvalidPolicy {
+                violation: PolicyViolation::LimitTooLarge
+            })
+        );
+        let bus = InMemoryBus::with_config(config);
+        assert_eq!(
+            bus.config.retention.max_records,
+            Some(MAX_RETENTION_RECORDS)
+        );
     }
 }

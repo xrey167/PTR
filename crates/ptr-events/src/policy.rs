@@ -111,7 +111,25 @@ pub enum PolicyViolation {
     /// plus the payload) cannot be represented by the on-disk frame format's 32-bit length, so a
     /// record accepted under it could not be read back.
     RecordLimitTooLarge,
+    /// A record, byte or backlog limit above its documented hard maximum
+    /// ([`MAX_RETENTION_RECORDS`], [`MAX_RETENTION_BYTES`],
+    /// [`MAX_FILE_LOG_UNACKED_RECORDS`](crate::MAX_FILE_LOG_UNACKED_RECORDS)): such a limit is
+    /// nominally bounded but not in practice.
+    LimitTooLarge,
 }
+
+/// Hard maximum of [`RetentionPolicy::max_records`].
+pub const MAX_RETENTION_RECORDS: usize = 1 << 30;
+
+/// Hard maximum of [`RetentionPolicy::max_bytes`] (1 TiB, or `usize::MAX` where that is smaller).
+pub const MAX_RETENTION_BYTES: usize = {
+    let tib = 1u64 << 40;
+    if tib < usize::MAX as u64 {
+        tib as usize
+    } else {
+        usize::MAX
+    }
+};
 
 /// Which bound a [`BusError::Full`] refers to.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -149,6 +167,28 @@ impl RetentionPolicy {
     /// the logical tick.
     pub const fn is_unbounded(&self) -> bool {
         self.max_records.is_none() && self.max_bytes.is_none()
+    }
+
+    /// Check the policy against the bounds both bus backends require.
+    ///
+    /// # Errors
+    /// `InvalidPolicy` with [`PolicyViolation::UnboundedRetention`] if neither a record nor a
+    /// byte limit is set, or [`PolicyViolation::LimitTooLarge`] if one exceeds
+    /// [`MAX_RETENTION_RECORDS`] / [`MAX_RETENTION_BYTES`].
+    pub fn validate(&self) -> Result<(), BusError> {
+        if self.is_unbounded() {
+            return Err(BusError::InvalidPolicy {
+                violation: PolicyViolation::UnboundedRetention,
+            });
+        }
+        if self.max_records.is_some_and(|m| m > MAX_RETENTION_RECORDS)
+            || self.max_bytes.is_some_and(|m| m > MAX_RETENTION_BYTES)
+        {
+            return Err(BusError::InvalidPolicy {
+                violation: PolicyViolation::LimitTooLarge,
+            });
+        }
+        Ok(())
     }
 
     /// Keep no acknowledged history.
@@ -248,6 +288,33 @@ mod tests {
         assert_eq!(
             ok.for_class(EventClass::Projection),
             BackpressurePolicy::Reject
+        );
+    }
+
+    #[test]
+    fn retention_beyond_the_hard_maxima_is_refused_and_the_maxima_are_accepted() {
+        let too_large = Err(BusError::InvalidPolicy {
+            violation: PolicyViolation::LimitTooLarge,
+        });
+        assert_eq!(
+            RetentionPolicy::with_max_records(usize::MAX).validate(),
+            too_large
+        );
+        assert_eq!(
+            RetentionPolicy::with_max_bytes(MAX_RETENTION_BYTES.saturating_add(1)).validate(),
+            if MAX_RETENTION_BYTES == usize::MAX {
+                Ok(())
+            } else {
+                too_large
+            }
+        );
+        assert_eq!(
+            RetentionPolicy::with_max_records(MAX_RETENTION_RECORDS).validate(),
+            Ok(())
+        );
+        assert_eq!(
+            RetentionPolicy::with_max_bytes(MAX_RETENTION_BYTES).validate(),
+            Ok(())
         );
     }
 
