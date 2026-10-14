@@ -793,3 +793,46 @@ fn mismatched_outer_and_lifecycle_versions_are_refused() {
         assert_eq!(restore_error(&bytes, anchor), None);
     }
 }
+
+#[test]
+fn a_scope_left_open_above_the_floor_needs_recovery_after_a_restore_as_after_a_replay() {
+    use ptr_runtime::{ExecutionScope, ScopeState};
+    use ptr_types::{ProjectId, ScopeId, ScopeLeaseBinding, SessionId, Timestamp};
+
+    let mut runtime = fixture();
+    let snapshot = runtime.export_compacted_snapshot().unwrap();
+    let floor = runtime.committed_events().len();
+    let id = ScopeId::from("open-scope");
+    runtime
+        .create_scope(
+            ExecutionScope {
+                id: id.clone(),
+                parent: None,
+                session: SessionId::from("session"),
+                project: ProjectId::from("project"),
+                created_at: Timestamp(1),
+                deadline: None,
+                state: ScopeState::Created,
+                cancellation_requested: false,
+            },
+            ScopeLeaseBinding::default(),
+        )
+        .unwrap();
+    let above_floor: Vec<CommittedEvent> = runtime.committed_events()[floor..].to_vec();
+    assert!(!above_floor.is_empty());
+
+    // A full replay treats the scope the earlier incarnation left open as needing recovery.
+    let replayed = PtrRuntime::replay(PtrConfig::default(), runtime.committed_events()).unwrap();
+    assert!(replayed.scopes().recovery_required(&id));
+
+    // So must a restore from the compacted snapshot and the same retained records.
+    let restored = PtrRuntime::restore_compacted(
+        PtrConfig::default(),
+        snapshot.bytes(),
+        snapshot.anchor(),
+        &above_floor,
+    )
+    .unwrap();
+    assert!(restored.scopes().recovery_required(&id));
+    assert!(restored.scopes().ensure_available(&id).is_err());
+}

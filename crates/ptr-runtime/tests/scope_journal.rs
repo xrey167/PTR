@@ -417,3 +417,36 @@ fn committed_transition_cannot_change_scope_identity_or_created_shape() {
         Err(ScopeError::InvalidCommittedEvent)
     );
 }
+
+#[test]
+fn ending_a_scope_that_awaits_recovery_keeps_it_pending_until_it_is_released() {
+    let lease = ScopeLeaseBinding::default;
+    let id = ScopeId::from("turn");
+    let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+    runtime.create_scope(scope("turn"), lease()).unwrap();
+    for next in [ScopeState::Admitted, ScopeState::Started] {
+        runtime.transition_scope(&id, next, lease(), None).unwrap();
+    }
+    // A restart: the scope is still running in the history and awaits recovery.
+    let mut restarted =
+        PtrRuntime::replay(PtrConfig::default(), runtime.committed_events()).unwrap();
+    assert!(restarted.scopes().recovery_required(&id));
+
+    // Cancelling it is allowed, but releases nothing: its leases and session are still held.
+    restarted
+        .transition_scope(&id, ScopeState::Cancelled, lease(), None)
+        .unwrap();
+    assert!(restarted.scopes().recovery_required(&id));
+    assert_eq!(restarted.scopes().recoverable_scopes(), vec![id.clone()]);
+
+    // Recovery still runs the cleanup and only then is nothing pending.
+    let mut cleanup = CleanupProbe::default();
+    restarted.recover_scope(&id, &mut cleanup, lease()).unwrap();
+    assert_eq!(cleanup.steps.len(), 6);
+    assert_eq!(
+        restarted.scopes().get(&id).unwrap().state,
+        ScopeState::Released
+    );
+    assert!(!restarted.scopes().recovery_required(&id));
+    assert!(restarted.scopes().recoverable_scopes().is_empty());
+}
