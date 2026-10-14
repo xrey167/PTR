@@ -17,7 +17,7 @@
 //! snapshot-only `7 RestoreCurrent`, `8 RestoreLifecycle`, `9 RestoreRevision` that compaction
 //! uses to reproduce lifecycle records and revision counters exactly.
 
-use crate::codec::{CodecError, Reader, Writer};
+use crate::codec::{bounded_capacity, CodecError, Reader, Writer, MIN_STRING_BYTES};
 use crate::journal::{JournalError, JournalKind, JournalOptions, MemoryJournal};
 use crate::knowledge::{KnowledgeStore, KnowledgeStoreError, LifecycleRecord};
 use crate::retention::{
@@ -406,6 +406,11 @@ fn conflict_from(tag: u8) -> Result<ConflictState, CodecError> {
     }
 }
 
+/// Minimum encoded sizes of list elements, pinned by `min_element_sizes_match_the_encoder`.
+const MIN_RELATION_BYTES: usize = 2 * MIN_STRING_BYTES;
+const MIN_PROVENANCE_BYTES: usize = MIN_STRING_BYTES + 1;
+const MIN_KEY_BYTES: usize = MIN_STRING_BYTES + 8;
+
 fn write_key(w: &mut Writer, key: &KnowledgeKey) {
     w.str(&key.logical_id.0);
     w.u64(key.generation.0);
@@ -482,8 +487,12 @@ fn write_strings<'a>(w: &mut Writer, items: impl ExactSizeIterator<Item = &'a St
 }
 
 fn read_strings(r: &mut Reader<'_>) -> Result<Vec<String>, CodecError> {
-    let count = r.count()?;
-    (0..count).map(|_| r.string()).collect()
+    let count = r.count_of(MIN_STRING_BYTES)?;
+    let mut items = Vec::with_capacity(bounded_capacity(count));
+    for _ in 0..count {
+        items.push(r.string()?);
+    }
+    Ok(items)
 }
 
 fn write_object(w: &mut Writer, object: &KnowledgeObject) {
@@ -550,8 +559,8 @@ fn read_object(r: &mut Reader<'_>) -> Result<KnowledgeObject, CodecError> {
     let id = KnowledgeObjectId(r.string()?);
     let namespace = NamespaceId(r.string()?);
     let entities = read_strings(r)?.into_iter().map(EntityId).collect();
-    let relation_count = r.count()?;
-    let mut relations = Vec::with_capacity(relation_count);
+    let relation_count = r.count_of(MIN_RELATION_BYTES)?;
+    let mut relations = Vec::with_capacity(bounded_capacity(relation_count));
     for _ in 0..relation_count {
         relations.push(Relation {
             predicate: r.string()?,
@@ -559,8 +568,8 @@ fn read_object(r: &mut Reader<'_>) -> Result<KnowledgeObject, CodecError> {
         });
     }
     let sources = read_strings(r)?.into_iter().map(RawEventId).collect();
-    let provenance_count = r.count()?;
-    let mut provenance = Vec::with_capacity(provenance_count);
+    let provenance_count = r.count_of(MIN_PROVENANCE_BYTES)?;
+    let mut provenance = Vec::with_capacity(bounded_capacity(provenance_count));
     for _ in 0..provenance_count {
         provenance.push(ProvenanceRef {
             source: ptr_types::EvidenceId(r.string()?),
@@ -569,8 +578,8 @@ fn read_object(r: &mut Reader<'_>) -> Result<KnowledgeObject, CodecError> {
     }
     let generation = Generation(r.u64()?);
     let supersedes = if r.bool()? { Some(read_key(r)?) } else { None };
-    let dependency_count = r.count()?;
-    let mut dependencies = Vec::with_capacity(dependency_count);
+    let dependency_count = r.count_of(MIN_KEY_BYTES)?;
+    let mut dependencies = Vec::with_capacity(bounded_capacity(dependency_count));
     for _ in 0..dependency_count {
         dependencies.push(read_key(r)?);
     }
@@ -684,6 +693,80 @@ fn decode_op(payload: &[u8]) -> Result<Op, CodecError> {
     };
     r.finish()?;
     Ok(op)
+}
+
+#[cfg(test)]
+mod codec_tests {
+    use super::*;
+
+    fn smallest_object() -> KnowledgeObject {
+        KnowledgeObject {
+            id: KnowledgeObjectId::from(""),
+            namespace: NamespaceId::from(""),
+            entities: Vec::new(),
+            relations: Vec::new(),
+            sources: Vec::new(),
+            provenance: Vec::new(),
+            generation: Generation(0),
+            supersedes: None,
+            dependencies: Vec::new(),
+            confidence: Probability::new(0.0).unwrap(),
+            relevance: Probability::new(0.0).unwrap(),
+            freshness: Freshness::Current,
+            conflict: ConflictState::None,
+            lifecycle: KnowledgeLifecycle::Hot,
+            retrieval_keys: Vec::new(),
+            token_cost: 0,
+            validity: KnowledgeValidity::default(),
+        }
+    }
+
+    fn encoded(object: &KnowledgeObject) -> usize {
+        let mut w = Writer::new();
+        write_object(&mut w, object);
+        w.finish().len()
+    }
+
+    #[test]
+    fn min_element_sizes_match_the_encoder() {
+        let base = encoded(&smallest_object());
+        let mut o = smallest_object();
+        o.relations = vec![Relation {
+            predicate: String::new(),
+            target: KnowledgeObjectId::from(""),
+        }];
+        assert_eq!(encoded(&o) - base, MIN_RELATION_BYTES);
+        let mut o = smallest_object();
+        o.provenance = vec![ProvenanceRef {
+            source: ptr_types::EvidenceId::from(""),
+            note: None,
+        }];
+        assert_eq!(encoded(&o) - base, MIN_PROVENANCE_BYTES);
+        let mut o = smallest_object();
+        o.dependencies = vec![KnowledgeKey {
+            logical_id: KnowledgeObjectId::from(""),
+            generation: Generation(0),
+        }];
+        assert_eq!(encoded(&o) - base, MIN_KEY_BYTES);
+        let mut o = smallest_object();
+        o.entities = vec![EntityId::from("")];
+        assert_eq!(encoded(&o) - base, MIN_STRING_BYTES);
+    }
+
+    #[test]
+    fn an_inflated_relation_count_is_rejected_before_reserving() {
+        let mut w = Writer::new();
+        write_object(&mut w, &smallest_object());
+        let mut bytes = w.finish();
+        // id(4) namespace(4) entities(4) then the relation count.
+        let at = 12;
+        let remaining = u32::try_from(bytes.len() - at - 4).unwrap();
+        bytes[at..at + 4].copy_from_slice(&remaining.to_le_bytes());
+        assert_eq!(
+            read_object(&mut Reader::new(&bytes)).unwrap_err(),
+            CodecError::LengthTooLarge
+        );
+    }
 }
 
 #[cfg(test)]

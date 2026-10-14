@@ -16,13 +16,13 @@
 //!   (`derived_from`) as `NeedsRevalidation`.
 //! * Invariant 8: record counts per class, field sizes and the revocation traversal are bounded.
 
-use crate::codec::{CodecError, Reader, Writer};
+use crate::codec::{bounded_capacity, CodecError, Reader, Writer};
 use crate::consolidation::{
     ConsolidationPolicy, Contradiction, PromotionContext, PromotionDecision, RetentionVerdict,
 };
 use crate::journal::{JournalError, JournalKind, JournalOptions, MemoryJournal};
 use crate::record::{read_record, write_record};
-use crate::record::{MemoryRecord, MemoryRecordId, RecordState, Support};
+use crate::record::{MemoryRecord, MemoryRecordId, RecordState, Support, MIN_RECORD_BYTES};
 use crate::MemoryClass;
 use ptr_types::Revision;
 use std::collections::{BTreeMap, BTreeSet};
@@ -30,7 +30,24 @@ use std::path::Path;
 
 const DELTA_TAG: u8 = 0x10;
 
-/// Size and traversal bounds of a [`DurableMemoryStore`].
+/// Hard ceiling for [`MemoryLimits::max_records_per_class`]: the whole store is held in memory
+/// and replayed on open, so a class is capped at one million records.
+pub const MAX_RECORDS_PER_CLASS: usize = 1_000_000;
+/// Hard ceiling for [`MemoryLimits::max_id_bytes`] (64 KiB).
+pub const MAX_ID_BYTES: usize = 64 * 1024;
+/// Hard ceiling for [`MemoryLimits::max_body_bytes`] (16 MiB, a quarter of
+/// [`crate::MAX_JOURNAL_RECORD_BYTES`], so one record always fits in a journal frame).
+pub const MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
+/// Hard ceiling for [`MemoryLimits::max_supports`] and [`MemoryLimits::max_derived_from`].
+pub const MAX_LINKS_PER_RECORD: usize = 4096;
+/// Hard ceiling for [`MemoryLimits::max_revocation_depth`].
+pub const MAX_REVOCATION_DEPTH: usize = 65_536;
+/// Hard ceiling for [`MemoryLimits::max_revocation_visited`].
+pub const MAX_REVOCATION_VISITED: usize = 1_000_000;
+
+/// Size and traversal bounds of a [`DurableMemoryStore`]. Every field has a documented hard
+/// ceiling (the `MAX_*` constants); [`DurableMemoryStore::open`] rejects a larger value with
+/// [`MemoryStoreError::InvalidLimits`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MemoryLimits {
     pub max_records_per_class: usize,
@@ -42,6 +59,43 @@ pub struct MemoryLimits {
     pub max_revocation_depth: usize,
     /// Most dependents a single revocation will visit.
     pub max_revocation_visited: usize,
+}
+
+impl MemoryLimits {
+    /// Checks every field against its hard ceiling.
+    fn validate(&self) -> Result<(), MemoryStoreError> {
+        let checks: [(&'static str, usize, usize); 7] = [
+            (
+                "max_records_per_class",
+                self.max_records_per_class,
+                MAX_RECORDS_PER_CLASS,
+            ),
+            ("max_id_bytes", self.max_id_bytes, MAX_ID_BYTES),
+            ("max_body_bytes", self.max_body_bytes, MAX_BODY_BYTES),
+            ("max_supports", self.max_supports, MAX_LINKS_PER_RECORD),
+            (
+                "max_derived_from",
+                self.max_derived_from,
+                MAX_LINKS_PER_RECORD,
+            ),
+            (
+                "max_revocation_depth",
+                self.max_revocation_depth,
+                MAX_REVOCATION_DEPTH,
+            ),
+            (
+                "max_revocation_visited",
+                self.max_revocation_visited,
+                MAX_REVOCATION_VISITED,
+            ),
+        ];
+        for (field, value, max) in checks {
+            if value > max {
+                return Err(MemoryStoreError::InvalidLimits { field, max });
+            }
+        }
+        Ok(())
+    }
 }
 
 impl Default for MemoryLimits {
@@ -111,6 +165,11 @@ pub enum TraversalLimit {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MemoryStoreError {
     Journal(JournalError),
+    /// A [`MemoryLimits`] field exceeds its hard ceiling `max`; nothing was opened or created.
+    InvalidLimits {
+        field: &'static str,
+        max: usize,
+    },
     /// A journal record passed its CRC but could not be decoded.
     Decode {
         record_index: usize,
@@ -206,6 +265,7 @@ impl DurableMemoryStore {
         path: impl AsRef<Path>,
         options: MemoryStoreOptions,
     ) -> Result<Self, MemoryStoreError> {
+        options.limits.validate()?;
         let (journal, recovery) = MemoryJournal::open(path, JournalKind::Memory, options.journal)?;
         let mut records = BTreeMap::new();
         let mut horizon = Revision(0);
@@ -816,8 +876,8 @@ fn decode_delta(payload: &[u8]) -> Result<Delta, CodecError> {
     }
     let horizon = Revision(r.u64()?);
     let clock = r.u64()?;
-    let count = r.count()?;
-    let mut records = Vec::with_capacity(count);
+    let count = r.count_of(MIN_RECORD_BYTES)?;
+    let mut records = Vec::with_capacity(bounded_capacity(count));
     for _ in 0..count {
         records.push(read_record(&mut r)?);
     }
