@@ -10,6 +10,9 @@ use crate::policy::{
 
 /// Largest consumer count a bus accepts (Invariant 8: bounded everything).
 pub const MAX_CONSUMERS: usize = 256;
+/// Hard upper bound on [`BusConfig::capacity_records`]. A larger request is clamped to this
+/// value, so a host passing `usize::MAX` still gets a bounded in-memory queue (Invariant 8).
+pub const MAX_BUS_RECORD_CAPACITY: usize = 1 << 20;
 /// Default bound on one record's payload.
 pub const DEFAULT_MAX_RECORD_BYTES: usize = 1 << 20;
 
@@ -370,7 +373,7 @@ pub(crate) fn validate_consumer(
 /// Configuration of the in-memory bus.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BusConfig {
-    /// Bound on unacknowledged records (clamped to at least one).
+    /// Bound on unacknowledged records (clamped to `1..=`[`MAX_BUS_RECORD_CAPACITY`]).
     pub capacity_records: usize,
     /// Optional bound on unacknowledged bytes (topic + key + payload).
     pub capacity_bytes: Option<usize>,
@@ -383,7 +386,7 @@ pub struct BusConfig {
 impl BusConfig {
     pub fn new(capacity_records: usize) -> Self {
         Self {
-            capacity_records: capacity_records.max(1),
+            capacity_records: capacity_records.clamp(1, MAX_BUS_RECORD_CAPACITY),
             capacity_bytes: None,
             max_record_bytes: DEFAULT_MAX_RECORD_BYTES,
             policies: ClassPolicies::reject_all(),
@@ -418,12 +421,12 @@ pub struct InMemoryBus {
 
 impl InMemoryBus {
     /// Create an empty bus with no registered consumers and the default policies (reject,
-    /// keep no acknowledged history). `capacity` is clamped to at least one.
+    /// keep no acknowledged history). `capacity` is clamped to `1..=`[`MAX_BUS_RECORD_CAPACITY`].
     pub fn new(capacity: usize) -> Self {
         Self::with_config(BusConfig::new(capacity))
     }
 
-    /// Create an empty bus from a configuration. The record capacity is clamped to at least one.
+    /// Create an empty bus from a configuration. The record capacity is clamped to `1..=`[`MAX_BUS_RECORD_CAPACITY`].
     ///
     /// A [`RetentionPolicy`] with no record or byte limit (age alone does not count) would keep acknowledged history
     /// forever, so this infallible constructor replaces it with
@@ -432,7 +435,7 @@ impl InMemoryBus {
         if config.retention.is_unbounded() {
             config.retention = RetentionPolicy::acked_only();
         }
-        config.capacity_records = config.capacity_records.max(1);
+        config.capacity_records = config.capacity_records.clamp(1, MAX_BUS_RECORD_CAPACITY);
         Self {
             config,
             records: VecDeque::new(),
@@ -813,6 +816,23 @@ mod tests {
             key: key.into(),
             payload: key.as_bytes().to_vec(),
         }
+    }
+
+    #[test]
+    fn an_oversized_record_capacity_is_clamped_to_the_hard_maximum() {
+        let bus = InMemoryBus::new(usize::MAX);
+        assert_eq!(bus.config.capacity_records, MAX_BUS_RECORD_CAPACITY);
+        assert_eq!(
+            BusConfig::new(usize::MAX).capacity_records,
+            MAX_BUS_RECORD_CAPACITY
+        );
+        let mut config = BusConfig::new(8);
+        config.capacity_records = usize::MAX;
+        let bus = InMemoryBus::with_config(config);
+        assert_eq!(bus.config.capacity_records, MAX_BUS_RECORD_CAPACITY);
+        let bus = InMemoryBus::try_with_config(config).unwrap();
+        assert_eq!(bus.config.capacity_records, MAX_BUS_RECORD_CAPACITY);
+        assert_eq!(InMemoryBus::new(100).config.capacity_records, 100);
     }
 
     #[test]

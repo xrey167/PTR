@@ -9,7 +9,8 @@ mod policy;
 
 pub use bus::{
     BusConfig, BusError, BusRecord, CorruptionKind, EventClass, EventConsumer, EventProducer,
-    Field, InMemoryBus, NewRecord, Offset, DEFAULT_MAX_RECORD_BYTES, MAX_CONSUMERS,
+    Field, InMemoryBus, NewRecord, Offset, DEFAULT_MAX_RECORD_BYTES, MAX_BUS_RECORD_CAPACITY,
+    MAX_CONSUMERS,
 };
 pub use file_log::{
     FileEventLog, FileLogConfig, FsyncPolicy, RecoveryReport, TornTail, DEFAULT_SEGMENT_BYTES,

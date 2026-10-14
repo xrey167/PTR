@@ -270,11 +270,15 @@ fn scan_segment(
                         },
                     ));
                 }
+                // `u64::MAX` can never be followed by a next offset, so this log never writes it.
+                let Some(next_expected) = expected.checked_add(1) else {
+                    return Err(corrupt(name, scan.valid_bytes, CorruptionKind::BadEncoding));
+                };
                 scan.last = Some(expected);
                 scan.newest_tick = record.tick;
                 scan.count += 1;
                 scan.valid_bytes = end_pos;
-                expected += 1;
+                expected = next_expected;
             }
         }
     }
@@ -878,9 +882,19 @@ impl EventProducer for FileEventLog {
             });
         }
         let offset = self.next;
+        // Offset `u64::MAX` is not recoverable (see `scan_segment`), so the offset space ends
+        // one short of it; refuse before writing anything.
+        let Some(next) = offset.checked_add(1).filter(|n| *n != u64::MAX) else {
+            return Err(BusError::Full {
+                limit: Limit::Records,
+                capacity: self.config.max_unacked_records,
+                depth,
+                blocked_by: None,
+            });
+        };
         let frame = encode_frame(Offset(offset), self.tick, &record);
         self.append(&frame, offset)?;
-        self.next += 1;
+        self.next = next;
         Ok(Offset(offset))
     }
 }
@@ -1210,6 +1224,38 @@ mod tests {
         assert_eq!(log.compaction_failures(), 2);
         assert!(log.last_compaction_error().is_none());
         assert!(log.low_water() > Offset(0));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn write_segment_with_record_at(dir: &Path, offset: u64) {
+        fs::create_dir_all(dir).unwrap();
+        let frame = encode_frame(Offset(offset), 0, &rec("x"));
+        fs::write(dir.join(segment_name(offset)), frame).unwrap();
+    }
+
+    #[test]
+    fn a_record_at_the_last_representable_offset_is_corruption_not_an_overflow() {
+        let dir = unit_dir("max-offset");
+        write_segment_with_record_at(&dir, u64::MAX);
+        let result = FileEventLog::open(&dir, FileLogConfig::new(8));
+        assert!(
+            matches!(result, Err(BusError::Corrupt { .. })),
+            "expected typed corruption, got {:?}",
+            result.map(|_| ())
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn publishing_at_the_last_representable_offset_is_refused_without_writing() {
+        let dir = unit_dir("max-offset-publish");
+        write_segment_with_record_at(&dir, u64::MAX - 1);
+        let mut log = FileEventLog::open(&dir, FileLogConfig::new(8)).unwrap();
+        let before = fs::metadata(&log.segments[0].path).unwrap().len();
+        assert!(matches!(log.publish(rec("y")), Err(BusError::Full { .. })));
+        assert_eq!(fs::metadata(&log.segments[0].path).unwrap().len(), before);
+        drop(log);
+        assert!(FileEventLog::open(&dir, FileLogConfig::new(8)).is_ok());
         let _ = fs::remove_dir_all(&dir);
     }
 

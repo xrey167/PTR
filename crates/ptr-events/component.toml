@@ -24,6 +24,7 @@ implemented = [
   "FileEventLog::open refuses a segment with base offset zero as CorruptionKind::SegmentGap { expected: 1, found: 0 } (offsets start at 1), instead of underflowing the low-water arithmetic",
   "FileEventLog rolls a failed append back by truncating through a separate write handle on the segment path, because the active handle is append-only and Windows denies set_len on such a handle (not verified on Windows from this environment)",
   "RuntimeEvent::VcwPolicyChanged { scope, sequence, action, from, to, evidence } records that a host promoted or rolled back the routing policy of a verifier-closed loop (policy digests, the digest of the off-policy evidence a promotion rested on); emitted by ptr-runtime (PtrRuntime::record_vcw_policy_event). Observability of a host action, in memory, not a ledger event and no authority; not an audit record (lost on restart, not replayed, no gate record checked against it) until a ledger event exists",
+  "InMemoryBus and BusConfig clamp the record capacity to 1..=MAX_BUS_RECORD_CAPACITY (1 << 20), so a host passing usize::MAX still gets a bounded queue; FileEventLog never reads offset u64::MAX (open returns CorruptionKind::BadEncoding for a record at that offset instead of overflowing) and publish refuses with BusError::Full before writing the offset that would lead to it",
 ]
 
 missing = [
