@@ -161,11 +161,18 @@ impl<T: Inspectable> Inspectable for BTreeSet<T> {
     }
 }
 
-/// Elements are ordered by their rendered form so the output is deterministic.
+/// Elements are ordered by their rendered form so the output is deterministic; equal bounded
+/// labels (for example long strings sharing a prefix) are ordered by their full JSON rendering,
+/// as in [`InspectNode::map_sorted`].
 impl<T: Inspectable> Inspectable for HashSet<T> {
     fn inspect(&self) -> InspectNode {
         let mut items: Vec<InspectNode> = self.iter().map(Inspectable::inspect).collect();
-        items.sort_by_cached_key(crate::render::key_label);
+        items.sort_by_cached_key(|item| {
+            (
+                crate::render::key_label(item),
+                crate::render::render_json(item),
+            )
+        });
         InspectNode::List(items)
     }
 }

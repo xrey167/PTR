@@ -118,3 +118,23 @@ fn map_sorted_is_deterministic_for_keys_sharing_a_truncated_label() {
         assert_eq!(build(&order), first);
     }
 }
+
+#[test]
+fn hash_set_inspection_is_deterministic_for_items_sharing_a_truncated_label() {
+    use ptr_inspect::Inspectable;
+    let prefix = "k".repeat(5000);
+    let items: Vec<String> = ["a", "b", "c", "d", "e", "f"]
+        .iter()
+        .map(|s| format!("{prefix}{s}"))
+        .collect();
+    // Every HashSet gets its own RandomState, so iteration order differs between instances.
+    let first = items
+        .iter()
+        .cloned()
+        .collect::<std::collections::HashSet<_>>()
+        .inspect();
+    for _ in 0..32 {
+        let set: std::collections::HashSet<String> = items.iter().rev().cloned().collect();
+        assert_eq!(set.inspect(), first);
+    }
+}
