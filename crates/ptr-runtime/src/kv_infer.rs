@@ -787,7 +787,8 @@ impl RevokedInputs {
             .is_some_and(|promoted| {
                 promoted.generation == dependency.generation
                     && promoted.artifact == dependency.content_digest
-                    && self.base.is_none_or(|base| base == promoted.base)
+                    // A backend with no base identity cannot vouch for any promotion: not live.
+                    && self.base.is_some_and(|base| base == promoted.base)
             })
     }
 }
@@ -2050,5 +2051,28 @@ mod tests {
             !inputs.is_live(&old),
             "a pruned old generation is still not live"
         );
+    }
+
+    #[test]
+    fn a_liveness_with_no_base_identity_serves_no_promoted_adapter() {
+        let mut inputs = RevokedInputs::default();
+        assert!(inputs.base.is_none());
+        let project = ProjectId::from("alpha");
+        let key = crate::adapter::adapter_key(&project, "coder");
+        inputs.note_event(&LedgerEvent::AdapterPromoted {
+            project,
+            adapter: "coder".into(),
+            generation: Generation(2),
+            base: [1; 32],
+            artifact_sha256: [2; 32],
+            gate_report_digest: [3; 32],
+        });
+        // Armed by the event, promoted with matching generation and weights, but there is no
+        // base to compare with: not live.
+        assert!(inputs.strict_adapters);
+        assert!(!inputs.is_live(&KvDependency::adapter(&key, Generation(2), [2; 32])));
+        // With the base set to the promoted one it serves.
+        inputs.base = Some([1; 32]);
+        assert!(inputs.is_live(&KvDependency::adapter(&key, Generation(2), [2; 32])));
     }
 }

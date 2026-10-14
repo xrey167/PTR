@@ -35,6 +35,7 @@ outcome.
 from __future__ import annotations
 
 import hashlib
+from fractions import Fraction
 import json
 import math
 from collections.abc import Iterable, Mapping
@@ -523,6 +524,12 @@ class BacktestReport:
         }
 
 
+def _share(fraction: float) -> Fraction:
+    """The rule's fraction as an exact rational, read from its shortest decimal form, so
+    ``0.07`` is 7/100 and ``7 >= 0.07 * 100`` holds (the float product is 7.000000000000001)."""
+    return Fraction(repr(float(fraction)))
+
+
 def backtest(
     pool: HistoryPool,
     *,
@@ -613,7 +620,7 @@ def backtest(
     return BacktestReport(
         pipeline_ran=True,
         predictive=(
-            within >= min_within_bound and within >= min_within_fraction * predicted
+            within >= min_within_bound and within >= _share(min_within_fraction) * predicted
         ),
         generations=len(pool.generations),
         parameters=parameters,

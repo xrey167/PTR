@@ -1561,3 +1561,33 @@ fn a_wall_clock_that_steps_back_does_not_stretch_max_wait() {
         started.elapsed()
     );
 }
+
+#[test]
+fn a_batcher_closed_while_the_gate_decides_a_batch_never_calls_the_backend() {
+    let backend = Gated::new();
+    let gate = Arc::new(BlockingGate {
+        armed: AtomicBool::new(true),
+        entered: AtomicBool::new(false),
+        latch: Latch::default(),
+    });
+    let batcher = AdaptiveBatcher::with_parts(
+        Arc::clone(&backend),
+        policy(1, 0, 4),
+        Arc::new(SystemClock),
+        Some(Arc::clone(&gate) as Arc<dyn BatchGate>),
+    )
+    .expect("built");
+    std::thread::scope(|scope| {
+        let batcher = &batcher;
+        let call = scope.spawn(move || batcher.infer(&text_request("held", "held")));
+        // The worker is inside the gate for the batch.
+        assert!(eventually(PATIENT, || gate.entered.load(Ordering::SeqCst)));
+        batcher.close();
+        gate.latch.open();
+        assert_eq!(call.join().expect("thread"), Err(ModelError::closed()));
+    });
+    assert!(
+        backend.seen.lock().unwrap().is_empty(),
+        "the backend was called"
+    );
+}

@@ -1000,10 +1000,20 @@ impl<B: BatchInferenceBackend + 'static> AdaptiveBatcher<B> {
     }
 }
 
-impl<B: BatchInferenceBackend + 'static> Drop for AdaptiveBatcher<B> {
-    fn drop(&mut self) {
+impl<B: BatchInferenceBackend + 'static> AdaptiveBatcher<B> {
+    /// Close the batcher: new calls and resumes are refused with [`ModelError::closed`], queued
+    /// requests are answered the same way, and a batch whose gate is still deciding calls no
+    /// backend. The worker stops at its next look at the queue; dropping the batcher closes it
+    /// and waits for the worker.
+    pub fn close(&self) {
         self.shared.lock().closed = true;
         self.shared.wake.notify_all();
+    }
+}
+
+impl<B: BatchInferenceBackend + 'static> Drop for AdaptiveBatcher<B> {
+    fn drop(&mut self) {
+        self.close();
         if let Some(worker) = self.worker.take() {
             // A worker that panicked has nothing left to join.
             let _ = worker.join();
@@ -1139,6 +1149,14 @@ fn run_batch<B: BatchInferenceBackend + 'static>(shared: &Shared<B>, batch: Vec<
     }
     let batch = live;
     if batch.is_empty() {
+        return;
+    }
+    // The gate and the re-check may have taken a while: a batcher closed meanwhile calls no
+    // backend.
+    if shared.lock().closed {
+        for entry in batch {
+            answer(entry, Err(ModelError::closed()));
+        }
         return;
     }
     bump(&counters.batches, 1);

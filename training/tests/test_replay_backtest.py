@@ -534,3 +534,14 @@ class NeverSeenDecisionTests(unittest.TestCase):
         self.assertTrue(report.predictive)
         winner = choose_winner(pool, report, [policy, {"x": 2}], **PINNED)
         self.assertEqual(winner["decisions"], {"x": 2})
+
+
+class ExactFractionTests(unittest.TestCase):
+    def test_exactly_seven_of_a_hundred_passes_a_007_rule(self):
+        from ptr_training.replay.backtest import _share
+
+        self.assertEqual(_share(0.07) * 100, 7)
+        self.assertGreaterEqual(7, _share(0.07) * 100)
+        # The float product that motivated it.
+        self.assertGreater(0.07 * 100, 7)
+        self.assertEqual(_share(0.5), _share(0.50))

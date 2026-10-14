@@ -140,7 +140,7 @@ bounds recorded and running cycles, not crashed ones.
 ### Replay backtest (`training/src/ptr_training/replay`)
 
 `HistoryPool` is append-only and chronological (a repeated name or an order that does not advance is refused before
-anything changes; 256 generations at most). Generation orders, outcome counts and integer decision levels are integers below 2**53 (in absolute value for levels), anything else is a `HistoryError`. A categorical value is at most 256 characters and 1024 UTF-8 bytes and must be encodable text (an unpaired surrogate is a `HistoryError`). A decision the history never named is unidentified and counts as extrapolation whatever its value (0 and `False` included). A decision keeps the kind (categorical or numeric) of its first admission; a later generation, or a policy asked about, with the other kind is a `HistoryError`. `ReplaySimulator` fits an intercept and one response coefficient per
+anything changes; 256 generations at most). Generation orders, outcome counts and integer decision levels are integers below 2**53 (in absolute value for levels), anything else is a `HistoryError`. A categorical value is at most 256 characters and 1024 UTF-8 bytes and must be encodable text (an unpaired surrogate is a `HistoryError`). The predictive rule compares the count of correct predictions with the pinned fraction exactly (a rational read from the fraction's decimal form, so 7 of 100 passes a 0.07 rule). A decision the history never named is unidentified and counts as extrapolation whatever its value (0 and `False` included). A decision keeps the kind (categorical or numeric) of its first admission; a later generation, or a policy asked about, with the other kind is a `HistoryError`. `ReplaySimulator` fits an intercept and one response coefficient per
 decision from consecutive generations in which exactly one decision moved; a transition that moves two is ambiguous
 and charged to neither. `backtest(pool, error_bound=...)` holds each generation out and predicts it from the rest:
 
@@ -213,7 +213,7 @@ simulator training happens in PTR until `predictive` has been true on a real gen
   still-open run always has its successor and another principal cannot take the slot meanwhile. The entry
   also keeps the admission's deadline and cancel flag, and every resume path (continuation and trait) is refused once the
   batcher is closed, past its deadline or cancelled, before and after the gate (the closed check is repeated right before the
-  backend call). Plain
+  backend call, for a batch as for a resume; `AdaptiveBatcher::close` closes a batcher without dropping it). Plain
   `infer` and `infer_with` open no continuation. The unscoped
   `resume` of the trait is served only by a batcher built without a gate (which serves no adapter) and is refused when a
   gate is configured. A gate that panics has not admitted the key (refused as revoked, counted); a worker that ends for
