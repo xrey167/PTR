@@ -17,6 +17,7 @@ implemented = [
   "Private<T> (redaction marker with type name and optional size class) and RawEvidence<T> (length and FNV-1a 64 fingerprint, truncated preview only under PreviewPolicy::Allow, capped at 256 bytes), both with non-leaking Debug",
   "Key-based redaction passes (redact_keys exact, redact_keys_containing and redact_sensitive by fragment, case-insensitive) over struct fields, enum fields and text-keyed map entries",
   "Deterministic indented tree renderer (indent clamped to MAX_INDENT = 32 with saturating padding arithmetic, so no RenderOptions value can trigger an oversized allocation), single-line renderer (width, depth and item limits) and a hand-written JSON renderer with control-character escaping and non-finite floats as strings",
+  "InspectNode drops through an explicit heap stack (no recursion on teardown of deep trees); equal-label ties in map_sorted and the HashSet impl break on an iterative total-order structural comparison (cmp_nodes) instead of the depth-capped JSON rendering; RenderOptions max_text_width/max_items clamp to MAX_TEXT_WIDTH/MAX_RENDER_ITEMS (65536) and WalkLimits::max_nodes to HARD_MAX_NODES (1 << 24) (tests: node::tests map_sorted_orders_keys_that_differ_only_below_the_render_depth, cmp_nodes_is_a_total_order_over_variants_and_contents; tests/deep.rs)",
 ]
 
 missing = [
