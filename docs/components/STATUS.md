@@ -5,7 +5,7 @@
 
 **Component count:** 33  
 **Maturity distribution:** `foundation`: 1, `prototype`: 32  
-**Rust footprint:** 342 source files · 164645 nonblank source lines · 279 integration-test files · 3803 test markers (`#[test]`, `#[tokio::test]`)
+**Rust footprint:** 342 source files · 164910 nonblank source lines · 279 integration-test files · 3814 test markers (`#[test]`, `#[tokio::test]`)
 
 | Component | Maturity | Rust files | LOC | Test files | Tests | Implemented items | Missing items | Experiments | Evaluations |
 |---|---:|---:|---:|---:|---:|---:|---:|---|---|
@@ -14,7 +14,7 @@
 | [ptr-cluster](../../crates/ptr-cluster/README.md) | `prototype` | 3 | 749 | 2 | 17 | 15 | 6 | — | — |
 | [ptr-config](../../crates/ptr-config/README.md) | `prototype` | 2 | 1167 | 6 | 30 | 13 | 4 | E001:planned | — |
 | [ptr-core](../../crates/ptr-core/README.md) | `prototype` | 20 | 3799 | 4 | 78 | 17 | 6 | M001:planned, M002:planned, M003:planned, M004:planned, M005:planned, M006:planned, M007:planned, E001:planned, E003:planned, E004:planned | model-framework:open, inference-serving:open |
-| [ptr-events](../../crates/ptr-events/README.md) | `prototype` | 5 | 2119 | 5 | 57 | 14 | 5 | E001:planned, F001:frozen | event-streaming:open |
+| [ptr-events](../../crates/ptr-events/README.md) | `prototype` | 5 | 2292 | 5 | 61 | 16 | 5 | E001:planned, F001:frozen | event-streaming:open |
 | [ptr-exec](../../crates/ptr-exec/README.md) | `prototype` | 3 | 458 | 2 | 18 | 7 | 7 | R001:frozen, E001:planned, E003:planned | execution-runtime:open |
 | [ptr-execwire](../../crates/ptr-execwire/README.md) | `prototype` | 5 | 1597 | 3 | 36 | 18 | 9 | — | — |
 | [ptr-fastmem](../../crates/ptr-fastmem/README.md) | `prototype` | 9 | 3189 | 4 | 85 | 13 | 3 | M008:frozen, L003:completed | fast-weight-memory:open |
@@ -24,7 +24,7 @@
 | [ptr-labeling](../../crates/ptr-labeling/README.md) | `prototype` | 6 | 1888 | 1 | 36 | 12 | 5 | F002:frozen | label-model:open |
 | [ptr-ledger](../../crates/ptr-ledger/README.md) | `prototype` | 9 | 8947 | 16 | 197 | 68 | 12 | L001:superseded, L001-v2:frozen, L002:frozen, E004:planned | consensus:open, ledger:open |
 | [ptr-lineage](../../crates/ptr-lineage/README.md) | `prototype` | 9 | 4573 | 7 | 120 | 11 | 6 | R004:planned | adapter-serving:open |
-| [ptr-memory](../../crates/ptr-memory/README.md) | `prototype` | 14 | 4194 | 8 | 80 | 22 | 6 | Q002:frozen, E002:planned, E004:planned | — |
+| [ptr-memory](../../crates/ptr-memory/README.md) | `prototype` | 14 | 4286 | 8 | 87 | 22 | 6 | Q002:frozen, E002:planned, E004:planned | — |
 | [ptr-model-api](../../crates/ptr-model-api/README.md) | `prototype` | 10 | 2355 | 8 | 74 | 18 | 7 | M007:planned, E001:planned, E003:planned | inference-serving:open |
 | [ptr-net](../../crates/ptr-net/README.md) | `prototype` | 4 | 1399 | 5 | 49 | 22 | 6 | L002:frozen, E001:planned | network:open |
 | [ptr-observe](../../crates/ptr-observe/README.md) | `prototype` | 14 | 2316 | 11 | 59 | 15 | 5 | F001:frozen, E003:planned | observability:open |
