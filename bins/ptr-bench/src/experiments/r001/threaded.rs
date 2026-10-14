@@ -765,7 +765,9 @@ mod tests {
     #[test]
     fn a_stage_that_misses_its_deadline_is_a_hang_not_a_harness_fault() {
         let shape = params::THREADED_REDUCED;
-        let out = run_with_deadline(17, shape, Duration::from_millis(1)).expect("an outcome");
+        // A zero deadline times out before the coordinator can report: a 1 ms wait is rounded
+        // up to the timer period on Windows (about 15 ms), long enough for the reduced run.
+        let out = run_with_deadline(17, shape, Duration::ZERO).expect("an outcome");
         assert_eq!(out.product_hangs, 1);
         assert_eq!(out.offered, 0);
         assert_eq!(out.producers, 4);
