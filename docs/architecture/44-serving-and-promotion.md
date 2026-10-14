@@ -72,7 +72,10 @@ a replay is seen at the next use (invariant 3). The runtime holds at most 4096 a
 generation, digest)`, where the identity is the lifecycle key. Committing `AdapterPromoted` supersedes the adapter
 dependencies under that key below the promoted generation, and `AdapterRevoked` invalidates exactly the revoked
 generation; both cancel pinned forks and retire the entries, scoped to the adapter kind so no other kind or other
-adapter key is touched. `ImprovementCycleRecorded` invalidates nothing.
+adapter key is touched. `ImprovementCycleRecorded` invalidates nothing. The reference KV backend's own liveness follows the same events: an adapter-kind
+dependency in the lifecycle namespace is live only at the exact promoted generation, and a host that serves promoted adapters
+calls `require_promoted_adapters` once, after which that holds for every adapter-kind dependency whatever its identity (the
+default, standalone mode keeps ledger-free adapters live unless revoked; the R009 harness runs in it).
 
 **Limits.**
 
@@ -122,7 +125,7 @@ bounds recorded and running cycles, not crashed ones.
 ### Replay backtest (`training/src/ptr_training/replay`)
 
 `HistoryPool` is append-only and chronological (a repeated name or an order that does not advance is refused before
-anything changes; 256 generations at most). Generation orders and outcome counts are integers below 2**53, anything else is a `HistoryError`. `ReplaySimulator` fits an intercept and one response coefficient per
+anything changes; 256 generations at most). Generation orders, outcome counts and integer decision levels are integers below 2**53 (in absolute value for levels), anything else is a `HistoryError`. `ReplaySimulator` fits an intercept and one response coefficient per
 decision from consecutive generations in which exactly one decision moved; a transition that moves two is ambiguous
 and charged to neither. `backtest(pool, error_bound=...)` holds each generation out and predicts it from the rest:
 
@@ -147,7 +150,7 @@ and charged to neither. `backtest(pool, error_bound=...)` holds each generation 
 - `choose_winner` aborts with `NotPredictive` on a history that predicted nothing, and with `ExtrapolationAbort` when
   the best policy asks for a decision level the history never showed.
 
-The error bound has no default. It is pinned by whoever preregisters the claim and is not changed after a pilot. No
+The error bound has no default. It is to be pinned by whoever enrols the claim in `experiments/preregistration.toml` (F008 is a registered, planned experiment and is not enrolled yet) and is not changed after a pilot. No
 simulator training happens in PTR until `predictive` has been true on a real generation history at least once.
 
 ## 4. Adaptive batcher and replica router (`ptr-model-api`)
@@ -182,7 +185,10 @@ simulator training happens in PTR until `predictive` has been true on a real gen
   cancel flag is set are swept first; if it is still full the new `infer_scoped` is refused with `overloaded` before the model
   runs, and nothing of anyone else is evicted. The trade-off is stated: existing continuations are never lost to another
   principal's load (a crowd of principals cannot push a victim out), at the price that opens can be refused while the table
-  is full of live continuations. An evicted (own quota) continuation fails closed. The entry
+  is full of live continuations. An evicted (own quota) continuation fails closed. Dropping a `Continuation` releases its entry (the handle holds a weak reference to the table, no cycle), so abandoned handles do not
+  hold slots, and a run that ended with `Finished` opens none. A running resume keeps its entry reserved (in flight: not
+  resumable twice, never evicted or swept) and moves it in place to the next round under a new id, so a successful resume of a
+  still-open run always has its successor and another principal cannot take the slot meanwhile. The entry
   also keeps the admission's deadline and cancel flag, and every resume path (continuation and trait) is refused once the
   batcher is closed, past its deadline or cancelled, before and after the gate. Plain
   `infer` and `infer_with` open no continuation. The unscoped

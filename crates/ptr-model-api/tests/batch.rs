@@ -420,9 +420,31 @@ fn a_key_naming_an_adapter_is_refused_when_no_gate_vouches_for_it() {
     assert!(batcher.infer(&request("plain")).is_ok());
 }
 
-fn echo_batcher(gate: Arc<dyn BatchGate>) -> AdaptiveBatcher<ptr_model_api::ReferenceEchoBackend> {
+/// A backend whose runs always wait for an observation: it never finishes, so every scoped
+/// call opens a continuation.
+struct Waiting;
+
+impl InferenceBackend for Waiting {
+    fn name(&self) -> &'static str {
+        "waiting"
+    }
+
+    fn infer(&self, _request: &ModelRequest) -> Result<Vec<ModelEvent>, ModelError> {
+        Ok(vec![ModelEvent::Token("waiting".into())])
+    }
+}
+
+impl ptr_model_api::BatchInferenceBackend for Waiting {}
+
+impl ptr_model_api::ResumableInferenceBackend for Waiting {
+    fn resume(&self, _request: &ModelResumeRequest) -> Result<Vec<ModelEvent>, ModelError> {
+        Ok(vec![ModelEvent::Token("waiting".into())])
+    }
+}
+
+fn echo_batcher(gate: Arc<dyn BatchGate>) -> AdaptiveBatcher<Waiting> {
     AdaptiveBatcher::with_parts(
-        Arc::new(ptr_model_api::ReferenceEchoBackend),
+        Arc::new(Waiting),
         policy(1, 0, 4),
         Arc::new(SystemClock),
         Some(gate),
@@ -532,7 +554,7 @@ impl ptr_model_api::InferenceBackend for PanickingResume {
     }
 
     fn infer(&self, _request: &ptr_model_api::ModelRequest) -> Result<Vec<ModelEvent>, ModelError> {
-        Ok(vec![ModelEvent::Finished])
+        Ok(vec![ModelEvent::Token("waiting".into())])
     }
 }
 
@@ -598,6 +620,7 @@ fn open<B: ptr_model_api::BatchInferenceBackend + 'static>(
         .infer_scoped(&request_at(id, 7), admission_under(key))
         .expect("served")
         .continuation
+        .expect("a run that waits for an observation")
 }
 
 fn scope(project: &str, generation: u64) -> BatchKey {
@@ -630,7 +653,7 @@ impl InferenceBackend for ContextRecorder {
     }
 
     fn infer(&self, _request: &ModelRequest) -> Result<Vec<ModelEvent>, ModelError> {
-        Ok(vec![ModelEvent::Finished])
+        Ok(vec![ModelEvent::Token("waiting".into())])
     }
 }
 
@@ -639,7 +662,7 @@ impl ptr_model_api::BatchInferenceBackend for ContextRecorder {}
 impl ptr_model_api::ResumableInferenceBackend for ContextRecorder {
     fn resume(&self, request: &ModelResumeRequest) -> Result<Vec<ModelEvent>, ModelError> {
         self.resumed.lock().unwrap().push(request.clone());
-        Ok(vec![ModelEvent::Finished])
+        Ok(vec![ModelEvent::Token("waiting".into())])
     }
 }
 
@@ -725,10 +748,14 @@ fn the_open_continuations_are_bounded_and_an_evicted_one_fails_closed() {
     let batcher = echo_batcher(Arc::new(OpenGate));
     let key = key("coder");
     let first = open(&batcher, "first", &key);
+    // The flood is kept open (a dropped handle would release its slot).
+    let mut flood = Vec::new();
     for n in 0..ptr_model_api::MAX_OPEN_CONTINUATIONS {
-        batcher
-            .infer_scoped(&request(&format!("flood-{n}")), admission_under(&key))
-            .expect("served");
+        flood.push(
+            batcher
+                .infer_scoped(&request(&format!("flood-{n}")), admission_under(&key))
+                .expect("served"),
+        );
     }
     assert_eq!(
         batcher
@@ -752,16 +779,12 @@ fn one_principal_cannot_push_another_principals_continuation_out() {
     let y = principal_scope("y");
     let kept = open(&batcher, "y-run", &y);
     // 5000 continuations from X, far past both its quota and the global bound.
-    let mut x_first = None;
-    let mut x_last = None;
+    let mut all = Vec::new();
     for n in 0..5000 {
-        let continuation = open(&batcher, &format!("x-{n}"), &x);
-        if n == 0 {
-            x_first = Some(continuation);
-        } else if n == 4999 {
-            x_last = Some(continuation);
-        }
+        all.push(open(&batcher, &format!("x-{n}"), &x));
     }
+    let x_last = all.pop();
+    let x_first = all.remove(0);
     // Y's continuation is still there and resumes.
     assert!(batcher
         .resume_continuation(kept, &y, observation(1, b"x"))
@@ -769,7 +792,7 @@ fn one_principal_cannot_push_another_principals_continuation_out() {
     // X's own oldest failed closed once X passed its quota; its newest still resumes.
     assert_eq!(
         batcher
-            .resume_continuation(x_first.unwrap(), &x, observation(1, b"x"))
+            .resume_continuation(x_first, &x, observation(1, b"x"))
             .err(),
         Some(ModelError::scope_mismatch())
     );
@@ -817,24 +840,27 @@ fn an_expired_continuation_frees_its_slot_in_a_full_table() {
     use ptr_model_api::MAX_OPEN_CONTINUATIONS;
     let clock = Arc::new(SetClock(std::sync::atomic::AtomicU64::new(0)));
     let batcher = AdaptiveBatcher::with_parts(
-        Arc::new(ptr_model_api::ReferenceEchoBackend),
+        Arc::new(Waiting),
         policy(1, 0, 4),
         Arc::clone(&clock) as Arc<dyn BatchClock>,
         Some(Arc::new(OpenGate) as Arc<dyn BatchGate>),
     )
     .expect("built");
+    let mut held = Vec::new();
     for n in 0..MAX_OPEN_CONTINUATIONS {
         let scope = principal_scope(&format!("p{n}"));
-        batcher
-            .infer_scoped(
-                &request(&format!("r{n}")),
-                BatchAdmission {
-                    key: scope,
-                    deadline: Some(Timestamp(100)),
-                    cancel: None,
-                },
-            )
-            .expect("served");
+        held.push(
+            batcher
+                .infer_scoped(
+                    &request(&format!("r{n}")),
+                    BatchAdmission {
+                        key: scope,
+                        deadline: Some(Timestamp(100)),
+                        cancel: None,
+                    },
+                )
+                .expect("served"),
+        );
     }
     let late = principal_scope("late");
     assert_eq!(
@@ -1016,15 +1042,18 @@ fn a_resume_after_the_deadline_or_a_cancellation_never_reaches_the_backend() {
     let in_time = batcher
         .infer_scoped(&request_at("a", 1), admit(Some(100), None))
         .expect("served")
-        .continuation;
+        .continuation
+        .expect("waiting");
     let cancellable = batcher
         .infer_scoped(&request_at("b", 1), admit(None, Some(cancel.clone())))
         .expect("served")
-        .continuation;
+        .continuation
+        .expect("waiting");
     let live = batcher
         .infer_scoped(&request_at("c", 1), admit(Some(100), None))
         .expect("served")
-        .continuation;
+        .continuation
+        .expect("waiting");
     // Within the deadline and not cancelled: runs.
     assert!(batcher
         .resume_continuation(live, &key, observation(1, b"x"))
@@ -1082,4 +1111,118 @@ fn every_resume_path_is_refused_once_the_batcher_is_closed() {
         }
         assert!(backend.resumed.lock().unwrap().is_empty(), "gated: {gated}");
     }
+}
+
+#[test]
+fn abandoned_handles_do_not_hold_their_slots() {
+    use ptr_model_api::MAX_OPEN_CONTINUATIONS;
+    let batcher = echo_batcher(Arc::new(OpenGate));
+    let mut handles = Vec::new();
+    for n in 0..MAX_OPEN_CONTINUATIONS {
+        handles.push(open(
+            &batcher,
+            &format!("r{n}"),
+            &principal_scope(&format!("p{n}")),
+        ));
+    }
+    assert_eq!(
+        batcher
+            .infer_scoped(&request("late"), admission_under(&principal_scope("late")))
+            .err(),
+        Some(ModelError::overloaded())
+    );
+    // The holders walk away: dropping a handle releases its entry.
+    drop(handles);
+    assert!(batcher
+        .infer_scoped(&request("late"), admission_under(&principal_scope("late")))
+        .is_ok());
+}
+
+#[test]
+fn a_run_that_finished_opens_no_continuation() {
+    let batcher = AdaptiveBatcher::with_parts(
+        Arc::new(ptr_model_api::ReferenceEchoBackend),
+        policy(1, 0, 4),
+        Arc::new(SystemClock),
+        Some(Arc::new(OpenGate) as Arc<dyn BatchGate>),
+    )
+    .expect("built");
+    let answer = batcher
+        .infer_scoped(&request("done"), admission_under(&key("coder")))
+        .expect("served");
+    assert_eq!(answer.events.last(), Some(&ModelEvent::Finished));
+    assert!(answer.continuation.is_none());
+}
+
+/// A resumable backend whose resume waits for the test.
+struct SlowResume {
+    entered: AtomicBool,
+    latch: Latch,
+}
+
+impl InferenceBackend for SlowResume {
+    fn name(&self) -> &'static str {
+        "slow-resume"
+    }
+
+    fn infer(&self, _request: &ModelRequest) -> Result<Vec<ModelEvent>, ModelError> {
+        Ok(vec![ModelEvent::Token("waiting".into())])
+    }
+}
+
+impl ptr_model_api::BatchInferenceBackend for SlowResume {}
+
+impl ptr_model_api::ResumableInferenceBackend for SlowResume {
+    fn resume(&self, _request: &ModelResumeRequest) -> Result<Vec<ModelEvent>, ModelError> {
+        self.entered.store(true, Ordering::SeqCst);
+        self.latch.wait();
+        Ok(vec![ModelEvent::Token("waiting".into())])
+    }
+}
+
+#[test]
+fn a_running_resume_keeps_its_slot_for_the_successor() {
+    use ptr_model_api::MAX_OPEN_CONTINUATIONS;
+    let backend = Arc::new(SlowResume {
+        entered: AtomicBool::new(false),
+        latch: Latch::default(),
+    });
+    let batcher = AdaptiveBatcher::with_parts(
+        Arc::clone(&backend),
+        policy(1, 0, 4),
+        Arc::new(SystemClock),
+        Some(Arc::new(OpenGate) as Arc<dyn BatchGate>),
+    )
+    .expect("built");
+    let victim_scope = principal_scope("victim");
+    let victim = open(&batcher, "victim-run", &victim_scope);
+    let mut held = Vec::new();
+    for n in 0..MAX_OPEN_CONTINUATIONS - 1 {
+        held.push(open(
+            &batcher,
+            &format!("fill-{n}"),
+            &principal_scope(&format!("fill-{n}")),
+        ));
+    }
+    std::thread::scope(|scope| {
+        let batcher = &batcher;
+        let victim_scope = &victim_scope;
+        let resuming = scope
+            .spawn(move || batcher.resume_continuation(victim, victim_scope, observation(1, b"x")));
+        assert!(eventually(PATIENT, || backend
+            .entered
+            .load(Ordering::SeqCst)));
+        // The table is full and the resume is running: another principal's open is refused,
+        // and the slot the resume holds is not available to it.
+        assert_eq!(
+            batcher
+                .infer_scoped(&request("late"), admission_under(&principal_scope("late")))
+                .err(),
+            Some(ModelError::overloaded())
+        );
+        backend.latch.open();
+        let resumed = resuming.join().expect("thread").expect("resumes");
+        assert!(resumed.next.is_some(), "the successor kept its slot");
+    });
+    drop(held);
 }

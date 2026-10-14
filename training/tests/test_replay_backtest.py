@@ -455,3 +455,16 @@ class ForgedReportTests(unittest.TestCase):
         # The honest report is a NotPredictive abort, as before.
         with self.assertRaises(NotPredictive):
             choose_winner(pool, honest, [{"x": 1}], **PINNED)
+
+
+class LevelRangeTests(unittest.TestCase):
+    def test_integer_levels_beyond_the_exact_float_range_are_refused(self):
+        pool = HistoryPool()
+        pool.add_generation("g0", order=0, decisions={"x": 2**53 - 1}, outcome=outcome(200))
+        before = pool.fingerprint()
+        for bad in (2**53, 2**53 + 1, -(2**53)):
+            with self.assertRaises(HistoryError):
+                pool.add_generation("g1", order=1, decisions={"x": bad}, outcome=outcome(300))
+        self.assertEqual(pool.fingerprint(), before)
+        with self.assertRaises(HistoryError):
+            ReplaySimulator(pool).simulate({"x": 2**53 + 1})

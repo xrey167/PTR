@@ -124,6 +124,9 @@ def levels_of(
         if isinstance(value, bool):
             levels[name] = 1.0 if value else 0.0
         elif isinstance(value, (int, float)):
+            if isinstance(value, int) and abs(value) >= MAX_COUNT:
+                # Beyond 2**53 an int is no longer exactly a float: two levels would collide.
+                raise HistoryError(f"decision {name!r} is outside the exactly representable range")
             try:
                 number = float(value)
             except OverflowError:

@@ -134,12 +134,25 @@ impl std::error::Error for BatchError {}
 
 /// The handle of one continuation, returned with its answer by
 /// [`AdaptiveBatcher::infer_scoped`]. It is opaque: not `Clone`, not `Copy`, no public
-/// constructor, and it is consumed by [`AdaptiveBatcher::resume_continuation`]. It holds only an
-/// unguessable 128-bit id. Everything a resume needs (scope, request id, semantic context, the
-/// round) is kept in the batcher's bounded table under that id, so nothing a caller holds or
-/// writes decides any of it.
+/// constructor, and it is consumed by [`AdaptiveBatcher::resume_continuation`]. It holds an
+/// unguessable 128-bit id and a weak reference to the batcher's table (no strong cycle).
+/// Everything a resume needs (scope, request id, semantic context, the round) is kept in that
+/// table under the id, so nothing a caller holds or writes decides any of it. **Dropping the
+/// handle releases its table entry**, so an abandoned handle does not hold a slot.
 pub struct Continuation {
     id: u128,
+    table: std::sync::Weak<Mutex<Continuations>>,
+}
+
+impl Drop for Continuation {
+    fn drop(&mut self) {
+        if let Some(table) = self.table.upgrade() {
+            table
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .release(self.id);
+        }
+    }
 }
 
 // Not derived: the id is a credential and a log line must not carry it.
@@ -152,11 +165,12 @@ impl fmt::Debug for Continuation {
 }
 
 /// What [`AdaptiveBatcher::infer_scoped`] returns: the events and the continuation that a
-/// later observation resumes.
+/// later observation resumes. A run that ended with [`ModelEvent::Finished`] has nothing left to
+/// resume and carries none.
 #[derive(Debug)]
 pub struct ScopedAnswer {
     pub events: Vec<ModelEvent>,
-    pub continuation: Continuation,
+    pub continuation: Option<Continuation>,
 }
 
 /// What [`AdaptiveBatcher::resume_continuation`] returns: the events and, when the round
@@ -175,6 +189,9 @@ pub const MAX_OPEN_CONTINUATIONS: usize = 4096;
 /// The whole resume context of one open continuation. The resume request is built from this
 /// and the caller's observation, never from caller-supplied context.
 struct OpenContinuation {
+    /// A resume is running on this entry: it keeps its slot for the successor, cannot be
+    /// resumed again, and is neither evicted nor swept.
+    in_flight: bool,
     request_id: RequestId,
     key: BatchKey,
     semantic_context: SemanticContext,
@@ -206,13 +223,25 @@ struct Continuations {
     queues: std::collections::HashMap<PrincipalKey, std::collections::VecDeque<u128>>,
 }
 
+/// What a resume needs from its entry, copied out while the entry stays reserved.
+struct ResumeContext {
+    request_id: RequestId,
+    key: BatchKey,
+    semantic_context: SemanticContext,
+    round: u32,
+    deadline: Option<u64>,
+    cancel: Option<CancelFlag>,
+}
+
 impl Continuations {
     fn expired(entry: &OpenContinuation, now: u64) -> bool {
-        entry.deadline.is_some_and(|deadline| deadline <= now)
-            || entry.cancel.as_ref().is_some_and(CancelFlag::is_cancelled)
+        !entry.in_flight
+            && (entry.deadline.is_some_and(|deadline| deadline <= now)
+                || entry.cancel.as_ref().is_some_and(CancelFlag::is_cancelled))
     }
 
-    /// Drop every entry whose deadline has passed or whose cancel flag is set.
+    /// Drop every entry whose deadline has passed or whose cancel flag is set (never one a
+    /// resume is running on).
     fn sweep(&mut self, now: u64) {
         let dead: Vec<u128> = self
             .entries
@@ -226,13 +255,23 @@ impl Continuations {
     }
 
     /// Make room for one more continuation of `principal` if that can be done without taking
-    /// anything from another principal: the principal's own oldest at its quota, then expired
-    /// entries. False when the table is full of live continuations.
+    /// anything from another principal: the principal's own oldest (not one a resume is
+    /// running on) at its quota, then expired entries. False when the table is full of live
+    /// continuations.
     fn make_room(&mut self, principal: &PrincipalKey, now: u64) -> bool {
         let held = self.queues.get(principal).map_or(0, |queue| queue.len());
         if held >= MAX_CONTINUATIONS_PER_PRINCIPAL {
-            if let Some(oldest) = self.queues.get(principal).and_then(|q| q.front().copied()) {
-                self.close(oldest);
+            let oldest = self.queues.get(principal).and_then(|queue| {
+                queue
+                    .iter()
+                    .copied()
+                    .find(|id| self.entries.get(id).is_some_and(|entry| !entry.in_flight))
+            });
+            match oldest {
+                Some(oldest) => {
+                    self.close(oldest);
+                }
+                None => return false,
             }
         }
         if self.entries.len() >= MAX_OPEN_CONTINUATIONS {
@@ -252,6 +291,7 @@ impl Continuations {
         true
     }
 
+    /// Remove an entry whatever its state.
     fn close(&mut self, id: u128) -> Option<OpenContinuation> {
         let continuation = self.entries.remove(&id)?;
         let principal = continuation.key.principal.clone();
@@ -262,6 +302,81 @@ impl Continuations {
             }
         }
         Some(continuation)
+    }
+
+    /// Remove an entry a dropped handle named, unless a resume is running on it.
+    fn release(&mut self, id: u128) {
+        if self.entries.get(&id).is_some_and(|entry| !entry.in_flight) {
+            self.close(id);
+        }
+    }
+
+    /// Reserve the entry for one resume: it must exist, not be in flight and hold `key`. A key
+    /// that differs consumes the entry (the handle is spent either way).
+    fn begin_resume(&mut self, id: u128, key: &BatchKey) -> Option<ResumeContext> {
+        let entry = self.entries.get_mut(&id)?;
+        if entry.in_flight {
+            return None;
+        }
+        if &entry.key != key {
+            self.close(id);
+            return None;
+        }
+        entry.in_flight = true;
+        Some(ResumeContext {
+            request_id: entry.request_id.clone(),
+            key: entry.key.clone(),
+            semantic_context: entry.semantic_context.clone(),
+            round: entry.round,
+            deadline: entry.deadline,
+            cancel: entry.cancel.clone(),
+        })
+    }
+
+    /// End a resume. With a successor id the entry keeps its slot and moves to the next round
+    /// under the new id (it cannot fail for want of room); without one the entry goes.
+    /// False only if the reserved entry vanished.
+    fn finish_resume(&mut self, id: u128, successor: Option<u128>) -> bool {
+        let Some(new_id) = successor else {
+            return self.close(id).is_some();
+        };
+        let Some(mut entry) = self.entries.remove(&id) else {
+            return false;
+        };
+        let Some(next_round) = entry.round.checked_add(1) else {
+            self.entries.insert(id, entry);
+            return self.close(id).is_some();
+        };
+        entry.round = next_round;
+        entry.in_flight = false;
+        if let Some(queue) = self.queues.get_mut(&entry.key.principal) {
+            for slot in queue.iter_mut() {
+                if *slot == id {
+                    *slot = new_id;
+                }
+            }
+        }
+        self.entries.insert(new_id, entry);
+        true
+    }
+}
+
+/// Closes the reserved entry of a resume that did not reach `finish_resume` (an error, or an
+/// unwind), so a failed resume never leaves a slot stuck in flight.
+struct FlightGuard<'a> {
+    table: &'a Mutex<Continuations>,
+    id: u128,
+    armed: bool,
+}
+
+impl Drop for FlightGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.table
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .close(self.id);
+        }
     }
 }
 
@@ -397,7 +512,6 @@ impl fmt::Debug for Job {
 struct State {
     queue: BatchQueue<Job>,
     closed: bool,
-    continuations: Continuations,
 }
 
 struct Shared<B> {
@@ -405,6 +519,9 @@ struct Shared<B> {
     clock: Arc<dyn BatchClock>,
     gate: Option<Arc<dyn BatchGate>>,
     state: Mutex<State>,
+    /// The open continuations, under their own lock so a handle can hold a weak reference to
+    /// them.
+    table: Arc<Mutex<Continuations>>,
     wake: Condvar,
     counters: Counters,
     /// Two independently keyed hashers (the standard library seeds each from the operating
@@ -418,6 +535,17 @@ struct Shared<B> {
 }
 
 impl<B> Shared<B> {
+    fn table(&self) -> MutexGuard<'_, Continuations> {
+        self.table.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn handle(&self, id: u128) -> Continuation {
+        Continuation {
+            id,
+            table: Arc::downgrade(&self.table),
+        }
+    }
+
     fn issue_token(&self) -> u128 {
         use std::hash::BuildHasher;
         let counter = self.next_token.fetch_add(1, Ordering::Relaxed);
@@ -478,8 +606,8 @@ impl<B: BatchInferenceBackend + 'static> AdaptiveBatcher<B> {
             state: Mutex::new(State {
                 queue: BatchQueue::new(policy),
                 closed: false,
-                continuations: Continuations::default(),
             }),
+            table: Arc::new(Mutex::new(Continuations::default())),
             wake: Condvar::new(),
             counters: Counters::default(),
             token_keys: (
@@ -538,20 +666,23 @@ impl<B: BatchInferenceBackend + 'static> AdaptiveBatcher<B> {
         // Room is made, or the call refused, before the model runs: no work is done for a
         // continuation that cannot be kept.
         let now = self.shared.clock.now().0;
-        if !self
-            .shared
-            .lock()
-            .continuations
-            .make_room(&key.principal, now)
-        {
+        if !self.shared.table().make_room(&key.principal, now) {
             bump(&self.shared.counters.overloaded, 1);
             return Err(ModelError::overloaded());
         }
         let events = self.run_inferred(request, admission)?;
+        // A run that finished has nothing left to resume: no continuation, no slot.
+        if matches!(events.last(), Some(ModelEvent::Finished)) {
+            return Ok(ScopedAnswer {
+                events,
+                continuation: None,
+            });
+        }
         let id = self.shared.issue_token();
-        let opened = self.shared.lock().continuations.open(
+        let opened = self.shared.table().open(
             id,
             OpenContinuation {
+                in_flight: false,
                 request_id: request.request_id.clone(),
                 key,
                 semantic_context: request.semantic_context.clone(),
@@ -568,7 +699,7 @@ impl<B: BatchInferenceBackend + 'static> AdaptiveBatcher<B> {
         }
         Ok(ScopedAnswer {
             events,
-            continuation: Continuation { id },
+            continuation: Some(self.shared.handle(id)),
         })
     }
 
@@ -648,28 +779,43 @@ impl<B: BatchInferenceBackend + 'static> AdaptiveBatcher<B> {
     where
         B: ResumableInferenceBackend,
     {
-        let entry = self.shared.lock().continuations.close(continuation.id);
-        let Some(entry) = entry.filter(|entry| &entry.key == key) else {
+        // The entry is reserved, not removed: its slot is held for the successor while the
+        // backend runs, so no other principal can take it, and nothing else can resume it.
+        let reserved = self.shared.table().begin_resume(continuation.id, key);
+        let Some(context) = reserved else {
             return Err(ModelError::scope_mismatch());
         };
+        let mut guard = FlightGuard {
+            table: &self.shared.table,
+            id: continuation.id,
+            armed: true,
+        };
         let request = ModelResumeRequest {
-            request_id: entry.request_id.clone(),
-            semantic_context: entry.semantic_context.clone(),
-            round: entry.round,
+            request_id: context.request_id.clone(),
+            semantic_context: context.semantic_context.clone(),
+            round: context.round,
             observation,
         };
-        let events =
-            self.run_resume(&request, &entry.key, entry.deadline, entry.cancel.as_ref())?;
-        // The next round's continuation is opened only if there is room; otherwise there is none.
-        let next = entry.round.checked_add(1).and_then(|round| {
-            let id = self.shared.issue_token();
-            let now = self.shared.clock.now().0;
-            self.shared
-                .lock()
-                .continuations
-                .open(id, OpenContinuation { round, ..entry }, now)
-                .then_some(Continuation { id })
-        });
+        let events = self.run_resume(
+            &request,
+            &context.key,
+            context.deadline,
+            context.cancel.as_ref(),
+        )?;
+        // A run that finished, or a round counter with no room, has no successor.
+        let continues = !matches!(events.last(), Some(ModelEvent::Finished))
+            && context.round.checked_add(1).is_some();
+        let successor = continues.then(|| self.shared.issue_token());
+        let kept = self
+            .shared
+            .table()
+            .finish_resume(continuation.id, successor);
+        guard.armed = false;
+        if successor.is_some() && !kept {
+            // The reserved entry vanished: say so, rather than return a silent "no next".
+            return Err(ModelError::scope_mismatch());
+        }
+        let next = successor.map(|id| self.shared.handle(id));
         Ok(ResumedAnswer { events, next })
     }
 

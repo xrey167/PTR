@@ -166,3 +166,33 @@ fn an_adapter_key_no_promotion_named_is_refused_at_every_generation() {
     assert!(!refused(1));
     assert!(refused(2) && refused(999));
 }
+
+#[test]
+fn a_host_that_requires_promoted_adapters_refuses_an_adapter_outside_the_namespace() {
+    let backend = backend();
+    let req = request(&backend);
+    let outside = || {
+        Qwen2Adapter::seeded(
+            backend.stack_config(),
+            &Qwen2AdapterSpec::pinned("foo:bar", 1, Qwen2AdapterKind::Qkv, 2),
+            20240607,
+        )
+        .unwrap()
+    };
+    // Standalone mode: an adapter outside the lifecycle namespace is live unless revoked.
+    assert!(backend
+        .infer_scoped_bound(&scope(), &req, None, &StackBinding::with_adapter(outside()))
+        .is_ok());
+    // Once the host requires promoted adapters, no promotion names it and it is refused.
+    backend.require_promoted_adapters().unwrap();
+    let fresh = request(&backend);
+    assert!(matches!(
+        backend.infer_scoped_bound(
+            &scope(),
+            &fresh,
+            None,
+            &StackBinding::with_adapter(outside())
+        ),
+        Err(ReferenceKvError::Binding(BindingError::NotLive { .. }))
+    ));
+}

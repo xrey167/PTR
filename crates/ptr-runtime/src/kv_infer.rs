@@ -556,6 +556,9 @@ pub(crate) struct RevokedInputs {
     /// The one generation each promoted adapter key serves: an adapter dependency is live only
     /// at exactly this generation, not at any generation above the floor.
     adapter_current: BTreeMap<String, Generation>,
+    /// Set once by `require_promoted_adapters`: every adapter-kind dependency, whatever its
+    /// identity, is then live only at the generation a committed promotion named.
+    strict_adapters: bool,
     /// Expert identities with a committed fence epoch: an expert dependency recorded below it
     /// (or with none) is not live.
     fences: BTreeMap<String, u64>,
@@ -702,15 +705,21 @@ impl RevokedInputs {
             && self.adapter_is_current(dependency)
     }
 
-    /// The adapter namespace fails closed: a dependency under `ptr-adapter:` is live only when
-    /// a committed promotion named its key and the generation is exactly that one. A key no
-    /// promotion named (never promoted, or its event never reached this backend) is not live at
-    /// any generation. Identities outside the namespace have no such record to consult.
+    /// Adapter-kind dependencies fail closed. In the lifecycle namespace (`ptr-adapter:`) one is
+    /// live only when a committed promotion named its key and the generation is exactly that
+    /// one; a key no promotion named is not live at any generation. After
+    /// [`ReferenceKvReuseBackend::require_promoted_adapters`] that holds for every adapter-kind
+    /// dependency whatever its identity. Without it, an adapter outside the namespace is a
+    /// standalone adapter (the reference backend's own, ledger-free mode) and is live unless
+    /// revoked. The decision is by dependency kind, never by the shape of the identity alone.
     fn adapter_is_current(&self, dependency: &KvDependency) -> bool {
-        if !dependency
+        if dependency.kind != KvDependencyKind::Adapter {
+            return true;
+        }
+        let namespaced = dependency
             .identity
-            .starts_with(crate::adapter::ADAPTER_KEY_PREFIX)
-        {
+            .starts_with(crate::adapter::ADAPTER_KEY_PREFIX);
+        if !(namespaced || self.strict_adapters) {
             return true;
         }
         self.adapter_current.get(&dependency.identity) == Some(&dependency.generation)
@@ -1232,6 +1241,24 @@ impl ReferenceKvReuseBackend {
             CacheUse::Disabled,
             &StackBinding::base(),
         )
+    }
+
+    /// Switch to ledger-anchored adapters, once and for good: from now on an adapter binding is
+    /// live only if a committed `AdapterPromoted` (applied through
+    /// [`Self::apply_committed_event`]) named its key and generation exactly, whatever its
+    /// identity. A host that serves promoted adapters calls this at construction. The default
+    /// stays the standalone mode in which an adapter outside the lifecycle namespace is live
+    /// unless revoked (the R009 harness and the reference tests run in it).
+    ///
+    /// # Errors
+    /// [`ReferenceKvError::Poisoned`].
+    pub fn require_promoted_adapters(&self) -> Result<(), ReferenceKvError> {
+        self.liveness
+            .inner
+            .lock()
+            .map_err(|_| ReferenceKvError::Poisoned)?
+            .strict_adapters = true;
+        Ok(())
     }
 
     /// The backend's own liveness oracle (the fallback when no ledger-anchored one is
