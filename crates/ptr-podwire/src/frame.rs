@@ -28,10 +28,29 @@ use ptr_pods::ProtocolBinding;
 use ptr_protocol::TypedPayload;
 use ptr_types::{
     ArtifactId, CapabilityId, Generation, IdentityContext, MeshEndpointBinding, MeshRouteKind,
-    PeerId, PodAddress, PodRevisionAddress, Revision, SessionId, TraceId, TypeId,
+    PeerId, PodAddress, PodRevisionAddress, Revision, SessionId, Timestamp, TraceId, TypeId,
 };
 use sha2::{Digest, Sha256};
 use std::fmt;
+
+/// The wall clock as a [`Timestamp`] in milliseconds since the Unix epoch, the unit of every
+/// deadline on the PodWire path. A clock before the epoch reads as `u64::MAX`, which expires
+/// every deadline rather than extending one.
+pub fn unix_millis_now() -> Timestamp {
+    timestamp_of_clock(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH))
+}
+
+/// The timestamp a clock reading stands for. A clock that reads before the epoch cannot be
+/// trusted, so it reads as the **latest** instant, `u64::MAX`: every deadline is then already
+/// past (fail closed) and no request can be composed, instead of every deadline looking like
+/// it lies in the future.
+fn timestamp_of_clock(
+    reading: Result<std::time::Duration, std::time::SystemTimeError>,
+) -> Timestamp {
+    Timestamp(reading.map_or(u64::MAX, |elapsed| {
+        u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+    }))
+}
 
 /// Marks a request. Foreign bytes are refused before anything is interpreted.
 const REQUEST_MAGIC: &[u8; 8] = b"PTRPWREQ";
@@ -53,6 +72,10 @@ pub const FORMAT_V1: u16 = 1;
 pub const FORMAT_V2: u16 = 2;
 /// Address-bound extension of V2. FORMAT_V2 remains readable for legacy peers.
 pub const FORMAT_V3: u16 = 3;
+/// Deadline-carrying extension of V3. The address binding gains an absolute
+/// deadline and the origin timestamp it was derived from; V3 frames stay readable
+/// and decode with no deadline, so a V3 peer keeps the transport timeout alone.
+pub const FORMAT_V4: u16 = 4;
 
 /// Bound on one frame in either direction. A peer does not get to decide how much
 /// a receiver reads.
@@ -167,6 +190,15 @@ pub struct PodAddressBinding {
     pub visited: Vec<PodAddress>,
     pub protocol: Option<ProtocolBinding>,
     pub mesh: Option<MeshEndpointBinding>,
+    /// Absolute deadline in **milliseconds since the Unix epoch** (V4), the unit of
+    /// `PodLink::deadline`, `PodRoute::deadline` and `PodCall.deadline_ms` too. `None` is
+    /// the V3 shape: no deadline travels and only the local transport timeout applies.
+    /// Set together with [`Self::origin_ts`] or not at all.
+    pub deadline: Option<Timestamp>,
+    /// When the originating caller composed the request (V4), in the same unit as
+    /// [`Self::deadline`]. Stays fixed across hops so the budget a request was
+    /// given remains recoverable.
+    pub origin_ts: Option<Timestamp>,
 }
 
 impl PodAddressBinding {
@@ -187,7 +219,139 @@ impl PodAddressBinding {
             visited: Vec::new(),
             protocol: None,
             mesh: None,
+            deadline: None,
+            origin_ts: None,
         }
+    }
+
+    /// The deadline a forwarded request may carry: the earlier of this binding's
+    /// deadline and the one the next hop asks for. A deadline shrinks across hops
+    /// and never grows, so a relay cannot extend the time a caller allowed.
+    pub fn narrowed_deadline(&self, requested: Timestamp) -> Timestamp {
+        match self.deadline {
+            Some(current) => current.min(requested),
+            None => requested,
+        }
+    }
+
+    /// Refuse a binding whose deadline is later than its parent's, or that drops
+    /// a deadline its parent carried.
+    pub fn ensure_deadline_within(&self, parent: &Self) -> Result<(), FrameError> {
+        match (parent.deadline, self.deadline) {
+            (None, _) => Ok(()),
+            (Some(_), None) => Err(FrameError::InvalidField { field: "deadline" }),
+            (Some(parent), Some(own)) if own > parent => {
+                Err(FrameError::InvalidField { field: "deadline" })
+            }
+            (Some(_), Some(_)) => Ok(()),
+        }
+    }
+
+    /// The binding a request resolved through `route` travels under: the route's addresses, hop
+    /// budget and trace, the deadline it carries (milliseconds since the epoch) and `origin_ts`,
+    /// the instant the request is composed. A route with no deadline yields a V3-shaped binding.
+    ///
+    /// # Errors
+    /// [`FrameError::InvalidField`] when the route's deadline is not after `origin_ts`: a
+    /// request that is expired before it is sent is not composed.
+    pub fn for_route(
+        route: &ptr_types::PodRoute,
+        protocol: Option<ProtocolBinding>,
+        origin_ts: Timestamp,
+    ) -> Result<Self, FrameError> {
+        let binding = Self {
+            source: route.source.clone(),
+            destination: route.destination.clone(),
+            trace_id: route.trace_id.clone(),
+            hop_limit: route.hop_limit,
+            visited: route.visited.clone(),
+            protocol,
+            mesh: route.endpoint.mesh.clone(),
+            deadline: route.deadline,
+            origin_ts: route.deadline.map(|_| origin_ts),
+        };
+        binding.validate()?;
+        Ok(binding)
+    }
+
+    /// The binding a request made under `link` travels under. The link always carries a
+    /// deadline, in the same unit as the frame's, so the number that crosses the wire is the
+    /// number the link was given.
+    ///
+    /// # Errors
+    /// As [`Self::for_route`].
+    pub fn for_link(link: &ptr_pods::PodLink, origin_ts: Timestamp) -> Result<Self, FrameError> {
+        let binding = Self {
+            source: Some(link.source.clone()),
+            destination: link.target.clone(),
+            trace_id: TraceId(link.trace_id.clone()),
+            hop_limit: link.hop_limit,
+            visited: link.visited.clone(),
+            protocol: Some(link.protocol.clone()),
+            mesh: None,
+            deadline: Some(link.deadline),
+            origin_ts: Some(origin_ts),
+        };
+        binding.validate()?;
+        Ok(binding)
+    }
+
+    /// The binding for a hop onward to `destination`: this hop's destination becomes the
+    /// source and joins the visited list, the hop budget shrinks by one, and the deadline is
+    /// the earlier of this binding's and `requested` ([`Self::narrowed_deadline`]). Whatever
+    /// the result, it is checked against this binding ([`Self::ensure_deadline_within`]), so a
+    /// relay can neither extend the time it was given nor drop the deadline.
+    ///
+    /// A binding without a deadline that is forwarded with one (`requested`) becomes a V4
+    /// binding whose `origin_ts` is `now`, the instant the relay composes the hop.
+    ///
+    /// # Errors
+    /// [`FrameError::InvalidField`] when no hop is left (`hop_limit` would reach zero), when the
+    /// destination was already visited, or when the result is not a valid binding (a deadline
+    /// not after its origin included).
+    pub fn forward_to(
+        &self,
+        destination: PodRevisionAddress,
+        requested: Option<Timestamp>,
+        now: Timestamp,
+    ) -> Result<Self, FrameError> {
+        let hop_limit = self
+            .hop_limit
+            .checked_sub(1)
+            .filter(|left| *left > 0)
+            .ok_or(FrameError::InvalidField { field: "hop_limit" })?;
+        // The Pod that sent this request is on the trail too, or a hop back to it (A to B and
+        // back to A) would not look like a revisit.
+        let mut visited = self.visited.clone();
+        if let Some(source) = &self.source {
+            if !visited.contains(source) {
+                visited.push(source.clone());
+            }
+        }
+        visited.push(self.destination.address.clone());
+        if visited.contains(&destination.address) {
+            return Err(FrameError::InvalidField { field: "visited" });
+        }
+        let deadline = match (self.deadline, requested) {
+            (Some(_), Some(requested)) => Some(self.narrowed_deadline(requested)),
+            (None, Some(requested)) => Some(requested),
+            (current, None) => current,
+        };
+        let origin_ts = deadline.map(|_| self.origin_ts.unwrap_or(now));
+        let next = Self {
+            source: Some(self.destination.address.clone()),
+            destination,
+            trace_id: self.trace_id.clone(),
+            hop_limit,
+            visited,
+            protocol: self.protocol.clone(),
+            mesh: self.mesh.clone(),
+            deadline,
+            origin_ts,
+        };
+        next.validate()?;
+        next.ensure_deadline_within(self)?;
+        Ok(next)
     }
 
     pub fn validate(&self) -> Result<(), FrameError> {
@@ -201,6 +365,15 @@ impl PodAddressBinding {
         }
         if self.hop_limit == 0 {
             return Err(FrameError::InvalidField { field: "hop_limit" });
+        }
+        match (self.deadline, self.origin_ts) {
+            (None, None) => {}
+            (Some(deadline), Some(origin)) => {
+                if deadline.0 == 0 || origin.0 == 0 || deadline <= origin {
+                    return Err(FrameError::InvalidField { field: "deadline" });
+                }
+            }
+            _ => return Err(FrameError::InvalidField { field: "deadline" }),
         }
         if self.visited.len() > 64 {
             return Err(FrameError::InvalidField { field: "visited" });
@@ -555,14 +728,10 @@ pub fn encode_answer(answer: &PodAnswer) -> Result<Vec<u8>, FrameError> {
 pub fn encode_request_v2(request: &PodRequestV2) -> Result<Vec<u8>, FrameError> {
     let mut frame = Vec::with_capacity(192 + request.payload.bytes.len());
     frame.extend_from_slice(REQUEST_MAGIC);
-    let format = if request.address.is_some() {
-        FORMAT_V3
-    } else {
-        FORMAT_V2
-    };
+    let format = address_format(request.address.as_ref());
     frame.extend_from_slice(&format.to_le_bytes());
     if let Some(address) = &request.address {
-        put_address_binding(&mut frame, address)?;
+        put_address_binding(&mut frame, address, format)?;
         frame.extend_from_slice(&request.execution_manifest.ok_or(FrameError::InvalidField {
             field: "execution_manifest",
         })?);
@@ -594,11 +763,12 @@ pub fn encode_request_v2(request: &PodRequestV2) -> Result<Vec<u8>, FrameError> 
 }
 
 pub fn decode_request_v2(bytes: &[u8]) -> Result<PodRequestV2, FrameError> {
-    let (mut at, has_address) = open_v2_compatible(bytes, REQUEST_MAGIC)?;
-    let address = has_address
-        .then(|| take_address_binding(bytes, &mut at))
+    let (mut at, format) = open_v2_compatible(bytes, REQUEST_MAGIC)?;
+    let address = (format != FORMAT_V2)
+        .then(|| take_address_binding(bytes, &mut at, format))
         .transpose()?;
-    let execution_manifest = has_address
+    let execution_manifest = address
+        .is_some()
         .then(|| take_digest(bytes, &mut at))
         .transpose()?;
     let addressed_to = take_str(bytes, &mut at, "addressed_to")?;
@@ -642,14 +812,10 @@ pub fn decode_request_v2(bytes: &[u8]) -> Result<PodRequestV2, FrameError> {
 pub fn encode_answer_v2(answer: &PodAnswerV2) -> Result<Vec<u8>, FrameError> {
     let mut frame = Vec::with_capacity(192);
     frame.extend_from_slice(ANSWER_MAGIC);
-    let format = if answer.address.is_some() {
-        FORMAT_V3
-    } else {
-        FORMAT_V2
-    };
+    let format = address_format(answer.address.as_ref());
     frame.extend_from_slice(&format.to_le_bytes());
     if let Some(address) = &answer.address {
-        put_address_binding(&mut frame, address)?;
+        put_address_binding(&mut frame, address, format)?;
         frame.extend_from_slice(&answer.execution_manifest.ok_or(FrameError::InvalidField {
             field: "execution_manifest",
         })?);
@@ -679,11 +845,12 @@ pub fn encode_answer_v2(answer: &PodAnswerV2) -> Result<Vec<u8>, FrameError> {
 }
 
 pub fn decode_answer_v2(bytes: &[u8]) -> Result<PodAnswerV2, FrameError> {
-    let (mut at, has_address) = open_v2_compatible(bytes, ANSWER_MAGIC)?;
-    let address = has_address
-        .then(|| take_address_binding(bytes, &mut at))
+    let (mut at, format) = open_v2_compatible(bytes, ANSWER_MAGIC)?;
+    let address = (format != FORMAT_V2)
+        .then(|| take_address_binding(bytes, &mut at, format))
         .transpose()?;
-    let execution_manifest = has_address
+    let execution_manifest = address
+        .is_some()
         .then(|| take_digest(bytes, &mut at))
         .transpose()?;
     let responder = take_str(bytes, &mut at, "responder")?;
@@ -799,7 +966,19 @@ fn open_format(bytes: &[u8], magic: &[u8; 8], expected: u16) -> Result<usize, Fr
     Ok(at)
 }
 
-fn open_v2_compatible(bytes: &[u8], magic: &[u8; 8]) -> Result<(usize, bool), FrameError> {
+/// The layout an addressed frame is written in: V4 when a deadline travels, V3
+/// otherwise, and V2 when there is no address binding at all.
+fn address_format(address: Option<&PodAddressBinding>) -> u16 {
+    match address {
+        None => FORMAT_V2,
+        Some(binding) if binding.deadline.is_some() => FORMAT_V4,
+        Some(_) => FORMAT_V3,
+    }
+}
+
+/// Open a V2, V3 or V4 frame and report which layout it is, so the caller reads
+/// exactly the fields that layout carries.
+fn open_v2_compatible(bytes: &[u8], magic: &[u8; 8]) -> Result<(usize, u16), FrameError> {
     if bytes.len() > MAX_FRAME_BYTES {
         return Err(FrameError::TooLarge {
             field: "frame",
@@ -813,8 +992,7 @@ fn open_v2_compatible(bytes: &[u8], magic: &[u8; 8]) -> Result<(usize, bool), Fr
     let mut at = magic.len();
     let format = take_u16(bytes, &mut at, "format")?;
     match format {
-        FORMAT_V2 => Ok((at, false)),
-        FORMAT_V3 => Ok((at, true)),
+        FORMAT_V2 | FORMAT_V3 | FORMAT_V4 => Ok((at, format)),
         other => Err(FrameError::UnknownFormat { format: other }),
     }
 }
@@ -875,8 +1053,15 @@ fn put_state_binding(
     Ok(())
 }
 
-fn put_address_binding(frame: &mut Vec<u8>, binding: &PodAddressBinding) -> Result<(), FrameError> {
+fn put_address_binding(
+    frame: &mut Vec<u8>,
+    binding: &PodAddressBinding,
+    format: u16,
+) -> Result<(), FrameError> {
     binding.validate()?;
+    if format < FORMAT_V4 && binding.deadline.is_some() {
+        return Err(FrameError::InvalidField { field: "deadline" });
+    }
     match &binding.source {
         Some(source) => {
             frame.push(1);
@@ -923,10 +1108,21 @@ fn put_address_binding(frame: &mut Vec<u8>, binding: &PodAddressBinding) -> Resu
     for address in &binding.visited {
         put_address(frame, address)?;
     }
+    if format >= FORMAT_V4 {
+        let (Some(deadline), Some(origin)) = (binding.deadline, binding.origin_ts) else {
+            return Err(FrameError::InvalidField { field: "deadline" });
+        };
+        frame.extend_from_slice(&deadline.0.to_le_bytes());
+        frame.extend_from_slice(&origin.0.to_le_bytes());
+    }
     Ok(())
 }
 
-fn take_address_binding(bytes: &[u8], at: &mut usize) -> Result<PodAddressBinding, FrameError> {
+fn take_address_binding(
+    bytes: &[u8],
+    at: &mut usize,
+    format: u16,
+) -> Result<PodAddressBinding, FrameError> {
     let source = match take_u8(bytes, at, "source")? {
         0 => None,
         1 => Some(take_address(bytes, at, "source")?),
@@ -1001,6 +1197,14 @@ fn take_address_binding(bytes: &[u8], at: &mut usize) -> Result<PodAddressBindin
     for _ in 0..visited_len {
         visited.push(take_address(bytes, at, "visited")?);
     }
+    let (deadline, origin_ts) = if format >= FORMAT_V4 {
+        (
+            Some(Timestamp(take_u64(bytes, at, "deadline")?)),
+            Some(Timestamp(take_u64(bytes, at, "origin_ts")?)),
+        )
+    } else {
+        (None, None)
+    };
     let binding = PodAddressBinding {
         source,
         destination: PodRevisionAddress {
@@ -1013,6 +1217,8 @@ fn take_address_binding(bytes: &[u8], at: &mut usize) -> Result<PodAddressBindin
         visited,
         protocol,
         mesh,
+        deadline,
+        origin_ts,
     };
     binding.validate()?;
     Ok(binding)
@@ -1284,6 +1490,8 @@ mod tests {
                 visited: Vec::new(),
                 protocol: Some(ProtocolBinding::Ssh),
                 mesh: None,
+                deadline: None,
+                origin_ts: None,
             }),
             execution_manifest: Some([9; 32]),
             addressed_to: "key-of-the-host".into(),
@@ -1351,6 +1559,8 @@ mod tests {
                 visited: Vec::new(),
                 protocol: None,
                 mesh: None,
+                deadline: None,
+                origin_ts: None,
             }),
             execution_manifest: Some([9; 32]),
             addressed_to: "key-of-the-host".into(),
@@ -1725,6 +1935,29 @@ mod tests {
             FrameError::NotUtf8 {
                 field: "capability"
             }
+        );
+    }
+}
+
+#[cfg(test)]
+mod clock_tests {
+    use super::*;
+    use std::time::{Duration, UNIX_EPOCH};
+
+    #[test]
+    fn a_clock_before_the_epoch_expires_every_deadline_instead_of_extending_it() {
+        let before = UNIX_EPOCH.duration_since(UNIX_EPOCH + Duration::from_secs(1));
+        let now = timestamp_of_clock(before);
+        assert_eq!(now, Timestamp(u64::MAX));
+        // Any deadline is past, and no binding can be composed at this origin.
+        assert!(Timestamp(4_000_000_000_000) < now);
+    }
+
+    #[test]
+    fn a_working_clock_reads_whole_milliseconds() {
+        assert_eq!(
+            timestamp_of_clock(Ok(Duration::from_micros(1_500_900))),
+            Timestamp(1_500)
         );
     }
 }

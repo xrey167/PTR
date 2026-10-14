@@ -251,13 +251,13 @@ find = '''
         if self.stage != EvidenceStage::PossibleEvidence {
             return Err(EvidencePromotionError::WrongStage);
         }
-        match validity(&self.capsule, self.generation) {
+        self.lifecycle_answer(validity)
 '''
 replace = '''
         if self.stage != EvidenceStage::PossibleEvidence {
             return Err(EvidencePromotionError::StaleGeneration);
         }
-        match validity(&self.capsule, self.generation) {
+        self.lifecycle_answer(validity)
 '''
 
 [[mutation]]
@@ -269,10 +269,10 @@ find = '''
         if self.stage != EvidenceStage::PossibleEvidence {
             return Err(EvidencePromotionError::WrongStage);
         }
-        match validity(&self.capsule, self.generation) {
+        self.lifecycle_answer(validity)
 '''
 replace = '''
-        match validity(&self.capsule, self.generation) {
+        self.lifecycle_answer(validity)
 '''
 
 [[mutation]]
@@ -299,10 +299,16 @@ find = '''
         if self.stage != EvidenceStage::Observed {
             return Err(EvidencePromotionError::WrongStage);
         }
-        let Some(source) = self.source.as_ref() else {
+        if self.observed_validity.is_some() {
+            return Err(EvidencePromotionError::WrongStage);
+        }
+        self.promote_with_proof(proof)
 '''
 replace = '''
-        let Some(source) = self.source.as_ref() else {
+        if self.observed_validity.is_some() {
+            return Err(EvidencePromotionError::WrongStage);
+        }
+        self.promote_with_proof(proof)
 '''
 
 [[mutation]]
@@ -337,9 +343,11 @@ description = "observe_resolved does not hold the resolved source's owners again
 expect = ["stale_or_revoked_promoted", "false_known_mechanism", "stage_skip_accepted"]
 file = "crates/ptr-search/src/lib.rs"
 find = '''
+        self.check_lifecycle(validity)?;
         if !source.is_owned_by(&self.capsule, self.generation) {
 '''
 replace = '''
+        self.check_lifecycle(validity)?;
         if false && !source.is_owned_by(&self.capsule, self.generation) {
 '''
 

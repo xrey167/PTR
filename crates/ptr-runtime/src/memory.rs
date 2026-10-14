@@ -6,11 +6,12 @@
 
 use ptr_memory::RawEvent;
 use ptr_memory::{
-    compile_selected, compile_structured, BasicKnowledgeObjectBuilder, CompiledContext,
-    ContextCandidate, DeterministicEntityExtractor, DeterministicTokenizer, EntityExtractor,
-    IngestionError, KnowledgeObject, KnowledgeObjectBuilder, KnowledgeStore, NamespaceContext,
-    NamespaceResolver, RetentionController, RetentionDecision, RetentionModel, RetentionState,
-    SemanticTokenizer, StaticNamespaceResolver, TokenBudget,
+    compile_selected, compile_selected_at, compile_structured, compile_structured_at,
+    BasicKnowledgeObjectBuilder, CompiledContext, ContextCandidate, DeterministicEntityExtractor,
+    DeterministicTokenizer, EntityExtractor, IngestionError, KnowledgeObject,
+    KnowledgeObjectBuilder, KnowledgeStore, NamespaceContext, NamespaceResolver,
+    RetentionController, RetentionDecision, RetentionModel, RetentionState, SemanticTokenizer,
+    StaticNamespaceResolver, TokenBudget,
 };
 use ptr_pods::PodManifest;
 use ptr_protocol::TypedPayload;
@@ -79,23 +80,57 @@ impl<M: RetentionModel> ContextMemoryController<M> {
         self.retention.decide_all(state)
     }
 
-    pub fn compile(
+    fn objects_of(
         &self,
         ids: &[KnowledgeObjectId],
-        budget: TokenBudget,
-    ) -> Result<CompiledContext, MemoryControllerError> {
-        let objects: Vec<_> = ids
-            .iter()
+    ) -> Result<Vec<KnowledgeObject>, MemoryControllerError> {
+        ids.iter()
             .map(|id| {
                 self.store
                     .object(id)
                     .ok_or_else(|| MemoryControllerError::MissingObject(id.clone()))
             })
-            .collect::<Result<_, _>>()?;
-        compile_structured(&objects, budget)
+            .collect()
+    }
+
+    /// Compile the objects `ids` name for the instant `now` (milliseconds since the Unix
+    /// epoch): an object whose validity does not hold at `now` is left out and counted in
+    /// [`CompiledContext::omitted_expired`]. This is the path a context that feeds an answer
+    /// takes.
+    pub fn compile_at(
+        &self,
+        ids: &[KnowledgeObjectId],
+        budget: TokenBudget,
+        now: ptr_types::Timestamp,
+    ) -> Result<CompiledContext, MemoryControllerError> {
+        compile_structured_at(&self.objects_of(ids)?, budget, now)
             .map_err(|error| MemoryControllerError::Context(format!("{error:?}")))
     }
 
+    /// [`Self::compile_at`] for candidates that already carry a retention action.
+    pub fn compile_candidates_at(
+        &self,
+        candidates: &[ContextCandidate],
+        budget: TokenBudget,
+        now: ptr_types::Timestamp,
+    ) -> Result<CompiledContext, MemoryControllerError> {
+        compile_selected_at(candidates, budget, now)
+            .map_err(|error| MemoryControllerError::Context(format!("{error:?}")))
+    }
+
+    /// Compile with no time rule: the audit and replay path, where every object is eligible
+    /// whatever its validity. Use [`Self::compile_at`] for a context that feeds an answer.
+    pub fn compile(
+        &self,
+        ids: &[KnowledgeObjectId],
+        budget: TokenBudget,
+    ) -> Result<CompiledContext, MemoryControllerError> {
+        compile_structured(&self.objects_of(ids)?, budget)
+            .map_err(|error| MemoryControllerError::Context(format!("{error:?}")))
+    }
+
+    /// Compile candidates with no time rule: the audit and replay path. See
+    /// [`Self::compile_candidates_at`].
     pub fn compile_candidates(
         &self,
         candidates: &[ContextCandidate],
