@@ -1007,7 +1007,7 @@ fn many_created_and_released_scopes_still_export_and_restore() {
                 .unwrap();
         }
     }
-    assert!(runtime.scopes().snapshot_bytes() <= ptr_runtime::MAX_SCOPE_SNAPSHOT_BYTES);
+    assert!(runtime.scopes().snapshot_bytes() <= ptr_runtime::compacted::MAX_SECTION_BYTES);
     let snapshot = runtime.export_compacted_snapshot().unwrap();
     let mut restored = PtrRuntime::restore_compacted(
         PtrConfig::default(),
@@ -1029,11 +1029,11 @@ fn many_created_and_released_scopes_still_export_and_restore() {
         .is_err());
 }
 
-/// Review of #141 (P1): at the bound the next scope is refused with a typed error and nothing
-/// is committed; the export keeps working, before and after the refusal.
+/// Review of #141: at the execution section's bound the next scope is refused with a typed
+/// error and nothing is committed; the export keeps working, before and after the refusal.
 #[test]
 fn at_the_scope_bound_creation_is_refused_and_the_export_keeps_working() {
-    use ptr_runtime::{ScopeError, MAX_SCOPE_SNAPSHOT_BYTES};
+    use ptr_runtime::compacted::MAX_SECTION_BYTES;
     use ptr_types::ScopeLeaseBinding;
 
     let mut runtime = fixture();
@@ -1063,13 +1063,12 @@ fn at_the_scope_bound_creation_is_refused_and_the_export_keeps_working() {
     assert!(
         matches!(
             refusal,
-            RuntimeError::Scope(ScopeError::CapacityExceeded { bytes, .. })
-                if bytes > MAX_SCOPE_SNAPSHOT_BYTES
+            RuntimeError::ExecutionSectionFull { bytes, .. } if bytes > MAX_SECTION_BYTES
         ),
         "{refusal:?}"
     );
     assert!(created > 100);
-    assert!(runtime.scopes().snapshot_bytes() <= MAX_SCOPE_SNAPSHOT_BYTES);
+    assert!(runtime.scopes().snapshot_bytes() <= MAX_SECTION_BYTES);
     let snapshot = runtime.export_compacted_snapshot().unwrap();
     let restored = PtrRuntime::restore_compacted(
         PtrConfig::default(),

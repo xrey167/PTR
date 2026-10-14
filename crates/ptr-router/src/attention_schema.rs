@@ -603,7 +603,27 @@ impl AttentionSchema {
                     state.generations_evicted = state.generations_evicted.saturating_add(1);
                     Self::purge_everywhere(state, &oldest);
                 }
+                // From the first eviction on, no statistics exist for a Pod the table does not
+                // track: a support member that was never chosen has no recorded generation, so
+                // nothing would notice it change. Its entries go now, at the transition.
+                if state.generations_evicted > 0 {
+                    Self::purge_untracked(state);
+                }
             }
+        }
+    }
+
+    /// Drop every statistic of a Pod the generation table does not track.
+    fn purge_untracked(state: &mut State) {
+        let State {
+            contexts,
+            overflow,
+            generations,
+            ..
+        } = state;
+        for class in contexts.values_mut().chain(std::iter::once(overflow)) {
+            class.ema.retain(|pod, _| generations.contains_key(pod));
+            class.pods.retain(|pod, _| generations.contains_key(pod));
         }
     }
 
@@ -681,8 +701,23 @@ impl AttentionSchema {
         } else {
             BTreeSet::new()
         };
+        let stale: Vec<PodId> = if evicting {
+            let empty = ClassState::default();
+            Self::class_state(&state, &key, &self.limits, &empty)
+                .ema
+                .keys()
+                .filter(|pod| !state.generations.contains_key(*pod))
+                .cloned()
+                .collect()
+        } else {
+            Vec::new()
+        };
         let class = Self::class_state_mut(&mut state, key, &self.limits);
         class.observed = class.observed.saturating_add(1);
+        // Defence in depth: an untracked entry is neither updated nor kept once evicting.
+        for pod in &stale {
+            class.ema.remove(pod);
+        }
         for (pod, value) in class.ema.iter_mut() {
             let p = support
                 .iter()
@@ -1113,6 +1148,84 @@ mod tests {
         assert!(!state.overflow.ema.contains_key(&keep));
     }
 
+    /// Once the table has evicted, every statistic belongs to a tracked Pod.
+    fn assert_only_tracked_statistics(schema: &AttentionSchema) {
+        let state = schema.state();
+        if state.generations_evicted == 0 {
+            return;
+        }
+        for class in state
+            .contexts
+            .values()
+            .chain(std::iter::once(&state.overflow))
+        {
+            for pod in class.ema.keys().chain(class.pods.keys()) {
+                assert!(
+                    state.generations.contains_key(pod),
+                    "statistics for the untracked Pod {pod}"
+                );
+            }
+        }
+    }
+
+    /// Review of #141 (round 3): a Pod seen only as a support member before the first
+    /// eviction has a moving-average entry and no generation. The first eviction drops it, and
+    /// it is neither kept nor updated afterwards, so ema keys stay within the tracked Pods.
+    #[test]
+    fn a_support_only_pod_loses_its_statistics_at_the_first_eviction() {
+        let schema = AttentionSchema::new(SchemaLimits::default()).unwrap();
+        let half = RouteDistribution::RESOLUTION / 2;
+        let ghost = PodId::from("ghost");
+        let record = |i: usize, chosen: &PodId, other: &PodId| {
+            let mut support = vec![(chosen.clone(), half), (other.clone(), half)];
+            support.sort();
+            FindingRouteRecord::for_test(
+                &format!("g{i}"),
+                RouteClass::Repair(FindingCode::new("x")),
+                support,
+                chosen.clone(),
+                Generation(1),
+            )
+        };
+        let has_ema = |schema: &AttentionSchema, p: &PodId| {
+            let state = schema.state();
+            state
+                .contexts
+                .values()
+                .chain(std::iter::once(&state.overflow))
+                .any(|class| class.ema.contains_key(p))
+        };
+        // Before any eviction the ghost gathers an entry as a support member only.
+        schema.observe(&record(0, &pod(0), &ghost));
+        assert!(has_ema(&schema, &ghost));
+        assert!(!schema.state().generations.contains_key(&ghost));
+        // Fill the table to the brim, the ghost keeps riding along in the support.
+        for i in 1..MAX_TRACKED_GENERATIONS {
+            schema.observe(&record(i, &pod(i), &ghost));
+        }
+        assert_eq!(schema.state().generations_evicted, 0);
+        assert!(has_ema(&schema, &ghost), "kept while nothing was evicted");
+        // The first eviction: the ghost's entry goes with it.
+        schema.observe(&record(
+            MAX_TRACKED_GENERATIONS,
+            &pod(MAX_TRACKED_GENERATIONS),
+            &ghost,
+        ));
+        assert!(schema.state().generations_evicted > 0);
+        assert!(
+            !has_ema(&schema, &ghost),
+            "the untracked entry survived the first eviction"
+        );
+        assert_only_tracked_statistics(&schema);
+        // Afterwards it is neither re-created nor updated.
+        for i in 0..20 {
+            let n = 2 * MAX_TRACKED_GENERATIONS + i;
+            schema.observe(&record(n, &pod(n), &ghost));
+            assert_only_tracked_statistics(&schema);
+        }
+        assert!(!has_ema(&schema, &ghost));
+    }
+
     /// Review of #141 (P1): once the table has evicted, a Pod it does not track gathers no
     /// statistics as a support member of other records, and a Pod that returns (at a new
     /// generation) starts with none, so history of an unrecorded generation never steers it.
@@ -1160,6 +1273,7 @@ mod tests {
             !ema_of(&schema, &victim),
             "an untracked support member gathered statistics"
         );
+        assert_only_tracked_statistics(&schema);
         // It returns at a new generation and starts empty, apart from this record's own view.
         schema.observe(&record(base + 10, &victim, &pod(base + 11), 2));
         let state = schema.state();

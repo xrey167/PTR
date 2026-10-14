@@ -1672,6 +1672,182 @@ fn effect_from_tag(tag: u64) -> Result<Effect, RuntimeError> {
     }
 }
 
+/// Bytes of one encoded [`ActionIdentity`] (`Writer::identity`).
+fn identity_bytes(identity: &ActionIdentity) -> usize {
+    4 + identity.project.0.len() + 4 + identity.principal.len() + 8 + 8 + DIGEST_BYTES
+}
+
+/// Bytes of one unsettled attempt in the execution section (`ExecutionObligations::encode`).
+pub(crate) fn unsettled_entry_bytes(effect: &UnsettledEffect) -> usize {
+    8 + 8
+        + 8
+        + effect.key.as_ref().map_or(0, |key| 4 + key.len())
+        + 4
+        + effect.target.len()
+        + 4
+        + effect.operation.len()
+        + 8
+        + identity_bytes(&effect.identity)
+}
+
+/// Bytes of one settled key in the execution section.
+pub(crate) fn settled_entry_bytes(key: &str, outcome: &SettledOutcome) -> usize {
+    4 + key.len()
+        + 8
+        + match outcome {
+            SettledOutcome::Applied {
+                identity, response, ..
+            } => 8 + identity_bytes(identity) + 4 + response.len(),
+            SettledOutcome::AppliedWithoutResponse { identity, .. } => 8 + identity_bytes(identity),
+            SettledOutcome::NotApplied => 0,
+        }
+}
+
+/// The room a keyed unsettled attempt reserves for its settlement: its settled entry without
+/// a response, the largest a settlement is ever allowed to take when the section is full (a
+/// response that no longer fits is not retained, see [`PtrRuntime::settlement_retains_response`]).
+fn reserved_settlement_bytes(effect: &UnsettledEffect) -> usize {
+    effect.key.as_ref().map_or(0, |key| {
+        4 + key.len() + 8 + 8 + identity_bytes(&effect.identity)
+    })
+}
+
+/// The execution section a compacted snapshot of this runtime would carry, with every keyed
+/// unsettled attempt's settlement reserved: its bytes and its list lengths.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct SectionUse {
+    pub(crate) bytes: usize,
+    pub(crate) unsettled: usize,
+    /// Settled keys plus the keyed attempts that will settle into one.
+    pub(crate) settled: usize,
+    pub(crate) scopes: usize,
+}
+
+impl SectionUse {
+    fn fits(&self) -> bool {
+        self.bytes <= MAX_SECTION_BYTES
+            && self.unsettled <= MAX_SECTION_ITEMS
+            && self.settled <= MAX_SECTION_ITEMS
+            && self.scopes <= MAX_SECTION_ITEMS
+    }
+
+    fn refusal(&self) -> RuntimeError {
+        RuntimeError::ExecutionSectionFull {
+            bytes: self.bytes,
+            items: self.unsettled.max(self.settled).max(self.scopes),
+        }
+    }
+}
+
+impl PtrRuntime {
+    /// The execution section's use now (`ExecutionObligations::encode` exactly, plus the
+    /// settlement reservations).
+    pub(crate) fn execution_section_use(&self) -> SectionUse {
+        let (unsettled, settled) = self.execution.retained_obligations();
+        let keyed = unsettled
+            .values()
+            .filter(|effect| effect.key.is_some())
+            .count();
+        SectionUse {
+            bytes: 8
+                + 4
+                + unsettled
+                    .values()
+                    .map(|effect| unsettled_entry_bytes(effect) + reserved_settlement_bytes(effect))
+                    .sum::<usize>()
+                + 4
+                + settled
+                    .iter()
+                    .map(|(key, outcome)| settled_entry_bytes(key, outcome))
+                    .sum::<usize>()
+                + self.scopes.snapshot_bytes(),
+            unsettled: unsettled.len(),
+            settled: settled.len() + keyed,
+            scopes: self.scopes.compacted_len(),
+        }
+    }
+
+    /// Refuse a new record that would take the execution section past its bounds: an attempt
+    /// (its entry and the room its settlement reserves) or a new scope. Settlements never
+    /// grow the section past what their attempt reserved, so they are never refused here.
+    pub(crate) fn check_execution_section_growth(
+        &self,
+        event: &ptr_ledger::LedgerEvent,
+    ) -> Result<(), RuntimeError> {
+        let projected = match event {
+            ptr_ledger::LedgerEvent::EffectAttempted {
+                key,
+                project,
+                principal,
+                target,
+                operation,
+                effect,
+                generation,
+                revision,
+                action_digest,
+                ..
+            } => {
+                let attempt = UnsettledEffect {
+                    attempt: CommitIndex(0),
+                    key: key.clone(),
+                    target: target.clone(),
+                    operation: operation.clone(),
+                    effect: *effect,
+                    identity: ActionIdentity {
+                        project: project.clone(),
+                        principal: principal.clone(),
+                        revision: *revision,
+                        generation: *generation,
+                        action_digest: *action_digest,
+                    },
+                };
+                let mut use_ = self.execution_section_use();
+                use_.bytes += unsettled_entry_bytes(&attempt) + reserved_settlement_bytes(&attempt);
+                use_.unsettled += 1;
+                use_.settled += usize::from(attempt.key.is_some());
+                use_
+            }
+            ptr_ledger::LedgerEvent::ScopeLifecycle(scope) => {
+                let growth = self.scopes.growth_bytes(scope);
+                if growth == 0 {
+                    return Ok(());
+                }
+                let mut use_ = self.execution_section_use();
+                use_.bytes += growth;
+                use_.scopes += 1;
+                use_
+            }
+            _ => return Ok(()),
+        };
+        if projected.fits() {
+            Ok(())
+        } else {
+            Err(projected.refusal())
+        }
+    }
+
+    /// Whether settling `attempt` may retain a response of `len` bytes: the section with the
+    /// attempt replaced by its settled entry (and any earlier entry under its key replaced)
+    /// still fits. Otherwise the settlement records the outcome without the response, which
+    /// always fits in the room the attempt reserved.
+    pub(crate) fn settlement_retains_response(&self, attempt: CommitIndex, len: usize) -> bool {
+        let (unsettled, settled) = self.execution.retained_obligations();
+        let Some(effect) = unsettled.get(&attempt) else {
+            return true;
+        };
+        let Some(key) = effect.key.as_ref() else {
+            return true;
+        };
+        let current = self.execution_section_use();
+        let replaced = settled
+            .get(key)
+            .map_or(0, |outcome| settled_entry_bytes(key, outcome));
+        let with_response = 4 + key.len() + 8 + 8 + identity_bytes(&effect.identity) + 4 + len;
+        let freed = unsettled_entry_bytes(effect) + reserved_settlement_bytes(effect) + replaced;
+        (current.bytes + with_response).saturating_sub(freed) <= MAX_SECTION_BYTES
+    }
+}
+
 impl ExecutionObligations {
     /// Encode both maps in deterministic key order, unsettled attempts first.
     fn encode(&self) -> Result<Vec<u8>, RuntimeError> {
@@ -3134,5 +3310,102 @@ mod scope_block_tests {
         assert_eq!(out.0.len(), registry.snapshot_bytes());
         assert!(registry.snapshot_bytes() > SCOPE_BLOCK_OVERHEAD);
         assert_eq!(ScopeRegistry::default().snapshot_bytes(), 0);
+    }
+
+    /// Review of #141 (round 3): the per-entry accounting of the whole execution section
+    /// (unsettled attempts, settled keys of every outcome, the scope block and the framing) is
+    /// exactly what `ExecutionObligations::encode` writes.
+    #[test]
+    fn the_execution_section_accounting_is_exactly_the_encoded_section() {
+        let identity = |p: &str| ActionIdentity {
+            project: ProjectId::from(p),
+            principal: "principal".into(),
+            revision: Revision(3),
+            generation: Generation(2),
+            action_digest: [9; 32],
+        };
+        let mut unsettled = BTreeMap::new();
+        for (i, key) in [(1u64, Some("k1")), (2, None)] {
+            unsettled.insert(
+                CommitIndex(i),
+                UnsettledEffect {
+                    attempt: CommitIndex(i),
+                    key: key.map(str::to_owned),
+                    target: "capsule:a".into(),
+                    operation: "write".into(),
+                    effect: Effect::Mutation,
+                    identity: identity("project"),
+                },
+            );
+        }
+        let mut settled = BTreeMap::new();
+        settled.insert(
+            "a".to_owned(),
+            SettledOutcome::Applied {
+                attempt: CommitIndex(5),
+                identity: identity("p"),
+                response: vec![7; 33],
+            },
+        );
+        settled.insert(
+            "b".to_owned(),
+            SettledOutcome::AppliedWithoutResponse {
+                attempt: CommitIndex(6),
+                identity: identity(""),
+            },
+        );
+        settled.insert("c".to_owned(), SettledOutcome::NotApplied);
+        let accounted = |obligations: &ExecutionObligations, scope_bytes: usize| {
+            8 + 4
+                + obligations
+                    .unsettled
+                    .values()
+                    .map(unsettled_entry_bytes)
+                    .sum::<usize>()
+                + 4
+                + obligations
+                    .settled
+                    .iter()
+                    .map(|(key, outcome)| settled_entry_bytes(key, outcome))
+                    .sum::<usize>()
+                + scope_bytes
+        };
+        let plain = ExecutionObligations {
+            unsettled: unsettled.clone(),
+            settled: settled.clone(),
+            scopes: CompactedScopes::new(),
+            scope_revision: None,
+        };
+        assert_eq!(plain.encode().unwrap().len(), accounted(&plain, 0));
+        let mut scopes = CompactedScopes::new();
+        let id = ScopeId::from("scope");
+        scopes.insert(
+            id.clone(),
+            (
+                ExecutionScope {
+                    id,
+                    parent: None,
+                    session: SessionId::from("session"),
+                    project: ProjectId::from("project"),
+                    created_at: Timestamp(1),
+                    deadline: None,
+                    state: ScopeState::Created,
+                    cancellation_requested: false,
+                },
+                ScopeLeaseBinding::default(),
+            ),
+        );
+        let registry =
+            ScopeRegistry::from_compacted_parts(scopes.clone(), Some(Revision(1))).unwrap();
+        let scoped = ExecutionObligations {
+            unsettled,
+            settled,
+            scopes,
+            scope_revision: Some(Revision(1)),
+        };
+        assert_eq!(
+            scoped.encode().unwrap().len(),
+            accounted(&scoped, registry.snapshot_bytes())
+        );
     }
 }

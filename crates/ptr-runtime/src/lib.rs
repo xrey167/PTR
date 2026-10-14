@@ -100,7 +100,7 @@ pub use sandbox::{
 };
 pub use scopes::{
     CleanupError, ExecutionScope, ScopeCleanupCoordinator, ScopeError, ScopeEvent, ScopeEventKind,
-    ScopeRegistry, ScopeState, MAX_SCOPES, MAX_SCOPE_SNAPSHOT_BYTES,
+    ScopeRegistry, ScopeState, MAX_SCOPES,
 };
 pub use split_stage::{
     admit_frame, prefix_key, revalidate_chain, AdmittedFrame, ChainFault, RuntimeStageLiveness,
@@ -604,6 +604,18 @@ pub enum RuntimeError {
     /// and the retry's output has that same version-1 digest. Version 1 is not injective, so
     /// the retry cannot be proven to be the admitted output and the follow-up is not completed
     /// from it: an operator has to recover the admission. Nothing was appended.
+    /// Committing this record would take the execution section of a compacted snapshot past
+    /// its bounds ([`compacted::MAX_SECTION_BYTES`] bytes, or more than the section's item bound
+    /// in one of its lists). The section holds the unsettled attempts (each reserving room for
+    /// its settlement), the settled keys and the scope block, and nothing removes a settled key
+    /// or a scope, so it is held to one budget at every commit that grows it. Nothing was
+    /// committed; the snapshot this runtime exports stays within the section.
+    ExecutionSectionFull {
+        /// The bytes the section would take.
+        bytes: usize,
+        /// The longest of its lists, in items.
+        items: usize,
+    },
     LegacyAdmissionIncomplete {
         request_id: RequestId,
         pod_id: ptr_types::PodId,
@@ -1819,6 +1831,10 @@ impl PtrRuntime {
                 .check_capacity(scope_event)
                 .map_err(RuntimeError::Scope)?;
         }
+        // One budget for the whole execution section of a compacted snapshot (invariant 8): a
+        // new attempt (with room for its settlement) or a new scope is refused before it is
+        // committed if the section would no longer fit.
+        self.check_execution_section_growth(&event)?;
         self.validate_lifecycle_event(&event)?;
         let semantic = self.prepare_semantic_event(None, &event)?;
         self.append_prepared(event, semantic)

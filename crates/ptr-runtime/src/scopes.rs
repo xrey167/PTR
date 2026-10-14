@@ -78,23 +78,19 @@ pub enum ScopeError {
     InvalidCommittedEvent,
     InvalidLeaseBinding,
     InvalidRevision,
-    /// Creating this scope would take the registry past what a compacted snapshot can carry
-    /// ([`MAX_SCOPES`] scopes or [`MAX_SCOPE_SNAPSHOT_BYTES`] encoded bytes). Nothing was
+    /// Creating this scope would take the registry past [`MAX_SCOPES`] scopes. Nothing was
     /// committed. Every scope ever created is kept (its id cannot be reused and a released one
-    /// can still be named), so the bound is a refusal at creation, never a failing export.
+    /// can still be named), so the bound is a refusal at creation, never a failing export. The
+    /// bytes a scope takes in a compacted snapshot are held to the execution section's one
+    /// budget instead ([`RuntimeError::ExecutionSectionFull`](crate::RuntimeError)).
     CapacityExceeded {
         scopes: usize,
-        bytes: usize,
     },
 }
 
 /// Most scopes a runtime's history may create (released ones included). Below the item bound
 /// of a compacted section (65,536), so the scope block can always be counted.
 pub const MAX_SCOPES: usize = 16_384;
-/// Most bytes the scope block of a compacted snapshot may take: half of one section
-/// ([`MAX_SECTION_BYTES`](crate::compacted::MAX_SECTION_BYTES)), the rest staying for the
-/// execution obligations it shares the section with.
-pub const MAX_SCOPE_SNAPSHOT_BYTES: usize = crate::compacted::MAX_SECTION_BYTES / 2;
 /// The bytes of a scope block around its entries: magic, count and the optional revision.
 pub(crate) const SCOPE_BLOCK_OVERHEAD: usize = 8 + 4 + 8 + 8;
 
@@ -434,14 +430,32 @@ impl ScopeRegistry {
         Ok(())
     }
 
-    /// Whether a scope created by `event` still fits the bounds a compacted snapshot can carry
-    /// ([`MAX_SCOPES`], [`MAX_SCOPE_SNAPSHOT_BYTES`]). Checked before a new record is committed,
-    /// never on replay: a history written before the bound existed still replays.
+    /// Whether a scope created by `event` still fits [`MAX_SCOPES`]. Checked before a new
+    /// record is committed, never on replay: a history written before the bound existed still
+    /// replays.
     pub fn check_capacity(&self, event: &ScopeLifecycleEvent) -> Result<(), ScopeError> {
         if state_from_kind(event.kind) != ScopeState::Created {
             return Ok(());
         }
-        let bytes = self.snapshot_bytes.max(SCOPE_BLOCK_OVERHEAD)
+        let scopes = self.scopes.len() + 1;
+        if scopes > MAX_SCOPES {
+            return Err(ScopeError::CapacityExceeded { scopes });
+        }
+        Ok(())
+    }
+
+    /// Bytes `event` would add to the scope block of a compacted snapshot: its entry, plus the
+    /// block's framing when it is the first scope; 0 for a transition, which never grows it.
+    pub(crate) fn growth_bytes(&self, event: &ScopeLifecycleEvent) -> usize {
+        if state_from_kind(event.kind) != ScopeState::Created {
+            return 0;
+        }
+        let framing = if self.snapshot_bytes == 0 {
+            SCOPE_BLOCK_OVERHEAD
+        } else {
+            0
+        };
+        framing
             + compacted_scope_entry_bytes(
                 &event.scope_id,
                 event.parent_id.as_ref(),
@@ -449,12 +463,12 @@ impl ScopeRegistry {
                 &event.project_id,
                 event.deadline,
                 &event.lease,
-            );
-        let scopes = self.scopes.len() + 1;
-        if scopes > MAX_SCOPES || bytes > MAX_SCOPE_SNAPSHOT_BYTES {
-            return Err(ScopeError::CapacityExceeded { scopes, bytes });
-        }
-        Ok(())
+            )
+    }
+
+    /// Scopes the registry holds, released ones included.
+    pub(crate) fn compacted_len(&self) -> usize {
+        self.scopes.len()
     }
 
     /// Bytes the scope block of a compacted snapshot of this registry takes (0 without a scope).
@@ -785,7 +799,6 @@ mod capacity_tests {
             })
             .collect();
         let registry = ScopeRegistry::from_compacted_parts(full, Some(Revision(1))).unwrap();
-        assert!(registry.snapshot_bytes() <= MAX_SCOPE_SNAPSHOT_BYTES);
         let mut next = scope(MAX_SCOPES);
         next.state = ScopeState::Created;
         next.cancellation_requested = false;
