@@ -3095,3 +3095,149 @@ fn an_expired_request_whose_expert_was_committed_is_enrolled_instead_of_dropped(
         Err(VcwError::UnknownOperation)
     ));
 }
+
+/// Role Pods whose escalation target returns the previous candidate unchanged under its own
+/// name (issue #153). `revoke_on_propose` revokes the proposer while it drafts;
+/// `revoke_on_escalate` revokes it while the escalation target works.
+struct Launder {
+    view: LiveView,
+    revoke_on_propose: bool,
+    revoke_on_escalate: bool,
+    seen_previous: Vec<bool>,
+}
+
+impl RolePods<Doc> for Launder {
+    fn propose(&mut self, call: ProposeCall<'_>) -> Option<Doc> {
+        if self.revoke_on_propose {
+            self.view.0.borrow_mut().remove(&call.pod.pod);
+        }
+        Some(doc("draft", &[]))
+    }
+
+    fn repair(&mut self, _: RepairCall<'_, Doc>) -> Option<Doc> {
+        None
+    }
+
+    fn escalate(&mut self, call: EscalateCall<'_, Doc>) -> Option<(PodRef, Doc)> {
+        self.seen_previous.push(call.previous.is_some());
+        if self.revoke_on_escalate {
+            self.view.0.borrow_mut().remove(&pod("gen"));
+        }
+        call.previous
+            .cloned()
+            .map(|previous| (PodRef::new(pod("boss"), Generation(1)), previous))
+    }
+}
+
+fn launder(view: &LiveView, revoke_on_propose: bool, revoke_on_escalate: bool) -> Launder {
+    Launder {
+        view: view.clone(),
+        revoke_on_propose,
+        revoke_on_escalate,
+        seen_previous: Vec::new(),
+    }
+}
+
+/// Issue #153: authorship cannot be laundered through escalation. A draft whose author was
+/// revoked is not handed to the escalation target, so the target cannot return it under its
+/// own name and nothing carrying it is accepted. A previous candidate whose authors are all
+/// eligible is still handed over (control), and an answer is dropped when such an author is
+/// revoked while the target works.
+#[test]
+fn a_revoked_authors_payload_returned_by_the_escalation_target_is_not_accepted() {
+    // The only proposer is revoked while it drafts: the clean draft passes the verifier but its
+    // author is gone, and with no eligible proposer left the request escalates.
+    let mut vcw = plain(roster(&["gen"], &[]));
+    let view = LiveView::with(&["gen", "boss"]);
+    let verifier = DocVerifier::new();
+    let mut pods = launder(&view, true, false);
+    let run = vcw
+        .run(
+            &request("launder", 4, 4, VerificationLevel::SampleVerified),
+            &view,
+            &verifier,
+            &mut pods,
+        )
+        .unwrap();
+    assert_eq!(
+        run.trace.steps()[0].decision,
+        StepDecision::AuthorNoLongerEligible
+    );
+    assert_eq!(
+        pods.seen_previous,
+        vec![false],
+        "the revoked draft was withheld"
+    );
+    assert!(!is_verified(&run), "{:?}", run.outcome);
+    assert!(matches!(
+        run.outcome,
+        VcwOutcome::Escalated {
+            reason: EscalationReason::NoProposer(_)
+        }
+    ));
+    assert_eq!(vcw.counters().escalation_previous_withheld, 1);
+    assert_eq!(
+        verifier.calls.get(),
+        1,
+        "nothing after the draft was verified"
+    );
+
+    // Control: a disputed draft whose author is eligible is handed over, and the target's
+    // answer is verified and returned under its name.
+    let mut vcw = plain(roster(&["gen"], &[]));
+    let view = LiveView::with(&["gen", "boss"]);
+    let verifier = DocVerifier::new();
+    verifier.scripted.borrow_mut().push_back(report(
+        VerificationStatus::Disputed,
+        VerificationLevel::Deterministic,
+        &[],
+    ));
+    let mut pods = launder(&view, false, false);
+    let run = vcw
+        .run(
+            &request("handed", 4, 4, VerificationLevel::SampleVerified),
+            &view,
+            &verifier,
+            &mut pods,
+        )
+        .unwrap();
+    assert_eq!(pods.seen_previous, vec![true]);
+    let answer = verified(&run);
+    assert_eq!(answer.payload().tag, "draft");
+    assert_eq!(answer.author().pod, pod("boss"));
+    assert_eq!(vcw.counters().escalation_previous_withheld, 0);
+
+    // The draft's author is revoked while the target works on it: the answer may be its
+    // output, so it is dropped and the request is handed to the host.
+    let mut vcw = plain(roster(&["gen"], &[]));
+    let view = LiveView::with(&["gen", "boss"]);
+    let verifier = DocVerifier::new();
+    verifier.scripted.borrow_mut().push_back(report(
+        VerificationStatus::Disputed,
+        VerificationLevel::Deterministic,
+        &[],
+    ));
+    let mut pods = launder(&view, false, true);
+    let run = vcw
+        .run(
+            &request(
+                "revoked-while-escalated",
+                4,
+                4,
+                VerificationLevel::SampleVerified,
+            ),
+            &view,
+            &verifier,
+            &mut pods,
+        )
+        .unwrap();
+    assert_eq!(pods.seen_previous, vec![true]);
+    assert!(!is_verified(&run), "{:?}", run.outcome);
+    assert!(matches!(run.outcome, VcwOutcome::Escalated { .. }));
+    assert_eq!(vcw.counters().escalation_previous_author_revoked, 1);
+    assert_eq!(
+        verifier.calls.get(),
+        1,
+        "the dropped answer was never verified"
+    );
+}

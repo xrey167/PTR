@@ -988,3 +988,196 @@ fn a_hypothesis_marked_verified_is_refused_before_any_append() {
     assert!(matches!(admitted, PodOutputAdmission::Hypothesis { .. }));
     PtrRuntime::replay(PtrConfig::default(), runtime.committed_events()).unwrap();
 }
+
+fn install_merge_grant(runtime: &mut PtrRuntime) {
+    runtime
+        .install_semantic_grant(
+            SemanticGrant::new(RequiredVerification::Deterministic)
+                .with_verifier(MergePass)
+                .with_merge_policy(
+                    PolicyRecord::manual(
+                        "pod-merge-policy",
+                        TriagePolicy::new(AutoThreshold::AtLeast(0.8), 0.0).unwrap(),
+                    )
+                    .unwrap(),
+                    7,
+                ),
+        )
+        .unwrap();
+}
+
+fn triage() -> MergeAuthority {
+    MergeAuthority::Triage {
+        score: Probability::new(1.0).unwrap(),
+    }
+}
+
+/// Issue #153 (3): a retry answered from an admission recorded under the version-1 digest is
+/// taint-contained like a version-2 retry. With an approximate KV taint it is answered with the
+/// recorded branch, behind one taint record (the version-1 and version-2 PodOutput subjects and
+/// the payload's Content subject), so the hypothesis is never merged, also after a replay. The
+/// same retry without the taint appends nothing and its branch merges.
+#[test]
+fn a_legacy_retry_with_an_approximate_taint_is_taint_contained() {
+    let hypothesis = request(PodOutputKind::Hypothesis);
+    let legacy = hypothesis.output.legacy_v1_digest();
+    let hex: String = legacy.iter().map(|b| format!("{b:02x}")).collect();
+    let answer = PodOutputAdmission::Hypothesis {
+        branch_id: format!("pod-branch:request:pod:{hex}"),
+    };
+    let branch = format!("pod-branch:request:pod:{hex}");
+    let is_taint = |event: &ptr_ledger::LedgerEvent| {
+        matches!(event, ptr_ledger::LedgerEvent::KvTaintCommitted { .. })
+    };
+
+    // Control: an exact retry appends nothing and its branch merges.
+    let mut clean = runtime_with(legacy_records(&hypothesis, true));
+    let before = clean.committed_events().len();
+    assert_eq!(
+        clean.admit_pod_output(hypothesis.clone(), &Pass).unwrap(),
+        answer
+    );
+    assert_eq!(clean.committed_events().len(), before);
+    install_merge_grant(&mut clean);
+    assert!(matches!(
+        clean.merge_pod_hypothesis(&branch, triage()),
+        Ok(ptr_runtime::MergeOutcome::Committed(_))
+    ));
+
+    let mut runtime = runtime_with(legacy_records(&hypothesis, true));
+    let mut tainted = hypothesis.clone();
+    tainted.kv_taint = ptr_model_api::KvReuseTaint::Approximate {
+        report_digest: [5; 32],
+    };
+    let before = runtime.committed_events().len();
+    assert_eq!(
+        runtime.admit_pod_output(tainted.clone(), &Pass).unwrap(),
+        answer
+    );
+    assert_eq!(runtime.committed_events().len(), before + 1);
+    let last = &runtime.committed_events()[before].event;
+    let ptr_ledger::LedgerEvent::KvTaintCommitted { subjects, .. } = last else {
+        panic!("expected a taint record, got {last:?}");
+    };
+    assert_eq!(subjects.len(), 3);
+    let kinds: Vec<_> = subjects.iter().map(|(kind, _)| *kind).collect();
+    assert_eq!(
+        kinds
+            .iter()
+            .filter(|kind| **kind == ptr_ledger::KvTaintSubjectKind::PodOutput)
+            .count(),
+        2
+    );
+    assert!(kinds.contains(&ptr_ledger::KvTaintSubjectKind::Content));
+    // A second tainted retry finds every subject live: nothing more is appended.
+    assert_eq!(runtime.admit_pod_output(tainted, &Pass).unwrap(), answer);
+    assert_eq!(runtime.committed_events().len(), before + 1);
+    assert_eq!(
+        runtime
+            .committed_events()
+            .iter()
+            .filter(|committed| is_taint(&committed.event))
+            .count(),
+        1
+    );
+    let replayed = PtrRuntime::replay(PtrConfig::default(), runtime.committed_events()).unwrap();
+    for mut runtime in [runtime, replayed] {
+        install_merge_grant(&mut runtime);
+        let events = runtime.committed_events().len();
+        let refused = runtime.merge_pod_hypothesis(&branch, triage());
+        assert!(
+            matches!(
+                &refused,
+                Err(ptr_runtime::RuntimeError::ApproximateSemanticContent {
+                    boundary: ptr_runtime::kv_taint::SemanticTaintBoundary::BranchMerge,
+                    report_digest,
+                }) if *report_digest == [5; 32]
+            ),
+            "{refused:?}"
+        );
+        assert_eq!(runtime.committed_events().len(), events);
+    }
+}
+
+/// Issue #153 (3): a hypothesis record holds the whole output, so a retry answered from a
+/// version-1 admission is compared with it exactly, not only by the non-injective version-1
+/// digest. A different output that shares the version-1 digest is a reused request id and is
+/// refused, with or without a taint, appending nothing; the identical output is answered.
+#[test]
+fn a_colliding_retry_of_a_complete_legacy_hypothesis_is_refused() {
+    let source = "abcdefghijklmnopqrstuvw";
+    let mut forged = [0u8; 32];
+    forged[..8].copy_from_slice(&23u64.to_le_bytes());
+    forged[8..31].copy_from_slice(source.as_bytes());
+    let kept = ProvenanceRef {
+        source: ptr_types::EvidenceId::from("zzz"),
+        note: None,
+    };
+    let manifest = ExecutionManifest::build(
+        Generation(1),
+        vec![
+            LineageBinding {
+                key: "knowledge:fact".into(),
+                generation: Generation(1),
+                digest: [3; 32],
+            },
+            LineageBinding {
+                key: "knowledge:forged".into(),
+                generation: Generation(1),
+                digest: forged,
+            },
+        ],
+        vec![LineageBinding {
+            key: "artifact:pod".into(),
+            generation: Generation(1),
+            digest: [2; 32],
+        }],
+        vec!["raw:test".into()],
+        None,
+        Revision(1),
+        [4; 32],
+        PrincipalId::from("principal"),
+        Revision(1),
+    )
+    .unwrap();
+    let mut admitted = request(PodOutputKind::Hypothesis);
+    admitted.manifest_digest = manifest.manifest_digest;
+    admitted.output.manifest_digest = manifest.manifest_digest;
+    admitted.manifest = manifest;
+    let mut colliding = admitted.clone();
+    admitted.output.dependencies = vec![forged];
+    admitted.output.provenance = vec![kept.clone()];
+    colliding.output.dependencies = Vec::new();
+    colliding.output.provenance = vec![
+        ProvenanceRef {
+            source: ptr_types::EvidenceId::from(source),
+            note: None,
+        },
+        kept,
+    ];
+    assert_ne!(admitted.output, colliding.output);
+    assert_eq!(
+        admitted.output.legacy_v1_digest(),
+        colliding.output.legacy_v1_digest()
+    );
+
+    let mut runtime = runtime_with(legacy_records(&admitted, true));
+    let events = runtime.committed_events().len();
+    let mut tainted = colliding.clone();
+    tainted.kv_taint = ptr_model_api::KvReuseTaint::Approximate {
+        report_digest: [5; 32],
+    };
+    for retry in [colliding, tainted] {
+        let refused = runtime.admit_pod_output(retry, &Pass);
+        assert!(
+            matches!(&refused, Err(ptr_runtime::RuntimeError::PodOutputAdmission(message)) if message.contains("different output")),
+            "{refused:?}"
+        );
+        assert_eq!(runtime.committed_events().len(), events, "nothing appended");
+    }
+    assert!(matches!(
+        runtime.admit_pod_output(admitted, &Pass).unwrap(),
+        PodOutputAdmission::Hypothesis { .. }
+    ));
+    assert_eq!(runtime.committed_events().len(), events);
+}

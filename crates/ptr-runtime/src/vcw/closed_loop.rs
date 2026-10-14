@@ -231,6 +231,12 @@ pub struct VcwCounters {
     pub unroutable_codes: u64,
     pub author_no_longer_eligible: u64,
     pub escalation_author_ineligible: u64,
+    /// Escalations whose previous candidate was withheld from the escalation target because a
+    /// Pod whose output is in it was no longer eligible (issue #153): the target starts fresh.
+    pub escalation_previous_withheld: u64,
+    /// Escalation answers dropped because a Pod whose output was handed to the escalation target
+    /// lost its eligibility while the target worked (issue #153).
+    pub escalation_previous_author_revoked: u64,
     pub workspace_not_submitted: u64,
     pub windows_closed: u64,
     pub requests_refused_outstanding_full: u64,
@@ -788,8 +794,17 @@ enum Plan<P> {
     },
     Escalate {
         reason: EscalationReason,
-        previous: Option<P>,
+        /// The previous candidate and every Pod whose output is in it. It is handed to the
+        /// escalation target only while all of them are eligible, so the target can never
+        /// return a revoked author's output under its own name (issue #153).
+        previous: Option<Handed<P>>,
     },
+}
+
+/// A candidate handed on to the next step, with every Pod whose output is in it.
+struct Handed<P> {
+    value: P,
+    authors: Vec<PodRef>,
 }
 
 struct Attempt<P> {
@@ -849,7 +864,14 @@ impl<S: AdmissibleScorer> VcwLoop<S> {
                 // A decline is an outcome of the routing decision, not a missing one.
                 self.settle_unproduced(&attempt);
                 let previous = match &attempt.plan {
-                    Plan::Repair { previous, .. } => Some(previous.clone()),
+                    Plan::Repair {
+                        previous,
+                        previous_authors,
+                        ..
+                    } => Some(Handed {
+                        value: previous.clone(),
+                        authors: previous_authors.clone(),
+                    }),
                     Plan::Propose { .. } | Plan::Escalate { .. } => None,
                 };
                 let mut next =
@@ -1009,7 +1031,7 @@ impl<S: AdmissibleScorer> VcwLoop<S> {
         &mut self,
         session: &mut Session<'_, P>,
         reason: FallbackReason,
-        previous: Option<P>,
+        previous: Option<Handed<P>>,
     ) -> Result<Attempt<P>, VcwError> {
         let status = match reason {
             FallbackReason::FailWithoutHardFinding => VerificationStatus::Fail,
@@ -1153,14 +1175,40 @@ impl<S: AdmissibleScorer> VcwLoop<S> {
             }
             Plan::Escalate { reason, previous } => {
                 session.meter.count_pod_call();
+                // The escalation target answers alone for what it returns, so it is shown the
+                // previous candidate only while every Pod whose output is in it is eligible:
+                // otherwise a revoked author's payload, returned unchanged, would be accepted
+                // under the escalation author's name (issue #153).
+                let eligible = |authors: &[PodRef]| {
+                    authors.iter().all(|pod| {
+                        session.standing.current_generation(&pod.pod) == Some(pod.generation)
+                    })
+                };
+                let handed = previous
+                    .as_ref()
+                    .filter(|previous| eligible(&previous.authors));
+                if previous.is_some() && handed.is_none() {
+                    self.counters.escalation_previous_withheld =
+                        self.counters.escalation_previous_withheld.saturating_add(1);
+                }
                 let call = EscalateCall {
                     request_id: &session.request.request_id,
                     round,
                     reason: *reason,
-                    previous: previous.as_ref(),
+                    previous: handed.map(|previous| &previous.value),
                     snapshot: session.snapshot(),
                 };
-                match pods.escalate(call) {
+                let answer = pods.escalate(call);
+                // A Pod whose output was handed over and that lost its eligibility while the
+                // target worked: the answer may be its output, so it is dropped.
+                if answer.is_some() && handed.is_some_and(|previous| !eligible(&previous.authors)) {
+                    self.counters.escalation_previous_author_revoked = self
+                        .counters
+                        .escalation_previous_author_revoked
+                        .saturating_add(1);
+                    return Produced::Nothing;
+                }
+                match answer {
                     Some((author, value))
                         if session.standing.current_generation(&author.pod)
                             == Some(author.generation) =>
@@ -1509,7 +1557,11 @@ impl<S: AdmissibleScorer> VcwLoop<S> {
         // An accepted candidate whose author is no longer eligible is replaced by a fresh draw.
         if matches!(judged.class, ReportClass::Accept(_)) {
             self.counters.regenerations = self.counters.regenerations.saturating_add(1);
-            let attempt = self.route_fallback(session, FallbackReason::Unknown, Some(value))?;
+            let previous = Handed {
+                value,
+                authors: authors.to_vec(),
+            };
+            let attempt = self.route_fallback(session, FallbackReason::Unknown, Some(previous))?;
             return Ok((attempt, StepDecision::AuthorNoLongerEligible));
         }
         let outcome = self.router_route(session, &judged.report)?;
@@ -1540,7 +1592,10 @@ impl<S: AdmissibleScorer> VcwLoop<S> {
                     role: SelfRole::Proposal,
                     plan: Plan::Escalate {
                         reason,
-                        previous: Some(value),
+                        previous: Some(Handed {
+                            value,
+                            authors: authors.to_vec(),
+                        }),
                     },
                     routes: Vec::new(),
                     settled: 0,
@@ -1577,7 +1632,10 @@ impl<S: AdmissibleScorer> VcwLoop<S> {
                     let mut attempt = self.route_fallback(
                         session,
                         FallbackReason::FailWithoutHardFinding,
-                        Some(value),
+                        Some(Handed {
+                            value,
+                            authors: authors.to_vec(),
+                        }),
                     )?;
                     attempt.unroutable = unroutable;
                     let decision = if escalating(&attempt) {
