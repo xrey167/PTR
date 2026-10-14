@@ -83,6 +83,23 @@ pub enum RuntimeEvent {
         difference: f64,
         lower_bound: f64,
     },
+    /// The routed Pod answered a Pod request and its output was promoted. Telemetry of the
+    /// reflex counters: in memory, not a ledger record, no authority.
+    ReflexHit {
+        pod: String,
+    },
+    /// The primary routing path produced no answer for a Pod request. `reason` is a stable,
+    /// Pod-free code (`ptr_router::MissReason::code`). Emitted before any failover Pod is
+    /// invoked. Telemetry only.
+    ReflexMiss {
+        reason: String,
+    },
+    /// The default Pod answered a missed Pod request and its output was promoted by the same
+    /// verifier path as any Pod output. Emitted only after promotion, so a failover that was
+    /// refused or failed has no such event. Telemetry only.
+    ReflexFailover {
+        to: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]

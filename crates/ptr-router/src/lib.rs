@@ -1,4 +1,5 @@
 mod attention_schema;
+mod fallback;
 mod findings;
 mod learned;
 mod learning;
@@ -15,6 +16,10 @@ mod verifier_roles;
 pub use attention_schema::{
     AttentionSchema, BalanceStrength, ControlArm, ControlConfig, ControlledScorer, SchemaError,
     SchemaLimits, SchemaReport, TargetPower,
+};
+pub use fallback::{
+    FailoverCoverage, FallbackPlan, FallbackPlanError, LatencySample, LatencyWindow, MissReason,
+    ReflexCounters, ReflexOutcome, UncoveredReason, LATENCY_WINDOW, MAX_FALLBACK_ATTEMPTS,
 };
 pub use findings::{
     classify, Accepted, AdmissibleScorer, CodeRoute, EligibilitySnapshot, EscalationReason,
