@@ -1531,3 +1531,69 @@ async fn v2_binding_rejects_a_manifest_digest_that_is_not_the_registered_manifes
     );
     assert_eq!(*invocations.lock().unwrap(), 0);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn v4_one_shot_client_rejects_an_answer_whose_address_binding_was_changed() {
+    let client = PodClient::bind().await.unwrap();
+    let raw = IrohTransport::bind(&[ALPN_PODWIRE]).await.unwrap();
+    let responder = raw.identity().public_key.clone();
+    let address = located(raw.direct_addr());
+    let manifest = pod("alpha", &Arc::new(Mutex::new(0))).manifest().clone();
+    let responder_task = tokio::spawn(async move {
+        for tamper in 0..2 {
+            let session = raw.accept_session().await.unwrap();
+            let incoming = session.accept_request(1 << 20).await.unwrap();
+            let request = decode_request_v2(&incoming.payload).unwrap();
+            let mut bound = request.address.clone();
+            if tamper == 0 {
+                // The deadline is stripped from the echoed binding.
+                bound.as_mut().unwrap().deadline = None;
+                bound.as_mut().unwrap().origin_ts = None;
+            } else {
+                // The deadline is extended in the echoed binding.
+                let echoed = bound.as_mut().unwrap();
+                echoed.deadline = Some(Timestamp(echoed.deadline.unwrap().0 + 3_600_000));
+            }
+            let answer = PodAnswerV2 {
+                address: bound,
+                execution_manifest: request.execution_manifest,
+                responder: responder.clone(),
+                request_id: request.request_id,
+                request_digest: request_digest(&incoming.payload),
+                generation: request.generation,
+                revision: request.revision,
+                placement_epoch: request.placement_epoch,
+                fencing_token: request.fencing_token,
+                identity_digest: request.identity_digest,
+                session_id: request.session_id.clone(),
+                policy_revision: request.policy_revision,
+                outcome: PodOutcome::Refused {
+                    code: RefusalCode::Unavailable,
+                },
+            };
+            incoming
+                .respond(&encode_answer_v2(&answer).unwrap())
+                .await
+                .unwrap();
+            session.wait_closed().await;
+        }
+    });
+    for request_id in [901, 902] {
+        let asked = with_deadline(
+            request_v2(
+                "peer".into(),
+                request_id,
+                &manifest,
+                Generation(2),
+                Revision(9),
+            ),
+            wall_clock_millis() + 60_000,
+        );
+        let answered = client.request_v2(address.clone(), &asked).await;
+        assert!(
+            matches!(answered, Err(PodWireError::V2BindingUnavailable)),
+            "{request_id}: {answered:?}"
+        );
+    }
+    responder_task.abort();
+}

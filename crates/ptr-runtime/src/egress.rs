@@ -22,7 +22,7 @@
 //! the audit trail is complete for every closed window.
 //!
 //! The record carries the trace, the Pod revision that tried, the redacted target (a
-//! `host:port` or a topic digest, see `ptr_pods::redact_target` and `redact_topic`) and the
+//! hashed `host:` or `topic:` digest, see `ptr_pods::redact_endpoint` and `redact_topic`) and the
 //! reason. It carries no payload, no resolved address and no credential (Invariant 13).
 use crate::{PtrRuntime, RuntimeError};
 use ptr_ledger::LedgerEvent;
@@ -54,7 +54,7 @@ pub struct EgressRefusalRecord {
     pub trace_id: TraceId,
     /// The Pod revision that tried to send.
     pub source: PodRevisionAddress,
-    /// The redacted `host:port` or topic digest. Never a payload.
+    /// The redacted `host:` or `topic:` digest. Never a payload.
     pub target: String,
     /// Which rule refused it.
     pub reason: EgressRefusalReason,
@@ -395,7 +395,7 @@ mod tests {
         EgressRefusalRecord {
             trace_id: TraceId::from("t"),
             source: pod(n),
-            target: "h:1".into(),
+            target: "host:0123456789abcdef:1:1".into(),
             reason: EgressRefusalReason::HostNotAllowed,
             observed_at: Timestamp(at),
         }
@@ -446,7 +446,7 @@ mod tests {
                 &pod(n),
                 &TraceId::from("t"),
                 EgressRefusalReason::HostNotAllowed,
-                "h:1",
+                "host:0123456789abcdef:1:1",
                 1,
                 3,
             );
@@ -477,7 +477,7 @@ mod tests {
         let source = pod(0);
         let trace = TraceId::from("t");
         let reason = EgressRefusalReason::RateLimited;
-        windows.absorb(&source, &trace, reason, "h:1", 2, 7);
+        windows.absorb(&source, &trace, reason, "host:0123456789abcdef:1:1", 2, 7);
         let taken = windows.take_all();
         assert!(windows.pods.is_empty());
         for (window, event) in taken {

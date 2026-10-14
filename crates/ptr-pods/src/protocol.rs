@@ -191,7 +191,7 @@ pub enum ProtocolError {
     InvalidEndpoint,
     FrameTooLarge,
     /// The link's egress policy or the lease's rate limit refused the request before anything
-    /// was sent. `target` is the redacted `host:port` or topic and never a payload; the runtime
+    /// was sent. `target` is the redacted `host:` or `topic:` digest and never a payload; the runtime
     /// commits it as a ledger event so the refusal is part of the replayable history.
     EgressRefused {
         target: String,

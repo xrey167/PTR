@@ -5,7 +5,7 @@
 
 **Component count:** 33  
 **Maturity distribution:** `foundation`: 1, `prototype`: 21, `research-scaffold`: 1, `scaffold`: 10  
-**Rust footprint:** 275 source files · 138563 nonblank source lines · 241 integration-test files · 3256 test markers (`#[test]`, `#[tokio::test]`)
+**Rust footprint:** 275 source files · 138578 nonblank source lines · 241 integration-test files · 3258 test markers (`#[test]`, `#[tokio::test]`)
 
 | Component | Maturity | Rust files | LOC | Test files | Tests | Implemented items | Missing items | Experiments | Evaluations |
 |---|---:|---:|---:|---:|---:|---:|---:|---|---|
@@ -22,15 +22,15 @@
 | [ptr-ingress](../../crates/ptr-ingress/README.md) | `scaffold` | 1 | 45 | 1 | 1 | 4 | 4 | E001:planned, E004:planned | ingress-classifier:open |
 | [ptr-inspect](../../crates/ptr-inspect/README.md) | `scaffold` | 1 | 48 | 1 | 5 | 3 | 5 | E001:planned | introspection:open |
 | [ptr-labeling](../../crates/ptr-labeling/README.md) | `prototype` | 6 | 1888 | 1 | 36 | 12 | 5 | F002:frozen | label-model:open |
-| [ptr-ledger](../../crates/ptr-ledger/README.md) | `prototype` | 9 | 9166 | 16 | 199 | 70 | 12 | L001:superseded, L001-v2:frozen, L002:frozen, E004:planned | consensus:open, ledger:open |
+| [ptr-ledger](../../crates/ptr-ledger/README.md) | `prototype` | 9 | 9222 | 16 | 200 | 70 | 12 | L001:superseded, L001-v2:frozen, L002:frozen, E004:planned | consensus:open, ledger:open |
 | [ptr-lineage](../../crates/ptr-lineage/README.md) | `prototype` | 9 | 4573 | 7 | 120 | 11 | 6 | R004:planned | adapter-serving:open |
 | [ptr-memory](../../crates/ptr-memory/README.md) | `scaffold` | 6 | 1356 | 2 | 25 | 17 | 6 | Q002:frozen, E002:planned, E004:planned | — |
 | [ptr-model-api](../../crates/ptr-model-api/README.md) | `scaffold` | 5 | 801 | 4 | 26 | 12 | 8 | M007:planned, E001:planned, E003:planned | inference-serving:open |
 | [ptr-net](../../crates/ptr-net/README.md) | `prototype` | 4 | 1399 | 5 | 49 | 22 | 6 | L002:frozen, E001:planned | network:open |
 | [ptr-observe](../../crates/ptr-observe/README.md) | `scaffold` | 7 | 351 | 5 | 12 | 9 | 5 | F001:frozen, E003:planned | observability:open |
 | [ptr-pg](../../crates/ptr-pg/README.md) | `prototype` | 17 | 6774 | 3 | 169 | 47 | 13 | L004:completed, Q003:superseded, Q003-v2:superseded, Q003-v3:frozen | relational-substrate:open, materialized-state:open, lexical-search:open, local-vector-search:open, event-streaming:open |
-| [ptr-pods](../../crates/ptr-pods/README.md) | `prototype` | 40 | 18979 | 27 | 344 | 55 | 13 | R002:planned, E001:planned, E007:frozen | environment-runtime:open |
-| [ptr-podwire](../../crates/ptr-podwire/README.md) | `prototype` | 5 | 5404 | 5 | 98 | 36 | 15 | E007:frozen | — |
+| [ptr-pods](../../crates/ptr-pods/README.md) | `prototype` | 40 | 18974 | 27 | 344 | 55 | 13 | R002:planned, E001:planned, E007:frozen | environment-runtime:open |
+| [ptr-podwire](../../crates/ptr-podwire/README.md) | `prototype` | 5 | 5368 | 5 | 99 | 37 | 15 | E007:frozen | — |
 | [ptr-protocol](../../crates/ptr-protocol/README.md) | `scaffold` | 3 | 967 | 2 | 31 | 9 | 6 | R002:planned, E001:planned, E007:frozen | network-codec:open, local-serialization:open |
 | [ptr-router](../../crates/ptr-router/README.md) | `scaffold` | 12 | 7188 | 7 | 146 | 24 | 12 | M004:planned, R002:planned, E003:planned | inference-serving:open, distributed-data-compute:open |
 | [ptr-runtime](../../crates/ptr-runtime/README.md) | `prototype` | 58 | 48470 | 92 | 1223 | 148 | 48 | E001:planned, E003:planned, E004:planned, E007:frozen, L001-v2:frozen, R011:frozen, R012:frozen | — |

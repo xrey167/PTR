@@ -21,7 +21,7 @@
 //!   limiter belongs to one Pod lease: whoever holds the lease creates it and hands the same
 //!   `Arc` to every executor that sends on the lease's behalf.
 //!
-//! A refusal names only the redacted target (see [`redact_target`]): a `host:port` or a topic,
+//! A refusal names only the redacted target (see [`redact_endpoint`] and [`redact_topic`]): a hashed host with its port, or a hashed topic,
 //! never anything a payload could ride in.
 use crate::{EgressPolicy, PodLinkError};
 use ptr_types::EgressRefusalReason;
@@ -167,26 +167,17 @@ pub fn redact_topic(topic: &str) -> String {
     format!("topic:{prefix}:{}", topic.len())
 }
 
-/// A target fit to be recorded: control characters and whitespace replaced, cut to the bound a
-/// ledger record allows. Only ever a `host:port` or a topic goes in; this is what keeps a
-/// request's own bytes out of the audit trail.
-pub fn redact_target(target: &str) -> String {
-    let mut redacted = String::with_capacity(target.len().min(MAX_TOPIC_BYTES));
-    for character in target.chars() {
-        let character = if character.is_control() || character.is_whitespace() {
-            '_'
-        } else {
-            character
-        };
-        if redacted.len() + character.len_utf8() > MAX_TOPIC_BYTES {
-            break;
-        }
-        redacted.push(character);
-    }
-    if redacted.is_empty() {
-        redacted.push('_');
-    }
-    redacted
+/// A destination fit to be recorded: `host:<16 hex of the SHA-256 prefix>:<host length>:<port>`.
+/// The host is a name the request chose (and may carry a secret, e.g. a tenant or token label),
+/// so it is hashed like a topic; the port is a number and stays readable. Same host, same
+/// digest, so refusals still group.
+pub fn redact_endpoint(host: &str, port: u16) -> String {
+    let digest = Sha256::digest(host.as_bytes());
+    let prefix: String = digest[..8]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    format!("host:{prefix}:{}:{port}", host.len())
 }
 
 /// The budget of one Pod lease: `max_per_window` frames per `window`.
@@ -327,11 +318,15 @@ mod tests {
     }
 
     #[test]
-    fn a_redacted_target_is_bounded_and_carries_no_whitespace() {
-        assert_eq!(redact_target("host:80"), "host:80");
-        assert_eq!(redact_target("a b\nc"), "a_b_c");
-        assert_eq!(redact_target(""), "_");
-        assert_eq!(redact_target(&"x".repeat(1000)).len(), MAX_TOPIC_BYTES);
+    fn a_redacted_endpoint_hides_the_host_and_keeps_the_port() {
+        let redacted = redact_endpoint("secret-tenant.example", 1883);
+        assert!(redacted.starts_with("host:"), "{redacted}");
+        assert!(redacted.ends_with(":21:1883"), "{redacted}");
+        assert!(!redacted.contains("secret"), "{redacted}");
+        assert_eq!(redacted, redact_endpoint("secret-tenant.example", 1883));
+        assert_ne!(redacted, redact_endpoint("other.example", 1883));
+        assert_eq!(redact_endpoint("", 1).matches(':').count(), 3);
+        assert!(redact_endpoint(&"x".repeat(10_000), 9).len() < 64);
     }
 
     #[test]

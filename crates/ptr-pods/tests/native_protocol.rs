@@ -141,7 +141,7 @@ async fn udp_executor_round_trips_a_typed_datagram_and_rejects_unlisted_ports() 
     assert_eq!(
         rejected.unwrap_err(),
         ptr_pods::ProtocolError::EgressRefused {
-            target: format!("127.0.0.1:{}", port.saturating_add(1)),
+            target: ptr_pods::redact_endpoint("127.0.0.1", port.saturating_add(1)),
             reason: ptr_types::EgressRefusalReason::PortNotAllowed,
         },
         "an unlisted port is a policy decision and carries its reason and redacted target"

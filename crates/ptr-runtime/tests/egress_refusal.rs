@@ -58,7 +58,7 @@ fn a_refusal_is_counted_flushed_projected_and_replayed() {
     assert_eq!(
         runtime
             .record_egress_refusal(record(
-                "broker.example:1883",
+                "host:0123456789abcdef:14:1883",
                 EgressRefusalReason::HostNotAllowed,
                 10,
             ))
@@ -71,7 +71,7 @@ fn a_refusal_is_counted_flushed_projected_and_replayed() {
     );
     runtime
         .record_egress_refusal(record(
-            "broker.example:1883",
+            "host:0123456789abcdef:14:1883",
             EgressRefusalReason::HostNotAllowed,
             20,
         ))
@@ -81,7 +81,7 @@ fn a_refusal_is_counted_flushed_projected_and_replayed() {
     assert_eq!(
         refusals(&runtime),
         [(
-            "broker.example:1883".to_owned(),
+            "host:0123456789abcdef:14:1883".to_owned(),
             EgressRefusalReason::HostNotAllowed,
             2
         )]
@@ -92,7 +92,7 @@ fn a_refusal_is_counted_flushed_projected_and_replayed() {
         indexes[0].0,
         EgressRefusalReason::HostNotAllowed,
         2,
-        "broker.example:1883",
+        "host:0123456789abcdef:14:1883",
     );
     assert_eq!(
         runtime.materialized_state().values.get(&key),
@@ -112,7 +112,7 @@ fn a_thousand_refusals_become_a_bounded_number_of_events_whose_counts_add_up() {
     for attempt in 0..1000u64 {
         runtime
             .record_egress_refusal(record(
-                &format!("h{}.example:80", attempt % 50),
+                &format!("host:{:016x}:1:80", attempt % 50),
                 reasons[(attempt as usize) % reasons.len()],
                 attempt,
             ))
@@ -152,12 +152,16 @@ fn a_window_that_closes_appends_its_counters_and_the_next_one_starts_fresh() {
     let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
     for at in [1, 2, 3] {
         runtime
-            .record_egress_refusal(record("a.example:1", EgressRefusalReason::RateLimited, at))
+            .record_egress_refusal(record(
+                "host:aaaaaaaaaaaaaaaa:9:1",
+                EgressRefusalReason::RateLimited,
+                at,
+            ))
             .unwrap();
     }
     let outcome = runtime
         .record_egress_refusal(record(
-            "a.example:1",
+            "host:aaaaaaaaaaaaaaaa:9:1",
             EgressRefusalReason::RateLimited,
             EGRESS_WINDOW_MILLIS + 1,
         ))
@@ -166,7 +170,7 @@ fn a_window_that_closes_appends_its_counters_and_the_next_one_starts_fresh() {
     assert_eq!(
         refusals(&runtime),
         [(
-            "a.example:1".to_owned(),
+            "host:aaaaaaaaaaaaaaaa:9:1".to_owned(),
             EgressRefusalReason::RateLimited,
             3
         )]
@@ -178,7 +182,16 @@ fn a_window_that_closes_appends_its_counters_and_the_next_one_starts_fresh() {
 #[test]
 fn a_record_that_could_carry_a_payload_is_refused_before_anything_is_counted() {
     let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
-    for target in ["", "host: 80", "line\nbreak", &"x".repeat(257)] {
+    for target in [
+        "",
+        "host: 80",
+        "line\nbreak",
+        &"x".repeat(257),
+        "broker.example:1883",
+        "host:ABCDEF0123456789:1:1",
+        "host:0123456789abcdef:1:99999",
+        "topic:0123456789abcdef",
+    ] {
         let refused =
             runtime.record_egress_refusal(record(target, EgressRefusalReason::InvalidTopic, 1));
         assert!(
@@ -186,13 +199,21 @@ fn a_record_that_could_carry_a_payload_is_refused_before_anything_is_counted() {
             "{target:?}: {refused:?}"
         );
     }
-    let mut no_trace = record("host:1", EgressRefusalReason::HostNotAllowed, 1);
+    let mut no_trace = record(
+        "host:0123456789abcdef:1:1",
+        EgressRefusalReason::HostNotAllowed,
+        1,
+    );
     no_trace.trace_id = TraceId::from("");
     assert!(matches!(
         runtime.record_egress_refusal(no_trace),
         Err(RuntimeError::Ledger(_))
     ));
-    let mut long_trace = record("host:1", EgressRefusalReason::HostNotAllowed, 1);
+    let mut long_trace = record(
+        "host:0123456789abcdef:1:1",
+        EgressRefusalReason::HostNotAllowed,
+        1,
+    );
     long_trace.trace_id = TraceId::from("t".repeat(257).as_str());
     assert!(matches!(
         runtime.record_egress_refusal(long_trace),
@@ -208,7 +229,7 @@ fn a_generic_commit_cannot_forge_a_refusal() {
     let forged = LedgerEvent::EgressRefused {
         trace_id: TraceId::from("trace-egress"),
         source: source(),
-        target: "host:1".into(),
+        target: "host:0123456789abcdef:1:1".into(),
         count: 1,
         reason: EgressRefusalReason::HostNotAllowed,
     };
@@ -223,7 +244,7 @@ fn a_refused_native_call_reaches_the_ledger_through_the_runtime_dispatch_hook() 
     let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
     let refused: Result<NativeProtocolResponse, ProtocolError> =
         Err(ProtocolError::EgressRefused {
-            target: "evil.example:9".into(),
+            target: "host:fedcba9876543210:12:9".into(),
             reason: EgressRefusalReason::HostNotAllowed,
         });
     let counted = runtime
@@ -266,7 +287,7 @@ fn a_refused_native_call_reaches_the_ledger_through_the_runtime_dispatch_hook() 
     assert_eq!(
         refusals(&runtime),
         [(
-            "evil.example:9".to_owned(),
+            "host:fedcba9876543210:12:9".to_owned(),
             EgressRefusalReason::HostNotAllowed,
             1
         )]

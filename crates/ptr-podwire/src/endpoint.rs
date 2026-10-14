@@ -1599,43 +1599,7 @@ impl PodClient {
         .map_err(|_| timeout_error(bound_by))?
         .map_err(PodWireError::Transport)?;
         let answered = decode_answer_v2(&response)?;
-        if answered.responder != authenticated {
-            return Err(PodWireError::ForgedAnswer {
-                authenticated,
-                claimed: answered.responder,
-            });
-        }
-        if answered.request_id != request.request_id {
-            return Err(PodWireError::WrongRequest {
-                expected: request.request_id,
-                answered: answered.request_id,
-            });
-        }
-        if answered.generation != request.generation {
-            return Err(PodWireError::WrongGeneration {
-                expected: request.generation,
-                answered: answered.generation,
-            });
-        }
-        if answered.revision != request.revision {
-            return Err(PodWireError::WrongRevision {
-                expected: request.revision,
-                answered: answered.revision,
-            });
-        }
-        if answered.placement_epoch != request.placement_epoch
-            || answered.fencing_token != request.fencing_token
-        {
-            return Err(PodWireError::StateBindingMismatch {
-                expected_epoch: request.placement_epoch,
-                answered_epoch: answered.placement_epoch,
-                expected_token: request.fencing_token,
-                answered_token: answered.fencing_token,
-            });
-        }
-        if answered.request_digest != digest {
-            return Err(PodWireError::UnboundAnswer);
-        }
+        validate_answer_v2(&answered, request, digest, &authenticated)?;
         Ok(answered)
     }
 

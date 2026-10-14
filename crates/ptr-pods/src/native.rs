@@ -1,4 +1,4 @@
-use crate::egress::{redact_target, redact_topic};
+use crate::egress::{redact_endpoint, redact_topic};
 use crate::{
     FrameRateLimiter, NativeProtocolRequest, NativeProtocolResponse, ProtocolBinding, ProtocolError,
 };
@@ -144,13 +144,13 @@ impl crate::protocol::NetworkEndpoint {
 
 /// The redacted target a refusal names, chosen by the reason: a refused topic is named by its
 /// digest prefix and length ([`redact_topic`]), everything else (a host, a port, a missing
-/// topic, a spent budget) by `host:port`. Never the payload.
+/// topic, a spent budget) by `host:` digest and port ([`redact_endpoint`]). Never the payload.
 fn refusal_target(request: &NativeProtocolRequest, reason: EgressRefusalReason) -> String {
     match (&request.topic, reason) {
         (Some(topic), EgressRefusalReason::TopicNotAllowed | EgressRefusalReason::InvalidTopic) => {
             redact_topic(topic)
         }
-        _ => redact_target(&request.endpoint.socket_addr()),
+        _ => redact_endpoint(&request.endpoint.host, request.endpoint.port),
     }
 }
 

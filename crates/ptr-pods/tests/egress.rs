@@ -3,9 +3,9 @@
 //! Every refusal here is a policy decision, so each must carry its reason and a redacted
 //! target and must leave nothing sent. The payload never appears in a refusal.
 use ptr_pods::{
-    redact_topic, EgressPolicy, FrameRateLimit, FrameRateLimiter, NativeProtocolRequest,
-    NetworkEndpoint, PodLink, PodLinkError, ProtocolBinding, ProtocolError, TcpProtocolExecutor,
-    UdpProtocolExecutor,
+    redact_endpoint, redact_topic, EgressPolicy, FrameRateLimit, FrameRateLimiter,
+    NativeProtocolRequest, NetworkEndpoint, PodLink, PodLinkError, ProtocolBinding, ProtocolError,
+    TcpProtocolExecutor, UdpProtocolExecutor,
 };
 use ptr_protocol::TypedPayload;
 use ptr_types::{
@@ -176,7 +176,8 @@ async fn an_unlisted_host_is_refused_with_its_redacted_target_and_nothing_is_sen
         .unwrap_err();
     let (target, reason) = refusal(error);
     assert_eq!(reason, EgressRefusalReason::HostNotAllowed);
-    assert_eq!(target, "evil.example:9");
+    assert_eq!(target, ptr_pods::redact_endpoint("evil.example", 9));
+    assert!(!target.contains("evil"), "{target}");
     assert!(
         !target.as_bytes().windows(SECRET.len()).any(|w| w == SECRET),
         "the payload is not part of the recorded target"
@@ -199,7 +200,7 @@ async fn an_unlisted_port_and_an_unlisted_topic_each_name_their_own_reason() {
     assert_eq!(
         refusal(port_error),
         (
-            "127.0.0.1:1884".to_owned(),
+            redact_endpoint("127.0.0.1", 1884),
             EgressRefusalReason::PortNotAllowed
         )
     );
@@ -217,7 +218,7 @@ async fn an_unlisted_port_and_an_unlisted_topic_each_name_their_own_reason() {
     assert_eq!(
         refusal(topic_error),
         (
-            "127.0.0.1:1883".to_owned(),
+            redact_endpoint("127.0.0.1", 1883),
             EgressRefusalReason::TopicUnverifiable
         ),
         "these executors cannot tie a declared topic to the wire, so any topic is refused"
@@ -300,7 +301,7 @@ async fn a_lease_that_used_its_budget_is_refused_until_the_bucket_refills() {
     assert_eq!(
         refusal(second),
         (
-            format!("127.0.0.1:{port}"),
+            redact_endpoint("127.0.0.1", port),
             EgressRefusalReason::RateLimited
         )
     );
@@ -339,7 +340,7 @@ async fn a_policy_that_lists_topics_refuses_a_request_that_names_none() {
     assert_eq!(
         refusal(error),
         (
-            "127.0.0.1:1883".to_owned(),
+            redact_endpoint("127.0.0.1", 1883),
             EgressRefusalReason::TopicUnverifiable
         ),
         "omitting the topic must not be a way around the topic policy"
@@ -426,7 +427,7 @@ async fn a_declared_topic_under_a_topic_policy_is_refused_because_the_wire_is_no
         assert_eq!(
             refusal(error),
             (
-                "127.0.0.1:9".to_owned(),
+                redact_endpoint("127.0.0.1", 9),
                 EgressRefusalReason::TopicUnverifiable
             )
         );

@@ -340,7 +340,7 @@ pub enum LedgerEvent {
     },
     /// A Pod's outbound connection or publication was refused by its egress policy or its
     /// rate limit before anything left the host (tag 33). The record names the trace, the Pod
-    /// revision that tried, the redacted `target` (a `host:port` or a topic, never a payload)
+    /// revision that tried, the redacted `target` (`*`, a hashed `host:` or a hashed `topic:`, never a payload)
     /// and the reason, so the refusal is part of the replayable history rather than a log line.
     ///
     /// This crate checks only the shape: a non-empty trace, a valid source address and a
@@ -1971,10 +1971,36 @@ pub(crate) fn check_origin_bounds(event: &LedgerEvent) -> Result<(), io::Error> 
     Ok(())
 }
 
-/// An egress refusal names a non-empty, bounded trace, a positive count, a valid source revision address and a target of
-/// at most [`MAX_EGRESS_TARGET_BYTES`] bytes without control characters or whitespace: a
-/// `host:port` or a topic and nothing a payload could ride in. The decoder and the append
-/// paths both call this.
+/// The one shape a recorded refusal target may have, so a hostname, topic or credential can
+/// never ride in it (Invariant 13): `*` (the overflow bucket), `host:<16 lower-case hex>:<len>:<port>`
+/// or `topic:<16 lower-case hex>:<len>`.
+fn egress_target_is_redacted(target: &str) -> bool {
+    fn hex16(part: &str) -> bool {
+        part.len() == 16
+            && part
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    }
+    fn number<T: std::str::FromStr>(part: &str) -> bool {
+        !part.is_empty()
+            && part.bytes().all(|b| b.is_ascii_digit())
+            && (part == "0" || !part.starts_with('0'))
+            && part.parse::<T>().is_ok()
+    }
+    if target == "*" {
+        return true;
+    }
+    let parts: Vec<&str> = target.split(':').collect();
+    match parts.as_slice() {
+        ["host", digest, len, port] => hex16(digest) && number::<u32>(len) && number::<u16>(port),
+        ["topic", digest, len] => hex16(digest) && number::<u32>(len),
+        _ => false,
+    }
+}
+
+/// An egress refusal names a non-empty, bounded trace, a positive count, a valid source
+/// revision address and a redacted target (see [`egress_target_is_redacted`]). The decoder and
+/// the append paths both call this.
 fn check_egress_refused(event: &LedgerEvent) -> Result<(), io::Error> {
     let LedgerEvent::EgressRefused {
         trace_id,
@@ -1986,11 +2012,7 @@ fn check_egress_refused(event: &LedgerEvent) -> Result<(), io::Error> {
     else {
         return Ok(());
     };
-    let target_ok = !target.is_empty()
-        && target.len() <= MAX_EGRESS_TARGET_BYTES
-        && !target
-            .chars()
-            .any(|character| character.is_control() || character.is_whitespace());
+    let target_ok = egress_target_is_redacted(target);
     if trace_id.0.is_empty()
         || trace_id.0.len() > MAX_EGRESS_TARGET_BYTES
         || *count == 0
@@ -3218,7 +3240,7 @@ mod effect_record_tests {
                 semantic_revision: [7; 32],
                 generation: Generation(3),
             },
-            target: "broker.example:1883".into(),
+            target: "host:0123456789abcdef:14:1883".into(),
             count: 3,
             reason,
         }
@@ -3256,6 +3278,42 @@ mod effect_record_tests {
         let mut unknown = encode_event(&egress_refused_event(EgressRefusalReason::RateLimited));
         *unknown.last_mut().unwrap() = 7;
         assert!(decode_event(&unknown).is_err());
+    }
+
+    #[test]
+    fn egress_refusal_target_must_be_a_redacted_shape() {
+        let accepted = [
+            "*",
+            "host:0123456789abcdef:14:1883",
+            "host:0123456789abcdef:0:0",
+            "topic:0123456789abcdef:24",
+        ];
+        let refused = [
+            "broker.example:1883",
+            "127.0.0.1:1883",
+            "tokens/s3cr3t",
+            "host:0123456789abcdef",
+            "host:0123456789ABCDEF:1:1",
+            "host:0123456789abcde:1:1",
+            "host:0123456789abcdef:1:65536",
+            "host:0123456789abcdef:01:1",
+            "host:0123456789abcdef:1:1:1",
+            "topic:0123456789abcdef",
+            "topic:0123456789abcdef:x",
+            "topic:s3cr3t:24",
+            "**",
+        ];
+        for target in accepted.iter().chain(refused.iter()) {
+            let mut event = egress_refused_event(EgressRefusalReason::HostNotAllowed);
+            if let LedgerEvent::EgressRefused { target: t, .. } = &mut event {
+                *t = (*target).to_owned();
+            }
+            assert_eq!(
+                check_encodable(&event).is_ok(),
+                accepted.contains(target),
+                "{target}"
+            );
+        }
     }
 
     #[test]
@@ -3318,13 +3376,13 @@ mod effect_record_tests {
             // The decoder refuses the same forms, so a log that holds one cannot be read back.
             assert!(decode_event(&encode_event(&event)).is_err(), "{event:?}");
         }
-        let at_bound = with(&|e| {
+        let overflow = with(&|e| {
             if let LedgerEvent::EgressRefused { target, .. } = e {
-                *target = "x".repeat(MAX_EGRESS_TARGET_BYTES);
+                *target = "*".to_owned();
             }
         });
-        check_encodable(&at_bound).unwrap();
-        assert_eq!(decode_event(&encode_event(&at_bound)).unwrap(), at_bound);
+        check_encodable(&overflow).unwrap();
+        assert_eq!(decode_event(&encode_event(&overflow)).unwrap(), overflow);
     }
 
     #[test]

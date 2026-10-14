@@ -390,7 +390,7 @@ pub fn egress_refusal_key(address: &ptr_types::PodAddress) -> String {
 }
 
 /// The value of an egress refusal key: `<commit index>:<reason name>:<count>:<target>`. The
-/// target is a redacted `host:port` or topic digest and may itself contain `:`, so it comes last.
+/// target is a redacted `host:` or `topic:` digest and may itself contain `:`, so it comes last.
 pub fn egress_refusal_entry(
     index: u64,
     reason: ptr_types::EgressRefusalReason,
