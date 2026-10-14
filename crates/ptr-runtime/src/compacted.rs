@@ -61,6 +61,14 @@ use std::collections::{BTreeMap, BTreeSet};
 /// strictly ascending order, names registered experts, holds no all-zero entry and no epoch above
 /// the current standing of its kind.
 const AUTHORITY_MAGIC: &[u8; 8] = b"PTRCS009";
+/// PTRCS010 is written only when the execution section is PTREX003, that is, when the history
+/// holds a scope (issue #141); a snapshot without one is written under the outer magic it had
+/// before, byte for byte. So a build from before the scope block stops at the outer magic, as
+/// with every earlier layout change. The outer magic no longer names the lifecycle layout: a
+/// PTRCS010 snapshot's lifecycle section is any layout this build writes (PTRLC004 to PTRLC007),
+/// taken from that section's own magic. Its execution section must be PTREX003, and a PTREX003
+/// section is refused under any other outer magic.
+const SCOPE_MAGIC: &[u8; 8] = b"PTRCS010";
 /// The lifecycle section of a PTRCS009 snapshot.
 const AUTHORITY_LIFECYCLE_MAGIC: &[u8; 8] = b"PTRLC007";
 /// Opens the authority block at the end of a PTRLC007 section.
@@ -1725,14 +1733,15 @@ impl ExecutionObligations {
 
     /// Strict ascending key order per map, so each state has exactly one
     /// encoding and a reordered or duplicated entry fails closed.
-    fn decode(bytes: &[u8]) -> Result<Self, RuntimeError> {
+    /// `scoped`: the outer magic is PTRCS010, which requires PTREX003 and nothing else does.
+    fn decode(bytes: &[u8], scoped: bool) -> Result<Self, RuntimeError> {
         if bytes.len() > MAX_SECTION_BYTES {
             return Err(invalid(CompactedError::SizeLimit));
         }
         let mut reader = Reader { bytes, offset: 0 };
         let has_scope_block = match reader.take(8)? {
-            magic if magic == EXECUTION_SCOPE_MAGIC => true,
-            magic if magic == EXECUTION_MAGIC => false,
+            magic if magic == EXECUTION_SCOPE_MAGIC && scoped => true,
+            magic if magic == EXECUTION_MAGIC && !scoped => false,
             _ => return Err(invalid(CompactedError::UnsupportedVersion)),
         };
         let mut state = Self::default();
@@ -1853,7 +1862,9 @@ impl PtrRuntime {
         let mut bytes = Vec::with_capacity(
             HEADER + semantic.len() + lifecycle.len() + execution.len() + DIGEST_BYTES,
         );
-        bytes.extend_from_slice(if lifecycle.starts_with(AUTHORITY_LIFECYCLE_MAGIC) {
+        bytes.extend_from_slice(if execution.starts_with(EXECUTION_SCOPE_MAGIC) {
+            SCOPE_MAGIC
+        } else if lifecycle.starts_with(AUTHORITY_LIFECYCLE_MAGIC) {
             AUTHORITY_MAGIC
         } else if lifecycle.starts_with(DEPENDENCY_LIFECYCLE_MAGIC) {
             DEPENDENCY_MAGIC
@@ -1925,13 +1936,14 @@ impl PtrRuntime {
         above_floor: &[CommittedEvent],
         attestors: super::expert::ExpertAttestorRegistry,
     ) -> Result<Self, RuntimeError> {
-        let (layout, (semantic, lifecycle, execution)) = compacted_sections(bytes, trusted)?;
+        let (layout, scoped, (semantic, lifecycle, execution)) =
+            compacted_sections(bytes, trusted)?;
         let semantic = SemanticDelta::decode(semantic).map_err(RuntimeError::Semantic)?;
         let lifecycle = LifecycleState::decode(lifecycle, layout)?;
         let semdb =
             SemanticHost::restore(trusted.revision, semantic).map_err(RuntimeError::Semantic)?;
 
-        let execution = ExecutionObligations::decode(execution)?;
+        let execution = ExecutionObligations::decode(execution, scoped)?;
         if execution
             .scope_revision
             .is_some_and(|revision| revision > trusted.revision)
@@ -2017,11 +2029,15 @@ type CompactedSections<'a> = (&'a [u8], &'a [u8], &'a [u8]);
 fn compacted_sections(
     bytes: &[u8],
     trusted: CompactedAnchor,
-) -> Result<(Layout, CompactedSections<'_>), RuntimeError> {
+) -> Result<(Layout, bool, CompactedSections<'_>), RuntimeError> {
     if bytes.len() < HEADER + DIGEST_BYTES || bytes.len() > MAX_COMPACTED_BYTES {
         return Err(invalid(CompactedError::SizeLimit));
     }
+    let scoped = &bytes[..8] == SCOPE_MAGIC;
+    // Under PTRCS010 the layout is the lifecycle section's own (read once the framing is
+    // checked, below); `Evidence` stands in until then.
     let layout = match &bytes[..8] {
+        magic if magic == SCOPE_MAGIC => Layout::Evidence,
         magic if magic == AUTHORITY_MAGIC => Layout::Authority,
         magic if magic == DEPENDENCY_MAGIC => Layout::Dependency,
         magic if magic == FENCE_CAUSE_MAGIC => Layout::FenceCause,
@@ -2070,8 +2086,20 @@ fn compacted_sections(
     }
     let semantic_end = HEADER + semantic_len as usize;
     let lifecycle_end = semantic_end + lifecycle_len as usize;
+    let layout = if scoped {
+        match bytes[semantic_end..lifecycle_end].get(..8) {
+            Some(magic) if magic == AUTHORITY_LIFECYCLE_MAGIC => Layout::Authority,
+            Some(magic) if magic == DEPENDENCY_LIFECYCLE_MAGIC => Layout::Dependency,
+            Some(magic) if magic == FENCE_LIFECYCLE_MAGIC => Layout::FenceCause,
+            Some(magic) if magic == EVIDENCE_LIFECYCLE_MAGIC => Layout::Evidence,
+            _ => return Err(invalid(CompactedError::UnsupportedVersion)),
+        }
+    } else {
+        layout
+    };
     Ok((
         layout,
+        scoped,
         (
             &bytes[HEADER..semantic_end],
             &bytes[semantic_end..lifecycle_end],

@@ -881,6 +881,20 @@ fn a_scope_created_below_the_floor_keeps_its_recovery_obligation_after_a_restore
         semantic + lifecycle
     };
     assert_eq!(&snapshot.bytes()[section..section + 8], b"PTREX003");
+    // A snapshot with a scope moves the outer magic, so an older build stops there.
+    assert_eq!(&snapshot.bytes()[..8], b"PTRCS010");
+    // The scope block under an older outer magic is refused by version, even when resealed.
+    let mut relabelled = snapshot.bytes().to_vec();
+    relabelled[..8].copy_from_slice(b"PTRCS006");
+    let anchor = reseal(
+        &mut relabelled,
+        snapshot.anchor().floor,
+        snapshot.anchor().revision,
+    );
+    assert!(matches!(
+        restore_error(&relabelled, anchor),
+        Some(RuntimeError::Compacted(CompactedError::UnsupportedVersion))
+    ));
 
     // Above the floor: the open scope moves on, a scope under the child is created.
     runtime
@@ -942,6 +956,19 @@ fn a_snapshot_without_scopes_keeps_the_earlier_execution_layout() {
     let lifecycle = u64::from_le_bytes(bytes[64..72].try_into().unwrap()) as usize;
     let section = 80 + semantic + lifecycle;
     assert_eq!(&bytes[section..section + 8], b"PTREX002");
+    assert_eq!(&bytes[..8], b"PTRCS006");
+    // PTRCS010 requires the scope block: a scope-free section under it is refused.
+    let mut relabelled = bytes.to_vec();
+    relabelled[..8].copy_from_slice(b"PTRCS010");
+    let anchor = reseal(
+        &mut relabelled,
+        snapshot.anchor().floor,
+        snapshot.anchor().revision,
+    );
+    assert!(matches!(
+        restore_error(&relabelled, anchor),
+        Some(RuntimeError::Compacted(CompactedError::UnsupportedVersion))
+    ));
 }
 
 fn plain_scope(id: &str, session: &str, project: &str) -> ptr_runtime::ExecutionScope {

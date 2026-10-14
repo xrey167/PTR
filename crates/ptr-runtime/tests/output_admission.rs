@@ -714,75 +714,183 @@ fn a_hypothesis_record_replays_under_the_current_or_the_legacy_output_digest_onl
     assert!(forged.commit(with_digest([7; 32])).is_err());
 }
 
-/// Review of #141 (P1): a ledger written before version 2 holds an admission under the
-/// version-1 output digest. An identical retry after the upgrade must be recognised as the same
-/// output, complete the missing follow-up under the stored digest and then be idempotent; a
-/// different output under the same request id is still refused.
-#[test]
-fn a_retry_of_an_admission_recorded_under_the_legacy_digest_is_the_same_output() {
-    let legacy = request(PodOutputKind::Observation)
-        .output
-        .legacy_v1_digest();
-    // The admission record an earlier build wrote: same fields, version-1 digest.
+/// The admission (and, for a hypothesis, its follow-up) a pre-version-2 build would have written
+/// for `request`: the records of a complete run with the output digest replaced by version 1.
+fn legacy_records(
+    request: &PodOutputAdmissionRequest,
+    with_followup: bool,
+) -> Vec<ptr_ledger::LedgerEvent> {
+    let legacy = request.output.legacy_v1_digest();
+    let hex: String = legacy.iter().map(|b| format!("{b:02x}")).collect();
     let mut first = runtime_with_scope();
-    first
-        .admit_pod_output(request(PodOutputKind::Observation), &Pass)
-        .unwrap();
-    let mut record = first
-        .committed_events()
-        .iter()
-        .find_map(|committed| match &committed.event {
-            event @ ptr_ledger::LedgerEvent::PodOutputAdmitted { .. } => Some(event.clone()),
-            _ => None,
-        })
-        .unwrap();
-    let ptr_ledger::LedgerEvent::PodOutputAdmitted { output_digest, .. } = &mut record else {
-        unreachable!();
-    };
-    *output_digest = legacy;
-    // Crash between the admission record and its promotion: only the record is in the ledger.
+    first.admit_pod_output(request.clone(), &Pass).unwrap();
+    let mut out = Vec::new();
+    for committed in first.committed_events() {
+        match &committed.event {
+            event @ ptr_ledger::LedgerEvent::PodOutputAdmitted { .. } => {
+                let mut event = event.clone();
+                if let ptr_ledger::LedgerEvent::PodOutputAdmitted { output_digest, .. } = &mut event
+                {
+                    *output_digest = legacy;
+                }
+                out.push(event);
+            }
+            event @ ptr_ledger::LedgerEvent::PodHypothesisCommitted { .. } if with_followup => {
+                let mut event = event.clone();
+                if let ptr_ledger::LedgerEvent::PodHypothesisCommitted {
+                    output_digest,
+                    branch_id,
+                    ..
+                } = &mut event
+                {
+                    *output_digest = legacy;
+                    *branch_id = format!("pod-branch:request:pod:{hex}");
+                }
+                out.push(event);
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+fn runtime_with(records: Vec<ptr_ledger::LedgerEvent>) -> PtrRuntime {
     let mut runtime = runtime_with_scope();
-    runtime.commit(record).unwrap();
-    let admissions = |runtime: &PtrRuntime| {
-        runtime
-            .committed_events()
-            .iter()
-            .filter(|c| matches!(c.event, ptr_ledger::LedgerEvent::PodOutputAdmitted { .. }))
-            .count()
-    };
+    for record in records {
+        runtime.commit(record).unwrap();
+    }
+    runtime
+}
 
-    let retried = runtime
-        .admit_pod_output(request(PodOutputKind::Observation), &Pass)
-        .unwrap();
-    let PodOutputAdmission::ObservationCandidate { semantic_key, .. } = &retried else {
-        panic!("expected a candidate, got {retried:?}");
-    };
-    // The follow-up was completed under the stored digest, and no second admission was written.
-    assert_eq!(
-        semantic_key,
-        &ptr_runtime::semantic::pod_candidate_key(
-            &RequestId::from("request"),
-            &ptr_types::PodId::from("pod"),
-            &legacy,
-        )
-    );
-    assert_eq!(admissions(&runtime), 1);
-    assert!(runtime.snapshot().payload(semantic_key).is_some());
-    // Idempotent from here on.
+/// Review of #141: a retry of an admission recorded under the version-1 output digest returns
+/// the recorded result only when its follow-up is already in the ledger, and appends nothing.
+#[test]
+fn a_legacy_admission_with_its_follow_up_answers_a_retry_idempotently() {
+    let hypothesis = request(PodOutputKind::Hypothesis);
+    let legacy = hypothesis.output.legacy_v1_digest();
+    let hex: String = legacy.iter().map(|b| format!("{b:02x}")).collect();
+    let mut runtime = runtime_with(legacy_records(&hypothesis, true));
     let events = runtime.committed_events().len();
-    let again = runtime
-        .admit_pod_output(request(PodOutputKind::Observation), &Pass)
-        .unwrap();
-    assert_eq!(again, retried);
-    assert_eq!(runtime.committed_events().len(), events);
+    for _ in 0..2 {
+        let retried = runtime.admit_pod_output(hypothesis.clone(), &Pass).unwrap();
+        assert_eq!(
+            retried,
+            PodOutputAdmission::Hypothesis {
+                branch_id: format!("pod-branch:request:pod:{hex}")
+            }
+        );
+        assert_eq!(runtime.committed_events().len(), events);
+    }
+}
 
-    // A different output under the same request id still conflicts.
+/// Review of #141 (P1): version 1 is not injective. A lone version-1 admission whose follow-up
+/// is missing is not completed by a retry, neither for the identical output nor for a different
+/// output that has the same version-1 digest: the retry is refused with a typed error and
+/// nothing is appended. A different output with another digest still conflicts, and a fresh
+/// request is unaffected.
+#[test]
+fn an_incomplete_legacy_admission_is_refused_for_the_identical_and_a_colliding_output() {
+    // Two different outputs that share their version-1 digest (see ptr-pods tests/output.rs).
+    let source = "abcdefghijklmnopqrstuvw";
+    let mut forged = [0u8; 32];
+    forged[..8].copy_from_slice(&23u64.to_le_bytes());
+    forged[8..31].copy_from_slice(source.as_bytes());
+    let kept = ProvenanceRef {
+        source: ptr_types::EvidenceId::from("zzz"),
+        note: None,
+    };
+    // Both carry a manifest that also binds the forged digest, so it is a known dependency.
+    let with_forged_binding = |mut request: PodOutputAdmissionRequest| {
+        let manifest = ExecutionManifest::build(
+            Generation(1),
+            vec![
+                LineageBinding {
+                    key: "knowledge:fact".into(),
+                    generation: Generation(1),
+                    digest: [3; 32],
+                },
+                LineageBinding {
+                    key: "knowledge:forged".into(),
+                    generation: Generation(1),
+                    digest: forged,
+                },
+            ],
+            vec![LineageBinding {
+                key: "artifact:pod".into(),
+                generation: Generation(1),
+                digest: [2; 32],
+            }],
+            vec!["raw:test".into()],
+            None,
+            Revision(1),
+            [4; 32],
+            PrincipalId::from("principal"),
+            Revision(1),
+        )
+        .unwrap();
+        request.manifest_digest = manifest.manifest_digest;
+        request.output.manifest_digest = manifest.manifest_digest;
+        request.manifest = manifest;
+        request
+    };
+    let mut admitted = with_forged_binding(request(PodOutputKind::Observation));
+    admitted.output.dependencies = vec![forged];
+    admitted.output.provenance = vec![kept.clone()];
+    let mut colliding = with_forged_binding(request(PodOutputKind::Observation));
+    colliding.output.dependencies = Vec::new();
+    colliding.output.provenance = vec![
+        ProvenanceRef {
+            source: ptr_types::EvidenceId::from(source),
+            note: None,
+        },
+        kept,
+    ];
+    assert_ne!(admitted.output, colliding.output);
+    assert_eq!(
+        admitted.output.legacy_v1_digest(),
+        colliding.output.legacy_v1_digest()
+    );
+
+    // Crash between the admission record and its promotion: only the record is in the ledger.
+    let mut runtime = runtime_with(legacy_records(&admitted, false));
+    let events = runtime.committed_events().len();
+    for retry in [admitted.clone(), colliding] {
+        let refused = runtime.admit_pod_output(retry, &Pass);
+        assert!(
+            matches!(
+                &refused,
+                Err(ptr_runtime::RuntimeError::LegacyAdmissionIncomplete { request_id, pod_id })
+                    if request_id == &RequestId::from("request") && pod_id.0 == "pod"
+            ),
+            "{refused:?}"
+        );
+        assert_eq!(runtime.committed_events().len(), events, "nothing appended");
+    }
+    // A different output with another digest is still a reused request id.
     let mut other = request(PodOutputKind::Observation);
     other.output.payload.bytes = b"another output".to_vec();
-    let refused = runtime.admit_pod_output(other, &Pass);
+    let conflict = runtime.admit_pod_output(other, &Pass);
     assert!(
-        matches!(&refused, Err(ptr_runtime::RuntimeError::PodOutputAdmission(message)) if message.contains("different output")),
-        "{refused:?}"
+        matches!(&conflict, Err(ptr_runtime::RuntimeError::PodOutputAdmission(message)) if message.contains("different output")),
+        "{conflict:?}"
     );
-    assert_eq!(runtime.committed_events().len(), events);
+    // A fresh request is admitted under version 2 as usual.
+    let mut fresh = request(PodOutputKind::Observation);
+    fresh.request_id = RequestId::from("fresh");
+    runtime
+        .ingest_text(RequestId::from("fresh"), "ground truth")
+        .unwrap();
+    let PodOutputAdmission::ObservationCandidate { semantic_key, .. } =
+        runtime.admit_pod_output(fresh.clone(), &Pass).unwrap()
+    else {
+        panic!("expected a candidate");
+    };
+    assert_eq!(
+        semantic_key,
+        ptr_runtime::semantic::pod_candidate_key(
+            &RequestId::from("fresh"),
+            &ptr_types::PodId::from("pod"),
+            &fresh.output.digest(),
+        )
+    );
 }

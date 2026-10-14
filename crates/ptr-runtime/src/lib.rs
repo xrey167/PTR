@@ -599,6 +599,15 @@ pub enum RuntimeError {
     LegacySemanticRecord {
         index: CommitIndex,
     },
+    /// The ledger holds an admission of this request and Pod recorded under the version-1
+    /// output digest (before issue #141), its follow-up (hypothesis or promotion) is missing,
+    /// and the retry's output has that same version-1 digest. Version 1 is not injective, so
+    /// the retry cannot be proven to be the admitted output and the follow-up is not completed
+    /// from it: an operator has to recover the admission. Nothing was appended.
+    LegacyAdmissionIncomplete {
+        request_id: RequestId,
+        pod_id: ptr_types::PodId,
+    },
     ModelResumeLimit {
         max_rounds: usize,
     },
@@ -2161,7 +2170,8 @@ impl PtrRuntime {
         }
         // Approximate-KV taint is decided before the verifier runs: a tainted output of a
         // promoting or acting kind must not even be judged, and nothing is appended.
-        let output_digest = self.admission_output_digest(&request);
+        let output_digest = request.output.digest();
+        let legacy_digest = request.output.legacy_v1_digest();
         let bindings: Vec<&ptr_pods::LineageBinding> = request
             .manifest
             .knowledge
@@ -2255,6 +2265,34 @@ impl PtrRuntime {
             } = &committed.event
             {
                 if request_id == &request.request_id && pod_id == &request.pod_id {
+                    // An admission recorded before version 2 under this output's version-1
+                    // digest (issue #141). Version 1 is not injective, so only its recorded
+                    // result is returned, when its follow-up is in the ledger; a missing
+                    // follow-up is never completed from a version-1 match.
+                    if existing_digest == &legacy_digest && legacy_digest != output_digest {
+                        if scope_id != &request.scope_id || session_id != &request.session_id {
+                            return Err(RuntimeError::PodOutputAdmission(
+                                "request id was admitted for a different scope or session".into(),
+                            ));
+                        }
+                        if self.admission_followup_committed(
+                            *output_kind,
+                            &request,
+                            &legacy_digest,
+                            position,
+                        ) {
+                            return self.admission_result_from_code(
+                                *output_kind,
+                                *revision,
+                                &request,
+                                legacy_digest,
+                            );
+                        }
+                        return Err(RuntimeError::LegacyAdmissionIncomplete {
+                            request_id: request.request_id.clone(),
+                            pod_id: request.pod_id.clone(),
+                        });
+                    }
                     if existing_digest != &output_digest {
                         return Err(RuntimeError::PodOutputAdmission(
                             "request id was reused with a different output".into(),
@@ -2419,30 +2457,6 @@ impl PtrRuntime {
                         &output_digest,
                     ),
                 }),
-        }
-    }
-
-    /// The digest an admission of `request.output` is recorded and looked up under: version 2
-    /// ([`ptr_pods::PodOutput::digest`]), unless the ledger already holds an admission of the
-    /// same request and Pod under the version-1 digest of this very output (committed before
-    /// version 2, issue #141). Then the retry keeps that digest, so it is recognised as the same
-    /// output and its taint lookup, follow-up and keys are the ones the earlier attempt used. A
-    /// different output matches neither digest and is still refused as a reused request id.
-    fn admission_output_digest(&self, request: &PodOutputAdmissionRequest) -> ptr_types::Digest {
-        let legacy = request.output.legacy_v1_digest();
-        let admitted_under_legacy = self.committed_events().iter().any(|committed| {
-            matches!(
-                &committed.event,
-                LedgerEvent::PodOutputAdmitted { request_id, pod_id, output_digest, .. }
-                    if request_id == &request.request_id
-                        && pod_id == &request.pod_id
-                        && *output_digest == legacy
-            )
-        });
-        if admitted_under_legacy {
-            legacy
-        } else {
-            request.output.digest()
         }
     }
 

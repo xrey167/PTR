@@ -583,6 +583,12 @@ impl AttentionSchema {
             Some(known) if known.generation == generation => {}
             Some(_) => Self::purge_everywhere(state, pod),
             None => {
+                // Once the table has evicted, a Pod it does not track may be one it evicted, and
+                // whatever it holds was gathered at a generation nobody recorded: it starts empty
+                // (a support member's statistics carry no generation of their own).
+                if state.generations_evicted > 0 {
+                    Self::purge_everywhere(state, pod);
+                }
                 while state.generations.len() > MAX_TRACKED_GENERATIONS {
                     let Some(oldest) = state
                         .generations
@@ -663,6 +669,18 @@ impl AttentionSchema {
         if overflowed {
             state.overflow_observations = state.overflow_observations.saturating_add(1);
         }
+        // After an eviction, a support member the table does not track gets no new statistics:
+        // it may be an evicted Pod, and nothing would notice its next generation.
+        let evicting = state.generations_evicted > 0;
+        let untracked: BTreeSet<PodId> = if evicting {
+            support
+                .iter()
+                .filter(|(pod, _)| !state.generations.contains_key(pod))
+                .map(|(pod, _)| pod.clone())
+                .collect()
+        } else {
+            BTreeSet::new()
+        };
         let class = Self::class_state_mut(&mut state, key, &self.limits);
         class.observed = class.observed.saturating_add(1);
         for (pod, value) in class.ema.iter_mut() {
@@ -673,7 +691,10 @@ impl AttentionSchema {
             *value += (p - *value) * EMA_RATE;
         }
         for (pod, p) in &support {
-            if !class.ema.contains_key(pod) && class.ema.len() < max_pods {
+            if !class.ema.contains_key(pod)
+                && class.ema.len() < max_pods
+                && !untracked.contains(pod)
+            {
                 class.ema.insert(pod.clone(), *p);
             }
         }
@@ -1043,6 +1064,7 @@ impl<S: AdmissibleScorer> AdmissibleScorer for ControlledScorer<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::RouteDistribution;
 
     fn pod(i: usize) -> PodId {
         PodId::from(format!("p{i}").as_str())
@@ -1058,8 +1080,8 @@ mod tests {
         let total = 3 * MAX_TRACKED_GENERATIONS;
         for i in 0..total {
             state.epoch = i as u64;
-            state.overflow.ema.insert(pod(i), 1.0);
             schema.track_generation(&mut state, &pod(i), Generation(1));
+            state.overflow.ema.insert(pod(i), 1.0);
             assert!(state.generations.len() <= MAX_TRACKED_GENERATIONS);
         }
         assert_eq!(state.generations.len(), MAX_TRACKED_GENERATIONS);
@@ -1085,8 +1107,72 @@ mod tests {
             .contains_key(&pod(total - MAX_TRACKED_GENERATIONS + 1)));
 
         // A tracked Pod at a new generation loses its statistics, as before.
+        // (Continued below in the_evicted_pod_gathers_no_statistics_and_returns_empty.)
         state.overflow.ema.insert(keep.clone(), 1.0);
         schema.track_generation(&mut state, &keep, Generation(2));
         assert!(!state.overflow.ema.contains_key(&keep));
+    }
+
+    /// Review of #141 (P1): once the table has evicted, a Pod it does not track gathers no
+    /// statistics as a support member of other records, and a Pod that returns (at a new
+    /// generation) starts with none, so history of an unrecorded generation never steers it.
+    #[test]
+    fn the_evicted_pod_gathers_no_statistics_and_returns_empty() {
+        let schema = AttentionSchema::new(SchemaLimits::default()).unwrap();
+        let half = RouteDistribution::RESOLUTION / 2;
+        let record = |i: usize, chosen: &PodId, other: &PodId, generation: u64| {
+            let mut support = vec![(chosen.clone(), half), (other.clone(), half)];
+            support.sort();
+            FindingRouteRecord::for_test(
+                &format!("r{i}"),
+                RouteClass::Repair(FindingCode::new("x")),
+                support,
+                chosen.clone(),
+                Generation(generation),
+            )
+        };
+        let victim = pod(0);
+        // The victim is chosen once, then crowded out of the table by more than its capacity.
+        schema.observe(&record(0, &victim, &pod(1), 1));
+        for i in 1..=MAX_TRACKED_GENERATIONS + 1 {
+            schema.observe(&record(i, &pod(i), &pod(i + 1), 1));
+        }
+        let ema_of = |schema: &AttentionSchema, p: &PodId| {
+            let state = schema.state();
+            state
+                .contexts
+                .values()
+                .chain(std::iter::once(&state.overflow))
+                .any(|class| class.ema.contains_key(p) || class.pods.contains_key(p))
+        };
+        {
+            let state = schema.state();
+            assert!(state.generations_evicted > 0);
+            assert!(!state.generations.contains_key(&victim));
+        }
+        assert!(!ema_of(&schema, &victim), "evicted with its statistics");
+        // While untracked it appears in other records' support: nothing is gathered for it.
+        let base = 10 * MAX_TRACKED_GENERATIONS;
+        for i in 0..5 {
+            schema.observe(&record(base + i, &pod(base + i), &victim, 1));
+        }
+        assert!(
+            !ema_of(&schema, &victim),
+            "an untracked support member gathered statistics"
+        );
+        // It returns at a new generation and starts empty, apart from this record's own view.
+        schema.observe(&record(base + 10, &victim, &pod(base + 11), 2));
+        let state = schema.state();
+        assert_eq!(
+            state.generations.get(&victim).map(|t| t.generation),
+            Some(Generation(2))
+        );
+        let seen: u64 = state
+            .contexts
+            .values()
+            .filter_map(|class| class.pods.get(&victim))
+            .map(|stat| stat.seen)
+            .sum();
+        assert_eq!(seen, 1, "only the returning record counts");
     }
 }
