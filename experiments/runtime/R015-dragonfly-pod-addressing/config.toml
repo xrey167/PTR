@@ -42,6 +42,9 @@ sweep_min_margin_permille = [100, 150, 200, 300]
 accuracy_margin_permille = 0
 # The preregistered text and the decision criteria (criteria.toml) are frozen with this table. Their
 # digests are pinned at the freeze, together with the encoder, when R015 leaves `planned`.
+# The exact interpreter of a confirmatory run (`uv run --python`); the training step exits 2 when
+# `sys.version_info` is not exactly this. A smoke run only records the version it ran on.
+python_version = "3.13.16"
 # The locked Python environment of the training step: a run goes through
 # `uv run --locked --project training --extra dragonfly`, and the training step exits 2 when the
 # installed sentence-transformers, torch, transformers or numpy differ from this lock.

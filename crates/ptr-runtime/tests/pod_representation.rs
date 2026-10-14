@@ -722,3 +722,25 @@ fn an_embedder_of_another_model_or_revision_is_refused_even_at_the_same_dimensio
     )
     .is_ok());
 }
+
+#[test]
+fn a_representation_cannot_become_live_through_a_commit_of_another_project() {
+    let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+    let alpha = representation("alpha", vec![1.0, 0.0, 0.0], 1);
+    // The pod belongs to project "demo"; project "other" tries to make its target live.
+    let refused = runtime.commit(LedgerEvent::CapsuleCommitted {
+        project: "other".into(),
+        capsule: CapsuleId::from(pod_lifecycle_target(&address("alpha", 1)).as_str()),
+        generation: Generation(1),
+    });
+    assert!(matches!(
+        refused,
+        Err(RuntimeError::PodCapsuleProjectMismatch { .. })
+    ));
+    let bound = runtime.bind_pod_representation(BindPodRepresentation {
+        representation: &alpha,
+        pod: &address("alpha", 1),
+        codebook: CodebookVersion::V1,
+    });
+    assert!(bound.is_err());
+}

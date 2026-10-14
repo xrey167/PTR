@@ -61,6 +61,15 @@ revision. `pod_head_status` still shows such a head (`Revoked` or `Stale`), so a
 it as `expected` and move the identity on. `advance_pod_head(AdvancePodHead { project, identity, expected, new })` commits through the
 ledger. `PodDirectory::resolve_head` resolves the caller's project and identity, then head, then the ordinary `resolve`; another project's head for the same identity is never consulted.
 A pod generation is the lifecycle target `pod:<project>/<namespace>/<pod>` (`pod_lifecycle_target`).
+That target names its project, so only that project may commit it: lifecycle validation refuses a
+`CapsuleCommitted { project: A, capsule: "pod:B/..." }` with `RuntimeError::PodCapsuleProjectMismatch`
+(on commit and on replay), and `pod_head` and the admission of a representation also compare the
+project the capsule was committed under (`capsule_projects`) with the project of the head or the
+representation. Existing ledgers: the `pod:<project>/<namespace>/<pod>` form is introduced by this
+change and no code on main commits such a capsule, so no record of a mismatching pod capsule is
+expected to exist; the rule is not grandfathered, and a log that does carry one fails replay closed
+instead of making another project's pod live. Ids that are not of that exact three-segment form
+(`pod:x`, `pod:a/b`, `note:...`) are ordinary capsules and unaffected.
 
 ```mermaid
 flowchart LR

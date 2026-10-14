@@ -676,6 +676,13 @@ pub enum RuntimeError {
         current: String,
         requested: String,
     },
+    /// A `pod:<project>/<namespace>/<pod>` capsule was committed under another project than the one
+    /// it names.
+    PodCapsuleProjectMismatch {
+        capsule: String,
+        embedded: String,
+        project: String,
+    },
     ReservedTargetNamespace {
         target: String,
     },
@@ -2963,6 +2970,17 @@ impl PtrRuntime {
                 // capsule IDs from impersonating the two reserved namespaces.
                 if target.starts_with("constraint:") || target.starts_with("procedure:") {
                     return Err(RuntimeError::ReservedTargetNamespace { target });
+                }
+                // A pod lifecycle target names its project; only that project may commit it, or
+                // one project could make another project's pod head or representation live.
+                if let Some(embedded) = pod_head::pod_capsule_project(&target) {
+                    if embedded != project.to_string() {
+                        return Err(RuntimeError::PodCapsuleProjectMismatch {
+                            capsule: target.clone(),
+                            embedded: embedded.to_owned(),
+                            project: project.to_string(),
+                        });
+                    }
                 }
                 if let Some(current) = self.capsule_projects.get(&target) {
                     if current != &project.to_string() {

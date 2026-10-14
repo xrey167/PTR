@@ -156,6 +156,15 @@ impl PodHeads {
     }
 }
 
+/// The project a `pod:<project>/<namespace>/<pod>` lifecycle target names, or `None` when the
+/// target is not of that form (three non-empty segments after `pod:`).
+pub(crate) fn pod_capsule_project(target: &str) -> Option<&str> {
+    let mut parts = target.strip_prefix("pod:")?.split('/');
+    let (project, namespace, pod) = (parts.next()?, parts.next()?, parts.next()?);
+    (parts.next().is_none() && !project.is_empty() && !namespace.is_empty() && !pod.is_empty())
+        .then_some(project)
+}
+
 /// The lifecycle target a pod's generations are committed under: `pod:<project>/<namespace>/<pod>`.
 /// A revocation of that target and generation revokes exactly that pod revision, and neural state
 /// bound under it (a learned pod representation, for one) stops being admitted.
@@ -179,9 +188,12 @@ impl PtrRuntime {
     /// unknown to it) fails closed.
     fn pod_head_is_current(&self, head: &PodRevisionAddress) -> bool {
         let target = pod_lifecycle_target(head);
-        !self
-            .revoked_generations
-            .contains(&(target.clone(), head.generation))
+        // The capsule must have been committed by the head's own project, whatever its id says.
+        self.capsule_projects.get(&target).map(String::as_str)
+            == Some(head.address.project.0.as_str())
+            && !self
+                .revoked_generations
+                .contains(&(target.clone(), head.generation))
             && self.live_generations.get(&target) == Some(&head.generation)
     }
 

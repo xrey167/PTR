@@ -174,7 +174,11 @@ impl PtrRuntime {
             .generations
             .iter()
             .all(|(target, generation)| {
-                *generation == representation.generation() && target_names(target, &representation)
+                *generation == representation.generation()
+                    && target_names(target, &representation)
+                    // The lifecycle target must have been committed by the representation's own
+                    // project.
+                    && self.capsule_project(target) == Some(representation.project().0.as_str())
             })
             && admitted.binding().generations.len() == 1;
         if !recorded || !bound_to_its_pod {

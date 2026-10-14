@@ -3,6 +3,7 @@ import importlib.metadata
 import importlib.util
 import io
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -12,10 +13,15 @@ from ptr_training.dragonfly import experiment
 from ptr_training.dragonfly.experiment import EncoderUnavailable, main, pinned_encoder
 
 
-def _config(directory: Path, model: str, revision: str) -> Path:
+def _running_python() -> str:
+    return "{}.{}.{}".format(*sys.version_info[:3])
+
+
+def _config(directory: Path, model: str, revision: str, python: str | None = None) -> Path:
     path = directory / "config.toml"
     path.write_text(
-        f'[preregistration]\nencoder_model = "{model}"\nencoder_revision = "{revision}"\n',
+        f'[preregistration]\nencoder_model = "{model}"\nencoder_revision = "{revision}"\n'
+        f'python_version = "{python or _running_python()}"\n',
         encoding="utf-8",
     )
     return path
@@ -89,6 +95,50 @@ def _lock(directory: Path, versions: dict[str, str]) -> Path:
     )
     path.write_text(body, encoding="utf-8")
     return path
+
+
+class PythonPinTest(unittest.TestCase):
+    def test_only_the_exact_pinned_version_matches(self) -> None:
+        version = (3, 13, 16)
+        self.assertTrue(experiment.python_matches("3.13.16", version))
+        for pin in ("3.13.15", "3.13", "3.13.16.1", "3.12.16", "3.13.*", ">=3.13", "", None,
+                    "must-be-pinned-at-freeze"):
+            self.assertFalse(experiment.python_matches(pin, version), pin)
+
+    def test_a_placeholder_or_missing_pin_is_no_pin(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            config = _config(Path(raw), "m", "r", python="must-be-pinned-at-freeze")
+            self.assertIsNone(experiment.pinned_python(config))
+            self.assertEqual(experiment.pinned_python(_config(Path(raw), "m", "r")), _running_python())
+
+    def test_a_confirmatory_run_on_another_interpreter_stops_with_status_2(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            out = Path(raw) / "world"
+            config = _config(Path(raw), "m", "r", python="2.7.18")
+            standin = experiment.HashedBagOfWordsEncoder(experiment.ENCODER_DIMS)
+            stderr = io.StringIO()
+            with (
+                mock.patch.object(experiment, "pinned_encoder", return_value=standin),
+                contextlib.redirect_stderr(stderr),
+            ):
+                status = main(["--seed", "1001", "--out", str(out), "--config", str(config)])
+            self.assertEqual(status, 2)
+            self.assertFalse(out.exists())
+            self.assertIn("pins 2.7.18", stderr.getvalue())
+
+    def test_a_smoke_run_only_records_the_interpreter_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            out = Path(raw) / "world"
+            config = _config(Path(raw), "m", "r", python="2.7.18")
+            with contextlib.redirect_stdout(io.StringIO()):
+                status = main(
+                    ["--seed", "1001", "--out", str(out), "--smoke", "--steps", "5",
+                     "--config", str(config)]
+                )
+            self.assertEqual(status, 0)
+            environment = json.loads((out / "world.json").read_text(encoding="utf-8"))["environment"]
+            self.assertEqual(environment["python_pinned"], "2.7.18")
+            self.assertFalse(environment["python_matches"])
 
 
 class EnvironmentTest(unittest.TestCase):

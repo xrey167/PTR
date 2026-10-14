@@ -48,6 +48,10 @@ use std::sync::Arc;
 const ABSTAIN_BELOW_PERMILLE: u32 = 500;
 const MIN_MARGIN_PERMILLE: u32 = 150;
 
+/// The exact interpreter of a confirmatory run: passed to `uv run --python`, and checked by the
+/// training step against `sys.version_info`. Restates `config.toml`'s `python_version`.
+const PYTHON_VERSION: &str = "3.13.16";
+
 /// The pre-fixed sensitivity sweep, `(abstain_below, min_margin)` in permille. They restate
 /// `config.toml`'s `sweep_abstain_below_permille` and `sweep_min_margin_permille`.
 const SWEEP: [(u32, u32); 4] = [(400, 100), (500, 150), (600, 200), (500, 300)];
@@ -223,7 +227,7 @@ fn training_command(seed: u64, out: &Path, smoke: bool, venv: &Path) -> Command 
     } else {
         command = Command::new("uv");
         command
-            .args(["run", "--locked", "--project"])
+            .args(["run", "--locked", "--python", PYTHON_VERSION, "--project"])
             .arg(&training)
             .args(["--extra", "dragonfly"])
             .args(module_args)
@@ -308,6 +312,11 @@ fn run_seed(seed: u64, smoke: bool) -> Result<Value, String> {
     let scratch = Scratch::create(seed)?;
     let dir = scratch.0.as_path();
     generate_world(seed, dir, smoke, &dir.join("venv"))?;
+    evaluate_world(seed, smoke, dir)
+}
+
+/// Routes the probes of the world in `dir` with every arm and returns the result object.
+fn evaluate_world(seed: u64, smoke: bool, dir: &Path) -> Result<Value, String> {
     let world = read_json(&dir.join("world.json"))?;
     let world_smoke = world["smoke"].as_bool().ok_or("world.smoke missing")?;
     if world_smoke != smoke {
@@ -502,7 +511,12 @@ fn route<R: Router + ?Sized>(
         Ok(Some(choice)) => Ok(Outcome::Routed(choice.route().pod_id.clone())),
         Ok(None) => Ok(Outcome::Abstained),
         Err(error) => match error.error() {
-            RouteError::Abstained { .. } => Ok(Outcome::Abstained),
+            // A learned router with no activated representation at all (every gate failed)
+            // declines like one with partial coverage; the seed is then INVALID through the
+            // coverage rule `representations_refused <= 0`, not a harness failure.
+            RouteError::Abstained { .. } | RouteError::NoRepresentation { .. } => {
+                Ok(Outcome::Abstained)
+            }
             other => Err(other.to_string()),
         },
     }
@@ -566,6 +580,112 @@ mod tests {
     }
 
     #[test]
+    fn the_confirmatory_interpreter_is_pinned_exactly() {
+        let command = training_command(2017, Path::new("/o"), false, Path::new("/v"));
+        let args = words(&command);
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--python", PYTHON_VERSION]));
+        assert!(
+            PYTHON_VERSION
+                .split('.')
+                .all(|part| part.parse::<u32>().is_ok())
+                && PYTHON_VERSION.split('.').count() == 3
+        );
+        // A smoke run takes whatever interpreter is there and only records it.
+        let smoke = training_command(1001, Path::new("/o"), true, Path::new("/v"));
+        assert!(!words(&smoke).contains(&"--python".to_owned()));
+    }
+
+    /// A world in which every representation failed its activation gate.
+    fn world_with_failed_gates(dir: &Path) {
+        let encoder = EncoderRef {
+            id: "test-encoder".into(),
+            revision: "r1".into(),
+        };
+        let gate = ptr_router::GateReport {
+            alias_threshold_permille: 800,
+            alias_min_permille: 700,
+            negative_threshold_permille: 900,
+            negative_reject_permille: 960,
+            alias_count: 4,
+            negative_count: 20,
+        };
+        let mut pods = Vec::new();
+        for (index, name) in ["alpha", "beta"].into_iter().enumerate() {
+            let mut z = vec![0.0f32; 3];
+            z[index] = 1.0;
+            let representation = PodRepresentation::new(PodRepresentationParts {
+                project: ProjectId::from("demo"),
+                pod: PodId::from(name),
+                identity: ptr_types::PodIdentity::from(format!("pod:{name}").as_str()),
+                cluster_key: ptr_types::ClusterKey([1; 32]),
+                encoder: encoder.clone(),
+                generation: ptr_types::Generation(1),
+                z,
+                bias: 10.0,
+                weights: ptr_router::ScoreWeights::default(),
+                gate,
+                activated: false,
+            })
+            .unwrap();
+            let (manifest, weights) = representation.to_artifact();
+            let mut manifest_json: Value = serde_json::from_str(&manifest).unwrap();
+            manifest_json["weights_file"] = json!(format!("{name}.bin"));
+            std::fs::write(dir.join(format!("{name}.bin")), weights).unwrap();
+            std::fs::write(dir.join(format!("{name}.json")), manifest_json.to_string()).unwrap();
+            pods.push(json!({
+                "pod_id": name,
+                "manifest": format!("{name}.json"),
+                "status": "not-activated",
+                "description_vector": [1.0, 0.0, 0.0],
+            }));
+        }
+        let probes: Vec<Value> = (0..4)
+            .map(|index| {
+                json!({
+                    "text": "question",
+                    "label": if index < 2 { json!("alpha") } else { Value::Null },
+                    "kind": "held-out",
+                    "vector": [1.0, 0.0, 0.0],
+                })
+            })
+            .collect();
+        let world = json!({
+            "seed": 1,
+            "encoder": {"id": "test-encoder", "revision": "r1"},
+            "dims": 3,
+            "project": "demo",
+            "smoke": true,
+            "evidence": "none (stand-in encoder)",
+            "environment": {"python": "3.13.16"},
+            "pods": pods,
+            "probes": probes,
+        });
+        std::fs::write(dir.join("world.json"), world.to_string()).unwrap();
+    }
+
+    #[test]
+    fn a_world_where_every_gate_fails_still_yields_a_result_that_the_coverage_rule_invalidates() {
+        let scratch = Scratch::create(u64::MAX - 1).unwrap();
+        world_with_failed_gates(&scratch.0);
+        let result = evaluate_world(1, true, &scratch.0).unwrap();
+        assert_eq!(result["representations_loaded"], 0);
+        assert_eq!(result["representations_refused"], 2);
+        // The learned arm declines every probe instead of failing the harness.
+        let learned = &result["arms"]["learned"];
+        assert_eq!(learned["abstained"], 4);
+        assert_eq!(learned["correct"], 0);
+        assert_eq!(learned["false_routes"], 0);
+        // criteria.toml marks such a seed INVALID: its coverage list holds this rule.
+        let criteria = include_str!(
+            "../../../../experiments/runtime/R015-dragonfly-pod-addressing/criteria.toml"
+        );
+        assert!(criteria.contains("\"representations_refused <= 0\""));
+        assert!(result["representations_refused"].as_i64().unwrap() > 0);
+    }
+
+    #[test]
     fn gaps_round_towards_minus_infinity() {
         assert_eq!(gap_permille(1, 0, 3), 333);
         assert_eq!(gap_permille(0, 1, 3), -334);
@@ -592,6 +712,7 @@ mod tests {
         for expected in [
             line("abstain_below_permille", ABSTAIN_BELOW_PERMILLE.to_string()),
             line("abstain_margin_permille", MIN_MARGIN_PERMILLE.to_string()),
+            line("python_version", format!("\"{PYTHON_VERSION}\"")),
             line(
                 "sweep_abstain_below_permille",
                 list(SWEEP.iter().map(|pair| pair.0).collect()),
