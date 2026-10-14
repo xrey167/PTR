@@ -9,8 +9,8 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-10-13  
-**Code footprint:** 17 Rust source files · 6816 nonblank source lines · 3 integration-test files · 170 test markers (`#[test]`, `#[tokio::test]`)
+**Last reviewed:** 2026-10-14  
+**Code footprint:** 17 Rust source files · 6849 nonblank source lines · 3 integration-test files · 170 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -62,6 +62,7 @@
 - ExpertFenceCommitted maps to no lifecycle change, topic expert.fence_committed, subject project:<project> and the entry the shared ptr-state projection yields (expert:<project>/<pod> = <generation>:fenced|serving|frozen:<epoch>); the projection still holds no expert catalog
 - KvTaintCommitted maps to no lifecycle change, topic kv.taint_committed, subject kv-taint:<kind>:<hex> of its first subject and the kv-taint entries of the shared ptr-state projection; there is no taint table
 - InputInvalidated (ledger tag 30, R011 WP3) has the topic expert.input_invalidated and the subject expert-input:<identity>; a Revoked kind is a lifecycle Tombstone for (input, generation), like a Revoked record, and a Superseded kind changes no lifecycle row (the supersession floor and the fenced experts are the runtime's dependency index, which this projection does not hold); the payload entries are exactly ptr-state's projection of the event
+- Lifecycle mapping of the adapter events: AdapterPromoted is SetLive and AdapterRevoked a Tombstone of adapter:<project>/<adapter> (the key the runtime uses), ImprovementCycleRecorded changes nothing; topics adapter.promoted, adapter.revoked and improvement.cycle_recorded, subjects adapter:<project>/<adapter> and improvement:<project>
 
 ### Missing for the target architecture
 
@@ -78,6 +79,7 @@
 - Stored branches bound to their rows without a seal key: a substrate without one writes no tag and checks none, so a writer with the work schema's privileges can delete a whole branch and write other rows under its id in one transaction, and load_branch returns them like sealed ones
 - Seal key custody: a key is the host's, and a tag authenticates rows to every substrate holding it whatever its schemas; seal_stored_branch binds rows as they are when the host vouches for them, and a tag binds the rows to a holder of the key, not to the author, whose PrincipalId is whatever the sealing caller passed; tags a retired key made stay, verifying under that key only
 - Database checks of the two sealing rules that compare a digest with the digest of absence or of the empty set (no set member present in a base without its key; a Remove only of a key with no inputs); load_branch refuses rows breaking them
+- The adapter event mapping is compiled and shares the ptr-state projection, but it was not run against a live PostgreSQL in this change (PTR_PG_TEST_DSN was not set)
 
 ### Next milestones
 

@@ -9,8 +9,8 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `scaffold`  
-**Last reviewed:** 2026-10-13  
-**Code footprint:** 5 Rust source files · 801 nonblank source lines · 4 integration-test files · 26 test markers (`#[test]`, `#[tokio::test]`)
+**Last reviewed:** 2026-10-14  
+**Code footprint:** 8 Rust source files · 1810 nonblank source lines · 7 integration-test files · 53 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -26,6 +26,9 @@
 - ScenarioBackend: a deterministic demonstrator backend named scenario that echoes the raw text as a Token and emits one Mutation ActionIr (create demo-note, capability demo.local-note.create, type ptr.demo-note.v1) at the request's revision; resume yields Finished. Its own doc comment calls it plumbing evidence for the local HTTP/effect path, not a model-quality baseline
 - KV-reuse P1 token contract (doc 36): TokenId, Tokenizer trait with TokenizerIdentity, ByteTokenizer (ptr.byte v1, one token per UTF-8 byte), SegmentSource (Raw, Semantic, Memory, Derived), PromptSegment with SHA-256 content_digest and lineage_contribution (Raw carries kind and content digest only), SegmentedModelRequest with tokens() and order-dependent lineage_digest() (covers semantic revision, tokenizer identity and segments), KvReuseMode, KvReusePolicy, KvReuseHint, KvReuseReport (hit_tokens bounded by total, Approximate rejected under ExactOnly), ModelRun and the KvReusingBackend trait; ModelRequest is unchanged. The one non-test implementation is ptr-runtime's CPU ReferenceKvReuseBackend; that Approximate reuse never reaches an effect path is enforced in ptr-runtime (authorize_action and the execution boundary), for runs the host routes through it
 - PromptSegment::from_text/from_tokens Semantic, Memory and Derived segments are caller-asserted (documented on the constructors): the crate cannot check that the text is the committed value of its source at its generation; a production path builds Semantic segments with ptr-runtime PtrRuntime::semantic_prompt_segment, and lineages fragment per cited generation
+- AdaptiveBatcher<B: BatchInferenceBackend>: one worker thread, a bounded queue (queue_capacity at most 65536; a full queue answers ModelError::overloaded before anything grows), requests grouped by BatchKey { adapter, principal, generation } so different keys never share a model call, a batch dispatched when it holds max_batch requests, when its oldest request has waited max_wait, or when its tightest deadline is within the margin, the key of the oldest ready request first; a request whose deadline passed or that was cancelled (CancelFlag) is answered without a model call, at the door or in the queue; a BatchGate is asked about the batch's key immediately before every model call (a revoked generation is refused at that use, ModelError::revoked); a backend panic or a wrong-length answer fails its batch and the batcher keeps serving; every caller gets exactly one answer, also on drop; counters in BatchStats. infer_with takes the per-request BatchAdmission; the plain infer uses the unscoped key and no deadline. The deterministic queue rule (batch_queue) takes the time as an argument and is unit-tested with a virtual clock
+- ReplicaRouter over Arc<dyn ResumableInferenceBackend> (1 to 64 replicas): round-robin start, failover to at most max_failover other replicas each tried once, only for errors another replica can change (overload, backend failure) and never for a passed deadline, a cancellation, a revoked generation or a closed backend (ModelError::refuses_failover); per-replica attempts, failures and failovers; ReplicaRouter(AdaptiveBatcher(backend)) composes
+- ModelError constructors and predicates for the contract errors (overloaded, deadline_exceeded, cancelled, revoked, closed, backend_failure); ModelError is still a String newtype
 
 ### Missing for the target architecture
 
@@ -37,12 +40,18 @@
 - SGLang, vLLM and Burn-native adapters
 - Backend checkpoint/state handles beyond observation-based continuation
 - Structured cancellation and timeout semantics
+- AdaptiveBatcher is not wired into ptrd or ptr-config ([model.batch] and [model.replicas] do not exist): ptr-server serializes requests behind the runtime lock, so a batcher in front of it would only queue; the lock restructuring (model call outside the lock, commit inside) is not done
+- ModelRequest carries neither a deadline nor a batch key (adding fields would touch every struct literal, about 70 across 40 files); the scoped path is AdaptiveBatcher::infer_with
+- No backend implements infer_batch with a batched forward pass, so the default sequential loop gains nothing; the throughput gain of batching is unmeasured, and the experiment that would measure it has no registered id yet (E009 is reserved by docs/architecture/42-pod-data-plane.md)
+- ReplicaRouter failover does not carry the request deadline, and replicas must be interchangeable (resume may land on another replica than infer)
 
 ### Next milestones
 
 - Convert infer/resume from Vec-returning sync calls to cancellable async streams
 - Add backend capability descriptor
 - Implement first external model adapter after inference-serving evaluation
+- Move the model call out of ptr-server's runtime lock (call outside, commit inside, generation checked at the commit) and then wire AdaptiveBatcher and ReplicaRouter into ptrd with [model.batch] and [model.replicas]
+- Register and run the batching experiment (baseline: no batcher; arms: batch-size ablation, deadline ablation, a batch-cost sensitivity control, an oracle ceiling) under an id the coordinator assigns
 
 ### Linked experiments
 
@@ -68,6 +77,9 @@
 - KV-reuse token contract tests: ByteTokenizer round trip, digest/lineage sensitivity, pinned lineage digest, request validation, report bound, trivial KvReusingBackend
 - tests/kv_taint.rs: report taint follows mode, taint survives two derivation hops, join laws, no downgrade by re-wrapping, Exact released
 - workspace fmt/check/test/clippy
+- src/batch_queue.rs tests: a full queue refuses before it grows, a batch waits for max_wait unless full, keys never share a batch, the oldest ready key is served first, a tight deadline dispatches early, an expired or cancelled request never reaches a batch, a batch never exceeds max_batch
+- tests/batch.rs: concurrent requests share one model call, a lone request is served after max_wait, different keys never share a call, a full queue answers overloaded at once, a passed deadline is refused before the model and one that passes in the queue drops the request unserved, a cancelled request is dropped, a generation revoked while a request waited is refused at dispatch, a backend panic and a wrong-length answer fail the batch without stopping the batcher, an out-of-range policy is refused by field, the debug form prints no prompt
+- tests/replica.rs: rotation, failover counted per replica, failover bounded with each replica tried once, errors another replica cannot fix end the request, resume fails over like infer, replica-count bounds, composition over a batcher
 
 <!-- PTR:STATUS:END -->
 

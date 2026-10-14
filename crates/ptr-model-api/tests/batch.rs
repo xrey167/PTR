@@ -139,7 +139,10 @@ fn a_full_queue_answers_overloaded_at_once_and_nothing_is_lost() {
         latch.open();
         first.join().expect("thread").expect("held request served");
         for handle in queued {
-            handle.join().expect("thread").expect("queued request served");
+            handle
+                .join()
+                .expect("thread")
+                .expect("queued request served");
         }
     });
     assert_eq!(batcher.stats().dispatched, 3);
@@ -220,7 +223,10 @@ fn a_cancelled_request_is_dropped_before_the_model() {
         flag.cancel();
         latch.open();
         held.join().expect("thread").expect("held served");
-        assert_eq!(waiting.join().expect("thread"), Err(ModelError::cancelled()));
+        assert_eq!(
+            waiting.join().expect("thread"),
+            Err(ModelError::cancelled())
+        );
     });
     assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
     assert_eq!(batcher.stats().cancelled, 1);
@@ -255,7 +261,9 @@ fn a_generation_revoked_while_a_request_waited_is_refused_at_dispatch() {
         // The request was admitted while the key was live; the revocation lands afterwards.
         gate.0.store(false, Ordering::SeqCst);
         latch.open();
-        held.join().expect("thread").expect("already running, served");
+        held.join()
+            .expect("thread")
+            .expect("already running, served");
         assert_eq!(waiting.join().expect("thread"), Err(ModelError::revoked()));
     });
     assert_eq!(backend.calls.load(Ordering::SeqCst), 1, "stale never ran");

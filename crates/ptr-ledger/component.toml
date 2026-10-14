@@ -1,7 +1,7 @@
 version = 1
 id = "ptr-ledger"
 maturity = "prototype"
-last_reviewed = "2026-10-13"
+last_reviewed = "2026-10-14"
 
 implemented = [
   "EgressRefused is ledger tag 37 (32-36 are reserved by ADR-0022); tag 33 decodes as an unknown tag",
@@ -78,6 +78,7 @@ implemented = [
   "InputInvalidated at tag 30 (R011 WP3), the compound input invalidation: input identity (1 to MAX_INPUT_IDENTITY_BYTES = 256 bytes, no control character), generation (non-zero), binding digest, an InputInvalidationKind (code 0 Revoked, or code 1 Superseded { old_generation, new_generation, new_digest, replacement_ref }), a u32 fence count and a fence digest. The event names the experts it fences by count and digest only, never by a list; the ledger checks the shape (no zero digest, a Superseded kind repeats the event's generation as old_generation and moves strictly forward) with one function used by the decoder and check_encodable, and cannot check that the count and digest are the fence set, which the runtime re-derives on commit and replay. The public ptr-runtime commit refuses the event; only PtrRuntime::invalidate_input writes it",
   "ExpertAuthorityChanged at tag 31 (R011 WP4), the change of an evidence authority: ExpertAuthorityKind (code 0 GateConfig, 1 Evaluator), a 32-byte identity digest, a non-zero epoch, ExpertAuthorityClass (code 0 Revoke, 1 TighteningRotation, 2 NonTightening), a u32 fence count and a fence digest. A Revoke or TighteningRotation fences the experts admitted under an earlier epoch of that kind in the same record, committed to by count and digest only like tag 30; the codec refuses a zero epoch, a zero identity or fence digest, and a NonTightening change with a non-zero count. The crate cannot check that the epoch advances or that the count and digest are the fence set; the runtime does both on commit and on replay, and the public commit refuses the event",
   "Raft storage keeps the poisoned refusal first: record_snapshot refuses a poisoned storage before it counts the log, so an install that failed after persisting SnapshotPending (poisoned and unaccounted) answers PTR_RAFT_STORAGE_POISONED rather than PTR_RAFT_SNAPSHOT_UNACCOUNTED (test: tests/raft_storage_crash.rs an_error_installing_a_snapshot_past_the_state_write_poisons_and_a_restart_finishes, features raft-rs-backend and failpoints)",
+  "AdapterPromoted (tag 39: project, adapter name, generation, base-model digest, weights SHA-256, gate-report digest), AdapterRevoked (tag 40: project, adapter name, generation, reason) and ImprovementCycleRecorded (tag 41: project, day, outcome Completed or Aborted{reason}, policy digest) with canonical codecs; one shape check per event, called by the decoder and by check_encodable alike: names of 1 to 256 bytes without control characters, whitespace or '/' (so a project and an adapter never share a lifecycle key), a non-zero generation, no all-zero digest, reasons of 1 to 512 bytes without control characters; an unknown cycle outcome tag, a truncated or padded record is refused; the ledger stores the records and cannot check any digest in them",
 ]
 
 missing = [
@@ -93,6 +94,7 @@ missing = [
   "Distributed snapshot/compaction protocols and cross-node cutover",
   "Retention schedule/policy engine and durable snapshot lifecycle tracking; PTR does not enumerate or reclaim host-retained snapshots",
   "Storage-residue and model-derived-state erasure, so no all-state-deleted declaration is available",
+  "The ledger does not check that an AdapterPromoted weights digest is the digest of any weights, that a generation advances, or that a cycle day never goes back; ptr-runtime's promote_adapter, revoke_adapter and begin_improvement_cycle do, and a replayed record is held only to its shape and the generation order",
 ]
 
 next = [
@@ -117,6 +119,7 @@ decisions = [
   "ADR-0002-authority-hierarchy.md",
   "ADR-0009-consensus-ledger-state-separation.md",
   "ADR-0020-only-the-runtime-merges-an-agent-branch.md",
+  "ADR-0025-adapter-promotion-and-improvement-budget-are-ledger-events.md",
 ]
 
 checks = [
@@ -164,4 +167,5 @@ checks = [
   "kv_taint_round_trips_every_kind_and_change (tag 29, every subject kind, Record and Clear, 1 and 16 subjects, truncation and trailing bytes) and kv_taint_refuses_malformed_records_on_encode_and_decode (empty, over-limit, unsorted, duplicate, zero digest, unknown kind and change codes)",
   "input_invalidation_round_trips_under_tag_30_and_the_codes_are_pinned, input_invalidation_refuses_every_non_canonical_form (empty, over-long and control-character identity, zero generation, zero binding or fence digest, a supersession that disagrees with the event's generation or does not move forward, zero new digest or replacement reference: each refused by check_encodable and the decoder) and input_invalidation_refuses_an_unknown_kind (every prefix, trailing bytes, kind codes 2, 3 and 255)",
   "authority_change_round_trips_under_tag_31_and_the_codes_are_pinned (every prefix and trailing byte refused), authority_change_refuses_every_non_canonical_form (zero epoch, zero identity, zero fence digest, a non-tightening change that fences: each refused by check_encodable and the decoder) and authority_change_refuses_an_unknown_kind_or_class (effect_record_tests in src/lib.rs)",
+  "adapter_event_tests in src/lib.rs: the three events round-trip under tags 39, 40 and 41, every prefix and a padded record are refused, each malformed field (empty, '/', whitespace, over-long name, zero generation, zero digest, control character in a reason, unknown outcome tag) is refused by check_encodable and by the decoder",
 ]

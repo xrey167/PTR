@@ -113,6 +113,7 @@ document states exists in code with tests; limits the document names still apply
 | [38 Consciousness indicators](38-consciousness-indicators.md) | design | Functional indicators only; C001 NOT_SHOWN, C004 COMPLETED, C007 and C008 FALSIFIED (CPU toys). Welfare rules: [MODEL_WELFARE](../MODEL_WELFARE.md). |
 | [39 VCW-MoE](39-vcw-moe.md) | design, loop implemented | `VcwLoop`, finding router, workspace, server path and `make vcw-demo` run with simulated (or `qwen-cpu`) experts; F007 COMPLETED as a mechanism check; no model-backed experiment yet. |
 | [41 Crate layering](41-crate-layering.md) | implemented | `scripts/check_crate_layering.py` in CI. |
+| [44 Serving and promotion](44-serving-and-promotion.md) | partially implemented | Adapter promotion and revocation as ledger events (tags 39, 40), a promotion refused without a serving baseline, the weights digest recomputed, the improvement-cycle budget counted from the ledger (tag 41), a replay backtest, and a bounded adaptive batcher with a replica router that `ptrd` does not use yet; F008 planned, the batching experiment has no id yet, R004 planned. |
 
 ### Pod placement and data plane
 

@@ -1,7 +1,7 @@
 version = 1
 id = "ptr-lineage"
 maturity = "prototype"
-last_reviewed = "2026-10-05"
+last_reviewed = "2026-10-14"
 
 implemented = [
   "Adapter records bound to one exact base model and revision, with origin, parent or consolidation sources and a data manifest, carrying the weights' artifact id and SHA-256 and the training-data fingerprint as the trainer supplies them (recorded, never read or checked here; erasure follows the manifest exactly as declared); a consolidation must name at least one registered source",
@@ -15,20 +15,23 @@ implemented = [
   "AIMER expert-pruning score (arXiv:2603.18492) s(w) = ||w||_1 / (sqrt(N) ||w||_2) of a flattened expert, computed on w / max|w| so any finite magnitude is scored, with both norms accumulated over the sorted magnitudes so the score depends only on the multiset of weights and not on their layout (empty, nonfinite and all-zero vectors refused), and a ranking of one layer's experts by descending score (highest prunes first, ties in input order, equal weight counts required, an unscorable expert named in the error); it only ranks, and a prune decision must still pass the forgetting gate",
   "Internal, no behaviour change: #[allow(clippy::manual_is_multiple_of)] on test helpers only (values_of_every_magnitude in src/scale.rs, forgotten_samples_are_drawn_far_more_often_than_retained_ones in tests/replay.rs), so the newer toolchain lints stay clean; no library code changed",
   "GateReport::bind(subject) attaches a GateSubject (proposal id, operation id, artifact digest, base model digest, evaluation manifest digest, all supplied by the trusted evaluator) and the config digest of the gate that evaluated the report, stored by ForgettingGate::evaluate (domain tag and the four finite thresholds as f64 bits, -0.0 hashed as 0.0; config_digest refuses a nonfinite threshold) and yields a BoundGateReport with private fields (compile-fail doctest against a literal) and a SHA-256 digest over a domain tag, every field, the adapter and the violations; the digest pins what was claimed, not that the measurements were taken on that artifact; BoundGateReport::encode_canonical/decode_canonical give it a versioned canonical encoding (magic PTRBGR01, at most 1 MiB) whose decode re-derives the digest, checks the passed flag and rejects non-canonical bytes (-0.0, odd NaN), trailing or truncated input; a decoded report is not proof of a trusted evaluator",
+  "GateViolation::MissingBaseline (codec tag 4, no fields; the canonical report's violation-count bound is now one byte per violation) and ForgettingGate::evaluate_promotion over PromotionSuite { serving: Option<f64>, candidate }: an absent serving score on the public suite is a violation in place of the regression comparison, so a report without a baseline cannot pass and a missing baseline is never read as zero; a nonfinite score that is present is refused as in evaluate (PublicSuite and evaluate are unchanged, they always hold a serving score)",
+  "PromotionProposal::new(record, base_digest, bound_report) builds the request ptr-runtime commits: a report with a missing baseline is LineageError::MissingBaseline, any other failing report GateFailed, and a report bound to another adapter, weights digest or base-model digest than the record's SubjectMismatch; SplitLock (SHA-256 of the frozen split manifest, the bound report's eval_manifest_digest) travels with it. The crate depends on no ledger type; the digest in the record is still not recomputed here (ptr-runtime does that from the weights)",
 ]
 
 missing = [
-  "Adapter promotion and revocation as committed ledger events in general (ptr-runtime admit_expert_proposal now admits expert structural records on a passing BoundGateReport bound to the proposal and operation under the required gate configuration, but no other adapter promotion or revocation event is written or admitted, and nothing checks that a BoundGateReport subject's artifact digest matches a committed artifact)",
   "Serving admission through checkpoint binding",
   "A lineage adapter in ptr-pg over the rest of the work schema (ptr-pg stores interference reports only)",
   "A training-run record per adapter run once an adapter is actually trained: training chain, adapter produced, run-manifest input fingerprint and adapter data fingerprint (different digests), trigger event, replay and new sample counts, wall-clock and model times, gate result",
   "Replay samples and probes keyed by the training chain whose weights and clock they were measured on, not by base model and revision, so concurrent chains on one base model keep separate clocks",
   "An adapter's function_accuracy on uniform gold absent from its data manifest recorded as a metric of its evaluation run and usable as a task score of the forgetting gate",
+  "A multi-adapter serving router: ptr-runtime commits AdapterPromoted and AdapterRevoked and checks a use against them (check_adapter_use), but nothing routes a request to an adapter, and the serving baseline of a first adapter (the base model's public-suite score) is supplied by the caller and not measured here",
+  "evaluate_promotion is not the only way to a passing report: evaluate with a placeholder serving score still yields a report that PromotionProposal accepts, so the evaluator must be the one that calls evaluate_promotion",
 ]
 
 next = [
   "Run R004 against a naive chain and a joint retrain",
-  "Define the AdapterPromoted ledger event and its admission rule",
+  "Route requests to promoted adapters through ptr-model-api's BatchKey and check_adapter_use at every dispatch",
 ]
 
 experiments = [
@@ -42,6 +45,7 @@ evaluations = [
 decisions = [
   "ADR-0019-adapter-lineage-and-weak-supervision.md",
   "ADR-0015-continued-pretraining-coding-pod.md",
+  "ADR-0025-adapter-promotion-and-improvement-budget-are-ledger-events.md",
 ]
 
 checks = [
@@ -53,4 +57,5 @@ checks = [
   "tests/aimer.rs AIMER score cases (uniform, one-hot, hand-computed, scale invariance at 1e300 and 1e-300, permutation invariance, refusals) and pruning order with a deterministic tie, permuted-weight ties and mismatched weight counts",
   "workspace fmt/check/test/clippy",
   "forgetting::tests bound_report_digest_* pin one bound-report digest and one gate-config digest and show the digest changing with each subject field, each of the four thresholds, the verdict and the adapter",
+  "src/promotion.rs tests: a missing serving baseline is red and yields no proposal (MissingBaseline), a passing report with a baseline yields a proposal whose digest and split lock are the report's, a subject for another artifact, base model or adapter is SubjectMismatch, a regressing candidate is GateFailed and not MissingBaseline, a missing baseline survives the canonical codec, a nonfinite baseline is refused",
 ]

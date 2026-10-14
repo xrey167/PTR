@@ -131,8 +131,8 @@ impl<J> BatchQueue<J> {
                 let waited_out = entry.arrived.saturating_add(self.policy.max_wait_millis);
                 dispatch_at = dispatch_at.min(waited_out);
                 if let Some(deadline) = entry.deadline {
-                    dispatch_at =
-                        dispatch_at.min(deadline.saturating_sub(self.policy.deadline_margin_millis));
+                    dispatch_at = dispatch_at
+                        .min(deadline.saturating_sub(self.policy.deadline_margin_millis));
                 }
             }
             if count >= self.policy.max_batch || dispatch_at <= now {
@@ -167,7 +167,9 @@ impl<J> BatchQueue<J> {
             .entries
             .iter()
             .filter_map(|entry| entry.deadline)
-            .fold(wake_at, |at, deadline| Some(at.map_or(deadline, |at| at.min(deadline))));
+            .fold(wake_at, |at, deadline| {
+                Some(at.map_or(deadline, |at| at.min(deadline)))
+            });
         debug_assert!(self.entries.iter().all(|entry| entry.seq < self.next_seq));
         Ready {
             dropped,
@@ -275,7 +277,9 @@ mod tests {
         let mut queue = BatchQueue::new(policy(8, 0, 8));
         let cancel = CancelFlag::default();
         queue.push(key("a"), Some(10), None, 1u32, 0).unwrap();
-        queue.push(key("a"), None, Some(cancel.clone()), 2, 0).unwrap();
+        queue
+            .push(key("a"), None, Some(cancel.clone()), 2, 0)
+            .unwrap();
         queue.push(key("a"), None, None, 3, 0).unwrap();
         cancel.cancel();
         let ready = queue.take_ready(10);

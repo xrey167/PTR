@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "F008-replay-backtest"
+path = "experiments/feedback/F008-replay-backtest"
+tests_dir = "tests"

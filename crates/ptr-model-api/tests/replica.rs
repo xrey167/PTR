@@ -153,7 +153,14 @@ fn a_router_composes_over_an_adaptive_batcher() {
         },
     )
     .expect("batcher");
-    let router = ReplicaRouter::new(vec![Arc::new(batcher) as Arc<dyn ResumableInferenceBackend>], 0).expect("router");
+    let router = ReplicaRouter::new(
+        vec![Arc::new(batcher) as Arc<dyn ResumableInferenceBackend>],
+        0,
+    )
+    .expect("router");
     let events = router.infer(&request("r0")).expect("served");
-    assert_eq!(events.first(), Some(&ModelEvent::Token("text of r0".into())));
+    assert_eq!(
+        events.first(),
+        Some(&ModelEvent::Token("text of r0".into()))
+    );
 }

@@ -164,6 +164,11 @@ F007, C004, C007, C008, E007, L002, R013 and Q003-v3 are no longer in progress: 
   (`M003-v4`, completed INCONCLUSIVE, see its line above; it reuses the
   `M003-v3-sweep` learning rates and does not pool any M003-v3 seed).
 
+## Research integration: work package 5, serving and promotion (2026-10-14)
+
+- **Done (mechanisms, tested; no experiment has run):** `AdapterPromoted`, `AdapterRevoked` and `ImprovementCycleRecorded` ledger events (tags 39, 40, 41) with canonical codecs; `PtrRuntime::promote_adapter` recomputes the weights digest, checks the split lock and refuses a gate report without a serving baseline (`GateViolation::MissingBaseline`); `revoke_adapter`; serving state derived from the committed events under a project-scoped key and checked at every use; the improvement-cycle budget counted from the ledger (an aborted cycle spends budget); `ptr_training.replay` backtest with separate `pipeline_ran` and `predictive` claims; `AdaptiveBatcher` and `ReplicaRouter` in `ptr-model-api`. Design: [44](docs/architecture/44-serving-and-promotion.md), decision: ADR-0025.
+- **Open:** `ptrd` does not use the batcher (the server holds its runtime lock across the model call; the restructuring was not attempted); compaction is refused while adapter or cycle state exists; a crash between admitting and recording a cycle is not counted; the batching throughput gain is unmeasured and its experiment has no registered id (E009 is reserved by the pod data-plane design); F008 replay-backtest is registered as `planned` with its controls and has no harness; R004 stays `planned`; no parity run for an adapter-serving candidate; the Postgres mapping of the new events was not run against a live database.
+
 ## Current research/implementation gap
 
 - PTR-Core now has a separate trainable Burn A0 research package with typed metadata, bidirectional cross-attention, recurrent latent refinement and a router; it is still a small architecture probe rather than a pretrained language model

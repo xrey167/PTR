@@ -1,0 +1,21 @@
+# ADR-0025 — Adapter Promotion and the Improvement Budget Are Ledger Events
+
+## Status
+Accepted for the prototype with research-integration work package 5 (`ptr-lineage`, `ptr-ledger`, `ptr-runtime`, `ptr-feedback`, `ptr-model-api`). It builds on ADR-0019 (adapter lineage), ADR-0009 (ledger is authority) and ADR-0018 (revocable derived state), and closes the open item that "no registry row decides which adapter serves" left standing.
+
+## Decision
+1. **Serving is a ledger fact.** `AdapterPromoted` (tag 39) and `AdapterRevoked` (tag 40) are the only records that make an adapter generation serve or stop serving. They are written only by `PtrRuntime::promote_adapter` and `revoke_adapter`; the public `commit` refuses them. The runtime derives the serving state from the committed events under the project-scoped lifecycle key `adapter:<project>/<adapter>`, and every use is checked against it (`check_adapter_use`), so a revocation holds against caches, restarts and replay (invariant 3).
+2. **A promotion needs a baseline.** The gate reports `GateViolation::MissingBaseline` when the serving score of the public suite is absent, and a report with that violation cannot become a `PromotionProposal`. A missing baseline is never read as zero.
+3. **The runtime recomputes the weights digest.** `promote_adapter` hashes the weights it is handed and compares with the digest the gate report was bound to; it also compares the frozen split manifest with the report's evaluation manifest digest. The lineage crate keeps recording the trainer's digest without reading it and takes no dependency on the ledger.
+4. **The improvement budget is counted from the ledger.** `ImprovementCycleRecorded` (tag 41) records every cycle that ended, completed or aborted, with the day and the policy digest. The rule lives in `ptr-feedback` (`ImprovementCycleBudget`); the runtime supplies the history from committed events plus the cycles admitted and not yet recorded. An aborted cycle and a running cycle spend budget. With no budget configured nothing is admitted.
+5. **No simulator before an out-of-sample prediction.** The replay backtest reports `pipeline_ran` and `predictive` as separate claims, flags `degenerate`, `not_identified` and `extrapolation`, and no winner is chosen from a history that predicted nothing or that extrapolates. No simulator training is built in PTR until `predictive` has been true on a real generation history at least once.
+6. **Batching sits behind the backend traits.** `AdaptiveBatcher` and `ReplicaRouter` implement `InferenceBackend`/`ResumableInferenceBackend`, are bounded, drop passed deadlines before the model, and ask a gate about the batch's generation immediately before every model call. They are not wired into `ptrd` until the server stops holding its lock across the model call.
+
+## Consequences
+- The three events take tags 39, 40 and 41 (37 is `EgressRefused`, 38 `PodHeadAdvanced`; 32 to 36 are reserved by ADR-0022). Each is added at the end of every exhaustive match, in tag order.
+- Adapter bindings and cycle counts are not part of any compacted snapshot layout. `export_compacted_snapshot` refuses while they exist; a snapshot section is a follow-up. This trades a missing feature for never dropping a revocation silently.
+- A cycle admitted and not recorded before a crash is not counted after the restart. The budget bounds recorded and running cycles.
+- The weights digest proves what the caller passed hashes to what the gate saw; it does not prove the bytes are the stored artifact, and the gate subject is the trusted evaluator's claim.
+- `evaluate` (with a serving score always present) still exists next to `evaluate_promotion`; a placeholder score there yields a report a proposal accepts. The evaluator must be the party that calls `evaluate_promotion`.
+- Evidence of the batcher's value does not exist: the default `infer_batch` is sequential, the server lock hides any gain, and the experiment that would measure it has no registered id (E009 is reserved by the pod data-plane design). Until it runs, the batcher is a bounded, tested mechanism and not a performance claim.
+- The mechanisms are covered by tests; the claims about the backtest and about adapter lineage are preregistered experiments (F008 planned, R004 planned) and are not evidence yet.

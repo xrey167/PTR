@@ -539,3 +539,8 @@ status = "failed"
 id = "C008"
 path = "consciousness/C008-attention-schema-routing-cpu"
 status = "failed"
+
+[[experiment]]
+id = "F008"
+path = "feedback/F008-replay-backtest"
+status = "planned"

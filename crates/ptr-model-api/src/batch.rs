@@ -397,7 +397,9 @@ impl<B: BatchInferenceBackend + 'static> AdaptiveBatcher<B> {
             }
         }
         self.shared.wake.notify_one();
-        answer_rx.recv().unwrap_or_else(|_| Err(ModelError::closed()))
+        answer_rx
+            .recv()
+            .unwrap_or_else(|_| Err(ModelError::closed()))
     }
 
     /// The counters since the batcher was built.
@@ -519,9 +521,10 @@ fn run_batch<B: BatchInferenceBackend + 'static>(shared: &Shared<B>, batch: Vec<
     }
     bump(&counters.batches, 1);
     bump(&counters.dispatched, batch.len());
-    counters
-        .largest_batch
-        .fetch_max(u64::try_from(batch.len()).unwrap_or(u64::MAX), Ordering::Relaxed);
+    counters.largest_batch.fetch_max(
+        u64::try_from(batch.len()).unwrap_or(u64::MAX),
+        Ordering::Relaxed,
+    );
     let requests: Vec<&ModelRequest> = batch.iter().map(|entry| &entry.payload.request).collect();
     let outcome = catch_unwind(AssertUnwindSafe(|| shared.backend.infer_batch(&requests)));
     let results = match outcome {

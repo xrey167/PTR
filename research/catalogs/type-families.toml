@@ -222,9 +222,9 @@ id = "adapter-lineage"
 owner = "ptr-lineage"
 status = "prototype"
 purpose = "Content-addressed adapter identity, gated lifecycle, subspace interference, forgetting-driven replay and consolidation."
-implemented = ["AdapterId", "AdapterRecord", "AdapterStatus", "BaseModel", "Origin", "Lineage", "ConsolidationPolicy", "ForgettingGate", "GateReport", "GateViolation", "AccuracyMatrix", "PublicSuite", "ReplayPool", "ReplaySample", "ReplayParams", "MemoryState", "ModelTime", "Split", "Basis", "Matrix", "LayerUpdate", "InterferenceReport", "LayerInterference", "LineageError"]
-open = ["AdapterPromoted ledger event", "checkpoint binding for serving", "multi-adapter routing"]
-invariants = ["no registry row decides serving", "held-out samples never enter replay", "revoking an input names every dependent adapter"]
+implemented = ["AdapterId", "AdapterRecord", "AdapterStatus", "BaseModel", "Origin", "Lineage", "ConsolidationPolicy", "ForgettingGate", "GateReport", "GateViolation", "AccuracyMatrix", "PublicSuite", "PromotionSuite", "PromotionProposal", "SplitLock", "ReplayPool", "ReplaySample", "ReplayParams", "MemoryState", "ModelTime", "Split", "Basis", "Matrix", "LayerUpdate", "InterferenceReport", "LayerInterference", "LineageError"]
+open = ["snapshot section for adapter bindings", "request routing to promoted adapters", "multi-adapter routing"]
+invariants = ["no registry row decides serving: the committed AdapterPromoted and AdapterRevoked events do", "a promotion without a serving baseline is refused", "held-out samples never enter replay", "revoking an input names every dependent adapter"]
 
 [[family]]
 id = "relational-substrate"
