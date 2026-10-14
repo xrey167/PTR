@@ -151,11 +151,11 @@ impl VcwPayload for ServedDefects {
     }
 
     fn payload_digest(&self) -> Digest {
-        let mut hasher = Sha256::new();
-        hasher.update(self.payload_type().0.as_bytes());
-        hasher.update([0]);
-        hasher.update(self.render().as_bytes());
-        hasher.finalize().into()
+        framed_digest(
+            SERVED_DIGEST_DOMAIN,
+            self.payload_type().0.as_bytes(),
+            self.render().as_bytes(),
+        )
     }
 
     fn confined_to(&self, edited: &Self, named: &[String]) -> bool {
@@ -206,10 +206,25 @@ pub(super) struct SimCodec {
 }
 
 fn digest_of(payload: &TypedPayload) -> Digest {
+    framed_digest(
+        CODEC_DIGEST_DOMAIN,
+        payload.type_id.0.as_bytes(),
+        &payload.bytes,
+    )
+}
+
+const SERVED_DIGEST_DOMAIN: &[u8] = b"ptr.server.vcw.sim.served.v2";
+const CODEC_DIGEST_DOMAIN: &[u8] = b"ptr.server.vcw.sim.codec.v2";
+
+/// v2 (issue #141): a domain tag, then the type id and the bytes, each length-prefixed. v1
+/// joined them with a 0 byte, so a type id holding a 0 byte aliased another split.
+fn framed_digest(domain: &[u8], type_id: &[u8], bytes: &[u8]) -> Digest {
     let mut hasher = Sha256::new();
-    hasher.update(payload.type_id.0.as_bytes());
-    hasher.update([0]);
-    hasher.update(&payload.bytes);
+    hasher.update(domain);
+    for field in [type_id, bytes] {
+        hasher.update((field.len() as u64).to_le_bytes());
+        hasher.update(field);
+    }
     hasher.finalize().into()
 }
 
@@ -231,6 +246,25 @@ impl PayloadCodec<ServedDefects> for SimCodec {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Issue #141: v1 joined the type id and the bytes with a 0 byte, so the boundary could move
+    /// and the codec could hand back another candidate's defects.
+    #[test]
+    fn a_zero_byte_in_the_type_or_bytes_does_not_alias() {
+        let left = TypedPayload {
+            type_id: TypeId::from("a\0b"),
+            bytes: b"c".to_vec(),
+        };
+        let right = TypedPayload {
+            type_id: TypeId::from("a"),
+            bytes: b"b\0c".to_vec(),
+        };
+        assert_ne!(digest_of(&left), digest_of(&right));
+        assert_ne!(
+            framed_digest(SERVED_DIGEST_DOMAIN, b"a\0b", b"c"),
+            framed_digest(SERVED_DIGEST_DOMAIN, b"a", b"b\0c")
+        );
+    }
 
     fn clean(kind: VcwTaskKind, reference: &str, entry: &str, arity: usize) -> ServedDefects {
         let job = SimJob {

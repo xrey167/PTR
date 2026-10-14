@@ -387,3 +387,86 @@ fn at_the_stranded_cap_the_install_stays_tracked_and_nothing_is_dropped() {
     assert!(again.abandoned.is_empty());
     assert_eq!(f.driver.pending_installs().len(), 1);
 }
+
+/// Issue #141: `install` takes over an existing PodRegistry entry only for a reactivation. A
+/// Birth, Merge or Split result whose id is already registered with another manifest is
+/// refused and the registered Pod stays; the same manifest is a retry and is left alone.
+#[test]
+fn install_replaces_an_existing_entry_only_for_a_reactivation() {
+    let specialist = |seed: u64| {
+        SimulatedTrainer::new(project(), DefectDoc::clean_type(), seed, 0.9)
+            .train(&TrainingRequest {
+                kind: OpKind::Birth,
+                pod: pod("taken"),
+                codes: [code("x")].into_iter().collect(),
+                sources: Vec::new(),
+            })
+            .unwrap()
+    };
+    let incumbent = specialist(1);
+    let newcomer = specialist(2);
+    assert_ne!(
+        incumbent.manifest.digest(),
+        newcomer.manifest.digest(),
+        "the two specialists must differ"
+    );
+    let registered = |pods: &PodRegistry| {
+        pods.get(&project(), &pod("taken"))
+            .unwrap()
+            .manifest()
+            .digest()
+    };
+    for kind in [OpKind::Birth, OpKind::Merge, OpKind::Split] {
+        let mut pods = PodRegistry::default();
+        pods.register_new(incumbent.executable()).unwrap();
+        let refused = install(&mut pods, kind, &newcomer);
+        assert!(
+            matches!(refused, Err(PodRegistrationError::AlreadyRegistered { .. })),
+            "{kind:?}: {refused:?}"
+        );
+        assert_eq!(registered(&pods), incumbent.manifest.digest(), "{kind:?}");
+        // A retry of the install that already happened is not a conflict.
+        install(&mut pods, kind, &incumbent).unwrap();
+        assert_eq!(registered(&pods), incumbent.manifest.digest(), "{kind:?}");
+        // A fresh id registers.
+        let mut empty = PodRegistry::default();
+        install(&mut empty, kind, &newcomer).unwrap();
+        assert_eq!(registered(&empty), newcomer.manifest.digest(), "{kind:?}");
+    }
+    let mut pods = PodRegistry::default();
+    pods.register_new(incumbent.executable()).unwrap();
+    install(&mut pods, OpKind::Reactivate, &newcomer).unwrap();
+    assert_eq!(registered(&pods), newcomer.manifest.digest());
+}
+
+/// Review of #141 (round 5): a registration that races the preflight (the id is taken after
+/// the Birth is committed) is still caught by the install: the registered Pod is not replaced
+/// and the committed expert is not reported installed.
+#[test]
+fn an_id_taken_after_the_commit_is_not_replaced_by_the_install() {
+    let mut f = Fixture::new(&[]);
+    let trained = f.train("raced", &["x"]);
+    f.slots += 1;
+    let result = f.spec(&trained, 100 + f.slots, 1);
+    let (proposal, commit) = f.admit(StructuralOp::Birth { result });
+    let intruder = SimulatedTrainer::new(project(), DefectDoc::clean_type(), 7, 0.5)
+        .train(&TrainingRequest {
+            kind: OpKind::Birth,
+            pod: pod("raced"),
+            codes: [code("x")].into_iter().collect(),
+            sources: Vec::new(),
+        })
+        .unwrap();
+    f.pods.register_new(intruder.executable()).unwrap();
+    f.pend(commit, proposal, trained, Vec::new(), &["x"]);
+    let retry = f.retry();
+    assert!(retry.installed.is_empty(), "{retry:?}");
+    assert_eq!(
+        f.pods
+            .get(&project(), &pod("raced"))
+            .unwrap()
+            .manifest()
+            .digest(),
+        intruder.manifest.digest()
+    );
+}

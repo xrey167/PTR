@@ -9,8 +9,8 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-10-13  
-**Code footprint:** 3 Rust source files · 749 nonblank source lines · 2 integration-test files · 17 test markers (`#[test]`, `#[tokio::test]`)
+**Last reviewed:** 2026-10-14  
+**Code footprint:** 3 Rust source files · 749 nonblank source lines · 2 integration-test files · 18 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -29,6 +29,7 @@
 - Snapshot payloads are carried unread, and the test carries a real PTRCS006 compacted snapshot end to end: it is recorded by the leader, arrives byte for byte at a member the leader cannot replay to, and a runtime restores from exactly those bytes
 - No background loop, timer or retry policy: the caller drives accept (serve_once) and the stepping calls (tick, campaign, propose, propose_membership), which keeps scheduling decisions where they can be made deliberately and keeps the tests free of sleeps
 - The whole composition is feature-gated, so iroh and raft stay out of every other workspace build exactly as ptr-net and ptr-ledger keep their own backends out
+- tests/wire.rs carries a compacted snapshot both without a scope (PTRCS006) and with one (PTRCS010, execution section PTREX003, issue #141) as the raft snapshot payload; the far side restores each from the bytes that arrived, the scope with its recovery obligation
 
 ### Missing for the target architecture
 
