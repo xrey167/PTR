@@ -8,8 +8,8 @@ use axum::{
 use ptr_config::PtrConfig;
 use ptr_runtime::PtrRuntime;
 use ptr_server::{
-    router, router_from_state, IngressDiagnosticsMode, RequestTracingOptions, ServerOptions,
-    ServerOptionsError, ServerState,
+    router, router_from_state, IngressDiagnosticsLimits, IngressDiagnosticsMode,
+    RequestTracingOptions, ServerOptions, ServerOptionsError, ServerState,
 };
 use serde_json::Value;
 use std::path::PathBuf;
@@ -105,6 +105,73 @@ async fn ingress_diagnostics_are_added_and_leave_the_other_fields_unchanged() {
         .unwrap()
         .iter()
         .any(|r| r == "high_risk_effect"));
+}
+
+#[tokio::test]
+async fn text_beyond_the_analysis_cap_is_truncated_in_the_report_only() {
+    let diagnosed = router_from_state(state_with(ServerOptions {
+        ingress_diagnostics: IngressDiagnosticsMode::Advisory,
+        ..ServerOptions::default()
+    }));
+    // 200 KiB, above the 64 KiB default cap; the high-risk words sit beyond the cap.
+    let text = format!("{}rm -rf everything", "a".repeat(200 * 1024));
+    let (status, bytes) = call(&diagnosed, &format!(r#"{{"id":"big","text":"{text}"}}"#)).await;
+    assert_eq!(status, StatusCode::OK);
+    let json: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        json["text"].as_str().unwrap(),
+        text,
+        "the runtime saw the full text"
+    );
+    let diagnostics = &json["ingress_diagnostics"];
+    assert_eq!(diagnostics["truncated"], true);
+    assert_eq!(diagnostics["analyzed_bytes"], 64 * 1024);
+    assert_eq!(diagnostics["advisory"], true);
+}
+
+#[tokio::test]
+async fn the_analysis_cap_is_configurable_and_zero_limits_are_refused() {
+    let state = state_with(ServerOptions {
+        ingress_diagnostics: IngressDiagnosticsMode::Advisory,
+        ..ServerOptions::default()
+    })
+    .with_ingress_diagnostics_limits(IngressDiagnosticsLimits {
+        max_concurrent: 1,
+        max_analyzed_bytes: 8,
+    })
+    .unwrap();
+    let (status, bytes) = call(
+        &router_from_state(state),
+        r#"{"id":"r","text":"hello world, this is long"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let json: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json["ingress_diagnostics"]["analyzed_bytes"], 8);
+    assert_eq!(json["ingress_diagnostics"]["truncated"], true);
+    for limits in [
+        IngressDiagnosticsLimits {
+            max_concurrent: 0,
+            ..IngressDiagnosticsLimits::default()
+        },
+        IngressDiagnosticsLimits {
+            max_analyzed_bytes: 0,
+            ..IngressDiagnosticsLimits::default()
+        },
+    ] {
+        let refused = ServerState::new(runtime())
+            .with_options(ServerOptions {
+                ingress_diagnostics: IngressDiagnosticsMode::Advisory,
+                ..ServerOptions::default()
+            })
+            .unwrap()
+            .with_ingress_diagnostics_limits(limits);
+        assert!(matches!(
+            refused,
+            Err(ServerOptionsError::ZeroIngressConcurrency
+                | ServerOptionsError::ZeroIngressAnalysisCap)
+        ));
+    }
 }
 
 #[tokio::test]
