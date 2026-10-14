@@ -596,8 +596,10 @@ impl FileTierBackend {
                 Ok(bytes)
             }
             crate::direct_io::DirectRead::Refused => {
+                // Counted only once the buffered read has served the request.
+                let bytes = fs::read(path)?;
                 self.fallback_reads.fetch_add(1, Ordering::Relaxed);
-                fs::read(path)
+                Ok(bytes)
             }
         }
     }
@@ -860,6 +862,13 @@ mod direct_fallback_tests {
             .read_direct_with(&path, |_| Err(std::io::Error::from_raw_os_error(5)))
             .unwrap_err();
         assert_eq!(error.raw_os_error(), Some(5));
+        assert_eq!(tier.read_stats().fallback, 1);
+        // A fallback whose buffered read fails is not counted.
+        let missing = root.join("chunks").join("missing");
+        let error = tier
+            .read_direct_with(&missing, |_| Ok(crate::direct_io::DirectRead::Refused))
+            .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
         assert_eq!(tier.read_stats().fallback, 1);
         let _ = fs::remove_dir_all(&root);
     }

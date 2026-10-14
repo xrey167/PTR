@@ -60,7 +60,13 @@ pub(crate) fn read_direct(path: &Path) -> io::Result<DirectRead> {
             Err(error) => return Err(error),
         }
     }
-    Ok(DirectRead::Direct(buffer[..filled.min(length)].to_vec()))
+    // A file that changed size while it was read (for example extended in place after the
+    // snapshot above) is not served from this read: the caller re-reads it buffered through EOF,
+    // and validation then rejects the changed object as the buffered path always does.
+    if filled != length || file.metadata()?.len() != length as u64 {
+        return Ok(DirectRead::Refused);
+    }
+    Ok(DirectRead::Direct(buffer[..length].to_vec()))
 }
 
 #[cfg(test)]
