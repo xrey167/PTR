@@ -8,7 +8,7 @@ use ptr_protocol::negotiation::{
 };
 use ptr_protocol::session::{
     DriveError, FrameTransport, LoopbackTransport, ProtocolSession, SessionConfig, SessionError,
-    SessionEvent, SessionState,
+    SessionEvent, SessionState, TransportError, MAX_UNSENT_FRAMES,
 };
 use ptr_protocol::TypedPayload;
 use ptr_types::{CapabilityId, TypeId};
@@ -490,4 +490,103 @@ fn responding_to_a_hello_with_an_unencodable_config_does_not_negotiate() {
         assert!(bad.negotiated().is_none(), "{name}");
         assert!(bad.peer_node_id().is_none(), "{name}");
     }
+}
+
+/// Handshakes over a pair whose queues hold only `capacity` frames.
+fn handshake_with_capacity(
+    capacity: usize,
+) -> (
+    (ProtocolSession, LoopbackTransport),
+    (ProtocolSession, LoopbackTransport),
+) {
+    let (mut ta, mut tb) = LoopbackTransport::pair(capacity);
+    let mut a = session("node-a", "predict");
+    let mut b = session("node-b", "embed");
+    ta.send(&a.start().unwrap()).unwrap();
+    b.pump(&mut tb).unwrap();
+    a.pump(&mut ta).unwrap();
+    b.pump(&mut tb).unwrap();
+    ((a, ta), (b, tb))
+}
+
+/// Fills b's outgoing queue with harmless Decl frames, so b's next send fails.
+fn fill(tb: &mut LoopbackTransport, capacity: usize) {
+    for _ in 0..capacity {
+        tb.send(&ControlFrame::Decl {
+            capabilities: Vec::new(),
+        })
+        .unwrap();
+    }
+}
+
+#[test]
+fn cancel_ack_that_could_not_be_sent_is_delivered_after_the_peer_drains_and_retries() {
+    let ((mut a, mut ta), (mut b, mut tb)) = handshake_with_capacity(2);
+    ta.send(&a.call(key("k"), payload(b"x")).unwrap()).unwrap();
+    ta.send(&a.cancel(1, "no longer needed").unwrap()).unwrap();
+    fill(&mut tb, 2);
+    // The Ack cannot be queued: the removal of the call has already been committed.
+    assert!(matches!(
+        b.pump(&mut tb),
+        Err(DriveError::Transport(TransportError::Full { .. }))
+    ));
+    assert_eq!(b.queued_calls(), 0);
+    // The peer drains its inbox and retries the Cancel.
+    a.pump(&mut ta).unwrap();
+    assert_eq!(a.outstanding_calls(), 1);
+    ta.send(&a.cancel(1, "retry").unwrap()).unwrap();
+    b.pump(&mut tb).unwrap();
+    let events = a.pump(&mut ta).unwrap();
+    assert_eq!(events, vec![SessionEvent::CancelAcknowledged { seq: 1 }]);
+    assert_eq!(a.outstanding_calls(), 0);
+    assert_eq!(b.unsent_frames(), 0);
+}
+
+#[test]
+fn bye_reply_that_could_not_be_sent_is_delivered_later() {
+    let ((mut a, mut ta), (mut b, mut tb)) = handshake_with_capacity(2);
+    ta.send(&a.close("done").unwrap()).unwrap();
+    fill(&mut tb, 2);
+    assert!(matches!(
+        b.pump(&mut tb),
+        Err(DriveError::Transport(TransportError::Full { .. }))
+    ));
+    // Drain the filler by hand: Decl is not legal once a is Closing.
+    while ta.recv().unwrap().is_some() {}
+    // Nothing new arrives; the next pump still sends the held Bye.
+    b.pump(&mut tb).unwrap();
+    a.pump(&mut ta).unwrap();
+    assert_eq!(a.state(), SessionState::Closed);
+    assert_eq!(b.state(), SessionState::Closed);
+}
+
+#[test]
+fn held_frames_stay_bounded_under_repeated_send_failures() {
+    let ((mut a, mut ta), (mut b, mut tb)) = handshake_with_capacity(2);
+    ta.send(&a.call(key("k"), payload(b"x")).unwrap()).unwrap();
+    ta.send(&a.cancel(1, "c").unwrap()).unwrap();
+    fill(&mut tb, 2);
+    for _ in 0..10 {
+        assert!(b.pump(&mut tb).is_err());
+        assert!(b.unsent_frames() <= MAX_UNSENT_FRAMES);
+    }
+    // The held Ack blocks further receiving, so nothing more accumulates.
+    assert_eq!(b.unsent_frames(), 1);
+    drop(a);
+}
+
+#[test]
+fn responder_hello_and_decl_survive_a_full_queue() {
+    let (mut ta, mut tb) = LoopbackTransport::pair(1);
+    let mut a = session("node-a", "predict");
+    let mut b = session("node-b", "embed");
+    ta.send(&a.start().unwrap()).unwrap();
+    // The Hello fits, the Decl does not; b is already Negotiated.
+    assert!(b.pump(&mut tb).is_err());
+    assert_eq!(b.unsent_frames(), 1);
+    a.pump(&mut ta).unwrap();
+    b.pump(&mut tb).unwrap();
+    assert_eq!(b.unsent_frames(), 0);
+    a.pump(&mut ta).unwrap();
+    assert_eq!(a.state(), SessionState::Negotiated);
 }

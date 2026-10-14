@@ -15,7 +15,8 @@
 //! Bounds (Invariant 8): at most `window` outstanding calls in each direction, at most
 //! `completed_capacity` remembered idempotency keys (least recently used is evicted, after
 //! which a retry of that key would execute again), at most `completed_capacity` remembered
-//! answered sequence numbers (oldest evicted), at most `capacity` frames per queue.
+//! answered sequence numbers (oldest evicted), at most `capacity` frames per queue, and at
+//! most [`MAX_UNSENT_FRAMES`] answers held by `pump` after a refused send.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
@@ -33,6 +34,9 @@ use crate::TypedPayload;
 
 pub const DEFAULT_WINDOW: usize = 8;
 pub const DEFAULT_COMPLETED_CAPACITY: usize = 64;
+/// Most frames [`ProtocolSession::pump`] holds after a failed send: one applied frame produces
+/// at most two (Hello and Decl) and `pump` stops receiving until they are out.
+pub const MAX_UNSENT_FRAMES: usize = 2;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SessionState {
@@ -224,6 +228,8 @@ pub struct ProtocolSession {
     /// recognised here instead of being an unknown sequence number. Front is the oldest.
     answered: VecDeque<(u64, [u8; 32])>,
     duplicate_replies: usize,
+    /// Frames `pump` applied but could not send; sent before anything else is received.
+    unsent: VecDeque<ControlFrame>,
     bye_sent: bool,
     bye_received: bool,
     farewell: Option<ControlFrame>,
@@ -250,6 +256,7 @@ impl ProtocolSession {
             completed: VecDeque::new(),
             answered: VecDeque::new(),
             duplicate_replies: 0,
+            unsent: VecDeque::new(),
             bye_sent: false,
             bye_received: false,
             farewell: None,
@@ -284,6 +291,12 @@ impl ProtocolSession {
     /// Calls the peer sent that have not been served yet.
     pub fn queued_calls(&self) -> usize {
         self.pending.len()
+    }
+
+    /// Frames produced by an applied frame that [`ProtocolSession::pump`] could not send and
+    /// will send first on its next call (at most [`MAX_UNSENT_FRAMES`]).
+    pub fn unsent_frames(&self) -> usize {
+        self.unsent.len()
     }
 
     /// Idempotency keys currently remembered.
@@ -725,28 +738,47 @@ impl ProtocolSession {
 
     /// Receives every frame waiting on `transport`, applies it and sends the answers.
     /// Stops at the first session error, after sending any farewell.
+    ///
+    /// Applying a frame commits state (a cancelled call is gone, the Bye is marked sent, the
+    /// session is Negotiated) before its answers are sent. An answer the transport refuses is
+    /// therefore kept (at most [`MAX_UNSENT_FRAMES`]) and sent first on the next call, and
+    /// nothing more is received until it is out, so the peer never has to retry a frame
+    /// whose effect this end already took.
     pub fn pump<T: FrameTransport>(
         &mut self,
         transport: &mut T,
     ) -> Result<Vec<SessionEvent>, DriveError> {
+        self.send_all(transport, Vec::new())?;
         let mut events = Vec::new();
         while let Some(frame) = transport.recv().map_err(DriveError::Transport)? {
             match self.on_frame(frame) {
                 Ok(handled) => {
-                    for out in &handled.send {
-                        transport.send(out).map_err(DriveError::Transport)?;
-                    }
+                    self.send_all(transport, handled.send)?;
                     events.push(handled.event);
                 }
                 Err(error) => {
                     if let Some(bye) = self.take_farewell() {
-                        transport.send(&bye).map_err(DriveError::Transport)?;
+                        self.send_all(transport, vec![bye])?;
                     }
                     return Err(DriveError::Session(error));
                 }
             }
         }
         Ok(events)
+    }
+
+    /// Sends the held frames, then `frames`; on a refusal keeps every frame not yet sent.
+    fn send_all<T: FrameTransport>(
+        &mut self,
+        transport: &mut T,
+        frames: Vec<ControlFrame>,
+    ) -> Result<(), DriveError> {
+        self.unsent.extend(frames);
+        while let Some(frame) = self.unsent.front() {
+            transport.send(frame).map_err(DriveError::Transport)?;
+            self.unsent.pop_front();
+        }
+        Ok(())
     }
 
     /// Serves every queued call and sends the Replies; returns how many were served.
