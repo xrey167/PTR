@@ -113,6 +113,7 @@ use ptr_protocol::{
 
 use ptr_types::{ProjectId, TypeId};
 
+use crate::host_quota::{QuotaCharge, QuotaRefusal, SharedHostQuota};
 use crate::split_stage::{revalidate_chain_in, ChainFault, StageLiveness};
 
 /// Identifies a table, so a ticket of one table is no ticket of another.
@@ -331,6 +332,9 @@ pub enum HandleRejection {
         in_flight: u64,
         requested: u64,
     },
+    /// The host-wide byte quota ([`SharedHostQuota`]) refused the footprint: the producer
+    /// session, the consumer session or the host would exceed its cap.
+    HostQuota(QuotaRefusal),
     /// The mapped bytes do not match the handle's content commitment.
     Content(HandleError),
     /// The chain or the placement epoch is not live now.
@@ -655,6 +659,9 @@ struct Claim {
     byte_len: u64,
     /// The allocated footprint charged to the budget (at least `byte_len`).
     charged_bytes: u64,
+    /// The charge held in the host-wide ledger, if the table has one; handed back exactly once,
+    /// when this claim is taken (with the notice that frees the buffer, or at teardown).
+    host: Option<QuotaCharge>,
 }
 
 struct Slot {
@@ -692,6 +699,8 @@ pub struct HandleTable {
     /// table-wide state by scanning.
     open_total: usize,
     producers: BTreeMap<String, Producer>,
+    /// The host-wide byte ledger shared with the other tables of the host, if any.
+    quota: Option<SharedHostQuota>,
 }
 
 impl HandleTable {
@@ -709,7 +718,28 @@ impl HandleTable {
             next_ticket: 1,
             open_total: 0,
             producers: BTreeMap::new(),
+            quota: None,
         })
+    }
+
+    /// Like [`Self::new`], and every handle this table admits is also charged to the host-wide
+    /// ledger `quota` (doc 42 rule 3b), which the tables of the host share: against its producer
+    /// session, its consumer session and the host, with the footprint rounded up to the ledger's
+    /// granularity. The charge is taken last in [`Self::admit`], so a refusal
+    /// ([`HandleRejection::HostQuota`]) records nothing, and it is handed back with the notice
+    /// that frees the buffer (a carrier that is not shared) or in
+    /// [`Self::release_after_teardown`] (a shared carrier), once. Dropping a table does not
+    /// release its charges: the host's teardown path owns them
+    /// ([`SharedHostQuota::release_pair`] with a [`crate::VerifiedTeardown`];
+    /// [`SharedHostQuota::tracked_pairs`] finds them).
+    pub fn with_host_quota(
+        policy: HandlePolicy,
+        consumer: &str,
+        quota: SharedHostQuota,
+    ) -> Result<Self, HandlePolicyViolation> {
+        let mut table = Self::new(policy, consumer)?;
+        table.quota = Some(quota);
+        Ok(table)
     }
 
     pub fn policy(&self) -> &HandlePolicy {
@@ -790,7 +820,12 @@ impl HandleTable {
         producer.key = key;
         producer.stage_identity = stage_identity.to_owned();
         producer.session = session;
-        let (released, closed) = abandon_open(producer, principal, ReclaimReason::ProducerReplaced);
+        let (released, closed) = abandon_open(
+            producer,
+            principal,
+            ReclaimReason::ProducerReplaced,
+            self.quota.as_ref(),
+        );
         self.open_total = self.open_total.saturating_sub(closed);
         Ok(released)
     }
@@ -807,7 +842,12 @@ impl HandleTable {
             return Vec::new();
         };
         producer.active = false;
-        let (released, closed) = abandon_open(producer, principal, ReclaimReason::ProducerRemoved);
+        let (released, closed) = abandon_open(
+            producer,
+            principal,
+            ReclaimReason::ProducerRemoved,
+            self.quota.as_ref(),
+        );
         self.open_total = self.open_total.saturating_sub(closed);
         released
     }
@@ -941,6 +981,17 @@ impl HandleTable {
             request.live,
         )
         .map_err(HandleRejection::Chain)?;
+        let slot_digest = handle_digest(&handle);
+        // The last fallible step: a refusal above or here records nothing, and nothing but the
+        // slot insert follows it.
+        let host = match &self.quota {
+            Some(quota) => Some(
+                quota
+                    .try_charge(producer.session, request.consumer_session, footprint)
+                    .map_err(HandleRejection::HostQuota)?,
+            ),
+            None => None,
+        };
         let ticket = self.next_ticket;
         self.next_ticket += 1;
         self.open_total += 1;
@@ -949,12 +1000,13 @@ impl HandleTable {
             Slot {
                 state: SlotState::Open { ticket },
                 deadline_ms,
-                digest: handle_digest(&handle),
+                digest: slot_digest,
                 claim: Some(Claim {
                     carrier: handle.carrier,
                     locator: reclaim_locator(&handle.locator),
                     byte_len: handle.byte_len,
                     charged_bytes: footprint,
+                    host,
                 }),
                 producer_session: producer.session,
                 consumer_session: request.consumer_session,
@@ -1089,15 +1141,13 @@ impl HandleTable {
         {
             return Ok(None);
         }
-        Ok(slot.claim.take().map(|claim| {
-            notice(
-                &consumed.principal,
-                nonce,
-                slot.digest,
-                claim,
-                ReclaimReason::Consumed,
-            )
-        }))
+        Ok(take_notice(
+            self.quota.as_ref(),
+            &consumed.principal,
+            nonce,
+            slot,
+            ReclaimReason::Consumed,
+        ))
     }
 
     /// The consumer gives an admitted handle up unused. The nonce is tombstoned; the claim and
@@ -1119,6 +1169,7 @@ impl HandleTable {
     pub fn expire(&mut self, now_ms: u64) -> Vec<ReclaimNotice> {
         let now_ms = self.advance(now_ms);
         let policy = self.policy;
+        let quota = self.quota.as_ref();
         let mut notices = Vec::new();
         let mut closed_open = 0usize;
         for (principal, producer) in &mut self.producers {
@@ -1144,7 +1195,7 @@ impl HandleTable {
                         continue;
                     }
                 }
-                let Some(slot) = producer.slots.remove(&nonce) else {
+                let Some(mut slot) = producer.slots.remove(&nonce) else {
                     continue;
                 };
                 let reason = match slot.state {
@@ -1155,10 +1206,7 @@ impl HandleTable {
                     SlotState::Abandoned => ReclaimReason::Abandoned,
                     SlotState::Consumed { .. } => ReclaimReason::Consumed,
                 };
-                notices.extend(
-                    slot.claim
-                        .map(|claim| notice(principal, nonce, slot.digest, claim, reason)),
-                );
+                notices.extend(take_notice(quota, principal, nonce, &mut slot, reason));
             }
         }
         self.open_total = self.open_total.saturating_sub(closed_open);
@@ -1183,6 +1231,7 @@ impl HandleTable {
         let Some(producer) = self.producers.get_mut(principal) else {
             return Vec::new();
         };
+        let quota = self.quota.as_ref();
         let mut notices = Vec::new();
         let mut closed = 0usize;
         for (nonce, slot) in &mut producer.slots {
@@ -1199,15 +1248,13 @@ impl HandleTable {
                 slot.state = SlotState::Abandoned;
                 closed += 1;
             }
-            notices.extend(slot.claim.take().map(|claim| {
-                notice(
-                    principal,
-                    *nonce,
-                    slot.digest,
-                    claim,
-                    ReclaimReason::TornDown,
-                )
-            }));
+            notices.extend(take_notice(
+                quota,
+                principal,
+                *nonce,
+                slot,
+                ReclaimReason::TornDown,
+            ));
         }
         self.open_total = self.open_total.saturating_sub(closed);
         notices
@@ -1221,6 +1268,7 @@ fn abandon_open(
     producer: &mut Producer,
     principal: &str,
     reason: ReclaimReason,
+    quota: Option<&SharedHostQuota>,
 ) -> (Vec<ReclaimNotice>, usize) {
     let mut notices = Vec::new();
     let mut closed = 0usize;
@@ -1233,11 +1281,7 @@ fn abandon_open(
                 .as_ref()
                 .is_some_and(|claim| !is_shared(claim.carrier))
             {
-                notices.extend(
-                    slot.claim
-                        .take()
-                        .map(|claim| notice(principal, *nonce, slot.digest, claim, reason)),
-                );
+                notices.extend(take_notice(quota, principal, *nonce, slot, reason));
             }
         }
     }
@@ -1287,6 +1331,25 @@ fn reclaim_locator(locator: &CarrierLocator) -> CarrierLocator {
         | CarrierLocator::NvmeFile { .. }
         | CarrierLocator::Remote { .. }) => other.clone(),
     }
+}
+
+/// Take the claim of `slot`, hand its host charge back and report the buffer. Every path that
+/// frees a claim goes through here, so a charge is released exactly once (the claim is gone
+/// afterwards) and never without the notice that frees the buffer. A release the ledger refuses
+/// is counted there ([`crate::HostQuotaUsage::release_faults`]) and changes nothing.
+fn take_notice(
+    quota: Option<&SharedHostQuota>,
+    principal: &str,
+    nonce: u64,
+    slot: &mut Slot,
+    reason: ReclaimReason,
+) -> Option<ReclaimNotice> {
+    let mut claim = slot.claim.take()?;
+    if let (Some(quota), Some(charge)) = (quota, claim.host.take()) {
+        // A refused release is already counted in the ledger; there is nothing to undo here.
+        let _ = quota.release(charge);
+    }
+    Some(notice(principal, nonce, slot.digest, claim, reason))
 }
 
 fn notice(

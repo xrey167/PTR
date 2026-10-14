@@ -4559,6 +4559,7 @@ dependencies = [
 name = "ptr-fabric"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "ptr-protocol",
  "ptr-types",
  "rustix 1.1.5",
