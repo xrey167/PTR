@@ -5,7 +5,7 @@
 
 **Component count:** 33  
 **Maturity distribution:** `foundation`: 1, `prototype`: 21, `research-scaffold`: 1, `scaffold`: 10  
-**Rust footprint:** 281 source files · 148167 nonblank source lines · 252 integration-test files · 3548 test markers (`#[test]`, `#[tokio::test]`)
+**Rust footprint:** 281 source files · 148466 nonblank source lines · 252 integration-test files · 3554 test markers (`#[test]`, `#[tokio::test]`)
 
 | Component | Maturity | Rust files | LOC | Test files | Tests | Implemented items | Missing items | Experiments | Evaluations |
 |---|---:|---:|---:|---:|---:|---:|---:|---|---|
@@ -33,7 +33,7 @@
 | [ptr-podwire](../../crates/ptr-podwire/README.md) | `prototype` | 5 | 5531 | 5 | 106 | 42 | 15 | E007:frozen | — |
 | [ptr-protocol](../../crates/ptr-protocol/README.md) | `scaffold` | 4 | 2689 | 3 | 68 | 10 | 7 | R002:planned, E001:planned, E007:frozen | network-codec:open, local-serialization:open |
 | [ptr-router](../../crates/ptr-router/README.md) | `scaffold` | 13 | 8530 | 10 | 184 | 30 | 13 | M004:planned, R002:planned, E003:planned, R015:planned | inference-serving:open, distributed-data-compute:open, pod-routing:open |
-| [ptr-runtime](../../crates/ptr-runtime/README.md) | `prototype` | 61 | 54010 | 96 | 1394 | 171 | 49 | E001:planned, E003:planned, E004:planned, E007:frozen, L001-v2:frozen, R011:frozen, R012:frozen, R015:planned | — |
+| [ptr-runtime](../../crates/ptr-runtime/README.md) | `prototype` | 61 | 54309 | 96 | 1400 | 172 | 49 | E001:planned, E003:planned, E004:planned, E007:frozen, L001-v2:frozen, R011:frozen, R012:frozen, R015:planned | — |
 | [ptr-search](../../crates/ptr-search/README.md) | `prototype` | 5 | 2480 | 6 | 82 | 14 | 6 | Q001:planned, Q002:frozen, E002:planned, E003:planned | lexical-search:open, local-vector-search:open, gpu-vector-search:open, distributed-search:open, structural-code-search:open |
 | [ptr-security](../../crates/ptr-security/README.md) | `prototype` | 1 | 126 | 2 | 8 | 6 | 4 | L001:superseded, E001:planned | security-context:open |
 | [ptr-semdb](../../crates/ptr-semdb/README.md) | `prototype` | 2 | 864 | 4 | 37 | 20 | 5 | S001:frozen, S002:frozen, E004:planned | semantic-db:open |

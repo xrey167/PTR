@@ -43,6 +43,28 @@ const ACTION_DOMAIN: &[u8] = b"PTREXEC01-ACTION";
 /// before this bound.
 pub const MAX_KEY_BYTES: usize = super::compacted::MAX_STRING_BYTES;
 
+/// The longest target or operation, in bytes, an attempt being committed may name; neither may
+/// be empty. A compacted snapshot carries both of every unsettled attempt as a string of 1 to
+/// this many bytes, so an attempt outside the bound would make every export fail while it is
+/// unsettled. A new `EffectAttempted` outside it is refused with
+/// [`RuntimeError::InvalidEffectAttemptField`] before anything is appended (issue #153); replay
+/// accepts a record a log already holds.
+pub const MAX_ATTEMPT_FIELD_BYTES: usize = super::compacted::MAX_STRING_BYTES;
+
+/// A string field of an `EffectAttempted` record that a compacted snapshot bounds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EffectAttemptField {
+    /// The action's target.
+    Target,
+    /// The action's operation.
+    Operation,
+}
+
+/// Whether `value` fits a compacted snapshot as an attempt's target or operation.
+pub(super) fn valid_attempt_field(value: &str) -> bool {
+    !value.is_empty() && value.len() <= MAX_ATTEMPT_FIELD_BYTES
+}
+
 /// The exact action an audit record commits to, domain-separated so a digest of
 /// these bytes cannot collide with a digest taken elsewhere in the system.
 pub fn action_digest(action: &ActionIr) -> [u8; 32] {

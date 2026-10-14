@@ -1822,8 +1822,10 @@ impl PtrRuntime {
     }
 
     /// Refuse a new record that would take the execution section past its bounds: an attempt
-    /// (its entry and the room its settlement reserves) or a new scope. Settlements never
-    /// grow the section past what their attempt reserved, so they are never refused here.
+    /// (its entry and the room its settlement reserves), a new scope, or a settlement that
+    /// retains a response the section has no room for (issue #153). A settlement without a
+    /// response, and a reconciliation, never grow the section past what their attempt reserved,
+    /// so they are never refused here.
     pub(crate) fn check_execution_section_growth(
         &self,
         event: &ptr_ledger::LedgerEvent,
@@ -1863,6 +1865,21 @@ impl PtrRuntime {
                 use_.settled += usize::from(adds_item);
                 use_
             }
+            ptr_ledger::LedgerEvent::EffectSettled {
+                attempt,
+                response: Some(response),
+                ..
+            } => {
+                // Only the bytes the response adds are judged: the settlement adds no item, and
+                // a history replayed over the item bound must still be able to settle.
+                return match self.section_bytes_after_settlement(*attempt, response.len()) {
+                    Some(bytes) if bytes > MAX_SECTION_BYTES => {
+                        let current = self.execution_section_use();
+                        Err(SectionUse { bytes, ..current }.refusal())
+                    }
+                    _ => Ok(()),
+                };
+            }
             ptr_ledger::LedgerEvent::ScopeLifecycle(scope) => {
                 let growth = self.scopes.growth_bytes(scope);
                 if growth == 0 {
@@ -1887,13 +1904,17 @@ impl PtrRuntime {
     /// still fits. Otherwise the settlement records the outcome without the response, which
     /// always fits in the room the attempt reserved.
     pub(crate) fn settlement_retains_response(&self, attempt: CommitIndex, len: usize) -> bool {
+        self.section_bytes_after_settlement(attempt, len)
+            .is_none_or(|bytes| bytes <= MAX_SECTION_BYTES)
+    }
+
+    /// The section's bytes (with every other reservation) once `attempt` is settled with a
+    /// retained response of `len` bytes, or `None` when the settlement retains nothing in the
+    /// section (an attempt that is not unsettled, or one without a key).
+    fn section_bytes_after_settlement(&self, attempt: CommitIndex, len: usize) -> Option<usize> {
         let (unsettled, settled) = self.execution.retained_obligations();
-        let Some(effect) = unsettled.get(&attempt) else {
-            return true;
-        };
-        let Some(key) = effect.key.as_ref() else {
-            return true;
-        };
+        let effect = unsettled.get(&attempt)?;
+        let key = effect.key.as_ref()?;
         let current = self.execution_section_use();
         let replaced = settled
             .get(key)
@@ -1901,7 +1922,7 @@ impl PtrRuntime {
         let with_response = 4 + key.len() + 8 + 8 + identity_bytes(&effect.identity) + 4 + len;
         let freed =
             unsettled_entry_bytes(effect) + reserved_settlement(effect, settled).0 + replaced;
-        (current.bytes + with_response).saturating_sub(freed) <= MAX_SECTION_BYTES
+        Some((current.bytes + with_response).saturating_sub(freed))
     }
 }
 
@@ -3509,5 +3530,83 @@ mod scope_block_tests {
             runtime.check_execution_section_growth(&attempt("fresh")),
             Err(RuntimeError::ExecutionSectionFull { items, .. }) if items == MAX_SECTION_ITEMS + 1
         ));
+    }
+
+    /// Issue #153: a settlement that retains a response is held to the execution-section budget
+    /// like the attempt it settles. With the section nearly full of retained responses, a
+    /// settlement whose response does not fit is refused (it agrees with
+    /// `settlement_retains_response`), while one with a response that fits, one without a
+    /// response, a reconciliation and a settlement of an unkeyed attempt are admitted.
+    #[test]
+    fn a_settlement_retaining_a_response_is_held_to_the_section_budget() {
+        let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+        let identity = ActionIdentity {
+            project: ProjectId::from("p"),
+            principal: "alice".into(),
+            revision: Revision(1),
+            generation: Generation(1),
+            action_digest: [1; 32],
+        };
+        let mut settled = BTreeMap::new();
+        for i in 0..8 {
+            settled.insert(
+                format!("filled-{i}"),
+                SettledOutcome::Applied {
+                    attempt: CommitIndex(100 + i),
+                    identity: identity.clone(),
+                    response: vec![7; 1_000_000],
+                },
+            );
+        }
+        let mut unsettled = BTreeMap::new();
+        for (index, key) in [(5u64, Some("pending")), (6, None)] {
+            unsettled.insert(
+                CommitIndex(index),
+                UnsettledEffect {
+                    attempt: CommitIndex(index),
+                    key: key.map(str::to_owned),
+                    target: "capsule:a".into(),
+                    operation: "write".into(),
+                    effect: Effect::Mutation,
+                    identity: identity.clone(),
+                },
+            );
+        }
+        runtime.execution.restore_obligations(unsettled, settled);
+        assert!(runtime.execution_section_use().fits());
+        let settle = |attempt: u64, response: Option<Vec<u8>>| {
+            let response_digest = response
+                .as_deref()
+                .map_or([0; 32], ptr_ledger::integrity::sha256);
+            ptr_ledger::LedgerEvent::EffectSettled {
+                attempt: CommitIndex(attempt),
+                response,
+                response_digest,
+            }
+        };
+        let large = vec![9; 1_048_576];
+        assert!(!runtime.settlement_retains_response(CommitIndex(5), large.len()));
+        assert!(matches!(
+            runtime.check_execution_section_growth(&settle(5, Some(large.clone()))),
+            Err(RuntimeError::ExecutionSectionFull { bytes, .. }) if bytes > MAX_SECTION_BYTES
+        ));
+        assert!(runtime.settlement_retains_response(CommitIndex(5), 1024));
+        runtime
+            .check_execution_section_growth(&settle(5, Some(vec![9; 1024])))
+            .unwrap();
+        runtime
+            .check_execution_section_growth(&settle(5, None))
+            .unwrap();
+        runtime
+            .check_execution_section_growth(&ptr_ledger::LedgerEvent::EffectReconciled {
+                attempt: CommitIndex(5),
+                applied: true,
+                evidence: "checked".into(),
+            })
+            .unwrap();
+        // An unkeyed attempt retains nothing in the section, whatever its response.
+        runtime
+            .check_execution_section_growth(&settle(6, Some(large)))
+            .unwrap();
     }
 }
