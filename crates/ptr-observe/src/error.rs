@@ -2,9 +2,20 @@ use std::fmt;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TraceError {
-    SinkUnavailable { sink: String },
-    RejectedField { field: String },
-    Export { sink: String, message: String },
+    SinkUnavailable {
+        sink: String,
+    },
+    RejectedField {
+        field: String,
+    },
+    Export {
+        sink: String,
+        message: String,
+    },
+    /// A failed append could not be rolled back; the exporter refuses to write until re-created.
+    ExporterPoisoned {
+        sink: String,
+    },
 }
 
 impl TraceError {
@@ -13,6 +24,7 @@ impl TraceError {
             Self::SinkUnavailable { .. } => "sink_unavailable",
             Self::RejectedField { .. } => "rejected_field",
             Self::Export { .. } => "export",
+            Self::ExporterPoisoned { .. } => "exporter_poisoned",
         }
     }
 }
@@ -24,6 +36,12 @@ impl fmt::Display for TraceError {
             Self::RejectedField { field } => write!(formatter, "trace field rejected: {field}"),
             Self::Export { sink, message } => {
                 write!(formatter, "trace export failed for {sink}: {message}")
+            }
+            Self::ExporterPoisoned { sink } => {
+                write!(
+                    formatter,
+                    "trace exporter poisoned by an unrecoverable write: {sink}"
+                )
             }
         }
     }
@@ -56,6 +74,12 @@ mod tests {
                     message: "failed".into(),
                 },
                 "export",
+            ),
+            (
+                TraceError::ExporterPoisoned {
+                    sink: "test".into(),
+                },
+                "exporter_poisoned",
             ),
         ];
 

@@ -7,6 +7,9 @@ publish = false
 
 [dependencies]
 ptr-config = { workspace = true }
+ptr-events = { workspace = true }
+ptr-ingress = { workspace = true }
+ptr-inspect = { workspace = true }
 ptr-runtime = { workspace = true }
 ptr-types = { workspace = true }
 serde = { workspace = true }
@@ -14,6 +17,7 @@ toml = { workspace = true }
 
 [dev-dependencies]
 ptr-ledger = { workspace = true }
+ptr-observe = { workspace = true }
 ptr-semdb = { workspace = true }
 # The journal fixture writes its semantic value as a host write, which only a
 # grant's verifier admits.

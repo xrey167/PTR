@@ -17,6 +17,7 @@ use ptr_types::{CandidateId, VerificationLevel};
 use ptr_verifier::Verifier;
 
 use crate::candidate::{Candidate, Critique};
+use crate::record::MAX_STEPS;
 
 /// Proposes a fresh value. The loop calls it for the first candidate and whenever a critique
 /// cannot be repaired.
@@ -30,9 +31,15 @@ pub trait Repairer<T> {
     fn repair(&mut self, previous: &Candidate<T>, critique: &Critique) -> Option<T>;
 }
 
+/// Most steps a run may retain; the same bound a [`crate::TrajectoryRecord`] accepts, so every
+/// run of a valid budget can be recorded.
+const MAX_RUN_STEPS: usize = MAX_STEPS;
+
 /// The most a run may spend. `max_verifier_calls` bounds the verifier calls (one per
 /// candidate); `max_rounds` bounds the replacements that follow the first candidate, so a run
-/// holds at most `1 + max_rounds` candidates. Both must be positive.
+/// holds at most `1 + max_rounds` candidates. Both must be positive, and the smaller of
+/// `max_verifier_calls` and `1 + max_rounds` may not exceed [`MAX_STEPS`], the most steps a run
+/// retains (every candidate is kept in the trajectory).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RepairBudget {
     pub max_verifier_calls: u32,
@@ -46,6 +53,13 @@ impl RepairBudget {
         }
         if self.max_rounds == 0 {
             return Err(RepairError::NoRounds);
+        }
+        // A run retains one step per verified candidate: at most the smaller of the two limits.
+        let steps = u64::from(self.max_verifier_calls).min(u64::from(self.max_rounds) + 1);
+        if steps > MAX_RUN_STEPS as u64 {
+            return Err(RepairError::BudgetTooLarge {
+                max_steps: MAX_RUN_STEPS as u32,
+            });
         }
         Ok(())
     }
@@ -63,6 +77,10 @@ pub struct RepairPolicy {
 pub enum RepairError {
     NoVerifierCalls,
     NoRounds,
+    /// The run could retain more steps than a trajectory record holds.
+    BudgetTooLarge {
+        max_steps: u32,
+    },
 }
 
 impl fmt::Display for RepairError {
@@ -70,6 +88,9 @@ impl fmt::Display for RepairError {
         match self {
             Self::NoVerifierCalls => f.write_str("the budget allows no verifier call"),
             Self::NoRounds => f.write_str("the budget allows no round"),
+            Self::BudgetTooLarge { max_steps } => {
+                write!(f, "the budget allows a run of more than {max_steps} steps")
+            }
         }
     }
 }
@@ -170,7 +191,8 @@ pub struct RepairLoop<'v, T> {
 
 impl<'v, T: Clone> RepairLoop<'v, T> {
     /// # Errors
-    /// Returns [`RepairError`] when the budget allows no verifier call or no round.
+    /// Returns [`RepairError`] when the budget allows no verifier call or no round, or a run that
+    /// could retain more than [`MAX_STEPS`] steps.
     pub fn new(verifier: &'v dyn Verifier<T>, policy: RepairPolicy) -> Result<Self, RepairError> {
         policy.budget.validate()?;
         Ok(Self { verifier, policy })
@@ -523,6 +545,83 @@ mod tests {
             Some(RepairError::NoRounds)
         );
         assert!(!RepairError::NoRounds.to_string().is_empty());
+    }
+
+    #[test]
+    fn an_oversized_budget_is_refused_before_a_run_can_outgrow_a_record() {
+        let judge = Judge::default();
+        for (calls, rounds) in [
+            (u32::MAX, u32::MAX),
+            (300, 300),
+            (257, 257),
+            (257, u32::MAX),
+        ] {
+            assert!(
+                RepairLoop::new(&judge, policy(calls, rounds)).is_err(),
+                "{calls} calls / {rounds} rounds"
+            );
+        }
+    }
+
+    #[test]
+    fn every_accepted_budget_yields_a_run_that_converts_to_a_record() {
+        use crate::record::{TrajectoryRecord, MAX_STEPS};
+        struct Never;
+        impl Verifier<String> for Never {
+            fn verify(&self, _: &String) -> VerificationReport {
+                VerificationReport {
+                    status: VerificationStatus::Fail,
+                    level: VerificationLevel::Deterministic,
+                    score: Probability::new(0.0).unwrap(),
+                    findings: vec![Finding {
+                        code: "x".into(),
+                        message: String::new(),
+                        hard: true,
+                    }],
+                }
+            }
+        }
+        struct Always;
+        impl Generator<String> for Always {
+            fn generate(&mut self) -> String {
+                "v".into()
+            }
+        }
+        struct Keep;
+        impl Repairer<String> for Keep {
+            fn repair(&mut self, previous: &Candidate<String>, _: &Critique) -> Option<String> {
+                Some(previous.value.clone())
+            }
+        }
+        let judge = Judge::default();
+        let steps = MAX_STEPS as u32;
+        // The tightest accepted budgets: either bound alone caps the run at MAX_STEPS.
+        for (calls, rounds) in [(steps, steps), (u32::MAX, steps - 1), (steps, u32::MAX)] {
+            let looped = RepairLoop::new(
+                &Never,
+                RepairPolicy {
+                    required_level: VerificationLevel::Deterministic,
+                    budget: RepairBudget {
+                        max_verifier_calls: calls,
+                        max_rounds: rounds,
+                    },
+                },
+            )
+            .expect("within the cap");
+            let run = looped.run(&mut Always, &mut Keep);
+            assert_eq!(run.trajectory.steps.len(), MAX_STEPS, "{calls}/{rounds}");
+            assert!(
+                TrajectoryRecord::from_run("r", &run).is_ok(),
+                "{calls}/{rounds}"
+            );
+        }
+        assert_eq!(
+            RepairLoop::new(&judge, policy(steps + 1, steps + 1)).err(),
+            Some(RepairError::BudgetTooLarge { max_steps: steps })
+        );
+        assert!(!RepairError::BudgetTooLarge { max_steps: steps }
+            .to_string()
+            .is_empty());
     }
 
     #[test]
