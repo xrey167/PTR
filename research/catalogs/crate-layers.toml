@@ -57,7 +57,7 @@ crates = ["ptr-branch", "ptr-cluster", "ptr-fastmem", "ptr-feedback", "ptr-pods"
 [[layer]]
 name = "projection"
 rank = 4
-crates = ["ptr-router", "ptr-state", "ptr-worker"]
+crates = ["ptr-router", "ptr-state"]
 
 [[layer]]
 name = "orchestration"
@@ -73,7 +73,10 @@ crates = ["ptr-execwire", "ptr-podwire", "ptr-server"]
 [[layer]]
 name = "binary"
 rank = 7
-crates = ["ptr-bench", "ptrctl", "ptrd"]
+# `ptr-worker` sits here since its `data-plane` feature (doc 42 stage S1) composes
+# `ptr-fabric` and `ptr-runtime`: the glue that releases a quota charge when a worker is
+# reaped needs both, and the fabric must not depend on the runtime.
+crates = ["ptr-bench", "ptr-worker", "ptrctl", "ptrd"]
 
 # Backend crates are matched by exact name or by a trailing `*` prefix pattern.
 [[backend_owner]]

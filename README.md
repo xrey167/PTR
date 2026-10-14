@@ -58,7 +58,7 @@ and `ptr-analytics` has.
 ```mermaid
 flowchart TB
   subgraph L7["binary"]
-    ptrd["ptrd"]; ptrctl["ptrctl"]; bench["ptr-bench"]
+    ptrd["ptrd"]; ptrctl["ptrctl"]; bench["ptr-bench"]; worker["ptr-worker"]
   end
   subgraph L6["surface"]
     server["ptr-server"]; execwire["ptr-execwire"]; podwire["ptr-podwire"]
@@ -67,7 +67,7 @@ flowchart TB
     runtime["ptr-runtime"]; pg["ptr-pg"]
   end
   subgraph L4["projection"]
-    router["ptr-router"]; state["ptr-state"]; worker["ptr-worker"]
+    router["ptr-router"]; state["ptr-state"]
   end
   subgraph L3["composition"]
     pods["ptr-pods"]; branch["ptr-branch"]; feedback["ptr-feedback"]; fastmem["ptr-fastmem"]
@@ -96,7 +96,7 @@ flowchart TB
   pg --> state & branch & fastmem & lineage
   router --> pods & analytics
   state --> pods & ledger
-  worker --> pods
+  worker --> runtime & fabric
   pods --> verifier & protocol & storage
   branch --> verifier & analytics
   feedback --> verifier
@@ -234,11 +234,11 @@ Maturity is `component.toml`'s; features are the crate's own Cargo features (all
 | [ptr-server](crates/ptr-server/README.md) | Axum HTTP API: `/health`, `/v1/requests`, optional `/v1/vcw/*` | `prototype` | `qwen-cpu` |
 | [ptr-execwire](crates/ptr-execwire/README.md) | One execution request and receipt over `ptr-exec/1` | `prototype` | `execwire-backend` |
 | [ptr-podwire](crates/ptr-podwire/README.md) | One Pod invocation and answer over `ptr-podwire/1`, project from host policy; split-Pod frames (E007) | `prototype` | `podwire-backend` |
-| [ptr-fabric](crates/ptr-fabric/README.md) | Data-plane carriers: inline `Bytes` and a sealed-memfd `HostShm` (Linux), digest verified before use; no descriptor passing yet | `prototype` | `shm-backend` |
+| [ptr-fabric](crates/ptr-fabric/README.md) | Data-plane carriers: inline `Bytes` and a sealed-memfd `HostShm` (Linux), digest verified before use; descriptor channel, confinement probe, seccomp allowlist and a worker supervisor (spawn, confine, observe, reap, drain) | `prototype` | `shm-backend`, `worker-channel`, `worker-confine`, `worker-supervisor` |
 
 Binaries (no `component.toml`): `ptrd` (feature `qwen-cpu`), `ptrctl`, `ptr-bench`
-(`postgres-experiments`, `ledger-experiments`, `turso-oracle`) and `ptr-worker`, which only prints
-that no Pod adapter is selected. Not compiled by any CI workflow: `candle-cuda` (no CUDA on the
+(`postgres-experiments`, `ledger-experiments`, `turso-oracle`) and `ptr-worker` (a stdio host for deterministic CPU Pods; with the `data-plane` feature also the
+confined worker and the supervisor-side `PodHost` of Pod data-plane stage S1). Not compiled by any CI workflow: `candle-cuda` (no CUDA on the
 runners) and `qwen-cpu`.
 
 ## Running it

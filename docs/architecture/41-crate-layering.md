@@ -37,10 +37,10 @@ dependencies are all the rules need, so nothing is resolved or downloaded.
 | 1 | foundation | leaf services that need only the kernel: `ptr-ledger`, `ptr-memory`, `ptr-semdb`, `ptr-security`, `ptr-storage`, `ptr-protocol`, `ptr-model-api`, `ptr-lineage`, and others |
 | 2 | domain | `ptr-verifier`, `ptr-search`, `ptr-labeling`, `ptr-net` |
 | 3 | composition | `ptr-pods`, `ptr-branch`, `ptr-feedback`, `ptr-fastmem`, `ptr-cluster` |
-| 4 | projection | `ptr-router`, `ptr-state`, `ptr-worker` |
+| 4 | projection | `ptr-router`, `ptr-state` |
 | 5 | orchestration | `ptr-runtime`, `ptr-pg` |
 | 6 | surface | `ptr-server`, `ptr-podwire`, `ptr-execwire` |
-| 7 | binary | `ptrd`, `ptrctl`, `ptr-bench` |
+| 7 | binary | `ptrd`, `ptrctl`, `ptr-bench`, `ptr-worker` |
 
 The table records what the graph is, not what an earlier sketch hoped for. `ptr-state`
 depends on `ptr-pods`, and `ptr-podwire` and `ptr-execwire` call `ptr-runtime`, so they sit

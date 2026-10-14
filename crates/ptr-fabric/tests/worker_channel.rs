@@ -530,3 +530,42 @@ fn a_peer_with_a_raised_send_buffer_cannot_fake_end_of_file_past_the_old_floor()
     let mut one = [0u8; 1];
     assert_eq!(rustix::io::read(&reader, &mut one).expect("eof"), 0);
 }
+
+#[test]
+fn wait_readable_times_out_when_idle_and_sees_a_frame_and_a_hangup() {
+    let _serial = serial();
+    let (left, right) = Channel::pair().expect("pair");
+    // Nothing queued: a short wait ends with `false`.
+    assert!(!right
+        .wait_readable(Some(std::time::Duration::from_millis(20)))
+        .expect("wait"));
+    assert!(!right.peer_hung_up());
+    left.send(b"x", &[]).expect("send");
+    assert!(right
+        .wait_readable(Some(std::time::Duration::from_secs(5)))
+        .expect("wait"));
+    assert_eq!(right.try_recv().expect("recv").body, b"x");
+    // A closed peer is readable (end of file) and shows as hung up.
+    drop(left);
+    assert!(right.peer_hung_up());
+    assert!(right.wait_readable(None).expect("wait"));
+    assert_eq!(right.try_recv().unwrap_err(), ChannelError::PeerClosed);
+}
+
+#[test]
+fn an_inherited_descriptor_must_be_a_seqpacket_socket() {
+    let _serial = serial();
+    let (left, _right) = Channel::pair().expect("pair");
+    // A duplicate of a real channel end is accepted (the number a child would inherit).
+    let duplicate = rustix::io::dup(left.as_fd()).expect("dup");
+    // SAFETY: the raw descriptor is a fresh duplicate that only this call owns.
+    let adopted =
+        unsafe { Channel::from_inherited_fd(std::os::fd::IntoRawFd::into_raw_fd(duplicate)) };
+    assert!(adopted.is_ok());
+    // A stream socket is not one.
+    let (stream, _peer) = UnixStream::pair().expect("stream pair");
+    // SAFETY: as above, for the stream socket's descriptor.
+    let refused =
+        unsafe { Channel::from_inherited_fd(std::os::fd::IntoRawFd::into_raw_fd(stream)) };
+    assert_eq!(refused.unwrap_err(), ChannelError::NotSeqPacket);
+}

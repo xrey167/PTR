@@ -852,6 +852,22 @@ impl HandleTable {
         released
     }
 
+    /// Like [`Self::unregister_producer`], but only if the producer is registered under exactly
+    /// `session`. A supervisor that fences a lost worker uses this one: if the principal was
+    /// respawned under a newer session in the meantime, fencing the old session must not
+    /// deactivate the new one. Returns no notices and changes nothing for another session.
+    #[must_use = "the returned notices name buffers the producer may reclaim"]
+    pub fn unregister_producer_session(
+        &mut self,
+        principal: &str,
+        session: WorkerSession,
+    ) -> Vec<ReclaimNotice> {
+        match self.producers.get(principal) {
+            Some(producer) if producer.session == session => self.unregister_producer(principal),
+            _ => Vec::new(),
+        }
+    }
+
     /// Admit one handle at `request.now_ms`. The checks run in this order and the first
     /// failure is returned, with nothing recorded: the clock is clamped monotonic, the
     /// principal is registered, the handle decodes, the signature verifies, the chain's stage
