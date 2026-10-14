@@ -140,6 +140,12 @@ impl ShmExpectation {
         let CarrierLocator::HostShm { offset, .. } = &handle.locator else {
             return Err(FabricError::WrongLocator);
         };
+        if handle.byte_len > MAX_HANDLE_BYTES {
+            return Err(FabricError::TooLarge {
+                len: handle.byte_len,
+                max: MAX_HANDLE_BYTES,
+            });
+        }
         Ok(Self {
             byte_len: handle.byte_len,
             offset: *offset,
@@ -157,12 +163,21 @@ pub struct ShmMapping {
 }
 
 impl ShmMapping {
-    /// Check the offset, the four seals and the file size, map `PROT_READ`, `MAP_SHARED`
+    /// Refuse a length above `MAX_HANDLE_BYTES` (before any system call), check the offset,
+    /// the four seals and the file size, map `PROT_READ`, `MAP_SHARED`
     /// exactly `byte_len` bytes, and verify the digest of the mapped bytes. On any failure
     /// nothing stays mapped. The descriptor is closed afterwards; the mapping outlives it.
     pub fn map(fd: OwnedFd, expected: &ShmExpectation) -> Result<Self, FabricError> {
         if expected.byte_len == 0 {
             return Err(FabricError::EmptyTensor);
+        }
+        // Before any system call on the descriptor: an expectation built by hand (its fields
+        // are public) cannot make the consumer size a mapping above the handle bound.
+        if expected.byte_len > MAX_HANDLE_BYTES {
+            return Err(FabricError::TooLarge {
+                len: expected.byte_len,
+                max: MAX_HANDLE_BYTES,
+            });
         }
         if expected.offset != 0 {
             return Err(FabricError::NonZeroOffset {

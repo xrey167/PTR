@@ -5,6 +5,7 @@ pub mod egress;
 pub mod execution;
 pub mod expert;
 mod handle_admission;
+mod host_quota;
 pub mod identity;
 pub mod kv;
 mod kv_derivation;
@@ -43,6 +44,11 @@ pub use handle_admission::{
     HandlePolicy, HandlePolicyViolation, HandleRejection, HandleSource, HandleTable,
     OperationCheck, OperationFault, OperationLiveness, ReclaimNotice, ReclaimReason,
     RegistrationRefused, Teardown, WorkerSession,
+};
+pub use host_quota::{
+    HostQuotaLedger, HostQuotaPolicy, HostQuotaPolicyViolation, HostQuotaUsage, QuotaCharge,
+    QuotaRefusal, ReleaseFault, SharedHostQuota, TrackedPair, VerifiedTeardown,
+    DEFAULT_CHARGE_GRANULARITY_BYTES,
 };
 #[cfg(feature = "oidc-http")]
 pub use identity::ReqwestJwksRefresher;

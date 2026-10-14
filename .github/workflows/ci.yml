@@ -255,8 +255,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo +stable test -p ptr-fabric --features shm-backend --locked
       - run: cargo +stable clippy -p ptr-fabric --features shm-backend --all-targets --locked -- -D warnings
+      - run: cargo +stable test -p ptr-fabric --features worker-channel,worker-confine --locked
+      - run: cargo +stable clippy -p ptr-fabric --features worker-channel,worker-confine --all-targets --locked -- -D warnings
       - run: rustup toolchain install 1.99.0 --profile minimal
       - run: cargo +1.99.0 test -p ptr-fabric --features shm-backend --locked
+      - run: cargo +1.99.0 test -p ptr-fabric --features worker-channel,worker-confine --locked
 
   storage-tiers:
     runs-on: ubuntu-latest
