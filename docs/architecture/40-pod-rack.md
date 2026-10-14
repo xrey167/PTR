@@ -116,7 +116,12 @@ survives is routable with a stale partner.
 allows the same `PodId` in two projects, so every placement, membership, lease and fencing lookup
 of a tray is keyed by `(ProjectId, PodId)`, and a member of another project is refused. A tray
 also names the **complete ordered per-layer KV chain** its members share, and the host that acts
-as its authority process. The chains are derived per member by
+as its authority process. **Every member placement is on that host**: its `NodeId` equals the
+tray's authority host, `assign_tray` refuses a member on any other node with a typed error
+(all members or none are placed), and a replacement under a new epoch keeps the same rule. Pods
+on another host form their own tray with their own authority process; traffic between trays
+uses the scale-out class of section 2.4 and the `Remote` path of
+[42](42-pod-data-plane.md), never membership in one locally fenced tray. The chains are derived per member by
 `crates/ptr-pods/src/kv_chain.rs`; the root `chain(-1)` alone is not enough, because layer
 weights and most layer configuration enter only in `chain(l)` (`crates/ptr-pods/tests/kv_chain.rs`
 checks that changing a layer's key norm leaves `root()` unchanged). `assign_tray` therefore
@@ -166,7 +171,8 @@ fencing, output admission and the hard security boundary, the verifier fabric, a
 append path. Doc 15 states this for one workstation ("Runtime remains one authority process
 while model/embedding/vector Pods use separate GPUs/processes").
 
-**Proposal.** The rule generalises to **one authority process per tray**, and a cluster is
+**Proposal.** The rule generalises to **one authority process per tray, on the host of every
+member** (section 2.2), and a cluster is
 raft across the authority processes ([31](31-cluster-integrity.md), [06](06-consensus-ledger.md)),
 not across GPU Pods. GPU-side Pods (stage Pods, expert Pods, KV tier backends) hold **no**
 authority: they never append to the ledger, never admit an output, never decide acceptance.
