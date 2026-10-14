@@ -1,7 +1,7 @@
 //! A refused egress is committed history: counted, bounded, replayed, projected, and holding
 //! no payload.
 use ptr_config::PtrConfig;
-use ptr_ledger::LedgerEvent;
+use ptr_ledger::{EgressRefusalSource, LedgerEvent};
 use ptr_pods::{NativeProtocolResponse, ProtocolBinding, ProtocolError};
 use ptr_runtime::egress::{
     EgressRefusalOutcome, EgressRefusalRecord, EGRESS_WINDOW_MILLIS,
@@ -228,7 +228,7 @@ fn a_generic_commit_cannot_forge_a_refusal() {
     let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
     let forged = LedgerEvent::EgressRefused {
         trace_id: TraceId::from("trace-egress"),
-        source: source(),
+        source: EgressRefusalSource::Pod(source()),
         target: "host:0123456789abcdef:1:1".into(),
         count: 1,
         reason: EgressRefusalReason::HostNotAllowed,

@@ -348,13 +348,25 @@ pub enum LedgerEvent {
     /// warranted is the runtime's to say; the record is written by the runtime's egress path.
     EgressRefused {
         trace_id: TraceId,
-        source: PodRevisionAddress,
+        source: EgressRefusalSource,
         target: String,
         /// How many refusals of this source, target and reason the record stands for: the
         /// runtime coalesces a window's identical refusals into one event. At least one.
         count: u32,
         reason: EgressRefusalReason,
     },
+}
+
+/// Who an [`LedgerEvent::EgressRefused`] counts refusals for. The overflow is a variant of its
+/// own, not a made-up Pod address, so no real Pod can collide with it (in the codec, the
+/// replay or the materialized state). Codec tag byte: Pod 0, Overflow 1.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum EgressRefusalSource {
+    /// Refusals of one Pod revision.
+    Pod(PodRevisionAddress),
+    /// Refusals of Pods the runtime could no longer track individually while the ledger was
+    /// refusing appends, folded per reason. Its target is always `*`.
+    Overflow,
 }
 
 /// Which authority an [`LedgerEvent::ExpertAuthorityChanged`] moves. The codes are pinned data:
@@ -1359,11 +1371,17 @@ fn encode_event(event: &LedgerEvent) -> Vec<u8> {
         } => {
             out.push(33);
             put_string(&mut out, &trace_id.0);
-            put_string(&mut out, &source.address.project.0);
-            put_string(&mut out, &source.address.namespace.0);
-            put_string(&mut out, &source.address.pod_id.0);
-            out.extend_from_slice(&source.semantic_revision);
-            put_u64(&mut out, source.generation.0);
+            match source {
+                EgressRefusalSource::Pod(source) => {
+                    out.push(0);
+                    put_string(&mut out, &source.address.project.0);
+                    put_string(&mut out, &source.address.namespace.0);
+                    put_string(&mut out, &source.address.pod_id.0);
+                    out.extend_from_slice(&source.semantic_revision);
+                    put_u64(&mut out, source.generation.0);
+                }
+                EgressRefusalSource::Overflow => out.push(1),
+            }
             put_string(&mut out, target);
             put_u32(&mut out, *count);
             out.push(reason.code());
@@ -1800,13 +1818,29 @@ fn decode_event(payload: &[u8]) -> io::Result<LedgerEvent> {
         }
         33 => {
             let trace_id = TraceId(cursor.string()?);
-            let address = PodAddress {
-                project: ProjectId(cursor.string()?),
-                namespace: NamespaceId(cursor.string()?),
-                pod_id: PodId(cursor.string()?),
+            let source = match cursor.u8()? {
+                0 => {
+                    let address = PodAddress {
+                        project: ProjectId(cursor.string()?),
+                        namespace: NamespaceId(cursor.string()?),
+                        pod_id: PodId(cursor.string()?),
+                    };
+                    let semantic_revision = cursor.digest()?;
+                    let generation = Generation(cursor.u64()?);
+                    EgressRefusalSource::Pod(PodRevisionAddress {
+                        address,
+                        semantic_revision,
+                        generation,
+                    })
+                }
+                1 => EgressRefusalSource::Overflow,
+                other => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("unknown egress refusal source tag {other}"),
+                    ))
+                }
             };
-            let semantic_revision = cursor.digest()?;
-            let generation = Generation(cursor.u64()?);
             let target = cursor.string()?;
             let count = cursor.u32()?;
             let reason_code = cursor.u8()?;
@@ -1818,11 +1852,7 @@ fn decode_event(payload: &[u8]) -> io::Result<LedgerEvent> {
             })?;
             let event = LedgerEvent::EgressRefused {
                 trace_id,
-                source: PodRevisionAddress {
-                    address,
-                    semantic_revision,
-                    generation,
-                },
+                source,
                 target,
                 count,
                 reason,
@@ -2017,7 +2047,11 @@ fn check_egress_refused(event: &LedgerEvent) -> Result<(), io::Error> {
         || trace_id.0.len() > MAX_EGRESS_TARGET_BYTES
         || *count == 0
         || !target_ok
-        || source.validate().is_err()
+        || match source {
+            EgressRefusalSource::Pod(source) => source.validate().is_err(),
+            // The overflow stands for no particular destination.
+            EgressRefusalSource::Overflow => target != "*",
+        }
     {
         return Err(integrity::invalid("PTR_LEDGER_EGRESS_REFUSED"));
     }
@@ -3231,7 +3265,7 @@ mod effect_record_tests {
     fn egress_refused_event(reason: EgressRefusalReason) -> LedgerEvent {
         LedgerEvent::EgressRefused {
             trace_id: TraceId("trace-1".into()),
-            source: PodRevisionAddress {
+            source: EgressRefusalSource::Pod(PodRevisionAddress {
                 address: PodAddress {
                     project: ProjectId("p".into()),
                     namespace: NamespaceId("ns".into()),
@@ -3239,7 +3273,7 @@ mod effect_record_tests {
                 },
                 semantic_revision: [7; 32],
                 generation: Generation(3),
-            },
+            }),
             target: "host:0123456789abcdef:14:1883".into(),
             count: 3,
             reason,
@@ -3277,6 +3311,31 @@ mod effect_record_tests {
         assert_eq!(EgressRefusalReason::from_code(7), None);
         let mut unknown = encode_event(&egress_refused_event(EgressRefusalReason::RateLimited));
         *unknown.last_mut().unwrap() = 7;
+        assert!(decode_event(&unknown).is_err());
+    }
+
+    #[test]
+    fn egress_refusal_overflow_source_round_trips_with_the_star_target_only() {
+        let mut event = egress_refused_event(EgressRefusalReason::RateLimited);
+        if let LedgerEvent::EgressRefused { source, target, .. } = &mut event {
+            *source = EgressRefusalSource::Overflow;
+            *target = "*".to_owned();
+        }
+        check_encodable(&event).unwrap();
+        let encoded = encode_event(&event);
+        assert_eq!(encoded[0], 33);
+        assert_eq!(decode_event(&encoded).unwrap(), event);
+        for len in 0..encoded.len() {
+            assert!(decode_event(&encoded[..len]).is_err(), "prefix {len}");
+        }
+        // The pod and overflow encodings differ in the tag byte and nothing else is shared.
+        let pod = encode_event(&egress_refused_event(EgressRefusalReason::RateLimited));
+        assert_ne!(encoded, pod);
+        // An unknown source tag is refused by the decoder.
+        let mut unknown = encoded.clone();
+        let tag_at = 1 + 4 + "trace-1".len();
+        assert_eq!(unknown[tag_at], 1);
+        unknown[tag_at] = 2;
         assert!(decode_event(&unknown).is_err());
     }
 
@@ -3361,13 +3420,27 @@ mod effect_record_tests {
                 }
             }),
             with(&|e| {
-                if let LedgerEvent::EgressRefused { source, .. } = e {
+                if let LedgerEvent::EgressRefused {
+                    source: EgressRefusalSource::Pod(source),
+                    ..
+                } = e
+                {
                     source.semantic_revision = [0; 32];
                 }
             }),
             with(&|e| {
-                if let LedgerEvent::EgressRefused { source, .. } = e {
+                if let LedgerEvent::EgressRefused {
+                    source: EgressRefusalSource::Pod(source),
+                    ..
+                } = e
+                {
                     source.address.pod_id = PodId("bad pod".into());
+                }
+            }),
+            // The overflow names no destination: only `*`.
+            with(&|e| {
+                if let LedgerEvent::EgressRefused { source, .. } = e {
+                    *source = EgressRefusalSource::Overflow;
                 }
             }),
         ];

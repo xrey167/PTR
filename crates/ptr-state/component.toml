@@ -5,7 +5,7 @@ last_reviewed = "2026-10-13"
 
 implemented = [
   "Egress refusal projection value carries the count",
-  "Projection of LedgerEvent::EgressRefused: the latest refusal per Pod under egress-refused:<project>/<namespace>/<pod> (bounded by the number of Pods)",
+  "Projection of LedgerEvent::EgressRefused: the latest refusal per Pod under egress-refused:<project>/<namespace>/<pod> (bounded by the number of Pods), the overflow source under the fixed key egress-refusal-overflow",
   "ATTESTED_MARKER (semdb:attested) and MERGED_BRANCH_PREFIX (branch-merge:) name the materialized keys that record attributed semantic records and merged branches: every attributed semantic record projects the marker and every merge record its branch's key, and ptr-runtime refuses a compacted snapshot in the pre-attestation lifecycle layout (PTRLC001) that carries either",
   "Semantic transaction position and revision materialization without duplicated payload ownership; every semantic record with an attributed origin also projects the semdb:attested marker (value 1), and ptr-runtime replays a record without an origin only in the absence of that marker",
   "A merge record projects merged_branch_key(branch), branch-merge:<byte length>:<id>, so no branch id aliases another's key, with merged_branch_entry(index, plan), the commit index and the plan digest in lowercase hexadecimal; merged_branch_of and parse_merged_branch_entry read back exactly what a merge projects and nothing else, and ptr-runtime refuses a second merge of a branch whose key is present",

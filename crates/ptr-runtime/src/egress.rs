@@ -25,7 +25,7 @@
 //! hashed `host:` or `topic:` digest, see `ptr_pods::redact_endpoint` and `redact_topic`) and the
 //! reason. It carries no payload, no resolved address and no credential (Invariant 13).
 use crate::{PtrRuntime, RuntimeError};
-use ptr_ledger::LedgerEvent;
+use ptr_ledger::{EgressRefusalSource, LedgerEvent};
 use ptr_pods::{NativeProtocolResponse, ProtocolError};
 use ptr_types::{CommitIndex, EgressRefusalReason, PodRevisionAddress, Timestamp, TraceId};
 use std::collections::BTreeMap;
@@ -89,24 +89,10 @@ pub(crate) struct EgressRefusalWindows {
     pods: BTreeMap<PodRevisionAddress, PodWindow>,
     /// Refusals of Pods that did not fit the table while an append was failing, folded per
     /// reason (so at most one counter per reason, however many Pods). Committed with the next
-    /// flush as events whose source is [`overflow_source`] and whose target is
+    /// flush as events whose source is [`EgressRefusalSource::Overflow`] and whose target is
     /// [`OVERFLOW_TARGET`].
     overflow: BTreeMap<u8, Counter>,
     overflow_window: u64,
-}
-
-/// The source of an event that stands for refusals of Pods that did not fit the table. A
-/// well-formed address that no real Pod has.
-pub fn overflow_source() -> PodRevisionAddress {
-    PodRevisionAddress {
-        address: ptr_types::PodAddress {
-            project: ptr_types::ProjectId::from("overflow"),
-            namespace: ptr_types::NamespaceId::from("overflow"),
-            pod_id: ptr_types::PodId::from("overflow"),
-        },
-        semantic_revision: [1; 32],
-        generation: ptr_types::Generation(0),
-    }
 }
 
 /// A closed counter on its way to the ledger, with the window it was counted in so it can be
@@ -115,7 +101,7 @@ type Closed = (u64, LedgerEvent);
 
 fn event_of(
     window: u64,
-    source: &PodRevisionAddress,
+    source: EgressRefusalSource,
     key: &(u8, String),
     counter: &Counter,
 ) -> Option<Closed> {
@@ -123,12 +109,36 @@ fn event_of(
         window,
         LedgerEvent::EgressRefused {
             trace_id: counter.trace_id.clone(),
-            source: source.clone(),
+            source,
             target: key.1.clone(),
             count: counter.count,
             reason: EgressRefusalReason::from_code(key.0)?,
         },
     ))
+}
+
+/// The key a refusal is counted under: its own `(reason, target)` while the Pod has room for
+/// another exact target, the reason's overflow target once it has used up
+/// [`MAX_EGRESS_KEYS_PER_POD`]. Used by `absorb` and `restore` alike, so no path grows a Pod's
+/// counters past the bound plus one overflow key per reason.
+fn bounded_key(
+    counters: &BTreeMap<(u8, String), Counter>,
+    reason: u8,
+    target: &str,
+) -> (u8, String) {
+    let key = (reason, target.to_owned());
+    if counters.contains_key(&key) || target == OVERFLOW_TARGET {
+        return key;
+    }
+    let distinct = counters
+        .keys()
+        .filter(|(_, target)| target != OVERFLOW_TARGET)
+        .count();
+    if distinct >= MAX_EGRESS_KEYS_PER_POD {
+        (reason, OVERFLOW_TARGET.to_owned())
+    } else {
+        key
+    }
 }
 
 impl EgressRefusalWindows {
@@ -138,7 +148,14 @@ impl EgressRefusalWindows {
             .map(|pod| {
                 pod.counters
                     .iter()
-                    .filter_map(|(key, counter)| event_of(pod.window, source, key, counter))
+                    .filter_map(|(key, counter)| {
+                        event_of(
+                            pod.window,
+                            EgressRefusalSource::Pod(source.clone()),
+                            key,
+                            counter,
+                        )
+                    })
                     .collect()
             })
             .unwrap_or_default()
@@ -150,7 +167,14 @@ impl EgressRefusalWindows {
             .flat_map(|(source, pod)| {
                 pod.counters
                     .iter()
-                    .filter_map(|(key, counter)| event_of(pod.window, &source, key, counter))
+                    .filter_map(|(key, counter)| {
+                        event_of(
+                            pod.window,
+                            EgressRefusalSource::Pod(source.clone()),
+                            key,
+                            counter,
+                        )
+                    })
                     .collect::<Vec<_>>()
             })
             .collect();
@@ -161,7 +185,7 @@ impl EgressRefusalWindows {
                 .filter_map(|(code, counter)| {
                     event_of(
                         overflow_window,
-                        &overflow_source(),
+                        EgressRefusalSource::Overflow,
                         &(*code, OVERFLOW_TARGET.to_owned()),
                         counter,
                     )
@@ -199,24 +223,32 @@ impl EgressRefusalWindows {
         // The table never grows past its capacity here: a Pod that is not in it already, when
         // it is full (or an event that already stands for the overflow), folds into the
         // per-reason overflow counters, of which there are at most one per reason.
-        if source == overflow_source()
-            || (!self.pods.contains_key(&source) && self.pods.len() >= MAX_TRACKED_EGRESS_PODS)
-        {
-            self.overflow_window = window;
-            let counter = self
-                .overflow
-                .entry(reason.code())
-                .or_insert_with(|| Counter { trace_id, count: 0 });
-            counter.count = counter.count.saturating_add(count);
-            return;
-        }
+        let source = match source {
+            EgressRefusalSource::Pod(source)
+                if self.pods.contains_key(&source) || self.pods.len() < MAX_TRACKED_EGRESS_PODS =>
+            {
+                source
+            }
+            EgressRefusalSource::Pod(_) | EgressRefusalSource::Overflow => {
+                self.overflow_window = window;
+                let counter = self
+                    .overflow
+                    .entry(reason.code())
+                    .or_insert_with(|| Counter { trace_id, count: 0 });
+                counter.count = counter.count.saturating_add(count);
+                return;
+            }
+        };
         let pod = self.pods.entry(source).or_insert_with(|| PodWindow {
             window,
             counters: BTreeMap::new(),
         });
+        // The same fold as `absorb`: a Pod never holds more than MAX_EGRESS_KEYS_PER_POD exact
+        // targets, however many failed rollovers put counters back.
+        let key = bounded_key(&pod.counters, reason.code(), &target);
         let counter = pod
             .counters
-            .entry((reason.code(), target))
+            .entry(key)
             .or_insert_with(|| Counter { trace_id, count: 0 });
         counter.count = counter.count.saturating_add(count);
     }
@@ -249,17 +281,7 @@ impl EgressRefusalWindows {
                 window,
                 counters: BTreeMap::new(),
             });
-        let mut key = (reason.code(), target.to_owned());
-        if !pod.counters.contains_key(&key) {
-            let distinct = pod
-                .counters
-                .keys()
-                .filter(|(_, target)| target != OVERFLOW_TARGET)
-                .count();
-            if target != OVERFLOW_TARGET && distinct >= MAX_EGRESS_KEYS_PER_POD {
-                key.1 = OVERFLOW_TARGET.to_owned();
-            }
-        }
+        let key = bounded_key(&pod.counters, reason.code(), target);
         let counter = pod.counters.entry(key).or_insert_with(|| Counter {
             trace_id: trace_id.clone(),
             count: 0,
@@ -289,7 +311,7 @@ impl PtrRuntime {
     ) -> Result<EgressRefusalOutcome, RuntimeError> {
         let probe = LedgerEvent::EgressRefused {
             trace_id: record.trace_id.clone(),
-            source: record.source.clone(),
+            source: EgressRefusalSource::Pod(record.source.clone()),
             target: record.target.clone(),
             count: 1,
             reason: record.reason,
@@ -461,14 +483,32 @@ mod tests {
         let overflow: Vec<_> = events
             .iter()
             .filter(|(_, event)| {
-                matches!(event, LedgerEvent::EgressRefused { source, target, .. }
-                    if *source == overflow_source() && target == OVERFLOW_TARGET)
+                matches!(event, LedgerEvent::EgressRefused { source: EgressRefusalSource::Overflow, target, .. }
+                    if target == OVERFLOW_TARGET)
             })
             .collect();
         assert!(!overflow.is_empty());
         for (_, event) in &events {
             ptr_ledger::check_encodable(event).unwrap();
         }
+    }
+
+    #[test]
+    fn failed_rollovers_of_one_pod_with_a_new_target_each_keep_its_keys_bounded() {
+        let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+        runtime.mark_commit_uncertain_for_test();
+        let rollovers = 5 * MAX_EGRESS_KEYS_PER_POD;
+        for n in 0..rollovers {
+            let mut refused = record(0, n as u64 * EGRESS_WINDOW_MILLIS);
+            refused.target = format!("host:{n:016x}:1:1");
+            let _ = runtime.record_egress_refusal(refused);
+            let keys = runtime.egress_refusals.pods[&pod(0)].counters.len();
+            assert!(
+                keys <= MAX_EGRESS_KEYS_PER_POD + EgressRefusalReason::ALL.len(),
+                "{keys} keys after {n} failed rollovers"
+            );
+        }
+        assert_eq!(total(&runtime.egress_refusals), rollovers as u64);
     }
 
     #[test]

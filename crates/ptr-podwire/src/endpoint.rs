@@ -48,10 +48,18 @@ fn request_budget(
     configured: Duration,
     address: Option<&PodAddressBinding>,
 ) -> Result<(Duration, Option<Timestamp>), PodWireError> {
+    budget_at(configured, address, now_millis())
+}
+
+/// [`request_budget`] at a given clock reading.
+fn budget_at(
+    configured: Duration,
+    address: Option<&PodAddressBinding>,
+    now: Timestamp,
+) -> Result<(Duration, Option<Timestamp>), PodWireError> {
     let Some(deadline) = address.and_then(|address| address.deadline) else {
         return Ok((configured, None));
     };
-    let now = now_millis();
     if now >= deadline {
         return Err(PodWireError::DeadlineExceeded {
             deadline,
@@ -60,7 +68,8 @@ fn request_budget(
         });
     }
     let remaining = Duration::from_millis(deadline.0 - now.0);
-    if remaining < configured {
+    // Equality is deadline-bound: a wait that ends exactly at the deadline is the deadline's.
+    if remaining <= configured {
         Ok((remaining, Some(deadline)))
     } else {
         Ok((configured, None))
@@ -1606,5 +1615,55 @@ impl PodClient {
     /// Close the endpoint.
     pub async fn close(&self) {
         self.transport.close().await;
+    }
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::*;
+
+    fn bound_to(deadline: u64) -> PodAddressBinding {
+        PodAddressBinding {
+            source: None,
+            destination: ptr_types::PodRevisionAddress {
+                address: ptr_types::PodAddress::new("p".into(), "n".into(), "pod".into()).unwrap(),
+                semantic_revision: [1; 32],
+                generation: Generation(1),
+            },
+            trace_id: "budget".into(),
+            hop_limit: 4,
+            visited: Vec::new(),
+            protocol: None,
+            mesh: None,
+            deadline: Some(Timestamp(deadline)),
+            origin_ts: Some(Timestamp(1)),
+        }
+    }
+
+    #[test]
+    fn a_wait_that_ends_exactly_at_the_deadline_is_the_deadlines_own() {
+        let configured = Duration::from_millis(500);
+        let binding = bound_to(10_500);
+        // Remaining equals the configured timeout: the deadline binds the wait.
+        let (budget, bound_by) = budget_at(configured, Some(&binding), Timestamp(10_000)).unwrap();
+        assert_eq!((budget, bound_by), (configured, Some(Timestamp(10_500))));
+        assert!(matches!(
+            timeout_error(bound_by),
+            PodWireError::DeadlineExceeded { sent: true, .. }
+        ));
+        // More time left than configured: the transport timeout binds.
+        let (budget, bound_by) = budget_at(configured, Some(&binding), Timestamp(9_999)).unwrap();
+        assert_eq!((budget, bound_by), (configured, None));
+        // Less time left: the deadline binds.
+        let (budget, bound_by) = budget_at(configured, Some(&binding), Timestamp(10_001)).unwrap();
+        assert_eq!(
+            (budget, bound_by),
+            (Duration::from_millis(499), Some(Timestamp(10_500)))
+        );
+        // At or after the deadline nothing is sent.
+        assert!(matches!(
+            budget_at(configured, Some(&binding), Timestamp(10_500)),
+            Err(PodWireError::DeadlineExceeded { sent: false, .. })
+        ));
     }
 }

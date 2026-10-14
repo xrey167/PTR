@@ -1,6 +1,6 @@
 use ptr_ledger::{
-    CommittedEvent, ExpertAuthorityClass, ExpertAuthorityKind, ExpertFenceAction,
-    ExpertFenceResume, InputInvalidationKind, KvTaintChange, LedgerEvent,
+    CommittedEvent, EgressRefusalSource, ExpertAuthorityClass, ExpertAuthorityKind,
+    ExpertFenceAction, ExpertFenceResume, InputInvalidationKind, KvTaintChange, LedgerEvent,
 };
 use ptr_pods::{ExpertCommitRecord, ExpertState, OutcomeKind, RetiredReason};
 use std::collections::BTreeMap;
@@ -370,11 +370,19 @@ pub fn projection_entries(committed: &CommittedEvent) -> Vec<(String, String)> {
             reason,
             ..
         } => vec![(
-            egress_refusal_key(&source.address),
+            match source {
+                EgressRefusalSource::Pod(source) => egress_refusal_key(&source.address),
+                EgressRefusalSource::Overflow => EGRESS_REFUSAL_OVERFLOW_KEY.to_owned(),
+            },
             egress_refusal_entry(index, *reason, *count, target),
         )],
     }
 }
+
+/// The one key of the refusals the runtime folded because it could not track their Pods
+/// ([`EgressRefusalSource::Overflow`]). It is not under [`EGRESS_REFUSAL_PREFIX`], so no Pod
+/// address can name it.
+pub const EGRESS_REFUSAL_OVERFLOW_KEY: &str = "egress-refusal-overflow";
 
 /// The prefix of every egress refusal key ([`egress_refusal_key`]).
 pub const EGRESS_REFUSAL_PREFIX: &str = "egress-refused:";

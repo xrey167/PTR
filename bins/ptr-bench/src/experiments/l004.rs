@@ -1191,10 +1191,18 @@ fn expected_subject(record: &CommittedEvent) -> String {
                 ptr_state::expert_authority_kind_name(*kind)
             )
         }
-        LedgerEvent::EgressRefused { source, .. } => format!(
+        LedgerEvent::EgressRefused {
+            source: ptr_ledger::EgressRefusalSource::Pod(source),
+            ..
+        } => format!(
             "egress:{}/{}/{}",
             source.address.project, source.address.namespace, source.address.pod_id
         ),
+        // Not of the `egress:p/n/pod` form, so no Pod can share it.
+        LedgerEvent::EgressRefused {
+            source: ptr_ledger::EgressRefusalSource::Overflow,
+            ..
+        } => "egress-overflow".to_owned(),
     }
 }
 
