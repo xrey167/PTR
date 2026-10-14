@@ -615,7 +615,50 @@ impl RevokedInputs {
                 kind: InputInvalidationKind::Superseded { new_generation, .. },
                 ..
             } => self.raise_floor(input.clone(), *new_generation),
-            _ => {}
+            // An adapter's dependency identity is its lifecycle key (as in the catalog
+            // mapping): a revocation kills that generation, a promotion supersedes every
+            // generation below the promoted one.
+            LedgerEvent::AdapterRevoked {
+                project,
+                adapter,
+                generation,
+                ..
+            } => {
+                self.revoked
+                    .insert((crate::adapter::adapter_key(project, adapter), *generation));
+            }
+            LedgerEvent::AdapterPromoted {
+                project,
+                adapter,
+                generation,
+                ..
+            } => self.raise_floor(crate::adapter::adapter_key(project, adapter), *generation),
+            // Every other kind leaves no input dead. Listed, not wildcarded, so a new event
+            // kind cannot be ignored here without someone deciding it.
+            LedgerEvent::SemanticDeltaCommitted { .. }
+            | LedgerEvent::VerifierAttested { .. }
+            | LedgerEvent::SnapshotCommitted { .. }
+            | LedgerEvent::EffectAttempted { .. }
+            | LedgerEvent::EffectSettled { .. }
+            | LedgerEvent::EffectReconciled { .. }
+            | LedgerEvent::ScopeLifecycle(_)
+            | LedgerEvent::ProtectedStateCommitted { .. }
+            | LedgerEvent::MeshTunnelLifecycle { .. }
+            | LedgerEvent::ExecutionManifestAdmitted { .. }
+            | LedgerEvent::ExecutionManifestRevoked { .. }
+            | LedgerEvent::PolicyBundleActivated { .. }
+            | LedgerEvent::PolicyBundleRevoked { .. }
+            | LedgerEvent::SessionRevoked { .. }
+            | LedgerEvent::TierBackendLifecycle { .. }
+            | LedgerEvent::TierObjectCommitted { .. }
+            | LedgerEvent::TierReplicaLifecycle { .. }
+            | LedgerEvent::PodEvidenceCommitted { .. }
+            | LedgerEvent::PodOutputAdmitted { .. }
+            | LedgerEvent::PodHypothesisCommitted { .. }
+            | LedgerEvent::KvTaintCommitted { .. }
+            | LedgerEvent::ExpertAuthorityChanged { .. }
+            | LedgerEvent::EgressRefused { .. }
+            | LedgerEvent::ImprovementCycleRecorded { .. } => {}
         }
     }
 

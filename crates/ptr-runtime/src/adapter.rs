@@ -98,6 +98,12 @@ pub enum AdapterError {
     ClockRegressed { high_water_day: u64, today: u64 },
     /// The runtime's cycle clock cannot say what day it is, or none was configured.
     ClockUnavailable,
+    /// The generation to revoke was never promoted for this adapter.
+    GenerationNeverPromoted {
+        project: String,
+        adapter: String,
+        generation: Generation,
+    },
     /// A different gate configuration is already pinned; a pin is never replaced.
     GatePinConflict { pinned: [u8; 32] },
     /// No gate configuration is pinned in this runtime
@@ -238,6 +244,9 @@ pub(crate) struct AdapterProjection {
     instance: u64,
     next_serial: u64,
     promoted: BTreeMap<String, PromotedAdapter>,
+    /// Every (key, generation) a committed promotion named: the only generations a revocation
+    /// may name.
+    promoted_history: std::collections::BTreeSet<(String, Generation)>,
     /// Cycles committed per project and day, kept for the days that can still be asked about
     /// (the retention window below the project's high-water day), so a cycle recorded out of
     /// day order is counted on its own day, live and on replay alike.
@@ -701,6 +710,20 @@ impl PtrRuntime {
                         requested: *generation,
                     });
                 }
+                // Only a generation a promotion actually named can be revoked: a number the
+                // adapter never had is not a tombstone to plant (it would pre-revoke it).
+                if !self
+                    .adapters
+                    .promoted_history
+                    .contains(&(key.clone(), *generation))
+                {
+                    return Err(AdapterError::GenerationNeverPromoted {
+                        project: project.0.clone(),
+                        adapter: adapter.clone(),
+                        generation: *generation,
+                    }
+                    .into());
+                }
                 Ok(())
             }
             LedgerEvent::ImprovementCycleRecorded { project, .. } => {
@@ -733,6 +756,9 @@ impl PtrRuntime {
             } => {
                 let key = adapter_key(project, adapter);
                 self.set_live_generation(key.clone(), *generation);
+                self.adapters
+                    .promoted_history
+                    .insert((key.clone(), *generation));
                 self.adapters.promoted.insert(
                     key,
                     PromotedAdapter {

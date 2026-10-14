@@ -310,7 +310,7 @@ fn a_panicking_replica_is_a_failed_replica_that_fails_over_and_is_counted() {
 }
 
 #[test]
-fn a_resume_without_failover_goes_back_to_the_replica_that_started_the_run() {
+fn a_placed_resume_without_failover_lands_on_the_replica_of_its_own_invocation() {
     let replicas = [healthy("a"), healthy("b"), healthy("c")];
     let strict = ReplicaRouter::new(
         replicas
@@ -323,16 +323,27 @@ fn a_resume_without_failover_goes_back_to_the_replica_that_started_the_run() {
         },
     )
     .expect("router");
-    // r0 starts on a, r1 on b. The rotation now points at c.
-    assert_eq!(label(strict.infer(&request("r0")).expect("served")), "a");
-    assert_eq!(label(strict.infer(&request("r1")).expect("served")), "b");
-    // Each resume lands on the replica that started its run, not on the next in rotation.
+    // The same request id twice: two invocations, two placements (a and b). The rotation now
+    // points at c.
+    let first = strict.infer_placed(&request("same-id")).expect("served");
+    let second = strict.infer_placed(&request("same-id")).expect("served");
+    assert_eq!(label(first.events), "a");
+    assert_eq!(label(second.events), "b");
+    // Each resume lands on the replica of its own invocation, in either order.
     assert_eq!(
-        label(strict.resume(&resume_request("r1")).expect("served")),
+        label(
+            strict
+                .resume_placed(second.placement, &resume_request("same-id"))
+                .expect("served")
+        ),
         "b"
     );
     assert_eq!(
-        label(strict.resume(&resume_request("r0")).expect("served")),
+        label(
+            strict
+                .resume_placed(first.placement, &resume_request("same-id"))
+                .expect("served")
+        ),
         "a"
     );
     assert_eq!(

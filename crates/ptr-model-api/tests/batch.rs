@@ -5,9 +5,10 @@ mod common;
 use common::{eventually, request, Latch, RecordingBackend};
 use ptr_model_api::{
     AdaptiveBatcher, BatchAdmission, BatchClock, BatchError, BatchGate, BatchKey, BatchPolicy,
-    CancelFlag, InferenceBackend, ModelError, ModelEvent, ResumeBinding, SystemClock,
+    CancelFlag, Continuation, InferenceBackend, ModelError, ModelEvent, ModelObservation,
+    ModelRequest, ModelResumeRequest, SystemClock,
 };
-use ptr_types::{Generation, Timestamp};
+use ptr_types::{Generation, Revision, SemanticContext, Timestamp, TypeId};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -559,30 +560,44 @@ fn the_unscoped_resume_serves_only_a_batcher_without_a_gate() {
     );
 }
 
-/// Answer `id` under `key`, record `payload` as the observation that resumes it, and return the
-/// resume request together with the binding of the continuation.
-fn prepared<B: ptr_model_api::BatchInferenceBackend + 'static>(
+/// A request whose semantic context is at `revision`.
+fn request_at(id: &str, revision: u64) -> ModelRequest {
+    ModelRequest {
+        semantic_context: SemanticContext {
+            revision: Revision(revision),
+            entries: vec![],
+        },
+        ..request(id)
+    }
+}
+
+fn observation(revision: u64, payload: &[u8]) -> ModelObservation {
+    ModelObservation {
+        revision: Revision(revision),
+        source: "test".into(),
+        type_id: TypeId::from("test.v1"),
+        payload: payload.to_vec(),
+    }
+}
+
+fn admission_under(key: &BatchKey) -> BatchAdmission {
+    BatchAdmission {
+        key: key.clone(),
+        deadline: None,
+        cancel: None,
+    }
+}
+
+/// Open a continuation for `id` under `key`.
+fn open<B: ptr_model_api::BatchInferenceBackend + 'static>(
     batcher: &AdaptiveBatcher<B>,
     id: &str,
     key: &BatchKey,
-    payload: &[u8],
-) -> (ptr_model_api::ModelResumeRequest, ResumeBinding) {
-    let answer = batcher
-        .infer_scoped(
-            &request(id),
-            BatchAdmission {
-                key: key.clone(),
-                deadline: None,
-                cancel: None,
-            },
-        )
-        .expect("served");
-    let mut resume = common::resume_request(id);
-    resume.observation.payload = payload.to_vec();
+) -> Continuation {
     batcher
-        .record_observation(&answer.binding, &resume.observation)
-        .expect("recorded once");
-    (resume, answer.binding)
+        .infer_scoped(&request_at(id, 7), admission_under(key))
+        .expect("served")
+        .continuation
 }
 
 fn scope(project: &str, generation: u64) -> BatchKey {
@@ -603,115 +618,142 @@ impl BatchGate for RevokedGenerations {
     }
 }
 
+/// An echo backend that keeps the resume requests it was handed.
+#[derive(Default)]
+struct ContextRecorder {
+    resumed: std::sync::Mutex<Vec<ModelResumeRequest>>,
+}
+
+impl InferenceBackend for ContextRecorder {
+    fn name(&self) -> &'static str {
+        "context-recorder"
+    }
+
+    fn infer(&self, _request: &ModelRequest) -> Result<Vec<ModelEvent>, ModelError> {
+        Ok(vec![ModelEvent::Finished])
+    }
+}
+
+impl ptr_model_api::BatchInferenceBackend for ContextRecorder {}
+
+impl ptr_model_api::ResumableInferenceBackend for ContextRecorder {
+    fn resume(&self, request: &ModelResumeRequest) -> Result<Vec<ModelEvent>, ModelError> {
+        self.resumed.lock().unwrap().push(request.clone());
+        Ok(vec![ModelEvent::Finished])
+    }
+}
+
 #[test]
-fn a_continuation_is_bound_to_the_scope_and_observation_it_was_recorded_under() {
+fn a_resume_runs_on_the_stored_context_and_round_and_never_on_the_callers() {
+    let backend = Arc::new(ContextRecorder::default());
+    let batcher = AdaptiveBatcher::with_parts(
+        Arc::clone(&backend),
+        policy(1, 0, 4),
+        Arc::new(SystemClock),
+        Some(Arc::new(OpenGate) as Arc<dyn BatchGate>),
+    )
+    .expect("built");
+    let key = key("coder");
+    let first = open(&batcher, "r", &key);
+    // The caller supplies an observation, which carries its own revision; the request the
+    // backend sees takes id, semantic context and round from the table.
+    let resumed = batcher
+        .resume_continuation(first, &key, observation(99, b"payload"))
+        .expect("resumes");
+    let seen = backend.resumed.lock().unwrap()[0].clone();
+    assert_eq!(seen.request_id, request("r").request_id);
+    assert_eq!(seen.semantic_context.revision, Revision(7));
+    assert_eq!(seen.round, 1);
+    assert_eq!(seen.observation.revision, Revision(99));
+    assert_eq!(seen.observation.payload, b"payload".to_vec());
+    // The next round's continuation carries round 2 and the same context.
+    let next = resumed.next.expect("room for a next round");
+    batcher
+        .resume_continuation(next, &key, observation(100, b"again"))
+        .expect("resumes again");
+    let seen = backend.resumed.lock().unwrap()[1].clone();
+    assert_eq!(seen.round, 2);
+    assert_eq!(seen.semantic_context.revision, Revision(7));
+}
+
+#[test]
+fn a_continuation_from_a_revoked_scope_is_refused_and_each_is_single_use() {
     let gate = Arc::new(RevokedGenerations(std::sync::Mutex::new(Vec::new())));
     let batcher = echo_batcher(Arc::clone(&gate) as Arc<dyn BatchGate>);
     let gen2 = scope("p", 2);
     let gen3 = scope("p", 3);
-    // The same request id and identical outputs under a scope that will be revoked (A) and a
-    // live one (B): only the continuation id tells them apart.
-    let (resume_a, binding_a) = prepared(&batcher, "same-id", &gen2, b"observation of A");
-    let (resume_b, binding_b) = prepared(&batcher, "same-id", &gen3, b"observation of B");
+    // One request id, identical outputs, a scope that will be revoked (A) and a live one (B).
+    let a = open(&batcher, "same-id", &gen2);
+    let a_again = open(&batcher, "same-id", &gen2);
+    let a_wrong_key = open(&batcher, "same-id", &gen2);
+    let b = open(&batcher, "same-id", &gen3);
+    let b_second = open(&batcher, "same-id", &gen3);
     gate.0.lock().unwrap().push(2);
-    // A's observation with B's binding and B's live key: the entry holds B's observation digest.
+    // A's continuation reaches the gate under A's scope: revoked.
     assert_eq!(
-        batcher.resume_with(&resume_a, &binding_b, &gen3),
-        Err(ModelError::scope_mismatch())
+        batcher
+            .resume_continuation(a, &gen2, observation(1, b"x"))
+            .err(),
+        Some(ModelError::revoked())
     );
-    // A's observation with A's binding but the live key: the entry holds A's scope.
+    // A's continuation claimed under B's live key is a scope mismatch.
     assert_eq!(
-        batcher.resume_with(&resume_a, &binding_a, &gen3),
-        Err(ModelError::scope_mismatch())
+        batcher
+            .resume_continuation(a_wrong_key, &gen3, observation(1, b"x"))
+            .err(),
+        Some(ModelError::scope_mismatch())
     );
-    // Another project's key does not fit either.
+    // B's continuations pass, each once; the handle is consumed by the call.
+    assert!(batcher
+        .resume_continuation(b, &gen3, observation(1, b"x"))
+        .is_ok());
+    assert!(batcher
+        .resume_continuation(b_second, &gen3, observation(1, b"x"))
+        .is_ok());
+    // A continuation that was already consumed by a refused resume is gone: a second
+    // continuation of A is still A's and still revoked.
     assert_eq!(
-        batcher.resume_with(&resume_a, &binding_a, &scope("q", 2)),
-        Err(ModelError::scope_mismatch())
+        batcher
+            .resume_continuation(a_again, &gen2, observation(1, b"x"))
+            .err(),
+        Some(ModelError::revoked())
     );
-    // A's own pair reaches the gate under A's key: revoked, and the continuation is consumed.
-    assert_eq!(
-        batcher.resume_with(&resume_a, &binding_a, &gen2),
-        Err(ModelError::revoked())
-    );
-    // B's own pair passes, once.
-    assert!(batcher.resume_with(&resume_b, &binding_b, &gen3).is_ok());
-    assert_eq!(
-        batcher.resume_with(&resume_b, &binding_b, &gen3),
-        Err(ModelError::scope_mismatch()),
-        "a continuation is single-use"
-    );
-}
-
-#[test]
-fn a_continuation_without_a_recorded_observation_or_from_nowhere_is_refused() {
-    let batcher = echo_batcher(Arc::new(OpenGate));
-    let key = key("coder");
-    let answer = batcher
-        .infer_scoped(
-            &request("r"),
-            BatchAdmission {
-                key: key.clone(),
-                deadline: None,
-                cancel: None,
-            },
-        )
-        .expect("served");
-    let resume = common::resume_request("r");
-    assert_eq!(
-        batcher.resume_with(&resume, &answer.binding, &key),
-        Err(ModelError::scope_mismatch()),
-        "no observation was recorded for it"
-    );
-    batcher
-        .record_observation(&answer.binding, &resume.observation)
-        .expect("recorded");
-    assert_eq!(
-        batcher.record_observation(&answer.binding, &resume.observation),
-        Err(ModelError::scope_mismatch()),
-        "the observation of a continuation is recorded once"
-    );
-    // A binding from another batcher is an id this one never issued.
-    let other = echo_batcher(Arc::new(OpenGate));
-    let foreign = other
-        .infer_scoped(
-            &request("r"),
-            BatchAdmission {
-                key: key.clone(),
-                deadline: None,
-                cancel: None,
-            },
-        )
-        .expect("served")
-        .binding;
-    assert_eq!(
-        batcher.resume_with(&resume, &foreign, &key),
-        Err(ModelError::scope_mismatch())
-    );
-    assert!(batcher.resume_with(&resume, &answer.binding, &key).is_ok());
 }
 
 #[test]
 fn the_open_continuations_are_bounded_and_an_evicted_one_fails_closed() {
     let batcher = echo_batcher(Arc::new(OpenGate));
     let key = key("coder");
-    let (first_resume, first) = prepared(&batcher, "first", &key, b"first");
+    let first = open(&batcher, "first", &key);
     for n in 0..ptr_model_api::MAX_OPEN_CONTINUATIONS {
         batcher
-            .infer_scoped(
-                &request(&format!("flood-{n}")),
-                BatchAdmission {
-                    key: key.clone(),
-                    deadline: None,
-                    cancel: None,
-                },
-            )
+            .infer_scoped(&request(&format!("flood-{n}")), admission_under(&key))
             .expect("served");
     }
     assert_eq!(
-        batcher.resume_with(&first_resume, &first, &key),
-        Err(ModelError::scope_mismatch())
+        batcher
+            .resume_continuation(first, &key, observation(1, b"x"))
+            .err(),
+        Some(ModelError::scope_mismatch())
     );
+}
+
+#[test]
+fn plain_inference_opens_no_continuation() {
+    let batcher = echo_batcher(Arc::new(OpenGate));
+    let key = key("coder");
+    let kept = open(&batcher, "kept", &key);
+    for n in 0..5000 {
+        batcher
+            .infer_with(&request(&format!("plain-{n}")), admission_under(&key))
+            .expect("served");
+        batcher
+            .infer(&request(&format!("unscoped-{n}")))
+            .expect("served");
+    }
+    assert!(batcher
+        .resume_continuation(kept, &key, observation(1, b"x"))
+        .is_ok());
 }
 
 #[test]
@@ -719,11 +761,13 @@ fn a_resume_is_stopped_by_a_closed_gate() {
     let gate = Arc::new(SwitchGate(AtomicBool::new(true)));
     let batcher = echo_batcher(Arc::clone(&gate) as Arc<dyn BatchGate>);
     let scoped = key("coder");
-    let (resume, binding) = prepared(&batcher, "r", &scoped, b"x");
+    let continuation = open(&batcher, "r", &scoped);
     gate.0.store(false, Ordering::SeqCst);
     assert_eq!(
-        batcher.resume_with(&resume, &binding, &scoped),
-        Err(ModelError::revoked())
+        batcher
+            .resume_continuation(continuation, &scoped, observation(1, b"x"))
+            .err(),
+        Some(ModelError::revoked())
     );
 }
 
@@ -736,10 +780,12 @@ fn a_backend_panic_in_resume_fails_that_call_and_the_batcher_keeps_serving() {
         Some(Arc::new(OpenGate) as Arc<dyn BatchGate>),
     )
     .expect("built");
-    let (resume, binding) = prepared(&batcher, "r", &BatchKey::unscoped(), b"x");
+    let continuation = open(&batcher, "r", &BatchKey::unscoped());
     assert_eq!(
-        batcher.resume_with(&resume, &binding, &BatchKey::unscoped()),
-        Err(ModelError::backend_failure())
+        batcher
+            .resume_continuation(continuation, &BatchKey::unscoped(), observation(1, b"x"))
+            .err(),
+        Some(ModelError::backend_failure())
     );
     assert_eq!(batcher.stats().backend_errors, 1);
     assert!(batcher.infer(&request("after")).is_ok());
@@ -761,7 +807,7 @@ impl BatchGate for PanickingGate {
 fn a_gate_that_panics_refuses_the_batch_and_the_resume_and_the_worker_keeps_serving() {
     let gate = Arc::new(PanickingGate(AtomicBool::new(false)));
     let batcher = echo_batcher(Arc::clone(&gate) as Arc<dyn BatchGate>);
-    let (resume, binding) = prepared(&batcher, "r", &key("coder"), b"x");
+    let continuation = open(&batcher, "r", &key("coder"));
     gate.0.store(true, Ordering::SeqCst);
     for n in 0..3 {
         assert_eq!(
@@ -772,8 +818,10 @@ fn a_gate_that_panics_refuses_the_batch_and_the_resume_and_the_worker_keeps_serv
     assert_eq!(batcher.stats().dispatched, 1);
     assert_eq!(batcher.stats().revoked, 3);
     assert_eq!(
-        batcher.resume_with(&resume, &binding, &key("coder")),
-        Err(ModelError::revoked())
+        batcher
+            .resume_continuation(continuation, &key("coder"), observation(1, b"x"))
+            .err(),
+        Some(ModelError::revoked())
     );
     gate.0.store(false, Ordering::SeqCst);
     assert!(batcher.infer(&request("after")).is_ok());

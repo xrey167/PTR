@@ -31,7 +31,7 @@ use crate::{
     InferenceBackend, ModelError, ModelEvent, ModelObservation, ModelRequest, ModelResumeRequest,
     ResumableInferenceBackend,
 };
-use ptr_types::{Generation, RequestId, Timestamp};
+use ptr_types::{Generation, RequestId, SemanticContext, Timestamp};
 use std::fmt;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -132,71 +132,62 @@ impl fmt::Display for BatchError {
 
 impl std::error::Error for BatchError {}
 
-/// The handle of one continuation, handed back with its answer by
-/// [`AdaptiveBatcher::infer_scoped`]. It carries nothing but an unguessable 128-bit id; the
-/// scope (key and request), the observation and the use count live in the batcher's bounded
-/// table under that id, so nothing a caller writes into a binding has any authority. It has no
-/// public constructor, and a continuation is single-use.
-#[derive(Clone, Eq, PartialEq)]
-pub struct ResumeBinding {
+/// The handle of one continuation, returned with its answer by
+/// [`AdaptiveBatcher::infer_scoped`]. It is opaque: not `Clone`, not `Copy`, no public
+/// constructor, and it is consumed by [`AdaptiveBatcher::resume_continuation`]. It holds only an
+/// unguessable 128-bit id. Everything a resume needs (scope, request id, semantic context, the
+/// round) is kept in the batcher's bounded table under that id, so nothing a caller holds or
+/// writes decides any of it.
+pub struct Continuation {
     id: u128,
 }
 
 // Not derived: the id is a credential and a log line must not carry it.
-impl fmt::Debug for ResumeBinding {
+impl fmt::Debug for Continuation {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("ResumeBinding")
+            .debug_struct("Continuation")
             .finish_non_exhaustive()
     }
 }
 
-/// What a scoped call returns: the events and the binding a later resume must present.
-#[derive(Clone, Debug, PartialEq)]
+/// What [`AdaptiveBatcher::infer_scoped`] returns: the events and the continuation that a
+/// later observation resumes.
+#[derive(Debug)]
 pub struct ScopedAnswer {
     pub events: Vec<ModelEvent>,
-    pub binding: ResumeBinding,
+    pub continuation: Continuation,
+}
+
+/// What [`AdaptiveBatcher::resume_continuation`] returns: the events and, when the round
+/// counter has room, the continuation of the next round.
+#[derive(Debug)]
+pub struct ResumedAnswer {
+    pub events: Vec<ModelEvent>,
+    pub next: Option<Continuation>,
 }
 
 /// The most continuations a batcher keeps open at once. A flood of answers that are never
 /// resumed evicts the oldest; resuming an evicted continuation fails closed.
 pub const MAX_OPEN_CONTINUATIONS: usize = 4096;
 
-/// SHA-256 over the fields of an observation, each framed by its length. It identifies the
-/// data that actually resumes.
-fn observation_digest(observation: &ModelObservation) -> [u8; 32] {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(b"ptr-batch-observation-v1");
-    for field in [
-        format!("{:?}", observation.revision),
-        observation.source.clone(),
-        format!("{:?}", observation.type_id),
-    ] {
-        hasher.update((field.len() as u64).to_le_bytes());
-        hasher.update(field.as_bytes());
-    }
-    hasher.update((observation.payload.len() as u64).to_le_bytes());
-    hasher.update(&observation.payload);
-    hasher.finalize().into()
-}
-
-struct Continuation {
+/// The whole resume context of one open continuation. The resume request is built from this
+/// and the caller's observation, never from caller-supplied context.
+struct OpenContinuation {
     request_id: RequestId,
     key: BatchKey,
-    /// Digest of the one observation this continuation resumes, recorded by whoever produced
-    /// it; none until then.
-    observation: Option<[u8; 32]>,
+    semantic_context: SemanticContext,
+    round: u32,
 }
 
 #[derive(Default)]
 struct Continuations {
     order: std::collections::VecDeque<u128>,
-    entries: std::collections::HashMap<u128, Continuation>,
+    entries: std::collections::HashMap<u128, OpenContinuation>,
 }
 
 impl Continuations {
-    fn open(&mut self, id: u128, continuation: Continuation) {
+    fn open(&mut self, id: u128, continuation: OpenContinuation) {
         while self.order.len() >= MAX_OPEN_CONTINUATIONS {
             if let Some(oldest) = self.order.pop_front() {
                 self.entries.remove(&oldest);
@@ -206,7 +197,7 @@ impl Continuations {
         self.entries.insert(id, continuation);
     }
 
-    fn close(&mut self, id: u128) -> Option<Continuation> {
+    fn close(&mut self, id: u128) -> Option<OpenContinuation> {
         let continuation = self.entries.remove(&id)?;
         self.order.retain(|open| *open != id);
         Some(continuation)
@@ -464,13 +455,14 @@ impl<B: BatchInferenceBackend + 'static> AdaptiveBatcher<B> {
         request: &ModelRequest,
         admission: BatchAdmission,
     ) -> Result<Vec<ModelEvent>, ModelError> {
-        self.infer_scoped(request, admission)
-            .map(|answer| answer.events)
+        self.run_inferred(request, admission)
     }
 
-    /// Like [`AdaptiveBatcher::infer_with`], and also returns the [`ResumeBinding`] of the
-    /// answer: the key and request id it was produced under, for a later
-    /// [`AdaptiveBatcher::resume_with`].
+    /// Like [`AdaptiveBatcher::infer_with`], and also opens a continuation: the returned
+    /// [`Continuation`] is the one handle a later observation resumes through
+    /// ([`AdaptiveBatcher::resume_continuation`]). The batcher keeps the scope (the admission's
+    /// key), the request id, the semantic context and the round in a table of at most
+    /// [`MAX_OPEN_CONTINUATIONS`] entries. `infer` and `infer_with` open none.
     ///
     /// # Errors
     /// As [`AdaptiveBatcher::infer_with`].
@@ -479,7 +471,29 @@ impl<B: BatchInferenceBackend + 'static> AdaptiveBatcher<B> {
         request: &ModelRequest,
         admission: BatchAdmission,
     ) -> Result<ScopedAnswer, ModelError> {
-        let bound_key = admission.key.clone();
+        let key = admission.key.clone();
+        let events = self.run_inferred(request, admission)?;
+        let id = self.shared.issue_token();
+        self.shared.lock().continuations.open(
+            id,
+            OpenContinuation {
+                request_id: request.request_id.clone(),
+                key,
+                semantic_context: request.semantic_context.clone(),
+                round: 1,
+            },
+        );
+        Ok(ScopedAnswer {
+            events,
+            continuation: Continuation { id },
+        })
+    }
+
+    fn run_inferred(
+        &self,
+        request: &ModelRequest,
+        admission: BatchAdmission,
+    ) -> Result<Vec<ModelEvent>, ModelError> {
         let counters = &self.shared.counters;
         if admission.key.adapter.is_some() && self.shared.gate.is_none() {
             bump(&counters.revoked, 1);
@@ -521,89 +535,56 @@ impl<B: BatchInferenceBackend + 'static> AdaptiveBatcher<B> {
             }
         }
         self.shared.wake.notify_one();
-        let events = answer_rx
+        answer_rx
             .recv()
-            .unwrap_or_else(|_| Err(ModelError::closed()))?;
-        let id = self.shared.issue_token();
-        self.shared.lock().continuations.open(
-            id,
-            Continuation {
-                request_id: request.request_id.clone(),
-                key: bound_key,
-                observation: None,
-            },
-        );
-        Ok(ScopedAnswer {
-            events,
-            binding: ResumeBinding { id },
-        })
+            .unwrap_or_else(|_| Err(ModelError::closed()))
     }
 
-    /// Record the observation that resumes the continuation `binding` names. It is called by
-    /// whoever produced the observation, with the binding of the answer that asked for it, and
-    /// only once: the digest of this observation is then the only one [`Self::resume_with`]
-    /// accepts for the continuation.
+    /// Resume `continuation` with a new observation, once. The observation is new input of the
+    /// caller under the continuation's scope: the gate checks exactly that scope, as it does
+    /// for a fresh `infer` under it, and the batcher does not and cannot see where the
+    /// caller's bytes came from. What it guarantees is that nothing stale is resumed. The
+    /// request id, semantic context and round come from the table entry of this continuation
+    /// and from nowhere else; the entry belongs to exactly one scope and is consumed here, so
+    /// a continuation is single-use and one from a scope since revoked is refused by the gate.
     ///
-    /// # Errors
-    /// [`ModelError::scope_mismatch`] for an unknown, evicted or used continuation and for one
-    /// whose observation was already recorded.
-    pub fn record_observation(
-        &self,
-        binding: &ResumeBinding,
-        observation: &ModelObservation,
-    ) -> Result<(), ModelError> {
-        let mut state = self.shared.lock();
-        match state.continuations.entries.get_mut(&binding.id) {
-            Some(continuation) if continuation.observation.is_none() => {
-                continuation.observation = Some(observation_digest(observation));
-                Ok(())
-            }
-            _ => Err(ModelError::scope_mismatch()),
-        }
-    }
-
-    /// Resume the continuation `binding` names, once. The scope is the continuation's own, read
-    /// from the batcher's table and not from anything the caller wrote: the entry must exist
-    /// (unknown, evicted and used ids are alike), belong to `request.request_id`, hold the
-    /// scope `key`, and hold the digest of exactly `request.observation` (recorded with
-    /// [`Self::record_observation`]); any difference is [`ModelError::scope_mismatch`] and
-    /// nothing runs. A matching entry is consumed, so a second resume with the same binding
-    /// is refused. The gate is then asked about the entry's key, so an observation recorded
-    /// under a revoked generation is refused whatever key or binding the caller holds for a
-    /// live one.
+    /// `key` is the scope the caller claims. It must be the entry's; any difference, an
+    /// unknown, evicted or used continuation alike, is [`ModelError::scope_mismatch`] and
+    /// nothing runs (the handle is consumed either way). On success the answer carries the
+    /// continuation of the next round.
     ///
     /// # Errors
     /// [`ModelError::scope_mismatch`], [`ModelError::revoked`] when the gate does not admit the
-    /// key (or a key naming an adapter has no gate), and whatever the backend returns.
-    pub fn resume_with(
+    /// entry's key (or a key naming an adapter has no gate), and whatever the backend returns.
+    pub fn resume_continuation(
         &self,
-        request: &ModelResumeRequest,
-        binding: &ResumeBinding,
+        continuation: Continuation,
         key: &BatchKey,
-    ) -> Result<Vec<ModelEvent>, ModelError>
+        observation: ModelObservation,
+    ) -> Result<ResumedAnswer, ModelError>
     where
         B: ResumableInferenceBackend,
     {
-        let entry = {
-            let mut state = self.shared.lock();
-            let matches = state
-                .continuations
-                .entries
-                .get(&binding.id)
-                .is_some_and(|entry| {
-                    entry.request_id == request.request_id
-                        && &entry.key == key
-                        && entry.observation == Some(observation_digest(&request.observation))
-                });
-            if !matches {
-                return Err(ModelError::scope_mismatch());
-            }
-            state.continuations.close(binding.id)
-        };
-        let Some(entry) = entry else {
+        let entry = self.shared.lock().continuations.close(continuation.id);
+        let Some(entry) = entry.filter(|entry| &entry.key == key) else {
             return Err(ModelError::scope_mismatch());
         };
-        self.run_resume(request, &entry.key)
+        let request = ModelResumeRequest {
+            request_id: entry.request_id.clone(),
+            semantic_context: entry.semantic_context.clone(),
+            round: entry.round,
+            observation,
+        };
+        let events = self.run_resume(&request, &entry.key)?;
+        let next = entry.round.checked_add(1).map(|round| {
+            let id = self.shared.issue_token();
+            self.shared
+                .lock()
+                .continuations
+                .open(id, OpenContinuation { round, ..entry });
+            Continuation { id }
+        });
+        Ok(ResumedAnswer { events, next })
     }
 
     fn run_resume(
@@ -684,7 +665,7 @@ impl<B: BatchInferenceBackend + ResumableInferenceBackend + 'static> ResumableIn
     /// admitted under, so this form is only for a batcher built without a gate (which serves no
     /// adapter at all), where every answer is unscoped. With a gate configured it is refused
     /// with [`ModelError::revoked`]; a caller that serves adapters resumes through
-    /// [`AdaptiveBatcher::resume_with`] with the binding of the answer.
+    /// [`AdaptiveBatcher::resume_continuation`] with the continuation of the answer.
     fn resume(&self, request: &ModelResumeRequest) -> Result<Vec<ModelEvent>, ModelError> {
         if self.shared.gate.is_some() {
             bump(&self.shared.counters.revoked, 1);

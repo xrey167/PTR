@@ -162,15 +162,18 @@ simulator training happens in PTR until `predictive` has been true on a real gen
 - **Generation at use (invariant 3).** A `BatchGate` is asked about the key of every batch immediately before the model
   runs; a revoked generation is refused at that use (`ModelError::revoked()`), not only when it was queued. A key that
   names an adapter is refused when the batcher was built without a gate (there is no admit-all default). A resume
-  continues a continuation the batcher issued: `infer_scoped` returns the answer with a `ResumeBinding`, which holds nothing but an
-  unguessable 128-bit id (two OS-keyed hashers over a counter; no public constructor, `Debug` prints nothing of it). The
-  scope (`BatchKey`, request id) and the digest of the observation that resumes it live in the batcher's table of at most
-  `MAX_OPEN_CONTINUATIONS` (4096, oldest evicted; an evicted continuation fails closed). Whoever produced the observation
-  records it once with `record_observation(binding, observation)`; `resume_with(request, binding, key)` looks the entry up
-  and refuses an unknown, evicted or used id, another request id, another key or an observation whose digest is not the
-  recorded one (`ModelErrorKind::ScopeMismatch`) before anything runs, then consumes the entry (single-use) and asks the gate
-  about the entry's key. Two calls under the same request id with identical outputs therefore stay apart, and an
-  observation recorded under a revoked generation cannot be carried by a key or binding of a live one. The unscoped
+  goes through an opaque `Continuation`: `infer_scoped` returns the answer with one (not `Clone`, no public constructor, an
+  unguessable 128-bit id from two OS-keyed hashers over a counter, `Debug` prints nothing of it). The batcher keeps the whole
+  resume context in a table of at most `MAX_OPEN_CONTINUATIONS` (4096, oldest evicted, an evicted one fails closed), keyed by
+  that id: `BatchKey`, request id, semantic context and the round. `resume_continuation(continuation, key, observation)`
+  consumes the handle and the entry, refuses a `key` other than the entry's (`ModelErrorKind::ScopeMismatch`, as for an unknown,
+  evicted or used continuation), asks the gate about the entry's key and builds the `ModelResumeRequest` itself from the stored
+  request id, semantic context and round plus the caller's observation; the answer carries the continuation of the next round.
+  The observation is new caller input under the continuation's scope: the gate checks exactly that scope, as for a fresh
+  `infer` under it, and the batcher cannot see where the caller's bytes came from and does not need to. What it guarantees is
+  that no stale state is resumed: context, round and scope come only from the table entry, which belongs to exactly one
+  scope, so a continuation from a revoked generation is refused whatever key or other continuation the caller holds. Plain
+  `infer` and `infer_with` open no continuation. The unscoped
   `resume` of the trait is served only by a batcher built without a gate (which serves no adapter) and is refused when a
   gate is configured. A gate that panics has not admitted the key (refused as revoked, counted); a worker that ends for
   any reason closes the batcher and answers every queued caller with `closed`. Resume has the same panic containment as a batch. Deadlines and cancellations are checked again after the gate, immediately before the backend call.
@@ -181,7 +184,7 @@ simulator training happens in PTR until `predictive` has been true on a real gen
 once, by an allowlist on the typed `ModelErrorKind`: only overload and backend failure (`ModelError::allows_failover`).
 A refusal of the request itself (kind `Other`, the default of `ModelError::new`), a passed deadline, a cancellation, a
 revoked generation and a closed backend end the request; the message is never read. A `resume` tries one replica unless
-`ResumeFailover::Interchangeable` declares the replicas interchangeable for it, and it goes back to the replica that answered the `infer` of its request id (the most recent 4096 ids are remembered; an id the router does not know takes the rotation's replica). Counters per replica:
+`ResumeFailover::Interchangeable` declares the replicas interchangeable for it, and `infer_placed` returns the answer with a per-invocation `Placement` (not `Clone`, no table) that `resume_placed` consumes: under `Never` the resume goes to exactly that replica, once, so two calls under one request id keep separate placements. The plain trait `resume` carries no placement and takes the rotation's replica. Counters per replica:
 attempts, failures, failovers. `ReplicaRouter(AdaptiveBatcher(backend))` composes.
 
 **Not done, and why.** `ptr-server` serializes requests behind the runtime lock, so a batcher in front of it would only

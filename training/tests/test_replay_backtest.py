@@ -386,3 +386,16 @@ class FoldEncodingTests(unittest.TestCase):
         self.assertNotEqual(fold.extrapolation({"mode": "beta"}), [])
         # The fold with nothing excluded still sees all three.
         self.assertEqual(ReplaySimulator(pool)._categories["mode"], ["alpha", "beta", "gamma"])
+
+
+class OversizedLevelTests(unittest.TestCase):
+    def test_an_int_too_large_for_a_float_is_a_history_error_and_leaves_the_pool_unchanged(self):
+        pool = HistoryPool()
+        pool.add_generation("g0", order=0, decisions={"x": 1}, outcome=outcome(200))
+        before = pool.fingerprint()
+        with self.assertRaises(HistoryError):
+            pool.add_generation("g1", order=1, decisions={"x": 10**10000}, outcome=outcome(300))
+        self.assertEqual(pool.fingerprint(), before)
+        self.assertEqual(len(pool.generations), 1)
+        with self.assertRaises(HistoryError):
+            ReplaySimulator(pool).simulate({"x": 10**10000})

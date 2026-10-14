@@ -120,9 +120,14 @@ def levels_of(
         if isinstance(value, bool):
             levels[name] = 1.0 if value else 0.0
         elif isinstance(value, (int, float)):
-            if not math.isfinite(value):
+            try:
+                number = float(value)
+            except OverflowError:
+                # An int too large for a float is not a level; refuse it as any other bad value.
+                raise HistoryError(f"decision {name!r} is not finite") from None
+            if not math.isfinite(number):
                 raise HistoryError(f"decision {name!r} is not finite")
-            levels[name] = float(value)
+            levels[name] = number
         elif isinstance(value, str):
             known = categories.setdefault(name, []) if register else categories.get(name, [])
             if value not in known:

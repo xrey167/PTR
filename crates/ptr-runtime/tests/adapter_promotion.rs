@@ -544,3 +544,33 @@ fn a_generic_revoke_in_the_adapter_namespace_is_refused_and_an_old_one_still_rep
     }];
     assert!(PtrRuntime::replay(PtrConfig::default(), &history).is_ok());
 }
+
+#[test]
+fn only_a_generation_that_was_promoted_can_be_revoked() {
+    let mut runtime = runtime();
+    runtime
+        .promote_adapter(request("coder", 5, WEIGHTS))
+        .expect("promotes generation 5 directly");
+    let before = runtime.committed_events().len();
+    // Generation 3 is below the live one but was never promoted: no tombstone to plant.
+    assert_eq!(
+        runtime.revoke_adapter(revoke("coder", 3)),
+        Err(RuntimeError::Adapter(
+            AdapterError::GenerationNeverPromoted {
+                project: "alpha".into(),
+                adapter: "coder".into(),
+                generation: Generation(3),
+            }
+        ))
+    );
+    assert_eq!(
+        runtime.committed_events().len(),
+        before,
+        "nothing committed"
+    );
+    // It was not pre-revoked either: promoting a later generation and revoking the real one
+    // still work.
+    runtime
+        .revoke_adapter(revoke("coder", 5))
+        .expect("the promoted generation revokes");
+}
