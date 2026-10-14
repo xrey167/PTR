@@ -3063,10 +3063,8 @@ impl PtrRuntime {
                 manifest_digest,
                 artifact_digest,
                 generation,
-                revision,
                 output_type,
                 output_digest,
-                payload,
                 provenance,
                 dependencies,
                 confidence_bits,
@@ -3093,29 +3091,11 @@ impl PtrRuntime {
                         "invalid Pod hypothesis event".into(),
                     ));
                 }
-                let output = ptr_pods::PodOutput {
-                    kind: PodOutputKind::Hypothesis,
-                    payload: TypedPayload {
-                        type_id: output_type.clone(),
-                        bytes: payload.clone(),
-                    },
-                    generation: *generation,
-                    manifest_digest: *manifest_digest,
-                    artifact_digest: *artifact_digest,
-                    provenance: provenance
-                        .iter()
-                        .map(|(source, note)| ProvenanceRef {
-                            source: EvidenceId(source.clone()),
-                            note: note.clone(),
-                        })
-                        .collect(),
-                    dependencies: dependencies.clone(),
-                    revision: *revision,
-                    verified: false,
-                };
+                let output = hypothesis_output(event).expect("a hypothesis event");
                 // Admission records the version-2 digest. A record committed before version 2
                 // (issue #141) carries the version-1 digest, which replay still accepts: the
-                // two versions are domain-separated, so a stored digest equals at most one.
+                // two versions are domain-separated, so a stored digest equals at most one. A
+                // new record must carry version 2 (`validate_new_record`).
                 if output.digest() != *output_digest && output.legacy_v1_digest() != *output_digest
                 {
                     return Err(RuntimeError::PodOutputAdmission(
@@ -3572,7 +3552,56 @@ impl PtrRuntime {
 /// ([`LedgerEvent::ExpertAuthorityChanged`]): only `change_expert_authority` may. A taint
 /// record ([`LedgerEvent::KvTaintCommitted`]) is refused the same way: only the runtime's taint
 /// path may write one.
+/// The Pod output a `PodHypothesisCommitted` record describes, for checking its output digest.
+fn hypothesis_output(event: &LedgerEvent) -> Option<ptr_pods::PodOutput> {
+    let LedgerEvent::PodHypothesisCommitted {
+        manifest_digest,
+        artifact_digest,
+        generation,
+        revision,
+        output_type,
+        payload,
+        provenance,
+        dependencies,
+        ..
+    } = event
+    else {
+        return None;
+    };
+    Some(ptr_pods::PodOutput {
+        kind: PodOutputKind::Hypothesis,
+        payload: TypedPayload {
+            type_id: output_type.clone(),
+            bytes: payload.clone(),
+        },
+        generation: *generation,
+        manifest_digest: *manifest_digest,
+        artifact_digest: *artifact_digest,
+        provenance: provenance
+            .iter()
+            .map(|(source, note)| ProvenanceRef {
+                source: EvidenceId(source.clone()),
+                note: note.clone(),
+            })
+            .collect(),
+        dependencies: dependencies.clone(),
+        revision: *revision,
+        verified: false,
+    })
+}
+
 fn validate_new_record(event: &LedgerEvent) -> Result<(), RuntimeError> {
+    // A new hypothesis record carries the version-2 output digest only; the version-1 digest
+    // (ambiguous, issue #141) is accepted for records already in a log, on replay and restore.
+    if let (LedgerEvent::PodHypothesisCommitted { output_digest, .. }, Some(output)) =
+        (event, hypothesis_output(event))
+    {
+        if output.digest() != *output_digest {
+            return Err(RuntimeError::PodOutputAdmission(
+                "hypothesis output digest mismatch".into(),
+            ));
+        }
+    }
     if matches!(
         event,
         LedgerEvent::ExpertStructuralCommitted { .. }

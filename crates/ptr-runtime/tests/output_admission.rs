@@ -706,12 +706,38 @@ fn a_hypothesis_record_replays_under_the_current_or_the_legacy_output_digest_onl
         *output_digest = digest;
         event
     };
-    let mut legacy = runtime_with_only_the_admission_record(&first);
-    legacy
-        .commit(with_digest(output.legacy_v1_digest()))
-        .unwrap();
-    let mut forged = runtime_with_only_the_admission_record(&first);
-    assert!(forged.commit(with_digest([7; 32])).is_err());
+    let admission = first
+        .committed_events()
+        .iter()
+        .find(|c| matches!(c.event, ptr_ledger::LedgerEvent::PodOutputAdmitted { .. }))
+        .unwrap()
+        .event
+        .clone();
+    // Already in a log: the version-1 digest replays; any other digest is refused.
+    let replayed = runtime_with(vec![
+        admission.clone(),
+        with_digest(output.legacy_v1_digest()),
+    ]);
+    assert!(replayed.committed_events().len() > 2);
+    let mut events = runtime_with_scope().committed_events().to_vec();
+    for event in [admission, with_digest([7; 32])] {
+        let index = ptr_types::CommitIndex(events.len() as u64 + 1);
+        events.push(ptr_ledger::CommittedEvent { index, event });
+    }
+    assert!(PtrRuntime::replay(PtrConfig::default(), &events).is_err());
+
+    // Review of #141: a new record through the public commit path must carry version 2; the
+    // version-1 digest is refused there and nothing is appended.
+    let mut fresh = runtime_with_only_the_admission_record(&first);
+    let before = fresh.committed_events().len();
+    let refused = fresh.commit(with_digest(output.legacy_v1_digest()));
+    assert!(
+        matches!(&refused, Err(ptr_runtime::RuntimeError::PodOutputAdmission(m)) if m.contains("digest mismatch")),
+        "{refused:?}"
+    );
+    assert_eq!(fresh.committed_events().len(), before);
+    fresh.commit(with_digest(output.digest())).unwrap();
+    assert!(fresh.commit(with_digest([7; 32])).is_err());
 }
 
 /// The admission (and, for a hypothesis, its follow-up) a pre-version-2 build would have written
@@ -754,11 +780,36 @@ fn legacy_records(
     out
 }
 
+/// A runtime whose log holds the scoped fixture followed by `records`, written by an earlier
+/// build: the records are replayed, as a log already on disk is, not committed anew (a new
+/// record must carry the version-2 digest).
 fn runtime_with(records: Vec<ptr_ledger::LedgerEvent>) -> PtrRuntime {
-    let mut runtime = runtime_with_scope();
-    for record in records {
-        runtime.commit(record).unwrap();
+    // The scope is created live after the replay: a scope replayed from the log would need
+    // recovery before it takes any work, which is not what these tests are about.
+    let mut base = PtrRuntime::new(PtrConfig::default()).unwrap();
+    base.ingest_text(RequestId::from("request"), "ground truth")
+        .unwrap();
+    let mut events = base.committed_events().to_vec();
+    for event in records {
+        let index = ptr_types::CommitIndex(events.len() as u64 + 1);
+        events.push(ptr_ledger::CommittedEvent { index, event });
     }
+    let mut runtime = PtrRuntime::replay(PtrConfig::default(), &events).unwrap();
+    runtime
+        .create_scope(
+            ExecutionScope {
+                id: ScopeId::from("scope"),
+                parent: None,
+                session: SessionId::from("session"),
+                project: ProjectId::from("project"),
+                created_at: Timestamp(1),
+                deadline: None,
+                state: ScopeState::Created,
+                cancellation_requested: false,
+            },
+            ScopeLeaseBinding::default(),
+        )
+        .unwrap();
     runtime
 }
 
