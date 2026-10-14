@@ -171,19 +171,25 @@ Rules, each the same as the one already enforced for frames and KV pages, restat
    `CudaIpc` and `DevicePeer` no seal exists, so a mapped device allocation is never used
    directly under this contract: the consumer copies it into a **receiver-owned** allocation
    (one device-to-device copy), verifies `content_digest` on that copy, and only then uses it.
-   Before copying, the consumer queries the imported allocation's actual base and size
-   (`cuMemGetAddressRange`) and refuses the handle unless `offset + byte_len` lies inside it,
-   overflow-checked, analogous to the file-extent check for `HostShm`. That check protects the
+   Before copying, the consumer checks the extent and refuses the handle unless
+   `offset + byte_len` lies inside the allocation, overflow-checked, analogous to the file-extent
+   check for `HostShm`. For the legacy form it queries the imported allocation's actual base and
+   size with `cuMemGetAddressRange`. That query is documented only for `cuMemAlloc` and
+   `cuMemAllocPitch` allocations, not for a `cuMemCreate` allocation mapped with `cuMemMap`, so for
+   the VMM form the consumer instead uses the allocation size recorded by the supervisor in the
+   export record (a multiple of the allocation granularity), reserves and maps exactly that range
+   with `cuMemAddressReserve` and `cuMemMap`, and checks the extent against it. That check protects the
    consumer, not the producer: CUDA IPC maps the whole underlying driver allocation, and the
    driver may place even a separate small `cudaMalloc` inside a shared block, so the importer
    could address adjacent tensors or weights. The producer therefore exports each tensor only
    from an **isolated staging buffer**: either a virtual-memory-management allocation
    (`cuMemCreate` with a POSIX file-descriptor shareable handle, size rounded up to the
    allocation granularity, holding nothing else), or a legacy `cudaMalloc` whose size is rounded
-   up to a multiple of 2 MiB, as NVIDIA's IPC guide recommends. Before exporting, the producer
-   queries the buffer with `cuMemGetAddressRange` and refuses to export unless the returned base
-   equals the buffer's start and the returned size equals its rounded size, so a sub-allocated
-   buffer is never exported. The whole range outside the tensor span is zeroed **before every
+   up to a multiple of 2 MiB, as NVIDIA's IPC guide recommends. Before a legacy export, the
+   guardian queries the buffer with `cuMemGetAddressRange` and refuses to export unless the
+   returned base equals the buffer's start and the returned size equals its rounded size, so a
+   sub-allocated buffer is never exported; a VMM buffer is isolated by construction (one
+   `cuMemCreate` per buffer), and its size is recorded in the export record. The whole range outside the tensor span is zeroed **before every
    publication**, not only at allocation, because a pooled buffer reused for a shorter tensor
    would otherwise expose the previous tensor's tail; E009's GPU cell includes a long-then-short
    reuse case. E009's GPU cell includes a
@@ -232,7 +238,10 @@ Rules, each the same as the one already enforced for frames and KV pages, restat
    carrier copies into a receiver-owned buffer and verifies the digest there, as `CudaIpc` does.
 3b. **Bytes are bounded, not only handles.** Every handle has a maximum `byte_len`, and each
    producer has an in-flight byte budget; a handle that would exceed it is refused with a typed
-   saturation error. A handle's bytes count against the budget for as long as its buffer is
+   saturation error. Budgets and quotas are charged with the **allocated footprint**, not the
+   logical `byte_len`: the VMM size rounded to the allocation granularity, the legacy allocation
+   rounded to 2 MiB, the `memfd` rounded to whole pages, padding included, so many small handles
+   cannot hold more memory than the cap. A handle's bytes count against the budget for as long as its buffer is
    held, so they are released only with the notice that frees the buffer. For a carrier that is
    not shared with another process (`InProcess` under moved ownership, `Bytes`, `NvmeFile`,
    `Remote`) that notice is `Consumed` or the reclaim at deadline plus skew; for a **shared**
@@ -506,7 +515,13 @@ grant also names the receiver's **session id**, a random value the receiver draw
 start, so a grant issued before a restart is refused after it even though the tombstones were not
 persisted; the
 receiver revalidates that binding against the current residency record at transfer time **and
-again, atomically, immediately before the destination replica becomes available**, discarding the
+again, atomically, immediately before the destination replica becomes available**. The
+residency and placement records of the source are local to the source authority, so the
+receiver's final check is a **commit request to the source authority**: the source checks the
+binding against its own live state and, if it holds, acknowledges and records the commit in
+the same step in which it would apply a fence or a replacement of that active write, so a
+fence either precedes the acknowledgement (the commit is refused) or follows it (the published
+replica is then fenced like any other). The receiver publishes only after that acknowledgement, discarding the
 transferred chunks if the binding or the project scope no longer holds (a principal admitted to
 several projects can therefore not move an object of project A into a destination of project B;
 `TierObjectManifest` and the KV snapshot binding carry no project today, so the object namespace
