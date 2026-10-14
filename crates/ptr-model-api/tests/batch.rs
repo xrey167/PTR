@@ -1226,3 +1226,199 @@ fn a_running_resume_keeps_its_slot_for_the_successor() {
     });
     drop(held);
 }
+
+/// Records every text it is asked about; "slow" waits for the test, "finish" finishes.
+struct Gated {
+    entered: AtomicBool,
+    latch: Latch,
+    seen: std::sync::Mutex<Vec<String>>,
+}
+
+impl Gated {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            entered: AtomicBool::new(false),
+            latch: Latch::default(),
+            seen: std::sync::Mutex::new(Vec::new()),
+        })
+    }
+}
+
+impl InferenceBackend for Gated {
+    fn name(&self) -> &'static str {
+        "gated"
+    }
+
+    fn infer(&self, request: &ModelRequest) -> Result<Vec<ModelEvent>, ModelError> {
+        self.seen.lock().unwrap().push(request.raw_text.clone());
+        if request.raw_text.ends_with("slow") {
+            self.entered.store(true, Ordering::SeqCst);
+            self.latch.wait();
+        }
+        if request.raw_text.ends_with("finish") {
+            return Ok(vec![ModelEvent::Finished]);
+        }
+        Ok(vec![ModelEvent::Token("waiting".into())])
+    }
+}
+
+impl ptr_model_api::BatchInferenceBackend for Gated {}
+
+impl ptr_model_api::ResumableInferenceBackend for Gated {
+    fn resume(&self, _request: &ModelResumeRequest) -> Result<Vec<ModelEvent>, ModelError> {
+        Ok(vec![ModelEvent::Token("waiting".into())])
+    }
+}
+
+fn gated_batcher(backend: &Arc<Gated>) -> AdaptiveBatcher<Gated> {
+    AdaptiveBatcher::with_parts(
+        Arc::clone(backend),
+        policy(1, 0, 4),
+        Arc::new(SystemClock),
+        Some(Arc::new(OpenGate) as Arc<dyn BatchGate>),
+    )
+    .expect("built")
+}
+
+fn text_request(id: &str, text: &str) -> ModelRequest {
+    ModelRequest {
+        raw_text: text.into(),
+        ..request(id)
+    }
+}
+
+#[test]
+fn the_last_slot_is_reserved_before_the_model_runs_and_never_promised_twice() {
+    use ptr_model_api::MAX_OPEN_CONTINUATIONS;
+    let backend = Gated::new();
+    let batcher = gated_batcher(&backend);
+    let mut held = Vec::new();
+    for n in 0..MAX_OPEN_CONTINUATIONS - 1 {
+        held.push(
+            batcher
+                .infer_scoped(
+                    &text_request(&format!("fill-{n}"), "fill"),
+                    admission_under(&principal_scope(&format!("fill-{n}"))),
+                )
+                .expect("served"),
+        );
+    }
+    std::thread::scope(|scope| {
+        let batcher = &batcher;
+        // The first call takes the last slot and is inside the model.
+        let first = scope.spawn(move || {
+            batcher.infer_scoped(
+                &text_request("first", "slow"),
+                admission_under(&principal_scope("a")),
+            )
+        });
+        assert!(eventually(PATIENT, || backend
+            .entered
+            .load(Ordering::SeqCst)));
+        // The second is refused before the backend sees it.
+        assert_eq!(
+            batcher
+                .infer_scoped(
+                    &text_request("second", "second"),
+                    admission_under(&principal_scope("b"))
+                )
+                .err(),
+            Some(ModelError::overloaded())
+        );
+        assert!(!backend.seen.lock().unwrap().contains(&"second".to_owned()));
+        backend.latch.open();
+        // The first run is not discarded afterwards: it keeps its continuation.
+        let answer = first.join().expect("thread").expect("served");
+        assert!(answer.continuation.is_some());
+    });
+    drop(held);
+}
+
+#[test]
+fn a_request_that_needs_no_continuation_evicts_nothing_of_the_principal() {
+    use ptr_model_api::MAX_CONTINUATIONS_PER_PRINCIPAL;
+    let backend = Gated::new();
+    let batcher = gated_batcher(&backend);
+    let scope = principal_scope("p");
+    let mut handles = Vec::new();
+    for n in 0..MAX_CONTINUATIONS_PER_PRINCIPAL {
+        handles.push(
+            batcher
+                .infer_scoped(
+                    &text_request(&format!("r{n}"), "wait"),
+                    admission_under(&scope),
+                )
+                .expect("served")
+                .continuation
+                .expect("waiting"),
+        );
+    }
+    let oldest = handles.remove(0);
+    // Cancelled, expired and finished requests at the quota: none of them evicts the oldest.
+    let cancel = CancelFlag::default();
+    cancel.cancel();
+    assert_eq!(
+        batcher
+            .infer_scoped(
+                &text_request("c", "wait"),
+                BatchAdmission {
+                    key: scope.clone(),
+                    deadline: None,
+                    cancel: Some(cancel),
+                }
+            )
+            .err(),
+        Some(ModelError::cancelled())
+    );
+    assert_eq!(
+        batcher
+            .infer_scoped(
+                &text_request("e", "wait"),
+                BatchAdmission {
+                    key: scope.clone(),
+                    deadline: Some(Timestamp(1)),
+                    cancel: None,
+                }
+            )
+            .err(),
+        Some(ModelError::deadline_exceeded())
+    );
+    let finished = batcher
+        .infer_scoped(&text_request("f", "finish"), admission_under(&scope))
+        .expect("served");
+    assert!(finished.continuation.is_none());
+    assert!(batcher
+        .resume_continuation(oldest, &scope, observation(1, b"x"))
+        .is_ok());
+}
+
+#[test]
+fn a_resume_is_counted_as_dispatched_before_the_backend_sees_it() {
+    let batcher = echo_batcher(Arc::new(OpenGate));
+    let key = key("coder");
+    let continuation = open(&batcher, "r", &key);
+    let before = batcher.stats();
+    batcher
+        .resume_continuation(continuation, &key, observation(1, b"x"))
+        .expect("resumes");
+    let after = batcher.stats();
+    assert_eq!(after.dispatched, before.dispatched + 1);
+    assert_eq!(after.backend_errors, before.backend_errors);
+
+    // A backend that fails the resume is counted as dispatched and as a backend error.
+    let failing = AdaptiveBatcher::with_parts(
+        Arc::new(PanickingResume),
+        policy(1, 0, 4),
+        Arc::new(SystemClock),
+        Some(Arc::new(OpenGate) as Arc<dyn BatchGate>),
+    )
+    .expect("built");
+    let continuation = open(&failing, "r", &BatchKey::unscoped());
+    let before = failing.stats();
+    assert!(failing
+        .resume_continuation(continuation, &BatchKey::unscoped(), observation(1, b"x"))
+        .is_err());
+    let after = failing.stats();
+    assert_eq!(after.dispatched, before.dispatched + 1);
+    assert_eq!(after.backend_errors, before.backend_errors + 1);
+}

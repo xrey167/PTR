@@ -425,11 +425,6 @@ impl LayeredReuseReport {
 
 // Digests and dependencies ----------------------------------------------------------------
 
-fn put_text(hasher: &mut Sha256, text: &str) {
-    hasher.update((text.len() as u64).to_le_bytes());
-    hasher.update(text.as_bytes());
-}
-
 fn put_bits(hasher: &mut Sha256, values: &[f32]) {
     hasher.update((values.len() as u64).to_le_bytes());
     for value in values {
@@ -437,45 +432,63 @@ fn put_bits(hasher: &mut Sha256, values: &[f32]) {
     }
 }
 
-/// Digest of everything that identifies an adapter's behaviour: identity, generation, kind,
-/// first layer, rank, scale and the exact bits of every pair.
-pub(crate) fn adapter_content_digest(adapter: &Qwen2Adapter, num_layers: usize) -> Digest {
-    let mut hasher = Sha256::new();
-    hasher.update(ADAPTER_DIGEST_DOMAIN);
-    put_text(&mut hasher, adapter.identity());
-    hasher.update(adapter.generation().to_le_bytes());
-    match adapter.kind() {
-        Qwen2AdapterKind::Qkv => hasher.update([0u8]),
-        Qwen2AdapterKind::QOnly => hasher.update([1u8]),
-        Qwen2AdapterKind::MlpOnly => hasher.update([2u8]),
-        Qwen2AdapterKind::Activated { invocation } => {
-            hasher.update([3u8]);
-            hasher.update((invocation as u64).to_le_bytes());
+/// The canonical bytes of an adapter's weights: a domain tag, then identity, generation,
+/// kind, first layer, rank, scale and the exact bits of every pair, each variable part framed by
+/// its length. This is the artifact of an adapter of this stack; its SHA-256 is the adapter's
+/// content digest ([`adapter_content_digest`]) and the `artifact_sha256` a promotion must name.
+pub(crate) fn adapter_canonical_bytes(adapter: &Qwen2Adapter, num_layers: usize) -> Vec<u8> {
+    fn text(out: &mut Vec<u8>, text: &str) {
+        out.extend_from_slice(&(text.len() as u64).to_le_bytes());
+        out.extend_from_slice(text.as_bytes());
+    }
+    fn bits(out: &mut Vec<u8>, values: &[f32]) {
+        out.extend_from_slice(&(values.len() as u64).to_le_bytes());
+        for value in values {
+            out.extend_from_slice(&value.to_bits().to_le_bytes());
         }
     }
-    hasher.update((adapter.first_layer() as u64).to_le_bytes());
-    hasher.update((adapter.rank() as u64).to_le_bytes());
-    hasher.update(adapter.scale().to_bits().to_le_bytes());
+    let mut out = Vec::new();
+    out.extend_from_slice(ADAPTER_DIGEST_DOMAIN);
+    text(&mut out, adapter.identity());
+    out.extend_from_slice(&adapter.generation().to_le_bytes());
+    match adapter.kind() {
+        Qwen2AdapterKind::Qkv => out.push(0),
+        Qwen2AdapterKind::QOnly => out.push(1),
+        Qwen2AdapterKind::MlpOnly => out.push(2),
+        Qwen2AdapterKind::Activated { invocation } => {
+            out.push(3);
+            out.extend_from_slice(&(invocation as u64).to_le_bytes());
+        }
+    }
+    out.extend_from_slice(&(adapter.first_layer() as u64).to_le_bytes());
+    out.extend_from_slice(&(adapter.rank() as u64).to_le_bytes());
+    out.extend_from_slice(&adapter.scale().to_bits().to_le_bytes());
     for layer in 0..num_layers {
         match adapter.layer(layer) {
-            None => hasher.update([0u8]),
+            None => out.push(0),
             Some(pairs) => {
-                hasher.update([1u8]);
+                out.push(1);
                 for pair in [&pairs.q, &pairs.k, &pairs.v, &pairs.mlp] {
                     match pair {
-                        None => hasher.update([0u8]),
+                        None => out.push(0),
                         Some(pair) => {
-                            hasher.update([1u8]);
-                            hasher.update((pair.rank as u64).to_le_bytes());
-                            put_bits(&mut hasher, &pair.a);
-                            put_bits(&mut hasher, &pair.b);
+                            out.push(1);
+                            out.extend_from_slice(&(pair.rank as u64).to_le_bytes());
+                            bits(&mut out, &pair.a);
+                            bits(&mut out, &pair.b);
                         }
                     }
                 }
             }
         }
     }
-    hasher.finalize().into()
+    out
+}
+
+/// Digest of everything that identifies an adapter's behaviour: the SHA-256 of
+/// [`adapter_canonical_bytes`].
+pub(crate) fn adapter_content_digest(adapter: &Qwen2Adapter, num_layers: usize) -> Digest {
+    Sha256::digest(adapter_canonical_bytes(adapter, num_layers)).into()
 }
 
 fn adapter_dependency(adapter: &Qwen2Adapter, num_layers: usize) -> KvDependency {

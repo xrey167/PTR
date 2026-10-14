@@ -468,3 +468,18 @@ class LevelRangeTests(unittest.TestCase):
         self.assertEqual(pool.fingerprint(), before)
         with self.assertRaises(HistoryError):
             ReplaySimulator(pool).simulate({"x": 2**53 + 1})
+
+
+class CategoryLengthTests(unittest.TestCase):
+    def test_a_long_categorical_value_is_refused_and_the_pool_is_unchanged(self):
+        pool = HistoryPool()
+        pool.add_generation("g0", order=0, decisions={"mode": "a" * 256}, outcome=outcome(200))
+        before = pool.fingerprint()
+        # 257 characters; 257 four-byte characters; and 342 three-byte characters (1026 bytes).
+        for bad in ("a" * 257, "\U0001F600" * 257, "\u20ac" * 342):
+            with self.assertRaises(HistoryError):
+                pool.add_generation("g1", order=1, decisions={"mode": bad}, outcome=outcome(300))
+        self.assertEqual(pool.fingerprint(), before)
+        self.assertEqual(pool.categories(), {"mode": ["a" * 256]})
+        with self.assertRaises(HistoryError):
+            ReplaySimulator(pool).simulate({"mode": "b" * 257})

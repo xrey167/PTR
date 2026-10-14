@@ -53,13 +53,22 @@ fn adapter(backend: &ReferenceKvReuseBackend, generation: u64) -> Qwen2Adapter {
     .unwrap()
 }
 
-fn promoted(generation: u64) -> LedgerEvent {
+/// A promotion of the adapter of key [`KEY`] at `generation` with the digest of its real
+/// weights, as a runtime that hashed the artifact would commit it.
+fn promoted(backend: &ReferenceKvReuseBackend, generation: u64) -> LedgerEvent {
+    promoted_with(
+        generation,
+        backend.adapter_artifact_digest(&adapter(backend, generation)),
+    )
+}
+
+fn promoted_with(generation: u64, artifact_sha256: [u8; 32]) -> LedgerEvent {
     LedgerEvent::AdapterPromoted {
         project: ProjectId::from("alpha"),
         adapter: "coder".into(),
         generation: Generation(generation),
         base: [1; 32],
-        artifact_sha256: [2; 32],
+        artifact_sha256,
         gate_report_digest: [3; 32],
     }
 }
@@ -78,7 +87,9 @@ fn a_revoked_adapter_generation_is_refused_on_a_cache_miss() {
     let backend = backend();
     let req = request(&backend);
     let binding = StackBinding::with_adapter(adapter(&backend, 2));
-    backend.apply_committed_event(&promoted(2)).unwrap();
+    backend
+        .apply_committed_event(&promoted(&backend, 2))
+        .unwrap();
     // Promoted and live: nothing is cached yet, the run is a cache miss and is served.
     assert!(backend
         .infer_scoped_bound(&scope(), &req, None, &binding)
@@ -98,8 +109,12 @@ fn a_revoked_adapter_generation_is_refused_on_a_cache_miss() {
 fn a_superseded_adapter_generation_is_refused_and_the_new_one_serves() {
     let backend = backend();
     let req = request(&backend);
-    backend.apply_committed_event(&promoted(2)).unwrap();
-    backend.apply_committed_event(&promoted(3)).unwrap();
+    backend
+        .apply_committed_event(&promoted(&backend, 2))
+        .unwrap();
+    backend
+        .apply_committed_event(&promoted(&backend, 3))
+        .unwrap();
     assert!(matches!(
         backend.infer_scoped_bound(
             &scope(),
@@ -123,7 +138,9 @@ fn a_superseded_adapter_generation_is_refused_and_the_new_one_serves() {
 fn only_the_exact_promoted_generation_is_live_not_every_generation_above_it() {
     let backend = backend();
     let req = request(&backend);
-    backend.apply_committed_event(&promoted(2)).unwrap();
+    backend
+        .apply_committed_event(&promoted(&backend, 2))
+        .unwrap();
     for generation in [3, 999] {
         assert!(
             matches!(
@@ -165,7 +182,9 @@ fn an_adapter_key_no_promotion_named_is_refused_at_every_generation() {
     };
     // Nothing promoted yet: no generation of the key is live.
     assert!(refused(1) && refused(2) && refused(999));
-    backend.apply_committed_event(&promoted(1)).unwrap();
+    backend
+        .apply_committed_event(&promoted(&backend, 1))
+        .unwrap();
     // After promote(1) only generation 1 serves.
     assert!(!refused(1));
     assert!(refused(2) && refused(999));
@@ -223,7 +242,9 @@ fn the_first_adapter_lifecycle_event_arms_the_rule_for_every_adapter_identity() 
         )
         .is_ok());
     // One AdapterPromoted for another key arms the rule, with no explicit opt-in.
-    backend.apply_committed_event(&promoted(1)).unwrap();
+    backend
+        .apply_committed_event(&promoted_with(1, [2; 32]))
+        .unwrap();
     let after = request(&backend);
     assert!(matches!(
         backend.infer_scoped_bound(
@@ -244,6 +265,66 @@ fn the_first_adapter_lifecycle_event_arms_the_rule_for_every_adapter_identity() 
             &probe,
             None,
             &StackBinding::with_adapter(outside())
+        ),
+        Err(ReferenceKvError::Binding(BindingError::NotLive { .. }))
+    ));
+}
+
+/// The adapter of key [`KEY`] at `generation`, seeded with `seed`.
+fn seeded(backend: &ReferenceKvReuseBackend, generation: u64, seed: u64) -> Qwen2Adapter {
+    Qwen2Adapter::seeded(
+        backend.stack_config(),
+        &Qwen2AdapterSpec::pinned(KEY, generation, Qwen2AdapterKind::Qkv, 2),
+        seed,
+    )
+    .unwrap()
+}
+
+#[test]
+fn other_weights_under_a_promoted_identity_and_generation_are_refused() {
+    let backend = backend();
+    let req = request(&backend);
+    let real = seeded(&backend, 2, 20240607);
+    // Promote with the real digest of these weights: the adapter is served.
+    let digest = backend.adapter_artifact_digest(&real);
+    assert_eq!(
+        digest,
+        {
+            use sha2::{Digest, Sha256};
+            let bytes: [u8; 32] = Sha256::digest(backend.adapter_artifact_bytes(&real)).into();
+            bytes
+        },
+        "the artifact digest is the SHA-256 of the canonical bytes"
+    );
+    backend
+        .apply_committed_event(&promoted_with(2, digest))
+        .unwrap();
+    assert!(backend
+        .infer_scoped_bound(&scope(), &req, None, &StackBinding::with_adapter(real))
+        .is_ok());
+    // Re-seeded weights with the same identity and generation are not the promoted adapter.
+    let fresh = request(&backend);
+    assert!(matches!(
+        backend.infer_scoped_bound(
+            &scope(),
+            &fresh,
+            None,
+            &StackBinding::with_adapter(seeded(&backend, 2, 7))
+        ),
+        Err(ReferenceKvError::Binding(BindingError::NotLive { .. }))
+    ));
+    // So are foreign weights promoted under a digest that is not theirs.
+    let other = backend_fresh();
+    other
+        .apply_committed_event(&promoted_with(2, [2; 32]))
+        .unwrap();
+    let probe = request(&other);
+    assert!(matches!(
+        other.infer_scoped_bound(
+            &scope(),
+            &probe,
+            None,
+            &StackBinding::with_adapter(seeded(&other, 2, 20240607))
         ),
         Err(ReferenceKvError::Binding(BindingError::NotLive { .. }))
     ));

@@ -48,6 +48,9 @@ MAX_FAMILIES = 16
 MAX_NAME_CHARS = 128
 # Counts and orders stay exactly representable as floats and cheap to compare.
 MAX_COUNT = 2**53
+# A categorical value is a label, not a payload: it is kept per decision and fingerprinted.
+MAX_CATEGORY_CHARS = 256
+MAX_CATEGORY_BYTES = 1024
 
 Level = bool | int | float | str
 
@@ -136,6 +139,11 @@ def levels_of(
                 raise HistoryError(f"decision {name!r} is not finite")
             levels[name] = number
         elif isinstance(value, str):
+            if len(value) > MAX_CATEGORY_CHARS or len(value.encode("utf-8")) > MAX_CATEGORY_BYTES:
+                raise HistoryError(
+                    f"decision {name!r}: a categorical value is at most "
+                    f"{MAX_CATEGORY_CHARS} characters and {MAX_CATEGORY_BYTES} UTF-8 bytes"
+                )
             known = categories.setdefault(name, []) if register else categories.get(name, [])
             if value not in known:
                 if register:

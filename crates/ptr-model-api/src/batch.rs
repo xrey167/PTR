@@ -221,6 +221,48 @@ type PrincipalKey = Option<String>;
 struct Continuations {
     entries: std::collections::HashMap<u128, OpenContinuation>,
     queues: std::collections::HashMap<PrincipalKey, std::collections::VecDeque<u128>>,
+    /// Slots promised to calls whose model is still running.
+    reserved: usize,
+}
+
+/// A slot promised before the model runs. Released on drop unless committed, so an error, a
+/// cancellation, a finished run or an unwind gives it back and evicts nothing.
+struct Reservation<'a> {
+    table: &'a Mutex<Continuations>,
+    active: bool,
+}
+
+impl<'a> Reservation<'a> {
+    fn take(table: &'a Mutex<Continuations>, now: u64) -> Option<Self> {
+        let reserved = table
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .reserve(now);
+        reserved.then_some(Self {
+            table,
+            active: true,
+        })
+    }
+
+    /// Spend the reservation on `id`; false when the entry could not be stored.
+    fn commit(mut self, id: u128, continuation: OpenContinuation) -> bool {
+        self.active = false;
+        self.table
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .commit(id, continuation)
+    }
+}
+
+impl Drop for Reservation<'_> {
+    fn drop(&mut self) {
+        if self.active {
+            self.table
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .unreserve();
+        }
+    }
 }
 
 /// What a resume needs from its entry, copied out while the entry stays reserved.
@@ -254,14 +296,35 @@ impl Continuations {
         }
     }
 
-    /// Make room for one more continuation of `principal` if that can be done without taking
-    /// anything from another principal: the principal's own oldest (not one a resume is
-    /// running on) at its quota, then expired entries. False when the table is full of live
-    /// continuations.
-    fn make_room(&mut self, principal: &PrincipalKey, now: u64) -> bool {
-        let held = self.queues.get(principal).map_or(0, |queue| queue.len());
+    /// Reserve one slot of the global capacity, before the model runs: entries plus
+    /// reservations never exceed [`MAX_OPEN_CONTINUATIONS`], so two concurrent calls cannot both
+    /// be promised the last slot. When the table is full, expired and cancelled entries are
+    /// swept first. Nothing of anyone is evicted here (the principal's quota is applied only at
+    /// commit, once a continuation is really needed).
+    fn reserve(&mut self, now: u64) -> bool {
+        if self.entries.len() + self.reserved >= MAX_OPEN_CONTINUATIONS {
+            self.sweep(now);
+        }
+        if self.entries.len() + self.reserved >= MAX_OPEN_CONTINUATIONS {
+            return false;
+        }
+        self.reserved += 1;
+        true
+    }
+
+    fn unreserve(&mut self) {
+        self.reserved = self.reserved.saturating_sub(1);
+    }
+
+    /// Turn a reservation into the entry `id`. At the principal's quota its own oldest entry
+    /// (not one a resume is running on) is evicted to make way; false (nothing stored, the
+    /// reservation released) when every one of its entries is running.
+    fn commit(&mut self, id: u128, continuation: OpenContinuation) -> bool {
+        self.unreserve();
+        let principal = continuation.key.principal.clone();
+        let held = self.queues.get(&principal).map_or(0, |queue| queue.len());
         if held >= MAX_CONTINUATIONS_PER_PRINCIPAL {
-            let oldest = self.queues.get(principal).and_then(|queue| {
+            let oldest = self.queues.get(&principal).and_then(|queue| {
                 queue
                     .iter()
                     .copied()
@@ -273,18 +336,6 @@ impl Continuations {
                 }
                 None => return false,
             }
-        }
-        if self.entries.len() >= MAX_OPEN_CONTINUATIONS {
-            self.sweep(now);
-        }
-        self.entries.len() < MAX_OPEN_CONTINUATIONS
-    }
-
-    /// Open `continuation`; false (nothing stored) when no room can be made.
-    fn open(&mut self, id: u128, continuation: OpenContinuation, now: u64) -> bool {
-        let principal = continuation.key.principal.clone();
-        if !self.make_room(&principal, now) {
-            return false;
         }
         self.queues.entry(principal).or_default().push_back(id);
         self.entries.insert(id, continuation);
@@ -663,23 +714,29 @@ impl<B: BatchInferenceBackend + 'static> AdaptiveBatcher<B> {
         let key = admission.key.clone();
         let deadline = admission.deadline.map(|deadline| deadline.0);
         let cancel = admission.cancel.clone();
-        // Room is made, or the call refused, before the model runs: no work is done for a
-        // continuation that cannot be kept.
+        // A slot is reserved before the model runs, or the call is refused: no work is done for a
+        // continuation that cannot be kept, and two calls are never both promised the last slot.
+        // The reservation is released unless it is committed below, so an error, a cancellation
+        // or a finished run evicts nothing.
         let now = self.shared.clock.now().0;
-        if !self.shared.table().make_room(&key.principal, now) {
+        let Some(reservation) = Reservation::take(&self.shared.table, now) else {
             bump(&self.shared.counters.overloaded, 1);
             return Err(ModelError::overloaded());
-        }
+        };
         let events = self.run_inferred(request, admission)?;
-        // A run that finished has nothing left to resume: no continuation, no slot.
-        if matches!(events.last(), Some(ModelEvent::Finished)) {
+        // A run that finished, or whose deadline passed or that was cancelled meanwhile, has
+        // nothing to resume: no continuation (the reservation drops and nothing is evicted).
+        let useless = matches!(events.last(), Some(ModelEvent::Finished))
+            || cancel.as_ref().is_some_and(CancelFlag::is_cancelled)
+            || deadline.is_some_and(|deadline| deadline <= self.shared.clock.now().0);
+        if useless {
             return Ok(ScopedAnswer {
                 events,
                 continuation: None,
             });
         }
         let id = self.shared.issue_token();
-        let opened = self.shared.table().open(
+        let opened = reservation.commit(
             id,
             OpenContinuation {
                 in_flight: false,
@@ -690,10 +747,9 @@ impl<B: BatchInferenceBackend + 'static> AdaptiveBatcher<B> {
                 deadline,
                 cancel,
             },
-            self.shared.clock.now().0,
         );
         if !opened {
-            // Another caller took the last slot while the model ran.
+            // Every continuation of this principal is running a resume: none can make way.
             bump(&self.shared.counters.overloaded, 1);
             return Err(ModelError::overloaded());
         }
@@ -863,7 +919,9 @@ impl<B: BatchInferenceBackend + 'static> AdaptiveBatcher<B> {
         if let Some(error) = self.resume_expired(deadline, cancel) {
             return Err(error);
         }
-        // The same containment as a batch: a backend that panics fails this call only.
+        // The same containment as a batch: a backend that panics fails this call only. The call
+        // is counted as dispatched immediately before the backend sees it.
+        bump(&self.shared.counters.dispatched, 1);
         match catch_unwind(AssertUnwindSafe(|| self.shared.backend.resume(request))) {
             Ok(result) => {
                 if result.is_err() {

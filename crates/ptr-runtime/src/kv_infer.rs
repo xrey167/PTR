@@ -555,7 +555,7 @@ pub(crate) struct RevokedInputs {
     floors: BTreeMap<String, Generation>,
     /// The one generation each promoted adapter key serves: an adapter dependency is live only
     /// at exactly this generation, not at any generation above the floor.
-    adapter_current: BTreeMap<String, Generation>,
+    adapter_current: BTreeMap<String, (Generation, [u8; 32])>,
     /// Set once, by `require_promoted_adapters` or by the first adapter lifecycle event this
     /// backend applies: every adapter-kind dependency, whatever its identity, is then live only
     /// at the generation a committed promotion named. Never cleared.
@@ -641,13 +641,20 @@ impl RevokedInputs {
                 project,
                 adapter,
                 generation,
+                artifact_sha256,
                 ..
             } => {
                 self.strict_adapters = true;
                 let key = crate::adapter::adapter_key(project, adapter);
                 self.raise_floor(key.clone(), *generation);
-                let current = self.adapter_current.entry(key).or_insert(*generation);
-                *current = (*current).max(*generation);
+                // The promoted generation and the digest of the weights it was promoted with.
+                let current = self
+                    .adapter_current
+                    .entry(key)
+                    .or_insert((*generation, *artifact_sha256));
+                if *generation >= current.0 {
+                    *current = (*generation, *artifact_sha256);
+                }
             }
             // Every other kind leaves no input dead. Listed, not wildcarded, so a new event
             // kind cannot be ignored here without someone deciding it.
@@ -728,7 +735,13 @@ impl RevokedInputs {
         if !(namespaced || self.strict_adapters) {
             return true;
         }
-        self.adapter_current.get(&dependency.identity) == Some(&dependency.generation)
+        // Identity, generation and the digest of the weights must all be the promoted entry's:
+        // other weights under a promoted identity and generation are not that adapter.
+        self.adapter_current
+            .get(&dependency.identity)
+            .is_some_and(|(generation, artifact)| {
+                *generation == dependency.generation && *artifact == dependency.content_digest
+            })
     }
 }
 
@@ -1247,6 +1260,19 @@ impl ReferenceKvReuseBackend {
             CacheUse::Disabled,
             &StackBinding::base(),
         )
+    }
+
+    /// The canonical bytes of `adapter` as an artifact of this stack, and the SHA-256 of them
+    /// ([`Self::adapter_artifact_digest`]): what a promotion of this adapter must hash to. The
+    /// serialization is a domain tag, then identity, generation, kind, first layer, rank, scale
+    /// and the exact bits of every low-rank pair, each variable part framed by its length.
+    pub fn adapter_artifact_bytes(&self, adapter: &ptr_pods::Qwen2Adapter) -> Vec<u8> {
+        crate::kv_infer_layered::adapter_canonical_bytes(adapter, self.stack.config().num_layers)
+    }
+
+    /// The `artifact_sha256` a promotion of `adapter` must carry to admit exactly these weights.
+    pub fn adapter_artifact_digest(&self, adapter: &ptr_pods::Qwen2Adapter) -> [u8; 32] {
+        crate::kv_infer_layered::adapter_content_digest(adapter, self.stack.config().num_layers)
     }
 
     /// Switch to ledger-anchored adapters, once and for good: from now on an adapter binding is

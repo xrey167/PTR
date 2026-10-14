@@ -79,6 +79,16 @@ backend arms itself the same way on the first `AdapterPromoted` or `AdapterRevok
 events is fail-closed without the call. A backend that never sees such an event stays standalone and keeps ledger-free adapters
 live unless revoked (the frozen R009 harness and the reference tests run in it).
 
+**Weights are bound to the promoted artifact.** Identity and generation alone do not admit an adapter: the backend keeps, per
+adapter key, the promoted generation and the `artifact_sha256` of that `AdapterPromoted`, and a bound adapter is live only if
+its identity, generation and weight digest all match. The weight digest of an adapter of the reference stack is defined
+explicitly: the SHA-256 of its canonical bytes (`ReferenceKvReuseBackend::adapter_artifact_bytes`: a domain tag, then identity,
+generation, kind, first layer, rank, scale and the exact bits of every low-rank pair, each variable part framed by its length),
+available as `adapter_artifact_digest`. That is the same digest the KV catalog already records as the adapter's content digest,
+and it is what a promotion of such an adapter must name: `promote_adapter` hashes the artifact bytes it is handed, so the
+artifact handed to it is these canonical bytes. A training export of another adapter format has no mapping yet; until one is
+defined, such an adapter cannot be served by this backend under a promotion.
+
 **Limits.**
 
 - No compacted snapshot layout carries the bindings or the cycle counts. `export_compacted_snapshot` refuses while
@@ -127,7 +137,7 @@ bounds recorded and running cycles, not crashed ones.
 ### Replay backtest (`training/src/ptr_training/replay`)
 
 `HistoryPool` is append-only and chronological (a repeated name or an order that does not advance is refused before
-anything changes; 256 generations at most). Generation orders, outcome counts and integer decision levels are integers below 2**53 (in absolute value for levels), anything else is a `HistoryError`. `ReplaySimulator` fits an intercept and one response coefficient per
+anything changes; 256 generations at most). Generation orders, outcome counts and integer decision levels are integers below 2**53 (in absolute value for levels), anything else is a `HistoryError`. A categorical value is at most 256 characters and 1024 UTF-8 bytes. `ReplaySimulator` fits an intercept and one response coefficient per
 decision from consecutive generations in which exactly one decision moved; a transition that moves two is ambiguous
 and charged to neither. `backtest(pool, error_bound=...)` holds each generation out and predicts it from the rest:
 
@@ -183,7 +193,10 @@ simulator training happens in PTR until `predictive` has been true on a real gen
   The observation is new caller input under the continuation's scope: the gate checks exactly that scope, as for a fresh
   `infer` under it, and the batcher cannot see where the caller's bytes came from and does not need to. What it guarantees is
   that no stale state is resumed: context, round and scope come only from the table entry, which belongs to exactly one
-  scope, so a continuation from a revoked generation is refused whatever key or other continuation the caller holds. A principal at its quota evicts its own oldest. When the table is full, entries whose deadline has passed or whose
+  scope, so a continuation from a revoked generation is refused whatever key or other continuation the caller holds. `infer_scoped` reserves a slot of the global capacity before the model runs (entries plus reservations never exceed the bound, so two
+  concurrent calls are never both promised the last slot) and applies the principal's quota only when a continuation is committed:
+  an error, a cancellation, an expired deadline, a gate refusal or a `Finished` run releases the reservation and evicts nothing. A
+  principal at its quota then evicts its own oldest. When the table is full, entries whose deadline has passed or whose
   cancel flag is set are swept first; if it is still full the new `infer_scoped` is refused with `overloaded` before the model
   runs, and nothing of anyone else is evicted. The trade-off is stated: existing continuations are never lost to another
   principal's load (a crowd of principals cannot push a victim out), at the price that opens can be refused while the table
