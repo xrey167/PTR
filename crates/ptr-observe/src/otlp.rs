@@ -12,9 +12,11 @@
 //! (default 0). Every span is passed through a [`Redactor`] before it is serialized.
 
 use std::fmt::Write as _;
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use crate::{Redactor, Span, SpanStatus, TraceError, TraceLevel, TraceValue};
 
@@ -41,7 +43,24 @@ impl Default for OtlpFileConfig {
 pub struct OtlpJsonFileExporter {
     path: PathBuf,
     config: OtlpFileConfig,
+    /// Set when a failed append could not be rolled back; shared by clones, so no clone ever
+    /// appends after an unknown tail.
+    poisoned: Arc<AtomicBool>,
+    #[cfg(test)]
+    faults: Arc<Faults>,
 }
+
+/// Test-only failure injection for the append step.
+#[cfg(test)]
+#[derive(Debug, Default)]
+struct Faults {
+    /// Write only this many bytes of the next line, then fail (consumed on use).
+    partial_write: std::sync::Mutex<Option<usize>>,
+    /// Make the rollback truncate fail.
+    truncate: AtomicBool,
+}
+
+const SINK_NAME: &str = "otlp-json-file";
 
 /// Appends `text` as a JSON string literal (with quotes) to `out`.
 pub(crate) fn push_json_string(out: &mut String, text: &str) {
@@ -127,6 +146,9 @@ impl OtlpJsonFileExporter {
         Self {
             path: path.into(),
             config,
+            poisoned: Arc::new(AtomicBool::new(false)),
+            #[cfg(test)]
+            faults: Arc::new(Faults::default()),
         }
     }
 
@@ -208,17 +230,59 @@ impl OtlpJsonFileExporter {
         let mut line = self.render(spans);
         line.push('\n');
         let export_error = |error: std::io::Error| TraceError::Export {
-            sink: "otlp-json-file".to_owned(),
+            sink: SINK_NAME.to_owned(),
             message: error.to_string(),
         };
+        if self.poisoned.load(Ordering::Acquire) {
+            return Err(TraceError::ExporterPoisoned {
+                sink: SINK_NAME.to_owned(),
+            });
+        }
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
             .open(&self.path)
             .map_err(export_error)?;
-        file.write_all(line.as_bytes()).map_err(export_error)?;
-        file.flush().map_err(export_error)?;
+        let good_len = file.metadata().map_err(export_error)?.len();
+        if let Err(error) = self.append(&mut file, line.as_bytes()) {
+            // A failed write may have left a prefix of the line; cut it off so the next export
+            // is not glued onto a fragment. If the cut fails the tail is unknown: poison.
+            if !self.truncate_to(good_len) {
+                self.poisoned.store(true, Ordering::Release);
+            }
+            return Err(export_error(error));
+        }
         Ok(spans.len())
+    }
+
+    fn append(&self, file: &mut File, bytes: &[u8]) -> std::io::Result<()> {
+        #[cfg(test)]
+        if let Some(prefix) = self
+            .faults
+            .partial_write
+            .lock()
+            .ok()
+            .and_then(|mut f| f.take())
+        {
+            file.write_all(&bytes[..prefix.min(bytes.len())])?;
+            return Err(std::io::Error::other("injected partial write"));
+        }
+        file.write_all(bytes)?;
+        file.flush()
+    }
+
+    /// Cuts the file back to `len` through a separate write handle: on Windows a handle opened
+    /// with `append(true)` lacks FILE_WRITE_DATA, so `set_len` on it would fail.
+    fn truncate_to(&self, len: u64) -> bool {
+        #[cfg(test)]
+        if self.faults.truncate.load(Ordering::Relaxed) {
+            return false;
+        }
+        OpenOptions::new()
+            .write(true)
+            .open(&self.path)
+            .and_then(|file| file.set_len(len))
+            .is_ok()
     }
 }
 
@@ -231,5 +295,84 @@ mod tests {
         let mut out = String::new();
         push_json_string(&mut out, "a\"b\\c\nd\te\u{1}\u{7f}\u{e9}");
         assert_eq!(out, "\"a\\\"b\\\\c\\nd\\te\\u0001\u{7f}\u{e9}\"");
+    }
+
+    fn unit_path(tag: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let name = format!(
+            "ptr-observe-otlp-{tag}-{}-{nanos}.jsonl",
+            std::process::id()
+        );
+        std::env::temp_dir().join(name)
+    }
+
+    fn one_span(name: &str) -> Span {
+        let tracer = crate::Tracer::new(
+            crate::TracerConfig::default(),
+            Arc::new(crate::ManualClock::new(0)),
+        );
+        tracer.root_span(name).expect("root").finish();
+        tracer.drain_finished().remove(0)
+    }
+
+    fn assert_well_formed_lines(bytes: &[u8], expected: usize) {
+        let text = std::str::from_utf8(bytes).expect("utf8");
+        assert!(
+            text.is_empty() || text.ends_with('\n'),
+            "no dangling fragment"
+        );
+        let lines: Vec<_> = text.lines().collect();
+        assert_eq!(lines.len(), expected);
+        for line in lines {
+            assert!(
+                line.starts_with("{\"resourceSpans\"") && line.ends_with("]}]}]}"),
+                "{line}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_partial_write_is_rolled_back_so_the_next_export_stays_well_formed() {
+        let path = unit_path("partial");
+        let exporter = OtlpJsonFileExporter::new(&path, OtlpFileConfig::default());
+        assert_eq!(exporter.export(&[one_span("first")]), Ok(1));
+        let before = std::fs::read(&path).expect("read");
+        *exporter.faults.partial_write.lock().expect("lock") = Some(25);
+        assert!(matches!(
+            exporter.export(&[one_span("lost")]),
+            Err(TraceError::Export { .. })
+        ));
+        assert_eq!(std::fs::read(&path).expect("read"), before);
+        assert_eq!(exporter.export(&[one_span("second")]), Ok(1));
+        assert_well_formed_lines(&std::fs::read(&path).expect("read"), 2);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_failed_rollback_poisons_the_exporter_and_its_clones() {
+        let path = unit_path("poison");
+        let exporter = OtlpJsonFileExporter::new(&path, OtlpFileConfig::default());
+        let clone = exporter.clone();
+        *exporter.faults.partial_write.lock().expect("lock") = Some(10);
+        exporter.faults.truncate.store(true, Ordering::Relaxed);
+        assert!(matches!(
+            exporter.export(&[one_span("x")]),
+            Err(TraceError::Export { .. })
+        ));
+        let tail = std::fs::read(&path).expect("read");
+        for target in [&exporter, &clone] {
+            assert!(matches!(
+                target.export(&[one_span("y")]),
+                Err(TraceError::ExporterPoisoned { .. })
+            ));
+        }
+        assert_eq!(
+            std::fs::read(&path).expect("read"),
+            tail,
+            "nothing appended after the tail"
+        );
+        let _ = std::fs::remove_file(&path);
     }
 }

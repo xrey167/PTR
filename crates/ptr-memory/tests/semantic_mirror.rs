@@ -206,3 +206,37 @@ fn knowledge_mirror_shows_digests_not_content_and_is_stable() {
     let reopened = DurableKnowledgeStore::open(&file.0, options).unwrap();
     assert_eq!(text, render_knowledge_mirror(reopened.store()));
 }
+
+fn raw_event_in_session(id: &str, session: &str) -> ptr_memory::RawEvent {
+    ptr_memory::RawEvent::new(
+        ptr_types::RawEventId::from(id),
+        ptr_types::SessionId::from(session),
+        ptr_types::EventRole::User,
+        b"payload".to_vec(),
+        ptr_types::Timestamp(1),
+    )
+}
+
+#[test]
+fn session_ids_are_digested_not_written_to_the_knowledge_mirror() {
+    let token = "sk-live-0123456789abcdef-SECRET";
+    let file = TempJournal::new("mirror-session");
+    let mut store = DurableKnowledgeStore::open(&file.0, DurableOptions::default()).unwrap();
+    store.append_raw(raw_event_in_session("e1", token)).unwrap();
+    store.append_raw(raw_event_in_session("e2", token)).unwrap();
+    store
+        .append_raw(raw_event_in_session("e3", "other-session"))
+        .unwrap();
+    let text = render_knowledge_mirror(store.store());
+    assert!(!text.contains(token), "{text}");
+    assert!(!text.contains("other-session"), "{text}");
+    let digests: Vec<&str> = text
+        .lines()
+        .filter_map(|l| l.split(" session=").nth(1))
+        .filter_map(|rest| rest.split(' ').next())
+        .collect();
+    assert_eq!(digests.len(), 3);
+    assert!(digests[0].starts_with("session:sha256:") && digests[0].len() == 15 + 16);
+    assert_eq!(digests[0], digests[1]);
+    assert_ne!(digests[0], digests[2]);
+}

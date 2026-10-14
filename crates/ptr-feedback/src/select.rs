@@ -22,6 +22,8 @@ use crate::text::CandidateText;
 pub const MAX_SELECTION_POINTS: usize = 4096;
 /// Most objectives a space declares.
 pub const MAX_OBJECTIVES: usize = 16;
+/// Most winners one [`Tournament::select`] call draws (one per point of a maximal population).
+pub const MAX_TOURNAMENT_WINNERS: usize = MAX_SELECTION_POINTS;
 
 /// Why selection could not run.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -42,6 +44,8 @@ pub enum SelectionError {
     InvalidTournamentSize,
     /// There are no ranked points to select from.
     NothingToSelect,
+    /// More than [`MAX_TOURNAMENT_WINNERS`] winners were requested.
+    TooManyWinners,
 }
 
 impl fmt::Display for SelectionError {
@@ -57,6 +61,7 @@ impl fmt::Display for SelectionError {
             Self::FrontOutOfRange => f.write_str("a front index is out of range"),
             Self::InvalidTournamentSize => f.write_str("invalid tournament size"),
             Self::NothingToSelect => f.write_str("nothing to select from"),
+            Self::TooManyWinners => f.write_str("too many tournament winners requested"),
         }
     }
 }
@@ -317,13 +322,18 @@ impl Tournament {
     ///
     /// # Errors
     /// [`SelectionError::NothingToSelect`] without ranked points and
-    /// [`SelectionError::InvalidTournamentSize`] when `size` is zero or above their number.
+    /// [`SelectionError::InvalidTournamentSize`] when `size` is zero or above their number,
+    /// [`SelectionError::TooManyWinners`] when `winners` exceeds [`MAX_TOURNAMENT_WINNERS`]
+    /// (winners are drawn with replacement, so the input size does not bound them).
     pub fn select(&self, ranked: &[Ranked], winners: usize) -> Result<Vec<usize>, SelectionError> {
         if ranked.is_empty() {
             return Err(SelectionError::NothingToSelect);
         }
         if self.size == 0 || self.size > ranked.len() {
             return Err(SelectionError::InvalidTournamentSize);
+        }
+        if winners > MAX_TOURNAMENT_WINNERS {
+            return Err(SelectionError::TooManyWinners);
         }
         let mut state = self.seed;
         let mut next_u64 = move || {
@@ -664,5 +674,30 @@ mod tests {
         let points = standard_points(&population, D, |_| 7.0);
         assert_eq!(points[0].values, [0.5, 7.0, 5.0]);
         assert_eq!(points[0].gate, Gate::Passed);
+    }
+
+    #[test]
+    fn an_unbounded_winner_count_is_rejected_before_allocating() {
+        let ranked = [Ranked {
+            index: 0,
+            rank: 0,
+            crowding: f64::INFINITY,
+        }];
+        let tournament = Tournament { size: 1, seed: 7 };
+        assert_eq!(
+            tournament.select(&ranked, usize::MAX),
+            Err(SelectionError::TooManyWinners)
+        );
+        assert_eq!(
+            tournament.select(&ranked, MAX_TOURNAMENT_WINNERS + 1),
+            Err(SelectionError::TooManyWinners)
+        );
+        assert_eq!(
+            tournament
+                .select(&ranked, MAX_TOURNAMENT_WINNERS)
+                .map(|w| w.len()),
+            Ok(MAX_TOURNAMENT_WINNERS)
+        );
+        assert!(!SelectionError::TooManyWinners.to_string().is_empty());
     }
 }

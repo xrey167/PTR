@@ -80,6 +80,11 @@ impl FileLogConfig {
                 violation: PolicyViolation::ZeroBound,
             });
         }
+        if max_body(self.max_record_bytes).is_none() {
+            return Err(BusError::InvalidPolicy {
+                violation: PolicyViolation::RecordLimitTooLarge,
+            });
+        }
         if self.retention.is_unbounded() {
             return Err(BusError::InvalidPolicy {
                 violation: PolicyViolation::UnboundedRetention,
@@ -147,6 +152,13 @@ enum Frame {
     End,
     Torn(Tear),
     Record { record: BusRecord, end_pos: u64 },
+}
+
+/// The largest frame body for a record bound; the config validator refuses bounds without one.
+fn frame_limit(max_record_bytes: usize) -> Result<usize, BusError> {
+    max_body(max_record_bytes).ok_or(BusError::InvalidPolicy {
+        violation: PolicyViolation::RecordLimitTooLarge,
+    })
 }
 
 fn corrupt(file: &str, position: u64, kind: CorruptionKind) -> BusError {
@@ -357,6 +369,8 @@ fn decode_offsets(bytes: &[u8]) -> Result<BTreeMap<String, Offset>, BusError> {
 struct Faults {
     sync: bool,
     truncate: bool,
+    /// Make deleting an expired segment fail.
+    delete: bool,
 }
 
 /// The persistent log: one writer, durable consumer offsets, replay, rollover and retention.
@@ -377,6 +391,8 @@ pub struct FileEventLog {
     unsynced: u32,
     /// Set when a failed append could not be rolled back; every publish then fails.
     poisoned: bool,
+    compaction_failures: u64,
+    last_compaction_error: Option<BusError>,
     #[cfg(test)]
     faults: Faults,
     recovery: RecoveryReport,
@@ -398,7 +414,7 @@ impl FileEventLog {
         let dir = dir.as_ref().to_path_buf();
         fs::create_dir_all(&dir).map_err(|e| BusError::io("create log dir", &e))?;
         let _ = fs::remove_file(dir.join(OFFSETS_TEMP));
-        let max_body_len = max_body(config.max_record_bytes);
+        let max_body_len = frame_limit(config.max_record_bytes)?;
 
         let mut files = Vec::new();
         for entry in fs::read_dir(&dir).map_err(|e| BusError::io("list log dir", &e))? {
@@ -417,6 +433,19 @@ impl FileEventLog {
         let mut tick = 0u64;
         for (index, (base, path)) in files.iter().enumerate() {
             let name = segment_name(*base);
+            // Offsets start at 1 (`next` is 1 on a fresh log, and a segment is named after the
+            // first offset it holds), so a zero base was never written by this log. Refuse it
+            // before `first - 1` arithmetic would underflow.
+            if *base == 0 {
+                return Err(corrupt(
+                    &name,
+                    0,
+                    CorruptionKind::SegmentGap {
+                        expected: 1,
+                        found: 0,
+                    },
+                ));
+            }
             if let Some(exp) = expected {
                 if *base != exp {
                     return Err(corrupt(
@@ -506,6 +535,8 @@ impl FileEventLog {
             tick,
             unsynced: 0,
             poisoned: false,
+            compaction_failures: 0,
+            last_compaction_error: None,
             #[cfg(test)]
             faults: Faults::default(),
             recovery,
@@ -530,6 +561,30 @@ impl FileEventLog {
     /// The current logical tick (restored from the newest record on open).
     pub fn tick(&self) -> u64 {
         self.tick
+    }
+
+    /// Number of retention passes run after a durable consumer commit that failed (for example a
+    /// segment could not be deleted). Such a failure never fails the commit; retention is
+    /// retried on later commits and publishes.
+    pub fn compaction_failures(&self) -> u64 {
+        self.compaction_failures
+    }
+
+    /// The most recent post-commit retention failure, cleared by the next successful pass.
+    pub fn last_compaction_error(&self) -> Option<&BusError> {
+        self.last_compaction_error.as_ref()
+    }
+
+    /// Retention after the triggering change is already durable: record a failure instead of
+    /// returning it.
+    fn compact_best_effort(&mut self) {
+        match self.compact() {
+            Ok(_) => self.last_compaction_error = None,
+            Err(error) => {
+                self.compaction_failures += 1;
+                self.last_compaction_error = Some(error);
+            }
+        }
     }
 
     /// Force appended data to stable storage regardless of the fsync policy.
@@ -592,6 +647,13 @@ impl FileEventLog {
                 || retention.max_age_ticks.is_some_and(|m| age > m);
             if !expired {
                 break;
+            }
+            #[cfg(test)]
+            if self.faults.delete {
+                return Err(BusError::io(
+                    "delete segment",
+                    &std::io::Error::other("injected delete failure"),
+                ));
             }
             fs::remove_file(&self.segments[0].path)
                 .map_err(|e| BusError::io("delete segment", &e))?;
@@ -667,7 +729,8 @@ impl FileEventLog {
 
     fn append(&mut self, frame: &[u8], offset: u64) -> Result<(), BusError> {
         let roll = self.segments.last().is_none_or(|s| {
-            s.last.is_some() && s.bytes + frame.len() as u64 > self.config.segment_max_bytes
+            s.last.is_some()
+                && s.bytes.saturating_add(frame.len() as u64) > self.config.segment_max_bytes
         });
         if roll {
             self.start_segment(offset)?;
@@ -716,10 +779,18 @@ impl FileEventLog {
         let forced_failure = self.faults.truncate;
         #[cfg(not(test))]
         let forced_failure = false;
-        let cut = match self.active.as_ref() {
-            Some(file) if !forced_failure => file.set_len(good_len).is_ok(),
-            _ => false,
-        };
+        // The cut goes through a separate write handle on the segment path, not through
+        // `self.active`: that handle is opened append-only, and on Windows an append-only handle
+        // lacks FILE_WRITE_DATA, so `set_len` (SetEndOfFile) on it fails and the writer would be
+        // poisoned although the cut is possible.
+        let cut = !forced_failure
+            && self.segments.last().is_some_and(|segment| {
+                OpenOptions::new()
+                    .write(true)
+                    .open(&segment.path)
+                    .and_then(|file| file.set_len(good_len))
+                    .is_ok()
+            });
         if !cut {
             self.poisoned = true;
         }
@@ -755,7 +826,7 @@ impl FileEventLog {
         if max == 0 {
             return Ok(out);
         }
-        let max_body_len = max_body(self.config.max_record_bytes);
+        let max_body_len = frame_limit(self.config.max_record_bytes)?;
         for segment in &self.segments {
             if segment.last.is_none_or(|last| last <= after) {
                 continue;
@@ -866,7 +937,9 @@ impl EventConsumer for FileEventLog {
                 return Err(error);
             }
         }
-        self.compact()?;
+        // The offset is durable: a retention I/O error must not turn it into a failed commit
+        // (a reopen would resume after `upto` although the caller was told the commit failed).
+        self.compact_best_effort();
         Ok(())
     }
 
@@ -1076,5 +1149,89 @@ mod tests {
                 violation: PolicyViolation::UnboundedRetention
             })
         );
+    }
+
+    fn retention_one_record_config() -> FileLogConfig {
+        let mut config = FileLogConfig::new(8);
+        config.segment_max_bytes = 1;
+        config.retention = RetentionPolicy::with_max_records(0);
+        config
+    }
+
+    #[test]
+    fn a_retention_failure_after_a_durable_commit_does_not_fail_the_commit() {
+        let dir = unit_dir("retention-fail");
+        let mut log = FileEventLog::open(&dir, retention_one_record_config()).unwrap();
+        log.register("c", Offset(0)).unwrap();
+        for key in ["a", "b", "c"] {
+            log.publish(rec(key)).unwrap();
+        }
+        assert!(log.segment_count() >= 3);
+
+        log.faults.delete = true;
+        assert_eq!(log.commit("c", Offset(3)), Ok(()));
+        assert_eq!(log.committed("c"), Ok(Offset(3)));
+        assert_eq!(log.compaction_failures(), 1);
+        assert!(matches!(
+            log.last_compaction_error(),
+            Some(BusError::Io {
+                operation: "delete segment",
+                ..
+            })
+        ));
+        drop(log);
+        // The commit really is durable: a reopen resumes after it.
+        let mut reopened = FileEventLog::open(&dir, retention_one_record_config()).unwrap();
+        assert_eq!(reopened.committed("c"), Ok(Offset(3)));
+
+        // Retention is retried on a later commit and the error clears.
+        reopened.publish(rec("d")).unwrap();
+        reopened.commit("c", Offset(4)).unwrap();
+        assert_eq!(reopened.compaction_failures(), 0);
+        assert!(reopened.last_compaction_error().is_none());
+        assert!(reopened.low_water() > Offset(0));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_retention_failure_is_counted_and_cleared_by_a_later_success() {
+        let dir = unit_dir("retention-retry");
+        let mut log = FileEventLog::open(&dir, retention_one_record_config()).unwrap();
+        log.register("c", Offset(0)).unwrap();
+        for key in ["a", "b", "c"] {
+            log.publish(rec(key)).unwrap();
+        }
+        log.faults.delete = true;
+        log.commit("c", Offset(3)).unwrap();
+        log.commit("c", Offset(3)).unwrap();
+        assert_eq!(log.compaction_failures(), 2);
+        log.faults.delete = false;
+        log.commit("c", Offset(3)).unwrap();
+        assert_eq!(log.compaction_failures(), 2);
+        assert!(log.last_compaction_error().is_none());
+        assert!(log.low_water() > Offset(0));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_record_limit_that_overflows_the_frame_is_refused() {
+        for max_record_bytes in [usize::MAX, usize::MAX - 100, u32::MAX as usize] {
+            let mut config = FileLogConfig::new(1);
+            config.max_record_bytes = max_record_bytes;
+            assert_eq!(
+                config.validate(),
+                Err(BusError::InvalidPolicy {
+                    violation: PolicyViolation::RecordLimitTooLarge
+                })
+            );
+        }
+        let mut config = FileLogConfig::new(1);
+        config.max_record_bytes = crate::codec::MAX_FRAME_BODY - 2 * MAX_FIELD_BYTES - MIN_BODY;
+        assert_eq!(config.validate(), Ok(()));
+        assert_eq!(
+            max_body(config.max_record_bytes),
+            Some(crate::codec::MAX_FRAME_BODY)
+        );
+        assert_eq!(max_body(config.max_record_bytes + 1), None);
     }
 }

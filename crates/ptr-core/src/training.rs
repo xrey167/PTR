@@ -90,6 +90,19 @@ fn shape_ok(head: &Linear, features: &[f32], target: usize) -> Result<(), CoreEr
             what: "target class out of range",
         });
     }
+    if !features.iter().all(|x| x.is_finite()) {
+        return Err(CoreError::NonFinite { what: "features" });
+    }
+    if !head.w.as_slice().iter().all(|x| x.is_finite()) {
+        return Err(CoreError::NonFinite {
+            what: "router weights",
+        });
+    }
+    if !head.b.as_slice().iter().all(|x| x.is_finite()) {
+        return Err(CoreError::NonFinite {
+            what: "router bias",
+        });
+    }
     Ok(())
 }
 
@@ -113,8 +126,14 @@ pub fn router_gradient(
 ) -> Result<RouterGradient, CoreError> {
     shape_ok(head, features, target)?;
     let logits = head.forward_vec(features)?;
+    if !logits.iter().all(|z| z.is_finite()) {
+        return Err(CoreError::NonFinite { what: "logits" });
+    }
     let p = softmax(&logits);
     let loss = stable_cross_entropy(&logits, target);
+    if !loss.is_finite() {
+        return Err(CoreError::NonFinite { what: "loss" });
+    }
     let mut dz = p;
     dz[target] -= 1.0;
     let classes = dz.len();
@@ -318,6 +337,66 @@ mod tests {
             g.loss
         );
         assert!(g.loss > 199.0);
+    }
+
+    fn tiny_head() -> Linear {
+        Linear {
+            w: Matrix::new(2, 2, vec![0.5, -0.5, 0.25, 0.75]).unwrap(),
+            b: Matrix::new(1, 2, vec![0.0, 0.0]).unwrap(),
+        }
+    }
+
+    #[test]
+    fn non_finite_features_are_refused() {
+        let head = tiny_head();
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            for features in [[bad, 1.0], [1.0, bad]] {
+                assert!(
+                    matches!(
+                        router_gradient(&head, &features, 0),
+                        Err(CoreError::NonFinite { what: "features" })
+                    ),
+                    "{features:?}"
+                );
+                assert!(matches!(
+                    router_loss_f64(&head, &features, 0),
+                    Err(CoreError::NonFinite { what: "features" })
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn non_finite_head_parameters_are_refused() {
+        let mut head = tiny_head();
+        head.w.as_mut_slice()[1] = f32::NAN;
+        assert!(matches!(
+            router_gradient(&head, &[1.0, 1.0], 0),
+            Err(CoreError::NonFinite {
+                what: "router weights"
+            })
+        ));
+        let mut head = tiny_head();
+        head.b.as_mut_slice()[0] = f32::INFINITY;
+        assert!(matches!(
+            router_gradient(&head, &[1.0, 1.0], 0),
+            Err(CoreError::NonFinite {
+                what: "router bias"
+            })
+        ));
+    }
+
+    #[test]
+    fn finite_inputs_that_overflow_are_reported_not_returned() {
+        // Finite features and weights whose f32 product overflows to +inf in the logits.
+        let head = Linear {
+            w: Matrix::new(1, 2, vec![f32::MAX, 1.0]).unwrap(),
+            b: Matrix::new(1, 2, vec![0.0, 0.0]).unwrap(),
+        };
+        assert!(matches!(
+            router_gradient(&head, &[10.0], 1),
+            Err(CoreError::NonFinite { .. })
+        ));
     }
 
     #[test]

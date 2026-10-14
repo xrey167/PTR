@@ -186,7 +186,7 @@ impl TrajectoryLog {
             // back, otherwise a retry would duplicate the trajectory and a reopen would resurrect
             // a record whose append returned an error. If the cut itself fails the tail is
             // unknown, so the log refuses appends until it is reopened.
-            if truncate_file(&file, good_len).is_err() {
+            if truncate_path(path, good_len).is_err() {
                 self.poisoned.store(true, Ordering::SeqCst);
             }
             return Err(error.into());
@@ -197,19 +197,61 @@ impl TrajectoryLog {
         })
     }
 
+    /// Shift `base` to `base.1`, `base.n` to `base.n+1`, dropping `base.keep`, failure-atomically.
+    ///
+    /// The oldest generation is first *staged* (renamed to `base.rotating`), never deleted. The
+    /// shifts then only move a file into a slot that was just vacated, so no rename ever
+    /// overwrites a retained file. On any failing step the completed moves are undone in reverse
+    /// (each undo moves a file back into the slot its own move vacated) and the staged file is
+    /// put back, so a failed rotation leaves exactly the files it found and a retry loses
+    /// nothing. If an undo itself fails the numbering is unknown and the log is poisoned. Only
+    /// after every move succeeded is the staged oldest generation deleted (a failure to delete
+    /// it leaves a stray `base.rotating`, which the next rotation replaces).
     fn rotate(&self) -> Result<(), LogError> {
         let base = &self.config.path;
         let keep = self.config.keep;
-        remove_if_present(&rotated_path(base, keep))?;
-        for n in (1..keep).rev() {
-            let from = rotated_path(base, n);
-            if from.exists() {
-                fs::rename(&from, rotated_path(base, n + 1))?;
-            }
+        let stage = staging_path(base);
+        let oldest = rotated_path(base, keep);
+        let staged = oldest.exists();
+        if staged {
+            rename_file(&oldest, &stage)?;
         }
-        fs::rename(base, rotated_path(base, 1))?;
+        // (from, to) of every move done so far, in order.
+        let mut done: Vec<(PathBuf, PathBuf)> = Vec::new();
+        let mut moves: Vec<(PathBuf, PathBuf)> = (1..keep)
+            .rev()
+            .map(|n| (rotated_path(base, n), rotated_path(base, n + 1)))
+            .filter(|(from, _)| from.exists())
+            .collect();
+        moves.push((base.clone(), rotated_path(base, 1)));
+        for (from, to) in moves {
+            if let Err(error) = rename_file(&from, &to) {
+                let mut restored = true;
+                for (undo_to, undo_from) in done.iter().rev() {
+                    restored &= rename_file(undo_from, undo_to).is_ok();
+                }
+                if staged {
+                    restored &= rename_file(&stage, &oldest).is_ok();
+                }
+                if !restored {
+                    self.poisoned.store(true, Ordering::SeqCst);
+                }
+                return Err(error.into());
+            }
+            done.push((from, to));
+        }
+        if staged {
+            let _ = fs::remove_file(&stage);
+        }
         Ok(())
     }
+}
+
+/// Where the oldest generation waits while a rotation is in flight: `base.rotating`.
+fn staging_path(base: &Path) -> PathBuf {
+    let mut name = base.as_os_str().to_owned();
+    name.push(".rotating");
+    PathBuf::from(name)
 }
 
 #[cfg(test)]
@@ -229,6 +271,26 @@ mod test_seam {
     thread_local! {
         static FAIL_SYNC: Cell<bool> = const { Cell::new(false) };
         static FAIL_TRUNCATE: Cell<bool> = const { Cell::new(false) };
+        static FAIL_RENAME: Cell<Option<(usize, bool)>> = const { Cell::new(None) };
+        static RENAME_COUNT: Cell<usize> = const { Cell::new(0) };
+    }
+
+    /// Fail the rename numbered `at` (0-based, counted from this call); with `persist`, every
+    /// later rename fails too (so an undo cannot succeed either).
+    pub(super) fn fail_rename_at(at: Option<usize>, persist: bool) {
+        RENAME_COUNT.with(|count| count.set(0));
+        FAIL_RENAME.with(|slot| slot.set(at.map(|at| (at, persist))));
+    }
+
+    pub(super) fn rename_fails() -> bool {
+        let number = RENAME_COUNT.with(|count| {
+            let number = count.get();
+            count.set(number + 1);
+            number
+        });
+        FAIL_RENAME
+            .with(Cell::get)
+            .is_some_and(|(at, persist)| number == at || (persist && number > at))
     }
 
     pub(super) fn fail_sync(on: bool) {
@@ -264,20 +326,23 @@ fn sync_file(file: &File) -> io::Result<()> {
     file.sync_data()
 }
 
-fn truncate_file(file: &File, len: u64) -> io::Result<()> {
+/// Cut `path` to `len` through a fresh write handle. The append handle cannot do it: on Windows
+/// an append-only handle lacks `FILE_WRITE_DATA`, so `set_len` on it fails and the rollback would
+/// never happen.
+fn truncate_path(path: &Path, len: u64) -> io::Result<()> {
     #[cfg(test)]
     if test_seam::truncate_fails() {
         return Err(io::Error::other("injected truncate failure"));
     }
-    file.set_len(len)
+    OpenOptions::new().write(true).open(path)?.set_len(len)
 }
 
-fn remove_if_present(path: &Path) -> Result<(), LogError> {
-    match fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error.into()),
+fn rename_file(from: &Path, to: &Path) -> io::Result<()> {
+    #[cfg(test)]
+    if test_seam::rename_fails() {
+        return Err(io::Error::other("injected rename failure"));
     }
+    fs::rename(from, to)
 }
 
 fn ends_with_newline(path: &Path) -> Result<bool, LogError> {
@@ -493,6 +558,96 @@ mod tests {
             .into_iter()
             .map(|r| r.run_id)
             .collect()
+    }
+
+    fn long_record(id: &str) -> TrajectoryRecord {
+        record(&format!("{}{id}", "x".repeat(200)))
+    }
+
+    /// A log whose base and `keep` rotated files all exist, one record each (`g0` newest in
+    /// `.1`, `g{keep-1}` oldest in `.keep`; the base holds `base`). The next append rotates.
+    fn full_log(dir: &TempDir, keep: u32) -> (TrajectoryLog, Vec<String>) {
+        let log = TrajectoryLog::open(config(dir, MIN_ROTATION_BYTES, keep)).unwrap();
+        let base = log.config().path.clone();
+        let mut all = Vec::new();
+        let line = |id: &str| {
+            let mut text = long_record(id).encode().unwrap();
+            text.push('\n');
+            text
+        };
+        fs::write(&base, line("base")).unwrap();
+        all.push(long_record("base").run_id);
+        for n in 1..=keep {
+            let id = format!("g{}", n - 1);
+            fs::write(rotated_path(&base, n), line(&id)).unwrap();
+            all.push(long_record(&id).run_id);
+        }
+        (log, all)
+    }
+
+    fn all_ids(log: &TrajectoryLog) -> Vec<String> {
+        let base = &log.config().path;
+        let mut ids = Vec::new();
+        for path in std::iter::once(base.clone())
+            .chain((1..=MAX_KEEP).map(|n| rotated_path(base, n)))
+            .filter(|path| path.exists())
+        {
+            ids.extend(ids_of(&path));
+        }
+        ids
+    }
+
+    #[test]
+    fn a_failed_rename_at_any_step_loses_nothing_and_a_retry_rotates_cleanly() {
+        for keep in 1..=3u32 {
+            for step in 0..=(keep as usize + 2) {
+                let dir = TempDir::new();
+                let (log, before) = full_log(&dir, keep);
+                let base = log.config().path.clone();
+                test_seam::fail_rename_at(Some(step), false);
+                let result = log.append(&long_record("new"));
+                test_seam::fail_rename_at(None, false);
+                if result.is_ok() {
+                    continue; // fewer renames than `step`: nothing was injected
+                }
+                assert!(
+                    matches!(result, Err(LogError::Io(_))),
+                    "keep {keep} step {step}"
+                );
+                let mut after = all_ids(&log);
+                after.sort();
+                let mut expected = before.clone();
+                expected.sort();
+                assert_eq!(
+                    after, expected,
+                    "failed append lost data: keep {keep} step {step}"
+                );
+                assert!(ids_of(&base).contains(&long_record("base").run_id));
+
+                log.append(&long_record("new")).unwrap();
+                let ids = all_ids(&log);
+                assert_eq!(ids.first(), Some(&long_record("new").run_id));
+                assert_eq!(ids.len(), keep as usize + 1, "keep {keep} step {step}");
+                // newest generations survive; only the oldest one is dropped by the rotation
+                for kept in before.iter().take(keep as usize) {
+                    assert!(ids.contains(kept), "lost {kept}: keep {keep} step {step}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_rotation_that_cannot_be_undone_poisons_the_log() {
+        let dir = TempDir::new();
+        let (log, _) = full_log(&dir, 3);
+        let clone = log.clone();
+        // Fail the second rename and every one after it, so the undo fails too.
+        test_seam::fail_rename_at(Some(2), true);
+        let failed = log.append(&long_record("new"));
+        test_seam::fail_rename_at(None, false);
+        assert!(matches!(failed, Err(LogError::Io(_))));
+        assert_eq!(log.append(&long_record("again")), Err(LogError::Poisoned));
+        assert_eq!(clone.append(&long_record("again")), Err(LogError::Poisoned));
     }
 
     #[test]

@@ -325,3 +325,100 @@ fn duplicate_reply_after_retry_with_delayed_original_is_ignored_and_counted() {
         Err(DriveError::Session(SessionError::UnknownSeq { seq: 77 }))
     );
 }
+
+#[test]
+fn unencodable_calls_are_refused_without_reserving_window_slots() {
+    use ptr_protocol::control::{CodecError, MAX_FRAME_BYTES};
+    use ptr_protocol::session::DEFAULT_WINDOW;
+
+    let ((mut a, mut ta), (mut b, mut tb)) = handshake();
+    let empty_type = TypedPayload {
+        type_id: TypeId::from(""),
+        bytes: b"x".to_vec(),
+    };
+    let long_type = TypedPayload {
+        type_id: TypeId::from("t".repeat(4096).as_str()),
+        bytes: b"x".to_vec(),
+    };
+    let big_body = payload(&vec![0u8; MAX_FRAME_BYTES]);
+    let invalid = [empty_type, long_type, big_body];
+
+    for n in 0..=DEFAULT_WINDOW {
+        let result = a.call(key(&format!("bad-{n}")), invalid[n % invalid.len()].clone());
+        assert!(
+            matches!(result, Err(SessionError::Encode(_))),
+            "call {n} must be refused as unencodable, got {result:?}"
+        );
+        assert_eq!(a.outstanding_calls(), 0);
+    }
+    assert!(matches!(
+        a.call(key("bad-x"), payload(&vec![0u8; MAX_FRAME_BYTES])),
+        Err(SessionError::Encode(CodecError::FrameTooLarge { .. }))
+    ));
+
+    // A valid call afterwards still works end to end and gets sequence number 1.
+    let frame = a.call(key("good"), payload(b"hello")).unwrap();
+    assert!(matches!(frame, ControlFrame::Call { seq: 1, .. }));
+    ta.send(&frame).unwrap();
+    b.pump(&mut tb).unwrap();
+    b.serve_all(&mut tb, &mut |p: &TypedPayload| {
+        payload(&[b"echo:", &p.bytes[..]].concat())
+    })
+    .unwrap();
+    let events = a.pump(&mut ta).unwrap();
+    assert_eq!(
+        events,
+        vec![SessionEvent::Replied {
+            seq: 1,
+            payload: payload(b"echo:hello")
+        }]
+    );
+    assert_eq!(a.outstanding_calls(), 0);
+}
+
+#[test]
+fn unencodable_cancel_close_and_reply_do_not_mutate_session_state() {
+    let ((mut a, mut ta), (mut b, mut tb)) = handshake();
+    let long = "r".repeat(2048);
+
+    // Cancel with an oversized reason is refused and the call is not marked cancelling.
+    let frame = a.call(key("k1"), payload(b"one")).unwrap();
+    assert!(matches!(
+        a.cancel(1, long.clone()),
+        Err(SessionError::Encode(_))
+    ));
+    // An Ack for a call that was never cancelled stays an AckMismatch.
+    ta.send(&frame).unwrap();
+    b.pump(&mut tb).unwrap();
+    tb.send(&ControlFrame::Ack {
+        seq: 1,
+        idempotency_key: key("k1"),
+    })
+    .unwrap();
+    assert_eq!(
+        a.pump(&mut ta),
+        Err(DriveError::Session(SessionError::AckMismatch { seq: 1 }))
+    );
+
+    // Close with an oversized reason is refused and the session stays Negotiated.
+    let ((mut c, _tc), _) = handshake();
+    assert!(matches!(c.close(long), Err(SessionError::Encode(_))));
+    assert_eq!(c.state(), SessionState::Negotiated);
+    assert!(c.close("done").is_ok());
+
+    // A handler reply that cannot be encoded is an error and is not cached for retries.
+    let ((mut d, mut td), (mut e, mut te)) = handshake();
+    td.send(&d.call(key("k2"), payload(b"two")).unwrap())
+        .unwrap();
+    e.pump(&mut te).unwrap();
+    let mut bad_handler = |_: &TypedPayload| TypedPayload {
+        type_id: TypeId::from(""),
+        bytes: Vec::new(),
+    };
+    assert!(matches!(
+        e.serve_next(&mut bad_handler),
+        Err(SessionError::Encode(_))
+    ));
+    assert_eq!(e.queued_calls(), 0);
+    assert_eq!(e.completed_keys(), 0);
+}

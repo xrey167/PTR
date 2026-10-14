@@ -558,3 +558,35 @@ fn oversized_records_and_foreign_files_are_handled() {
     let log = open(&dir, cfg);
     assert_eq!(log.recovery().segments, 0);
 }
+
+#[test]
+fn a_record_limit_that_cannot_fit_the_frame_is_refused_at_open() {
+    let dir = TempDir::new("huge-limit");
+    for max_record_bytes in [usize::MAX, usize::MAX - 1_000] {
+        let mut cfg = config();
+        cfg.max_record_bytes = max_record_bytes;
+        assert!(matches!(
+            FileEventLog::open(dir.path(), cfg),
+            Err(BusError::InvalidPolicy {
+                violation: PolicyViolation::RecordLimitTooLarge
+            })
+        ));
+    }
+}
+
+#[test]
+fn an_empty_zero_based_segment_is_corruption_not_a_wrapped_low_water_mark() {
+    let dir = TempDir::new("zero-base");
+    std::fs::create_dir_all(dir.path()).unwrap();
+    std::fs::write(dir.path().join("segment-00000000000000000000.log"), b"").unwrap();
+    assert!(matches!(
+        FileEventLog::open(dir.path(), config()),
+        Err(BusError::Corrupt {
+            kind: CorruptionKind::SegmentGap {
+                expected: 1,
+                found: 0
+            },
+            ..
+        })
+    ));
+}

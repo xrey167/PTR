@@ -113,6 +113,15 @@ pub enum SessionError {
     AckMismatch {
         seq: u64,
     },
+    /// The frame this call would produce cannot be encoded (empty or oversized field, frame
+    /// over the cap). Refused before any session state changed.
+    Encode(CodecError),
+}
+
+/// Refuses a frame the codec would refuse, using the codec itself so the limits live in one
+/// place. Called before a session method changes any state.
+fn ensure_encodable(frame: &ControlFrame) -> Result<(), SessionError> {
+    encode(frame).map(drop).map_err(SessionError::Encode)
 }
 
 impl fmt::Display for SessionError {
@@ -321,12 +330,13 @@ impl ProtocolSession {
             });
         }
         let seq = self.next_seq;
-        self.next_seq = self.next_seq.saturating_add(1);
         let frame = ControlFrame::Call {
             seq,
             idempotency_key: key.clone(),
             payload,
         };
+        ensure_encodable(&frame)?;
+        self.next_seq = self.next_seq.saturating_add(1);
         self.outbound.insert(
             seq,
             Outbound {
@@ -360,15 +370,17 @@ impl ProtocolSession {
             FrameKind::Cancel,
         )?;
         self.require_feature(Feature::Cancel)?;
+        let frame = ControlFrame::Cancel {
+            seq,
+            reason: reason.into(),
+        };
         let call = self
             .outbound
             .get_mut(&seq)
             .ok_or(SessionError::UnknownSeq { seq })?;
+        ensure_encodable(&frame)?;
         call.cancelling = true;
-        Ok(ControlFrame::Cancel {
-            seq,
-            reason: reason.into(),
-        })
+        Ok(frame)
     }
 
     /// Starts closing: `Negotiated -> Closing`. New calls are refused from here on; with the
@@ -376,11 +388,13 @@ impl ProtocolSession {
     /// flight in either direction.
     pub fn close(&mut self, reason: impl Into<String>) -> Result<ControlFrame, SessionError> {
         self.require(&[SessionState::Negotiated], FrameKind::Bye)?;
+        let frame = ControlFrame::Bye {
+            reason: reason.into(),
+        };
+        ensure_encodable(&frame)?;
         self.state = SessionState::Closing;
         self.bye_sent = true;
-        Ok(ControlFrame::Bye {
-            reason: reason.into(),
-        })
+        Ok(frame)
     }
 
     /// Runs the handler on the oldest queued call and returns its Reply, remembering the
@@ -397,19 +411,27 @@ impl ProtocolSession {
             return Ok(None);
         };
         let reply = handler(&call.payload);
+        let frame = ControlFrame::Reply {
+            seq: call.seq,
+            payload: reply.clone(),
+        };
+        // A reply the transport cannot encode is never cached: a retry of the call would
+        // otherwise be answered with the same unsendable reply forever. The call is dropped
+        // from the queue (the handler's fault), so the inbound window slot is not leaked.
+        if let Err(error) = ensure_encodable(&frame) {
+            self.close_if_drained();
+            return Err(error);
+        }
         if self.completed.len() >= self.config.completed_capacity {
             self.completed.pop_front();
         }
         self.completed.push_back(Completed {
             key: call.key,
             digest: call.digest,
-            reply: reply.clone(),
+            reply,
         });
         self.close_if_drained();
-        Ok(Some(ControlFrame::Reply {
-            seq: call.seq,
-            payload: reply,
-        }))
+        Ok(Some(frame))
     }
 
     /// Applies one received frame.

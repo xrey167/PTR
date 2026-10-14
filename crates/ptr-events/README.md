@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-14  
-**Code footprint:** 5 Rust source files · 2311 nonblank source lines · 5 integration-test files · 63 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 5 Rust source files · 2468 nonblank source lines · 5 integration-test files · 68 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -29,6 +29,10 @@
 - RuntimeEvent::VcwFinished { request, outcome, trace_digest } records how a verifier-closed workspace request ended (verified, exhausted, escalated, not_admitted or failed) and the digest of its trace; emitted by ptr-runtime (PtrRuntime::record_vcw_finished) for ptr-server vcw path; observability only, no authority; ptr-events only defines the variant
 - FileEventLog rolls a failed append back: if sync_data fails after the frame was written the segment is truncated to its last good length, so a retry cannot duplicate an offset and a reopen cannot resurrect a publish that returned an error; if that truncation also fails the writer is poisoned (BusError::WriterPoisoned on every publish) until the log is reopened and recovered
 - A RetentionPolicy with no record or byte limit (RetentionPolicy::is_unbounded; an age limit alone does not count, since logical ticks may never advance) is refused by FileEventLog::open and InMemoryBus::try_with_config (PolicyViolation::UnboundedRetention); the infallible InMemoryBus::with_config falls back to RetentionPolicy::acked_only (also for age-only policies) so acknowledged history cannot grow without limit
+- FileEventLog treats retention after a durable consumer commit as best effort: a segment-delete I/O error no longer fails a commit whose offset is already on disk; it is counted (compaction_failures) and kept (last_compaction_error), cleared by the next successful pass, and retried on later commits and publishes (advance_tick and compact still return the error)
+- FileLogConfig::validate refuses a max_record_bytes whose frame cannot be described by the u32 frame length (PolicyViolation::RecordLimitTooLarge); the frame limit is computed with checked arithmetic, so usize::MAX no longer overflows or wraps
+- FileEventLog::open refuses a segment with base offset zero as CorruptionKind::SegmentGap { expected: 1, found: 0 } (offsets start at 1), instead of underflowing the low-water arithmetic
+- FileEventLog rolls a failed append back by truncating through a separate write handle on the segment path, because the active handle is append-only and Windows denies set_len on such a handle (not verified on Windows from this environment)
 - RuntimeEvent::VcwPolicyChanged { scope, sequence, action, from, to, evidence } records that a host promoted or rolled back the routing policy of a verifier-closed loop (policy digests, the digest of the off-policy evidence a promotion rested on); emitted by ptr-runtime (PtrRuntime::record_vcw_policy_event). Observability of a host action, in memory, not a ledger event and no authority; not an audit record (lost on restart, not replayed, no gate record checked against it) until a ledger event exists
 
 ### Missing for the target architecture

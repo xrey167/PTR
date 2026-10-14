@@ -58,9 +58,16 @@ fn class_from_byte(byte: u8) -> Option<EventClass> {
     }
 }
 
-/// Largest legal frame body for a payload bound.
-pub(crate) fn max_body(max_payload: usize) -> usize {
-    BODY_FIXED + 2 * MAX_FIELD_BYTES + max_payload
+/// Largest frame body the format can describe: the length field is a `u32` and a reader adds
+/// [`FRAME_HEADER`] to it.
+pub(crate) const MAX_FRAME_BODY: usize = (u32::MAX as usize) - FRAME_HEADER;
+
+/// Largest legal frame body for a payload bound, or `None` if that bound cannot be represented
+/// (the arithmetic is checked: a public `max_record_bytes` is caller input).
+pub(crate) fn max_body(max_payload: usize) -> Option<usize> {
+    (BODY_FIXED + 2 * MAX_FIELD_BYTES)
+        .checked_add(max_payload)
+        .filter(|body| *body <= MAX_FRAME_BODY)
 }
 
 /// Encode a complete frame. The caller has validated field lengths.

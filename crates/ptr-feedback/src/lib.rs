@@ -43,6 +43,6 @@ pub use redact::{redact, REDACTED};
 pub use select::{
     crowding_distance, dominates, gate_of, pareto_front, pareto_fronts, rank_points,
     standard_points, standard_space, Direction, Gate, ObjectiveSpace, Point, Ranked,
-    SelectionError, Tournament, MAX_OBJECTIVES, MAX_SELECTION_POINTS,
+    SelectionError, Tournament, MAX_OBJECTIVES, MAX_SELECTION_POINTS, MAX_TOURNAMENT_WINNERS,
 };
 pub use text::{CandidateText, ModelOutput};

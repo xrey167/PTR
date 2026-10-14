@@ -107,6 +107,10 @@ pub enum PolicyViolation {
     /// without bound (an age limit alone does not bound it: records published and acknowledged
     /// at one logical tick never age).
     UnboundedRetention,
+    /// A record-size bound whose frame (header, fixed fields, topic and key at their maximum,
+    /// plus the payload) cannot be represented by the on-disk frame format's 32-bit length, so a
+    /// record accepted under it could not be read back.
+    RecordLimitTooLarge,
 }
 
 /// Which bound a [`BusError::Full`] refers to.

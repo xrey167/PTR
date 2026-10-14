@@ -3,13 +3,15 @@
 //! Output depends only on store content (sorted, no timestamps from the wall clock). Secrets
 //! never reach the mirror: a record flagged `sensitive` has its body replaced by `[REDACTED]`,
 //! and raw events are represented by byte length and digest only, never by content, tool
-//! arguments or tool output (Invariant 13). Free text is escaped so a value cannot start a new
+//! arguments or tool output (Invariant 13). Session ids are written only as a truncated SHA-256
+//! digest because they may hold client tokens. Free text is escaped so a value cannot start a new
 //! line or heading of its own.
 
 use crate::knowledge::KnowledgeStore;
 use crate::memory_store::DurableMemoryStore;
 use crate::record::{class_name, class_tag, MemoryRecord, SupportKind};
 use crate::MemoryClass;
+use sha2::{Digest, Sha256};
 use std::fmt::Write;
 
 /// Text that replaces a sensitive body.
@@ -38,6 +40,14 @@ fn hex(bytes: &[u8]) -> String {
         let _ = write!(out, "{byte:02x}");
     }
     out
+}
+
+/// Renders a session id as `session:sha256:<first 16 hex digits>`. A session id is an
+/// unconstrained public string that may carry a client token or private identifier, so the
+/// mirror never writes it verbatim; equal ids still map to equal digests and stay joinable.
+fn session_digest(session: &str) -> String {
+    let digest = Sha256::digest(session.as_bytes());
+    format!("session:sha256:{}", hex(&digest[..8]))
 }
 
 fn list<'a>(items: impl Iterator<Item = &'a str>) -> String {
@@ -137,7 +147,7 @@ pub fn render_knowledge_mirror(store: &KnowledgeStore) -> String {
             "- {} role={:?} session={} bytes={} sha256={} tool_call={}",
             escape(&event.id.0),
             event.role,
-            escape(&event.session.0),
+            session_digest(&event.session.0),
             event.content.len(),
             hex(&event.digest),
             event
@@ -196,6 +206,15 @@ mod tests {
     #[test]
     fn escape_neutralises_newlines_and_controls() {
         assert_eq!(escape("a\n# h\u{7}\\"), "a\\n# h\\u{7}\\\\");
+    }
+
+    #[test]
+    fn session_digest_is_stable_short_and_hides_the_value() {
+        let a = session_digest("tok-secret");
+        assert_eq!(a, session_digest("tok-secret"));
+        assert_ne!(a, session_digest("tok-secret2"));
+        assert_eq!(a.len(), "session:sha256:".len() + 16);
+        assert!(!a.contains("secret"));
     }
 
     #[test]
