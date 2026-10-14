@@ -258,21 +258,27 @@ impl ReplicaRouter {
     /// tried once; under [`ResumeFailover::Interchangeable`] it is tried first and the others
     /// follow like for `infer`.
     ///
+    /// The answer carries the [`Placement`] of the replica that served it, for the next round.
+    ///
     /// # Errors
     /// As `resume`.
     pub fn resume_placed(
         &self,
         placement: Placement,
         request: &ModelResumeRequest,
-    ) -> Result<Vec<ModelEvent>, ModelError> {
+    ) -> Result<PlacedAnswer, ModelError> {
         let max_failover = match self.policy.resume {
             ResumeFailover::Never => 0,
             ResumeFailover::Interchangeable => self.policy.max_failover,
         };
-        self.route(Some(placement.replica), max_failover, |backend| {
+        let (events, replica) = self.route(Some(placement.replica), max_failover, |backend| {
             backend.resume(request)
+        })?;
+        // The placement of the next round: the replica that served this one.
+        Ok(PlacedAnswer {
+            events,
+            placement: Placement { replica },
         })
-        .map(|(events, _)| events)
     }
 }
 

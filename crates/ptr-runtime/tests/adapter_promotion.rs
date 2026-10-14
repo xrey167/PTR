@@ -574,3 +574,30 @@ fn only_a_generation_that_was_promoted_can_be_revoked() {
         .revoke_adapter(revoke("coder", 5))
         .expect("the promoted generation revokes");
 }
+
+#[test]
+fn the_promotion_history_is_bounded_per_adapter_and_the_current_generation_still_revokes() {
+    use ptr_runtime::adapter::MAX_GENERATIONS_PER_ADAPTER;
+    let mut runtime = runtime();
+    for generation in 1..=100 {
+        runtime
+            .promote_adapter(request("coder", generation, WEIGHTS))
+            .expect("promotes");
+    }
+    // 100 promotions keep the last 64 (37..=100): older generations are no longer retained.
+    assert_eq!(MAX_GENERATIONS_PER_ADAPTER, 64);
+    for forgotten in [1, 36] {
+        assert!(matches!(
+            runtime.revoke_adapter(revoke("coder", forgotten)),
+            Err(RuntimeError::Adapter(
+                AdapterError::GenerationNeverPromoted { .. }
+            ))
+        ));
+    }
+    runtime
+        .revoke_adapter(revoke("coder", 37))
+        .expect("the oldest retained generation revokes");
+    runtime
+        .revoke_adapter(revoke("coder", 100))
+        .expect("the current generation revokes");
+}

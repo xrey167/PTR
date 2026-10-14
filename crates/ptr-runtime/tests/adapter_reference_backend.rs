@@ -143,3 +143,26 @@ fn only_the_exact_promoted_generation_is_live_not_every_generation_above_it() {
         )
         .is_ok());
 }
+
+#[test]
+fn an_adapter_key_no_promotion_named_is_refused_at_every_generation() {
+    let backend = backend();
+    let req = request(&backend);
+    let refused = |generation: u64| {
+        matches!(
+            backend.infer_scoped_bound(
+                &scope(),
+                &req,
+                None,
+                &StackBinding::with_adapter(adapter(&backend, generation))
+            ),
+            Err(ReferenceKvError::Binding(BindingError::NotLive { .. }))
+        )
+    };
+    // Nothing promoted yet: no generation of the key is live.
+    assert!(refused(1) && refused(2) && refused(999));
+    backend.apply_committed_event(&promoted(1)).unwrap();
+    // After promote(1) only generation 1 serves.
+    assert!(!refused(1));
+    assert!(refused(2) && refused(999));
+}

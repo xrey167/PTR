@@ -98,7 +98,8 @@ pub enum AdapterError {
     ClockRegressed { high_water_day: u64, today: u64 },
     /// The runtime's cycle clock cannot say what day it is, or none was configured.
     ClockUnavailable,
-    /// The generation to revoke was never promoted for this adapter.
+    /// The generation to revoke was never promoted for this adapter, or is no longer retained
+    /// ([`MAX_GENERATIONS_PER_ADAPTER`]).
     GenerationNeverPromoted {
         project: String,
         adapter: String,
@@ -308,6 +309,11 @@ impl AdapterProjection {
 
 /// The prefix of an adapter's lifecycle key; no new capsule may take it.
 pub(crate) const ADAPTER_KEY_PREFIX: &str = "ptr-adapter:";
+
+/// The most promoted generations the runtime remembers per adapter, for the rule that only a
+/// promoted generation can be revoked. The oldest are forgotten first; a revocation naming one
+/// is [`AdapterError::GenerationNeverPromoted`].
+pub const MAX_GENERATIONS_PER_ADAPTER: usize = 64;
 
 /// The lifecycle key of an adapter: the project is part of it, and the ledger refuses a `/` in
 /// either name, so two pairs never share a key.
@@ -774,9 +780,19 @@ impl PtrRuntime {
             } => {
                 let key = adapter_key(project, adapter);
                 self.set_live_generation(key.clone(), *generation);
-                self.adapters
-                    .promoted_history
-                    .insert((key.clone(), *generation));
+                let history = &mut self.adapters.promoted_history;
+                history.insert((key.clone(), *generation));
+                // Bounded per adapter, oldest out first: a revocation of a generation that is no
+                // longer retained is refused (it is long superseded and cannot serve anyway).
+                let kept: Vec<Generation> = history
+                    .range((key.clone(), Generation(0))..=(key.clone(), Generation(u64::MAX)))
+                    .map(|(_, kept)| *kept)
+                    .collect();
+                if kept.len() > MAX_GENERATIONS_PER_ADAPTER {
+                    for old in &kept[..kept.len() - MAX_GENERATIONS_PER_ADAPTER] {
+                        history.remove(&(key.clone(), *old));
+                    }
+                }
                 self.adapters.promoted.insert(
                     key,
                     PromotedAdapter {

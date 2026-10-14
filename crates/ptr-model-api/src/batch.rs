@@ -167,9 +167,9 @@ pub struct ResumedAnswer {
     pub next: Option<Continuation>,
 }
 
-/// The most continuations a batcher keeps open at once. A flood of answers that are never
-/// resumed evicts the oldest of the heaviest principal (see
-/// [`MAX_CONTINUATIONS_PER_PRINCIPAL`]); resuming an evicted continuation fails closed.
+/// The most continuations a batcher keeps open at once. When it is full of live continuations,
+/// a new [`AdaptiveBatcher::infer_scoped`] is refused with [`ModelError::overloaded`] and no
+/// existing continuation is lost; resuming an evicted (own quota) one fails closed.
 pub const MAX_OPEN_CONTINUATIONS: usize = 4096;
 
 /// The whole resume context of one open continuation. The resume request is built from this
@@ -186,71 +186,79 @@ struct OpenContinuation {
 }
 
 /// The most continuations one principal may hold open at once. At the quota a principal's
-/// next continuation evicts that principal's own oldest, so one principal cannot push another's
-/// out.
+/// next continuation evicts that principal's own oldest; nothing evicts another principal's.
 pub const MAX_CONTINUATIONS_PER_PRINCIPAL: usize = 256;
 
 type PrincipalKey = Option<String>;
 
-/// Open continuations: a global bound ([`MAX_OPEN_CONTINUATIONS`]) and a per-principal quota
-/// ([`MAX_CONTINUATIONS_PER_PRINCIPAL`]), each principal with its own FIFO. When the table is
-/// full, the oldest continuation of the principal that holds the most goes; a principal under
-/// its quota is displaced only when it is itself the largest holder. Every operation is
-/// logarithmic in the number of principals (a ranking by count) and at most linear in one
-/// principal's quota.
+/// Open continuations, bounded globally ([`MAX_OPEN_CONTINUATIONS`]) and per principal
+/// ([`MAX_CONTINUATIONS_PER_PRINCIPAL`]).
+///
+/// **Capacity is refused, never taken from someone else.** A principal at its quota loses its
+/// own oldest. When the table is full, entries whose deadline has passed or whose cancel flag is
+/// set are swept first; if it is still full the new open is refused
+/// ([`ModelError::overloaded`]). Existing continuations are therefore never lost to another
+/// principal's load (many principals cannot push a victim out); the price is that opens can be
+/// refused while the table is full of live continuations.
 #[derive(Default)]
 struct Continuations {
     entries: std::collections::HashMap<u128, OpenContinuation>,
     queues: std::collections::HashMap<PrincipalKey, std::collections::VecDeque<u128>>,
-    /// (open count, principal) for every principal with at least one open continuation.
-    ranking: std::collections::BTreeSet<(usize, PrincipalKey)>,
 }
 
 impl Continuations {
-    fn evict_oldest_of(&mut self, principal: &PrincipalKey) {
-        let Some(queue) = self.queues.get(principal) else {
-            return;
-        };
-        if let Some(oldest) = queue.front().copied() {
-            self.close(oldest);
+    fn expired(entry: &OpenContinuation, now: u64) -> bool {
+        entry.deadline.is_some_and(|deadline| deadline <= now)
+            || entry.cancel.as_ref().is_some_and(CancelFlag::is_cancelled)
+    }
+
+    /// Drop every entry whose deadline has passed or whose cancel flag is set.
+    fn sweep(&mut self, now: u64) {
+        let dead: Vec<u128> = self
+            .entries
+            .iter()
+            .filter(|(_, entry)| Self::expired(entry, now))
+            .map(|(id, _)| *id)
+            .collect();
+        for id in dead {
+            self.close(id);
         }
     }
 
-    fn open(&mut self, id: u128, continuation: OpenContinuation) {
-        let principal = continuation.key.principal.clone();
-        let held = self.queues.get(&principal).map_or(0, |queue| queue.len());
+    /// Make room for one more continuation of `principal` if that can be done without taking
+    /// anything from another principal: the principal's own oldest at its quota, then expired
+    /// entries. False when the table is full of live continuations.
+    fn make_room(&mut self, principal: &PrincipalKey, now: u64) -> bool {
+        let held = self.queues.get(principal).map_or(0, |queue| queue.len());
         if held >= MAX_CONTINUATIONS_PER_PRINCIPAL {
-            self.evict_oldest_of(&principal);
+            if let Some(oldest) = self.queues.get(principal).and_then(|q| q.front().copied()) {
+                self.close(oldest);
+            }
         }
-        while self.entries.len() >= MAX_OPEN_CONTINUATIONS {
-            let Some((_, heaviest)) = self.ranking.iter().next_back().cloned() else {
-                break;
-            };
-            self.evict_oldest_of(&heaviest);
+        if self.entries.len() >= MAX_OPEN_CONTINUATIONS {
+            self.sweep(now);
         }
-        let queue = self.queues.entry(principal.clone()).or_default();
-        let before = queue.len();
-        queue.push_back(id);
-        let after = queue.len();
-        if before > 0 {
-            self.ranking.remove(&(before, principal.clone()));
+        self.entries.len() < MAX_OPEN_CONTINUATIONS
+    }
+
+    /// Open `continuation`; false (nothing stored) when no room can be made.
+    fn open(&mut self, id: u128, continuation: OpenContinuation, now: u64) -> bool {
+        let principal = continuation.key.principal.clone();
+        if !self.make_room(&principal, now) {
+            return false;
         }
-        self.ranking.insert((after, principal));
+        self.queues.entry(principal).or_default().push_back(id);
         self.entries.insert(id, continuation);
+        true
     }
 
     fn close(&mut self, id: u128) -> Option<OpenContinuation> {
         let continuation = self.entries.remove(&id)?;
         let principal = continuation.key.principal.clone();
         if let Some(queue) = self.queues.get_mut(&principal) {
-            let before = queue.len();
             queue.retain(|open| *open != id);
-            let after = queue.len();
-            self.ranking.remove(&(before, principal.clone()));
-            if after == 0 {
+            if queue.is_empty() {
                 self.queues.remove(&principal);
-            } else {
-                self.ranking.insert((after, principal));
             }
         }
         Some(continuation)
@@ -527,9 +535,21 @@ impl<B: BatchInferenceBackend + 'static> AdaptiveBatcher<B> {
         let key = admission.key.clone();
         let deadline = admission.deadline.map(|deadline| deadline.0);
         let cancel = admission.cancel.clone();
+        // Room is made, or the call refused, before the model runs: no work is done for a
+        // continuation that cannot be kept.
+        let now = self.shared.clock.now().0;
+        if !self
+            .shared
+            .lock()
+            .continuations
+            .make_room(&key.principal, now)
+        {
+            bump(&self.shared.counters.overloaded, 1);
+            return Err(ModelError::overloaded());
+        }
         let events = self.run_inferred(request, admission)?;
         let id = self.shared.issue_token();
-        self.shared.lock().continuations.open(
+        let opened = self.shared.lock().continuations.open(
             id,
             OpenContinuation {
                 request_id: request.request_id.clone(),
@@ -539,7 +559,13 @@ impl<B: BatchInferenceBackend + 'static> AdaptiveBatcher<B> {
                 deadline,
                 cancel,
             },
+            self.shared.clock.now().0,
         );
+        if !opened {
+            // Another caller took the last slot while the model ran.
+            bump(&self.shared.counters.overloaded, 1);
+            return Err(ModelError::overloaded());
+        }
         Ok(ScopedAnswer {
             events,
             continuation: Continuation { id },
@@ -634,13 +660,15 @@ impl<B: BatchInferenceBackend + 'static> AdaptiveBatcher<B> {
         };
         let events =
             self.run_resume(&request, &entry.key, entry.deadline, entry.cancel.as_ref())?;
-        let next = entry.round.checked_add(1).map(|round| {
+        // The next round's continuation is opened only if there is room; otherwise there is none.
+        let next = entry.round.checked_add(1).and_then(|round| {
             let id = self.shared.issue_token();
+            let now = self.shared.clock.now().0;
             self.shared
                 .lock()
                 .continuations
-                .open(id, OpenContinuation { round, ..entry });
-            Continuation { id }
+                .open(id, OpenContinuation { round, ..entry }, now)
+                .then_some(Continuation { id })
         });
         Ok(ResumedAnswer { events, next })
     }

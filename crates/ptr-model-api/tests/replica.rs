@@ -310,7 +310,7 @@ fn a_panicking_replica_is_a_failed_replica_that_fails_over_and_is_counted() {
 }
 
 #[test]
-fn a_placed_resume_without_failover_lands_on_the_replica_of_its_own_invocation() {
+fn a_placed_resume_without_failover_lands_on_the_replica_of_its_own_invocation_every_round() {
     let replicas = [healthy("a"), healthy("b"), healthy("c")];
     let strict = ReplicaRouter::new(
         replicas
@@ -329,23 +329,21 @@ fn a_placed_resume_without_failover_lands_on_the_replica_of_its_own_invocation()
     let second = strict.infer_placed(&request("same-id")).expect("served");
     assert_eq!(label(first.events), "a");
     assert_eq!(label(second.events), "b");
-    // Each resume lands on the replica of its own invocation, in either order.
-    assert_eq!(
-        label(
-            strict
-                .resume_placed(second.placement, &resume_request("same-id"))
-                .expect("served")
-        ),
-        "b"
-    );
-    assert_eq!(
-        label(
-            strict
-                .resume_placed(first.placement, &resume_request("same-id"))
-                .expect("served")
-        ),
-        "a"
-    );
+    // Three rounds in a row on each: every round returns the placement of the replica that
+    // served it, so the affinity holds for the whole run.
+    let (mut on_a, mut on_b) = (first.placement, second.placement);
+    for _ in 0..3 {
+        let a = strict
+            .resume_placed(on_a, &resume_request("same-id"))
+            .expect("served");
+        assert_eq!(label(a.events), "a");
+        on_a = a.placement;
+        let b = strict
+            .resume_placed(on_b, &resume_request("same-id"))
+            .expect("served");
+        assert_eq!(label(b.events), "b");
+        on_b = b.placement;
+    }
     assert_eq!(
         replicas[2].calls.load(Ordering::SeqCst),
         0,

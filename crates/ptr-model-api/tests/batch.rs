@@ -779,38 +779,75 @@ fn one_principal_cannot_push_another_principals_continuation_out() {
 }
 
 #[test]
-fn a_full_table_evicts_from_the_principal_holding_the_most() {
-    use ptr_model_api::{MAX_CONTINUATIONS_PER_PRINCIPAL, MAX_OPEN_CONTINUATIONS};
+fn many_principals_cannot_push_a_victim_out_and_a_full_table_refuses_the_next_open() {
+    use ptr_model_api::MAX_OPEN_CONTINUATIONS;
     let batcher = echo_batcher(Arc::new(OpenGate));
-    // Every principal sits exactly at its quota and together they fill the table.
-    let principals = MAX_OPEN_CONTINUATIONS / MAX_CONTINUATIONS_PER_PRINCIPAL;
-    let mut oldest = Vec::new();
-    for p in 0..principals {
-        let scope = principal_scope(&format!("p{p}"));
-        for n in 0..MAX_CONTINUATIONS_PER_PRINCIPAL {
-            let continuation = open(&batcher, &format!("p{p}-{n}"), &scope);
-            if n == 0 {
-                oldest.push((scope.clone(), continuation));
-            }
-        }
+    let victim_scope = principal_scope("victim");
+    let victim = open(&batcher, "victim-run", &victim_scope);
+    // 4095 more, each under its own principal, fill the table without any quota being hit.
+    let mut held = Vec::new();
+    for n in 0..MAX_OPEN_CONTINUATIONS - 1 {
+        held.push(open(
+            &batcher,
+            &format!("sybil-{n}"),
+            &principal_scope(&format!("sybil-{n}")),
+        ));
     }
-    // A newcomer under its own quota finds the table full: it is served, and exactly one
-    // continuation of a full principal (its oldest) goes. The newcomer is not the one displaced.
-    let newcomer = principal_scope("newcomer");
-    let kept = open(&batcher, "new", &newcomer);
+    // The next open is refused, and nothing was evicted for it.
+    assert_eq!(
+        batcher
+            .infer_scoped(
+                &request("one-too-many"),
+                admission_under(&principal_scope("late"))
+            )
+            .err(),
+        Some(ModelError::overloaded())
+    );
+    // The victim's continuation survived: it resumes, and its slot carries over to the next
+    // round of the same run.
+    let resumed = batcher
+        .resume_continuation(victim, &victim_scope, observation(1, b"x"))
+        .expect("the victim was not displaced");
+    assert!(resumed.next.is_some());
+    drop(held);
+}
+
+#[test]
+fn an_expired_continuation_frees_its_slot_in_a_full_table() {
+    use ptr_model_api::MAX_OPEN_CONTINUATIONS;
+    let clock = Arc::new(SetClock(std::sync::atomic::AtomicU64::new(0)));
+    let batcher = AdaptiveBatcher::with_parts(
+        Arc::new(ptr_model_api::ReferenceEchoBackend),
+        policy(1, 0, 4),
+        Arc::clone(&clock) as Arc<dyn BatchClock>,
+        Some(Arc::new(OpenGate) as Arc<dyn BatchGate>),
+    )
+    .expect("built");
+    for n in 0..MAX_OPEN_CONTINUATIONS {
+        let scope = principal_scope(&format!("p{n}"));
+        batcher
+            .infer_scoped(
+                &request(&format!("r{n}")),
+                BatchAdmission {
+                    key: scope,
+                    deadline: Some(Timestamp(100)),
+                    cancel: None,
+                },
+            )
+            .expect("served");
+    }
+    let late = principal_scope("late");
+    assert_eq!(
+        batcher
+            .infer_scoped(&request("late"), admission_under(&late))
+            .err(),
+        Some(ModelError::overloaded())
+    );
+    // The deadlines pass: the expired continuations are swept and the slot is free again.
+    clock.0.store(100, Ordering::SeqCst);
     assert!(batcher
-        .resume_continuation(kept, &newcomer, observation(1, b"x"))
+        .infer_scoped(&request("late"), admission_under(&late))
         .is_ok());
-    let evicted = oldest
-        .into_iter()
-        .map(|(scope, continuation)| {
-            batcher
-                .resume_continuation(continuation, &scope, observation(1, b"x"))
-                .is_err()
-        })
-        .filter(|failed| *failed)
-        .count();
-    assert_eq!(evicted, 1, "exactly one oldest continuation was displaced");
 }
 
 #[test]

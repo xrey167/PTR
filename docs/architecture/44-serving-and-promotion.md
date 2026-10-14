@@ -140,8 +140,10 @@ and charged to neither. `backtest(pool, error_bound=...)` holds each generation 
 - the within-bound decision uses the exact errors; only the report rounds; a step or slope that is not a finite number
   (a step of 5e-324 overflows the slope) leaves the decision unidentified and no NaN or infinity reaches a prediction
   or the report;
-- `choose_winner` takes the pool, not a simulator: it rebuilds the full simulator itself after matching the report's
-  fingerprint, so no fold-fitted or edited state can enter;
+- `choose_winner` takes the pool and the pinned rule, not a simulator and not the report's verdict: it recomputes the
+  backtest from the pool with the pinned parameters, compares the report passed in with it (any difference, a forged
+  `predictive` included, is a `HistoryError`) and rebuilds the full simulator itself, so no fold-fitted, edited or forged
+  state can enter;
 - `choose_winner` aborts with `NotPredictive` on a history that predicted nothing, and with `ExtrapolationAbort` when
   the best policy asks for a decision level the history never showed.
 
@@ -176,9 +178,11 @@ simulator training happens in PTR until `predictive` has been true on a real gen
   The observation is new caller input under the continuation's scope: the gate checks exactly that scope, as for a fresh
   `infer` under it, and the batcher cannot see where the caller's bytes came from and does not need to. What it guarantees is
   that no stale state is resumed: context, round and scope come only from the table entry, which belongs to exactly one
-  scope, so a continuation from a revoked generation is refused whatever key or other continuation the caller holds. A principal at its quota evicts its own oldest; a full table evicts the oldest of the principal holding the most
-  (a per-principal FIFO and a ranking by count, no scan over entries), so one principal's flood never displaces a principal
-  under its quota, and an evicted continuation fails closed. The entry
+  scope, so a continuation from a revoked generation is refused whatever key or other continuation the caller holds. A principal at its quota evicts its own oldest. When the table is full, entries whose deadline has passed or whose
+  cancel flag is set are swept first; if it is still full the new `infer_scoped` is refused with `overloaded` before the model
+  runs, and nothing of anyone else is evicted. The trade-off is stated: existing continuations are never lost to another
+  principal's load (a crowd of principals cannot push a victim out), at the price that opens can be refused while the table
+  is full of live continuations. An evicted (own quota) continuation fails closed. The entry
   also keeps the admission's deadline and cancel flag, and every resume path (continuation and trait) is refused once the
   batcher is closed, past its deadline or cancelled, before and after the gate. Plain
   `infer` and `infer_with` open no continuation. The unscoped
@@ -192,7 +196,7 @@ simulator training happens in PTR until `predictive` has been true on a real gen
 once, by an allowlist on the typed `ModelErrorKind`: only overload and backend failure (`ModelError::allows_failover`).
 A refusal of the request itself (kind `Other`, the default of `ModelError::new`), a passed deadline, a cancellation, a
 revoked generation and a closed backend end the request; the message is never read. A `resume` tries one replica unless
-`ResumeFailover::Interchangeable` declares the replicas interchangeable for it, and `infer_placed` returns the answer with a per-invocation `Placement` (not `Clone`, no table) that `resume_placed` consumes: under `Never` the resume goes to exactly that replica, once, so two calls under one request id keep separate placements. The plain trait `resume` carries no placement and takes the rotation's replica. Counters per replica:
+`ResumeFailover::Interchangeable` declares the replicas interchangeable for it, and `infer_placed` returns the answer with a per-invocation `Placement` (not `Clone`, no table) that `resume_placed` consumes and answers with the placement of the replica that served it, so every round keeps its affinity: under `Never` the resume goes to exactly that replica, once, so two calls under one request id keep separate placements. The plain trait `resume` carries no placement and takes the rotation's replica. Counters per replica:
 attempts, failures, failovers. `ReplicaRouter(AdaptiveBatcher(backend))` composes.
 
 **Not done, and why.** `ptr-server` serializes requests behind the runtime lock, so a batcher in front of it would only

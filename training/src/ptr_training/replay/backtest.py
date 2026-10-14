@@ -573,13 +573,21 @@ def backtest(
 
 
 def choose_winner(
-    pool: HistoryPool, report: BacktestReport, policies: Iterable[Mapping[str, Level]]
+    pool: HistoryPool,
+    report: BacktestReport,
+    policies: Iterable[Mapping[str, Level]],
+    *,
+    error_bound: float,
+    min_within_bound: int,
+    min_within_fraction: float,
 ) -> dict[str, Any]:
     """The best identified policy, or an abort.
 
-    The simulator is rebuilt here, on the full ``pool`` (no generation excluded), after the
-    report's fingerprint has been matched to it; a caller cannot hand in a fitted state, so a
-    simulator fitted on a fold, or one whose responses were edited, has no way in.
+    Nothing is taken on trust from the caller: the backtest is recomputed here from ``pool``
+    with the pinned parameters (``error_bound``, ``min_within_bound``, ``min_within_fraction``,
+    the ones preregistered, never the report's own), and the simulator is rebuilt on the full
+    pool. ``report`` is only compared with the recomputed one; any difference, a forged
+    ``predictive`` included, is a ``HistoryError``.
 
     Raises ``NotPredictive`` when the backtest of this history did not predict a held-out
     generation within its bound, ``ExtrapolationAbort`` when the best identified policy asks
@@ -590,7 +598,15 @@ def choose_winner(
         raise TypeError("choose_winner takes the history pool, not a simulator")
     if report.pool_fingerprint != pool.fingerprint():
         raise ValueError("the backtest report was made on another history")
-    if not report.predictive:
+    recomputed = backtest(
+        pool,
+        error_bound=error_bound,
+        min_within_bound=min_within_bound,
+        min_within_fraction=min_within_fraction,
+    )
+    if recomputed != report:
+        raise HistoryError("the backtest report is not the one this history and rule produce")
+    if not recomputed.predictive:
         raise NotPredictive("no held-out generation was predicted within the error bound")
     simulator = ReplaySimulator(pool)
     ranked = simulator.rank(policies)

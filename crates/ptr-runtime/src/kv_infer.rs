@@ -699,10 +699,21 @@ impl RevokedInputs {
                 .floors
                 .get(&dependency.identity)
                 .is_none_or(|floor| dependency.generation >= *floor)
-            && self
-                .adapter_current
-                .get(&dependency.identity)
-                .is_none_or(|current| dependency.generation == *current)
+            && self.adapter_is_current(dependency)
+    }
+
+    /// The adapter namespace fails closed: a dependency under `ptr-adapter:` is live only when
+    /// a committed promotion named its key and the generation is exactly that one. A key no
+    /// promotion named (never promoted, or its event never reached this backend) is not live at
+    /// any generation. Identities outside the namespace have no such record to consult.
+    fn adapter_is_current(&self, dependency: &KvDependency) -> bool {
+        if !dependency
+            .identity
+            .starts_with(crate::adapter::ADAPTER_KEY_PREFIX)
+        {
+            return true;
+        }
+        self.adapter_current.get(&dependency.identity) == Some(&dependency.generation)
     }
 }
 
