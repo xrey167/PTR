@@ -272,9 +272,10 @@ impl InspectNode {
     }
 
     /// A map node whose entries are sorted by the rendered key, so unordered sources
-    /// (for example a `HashMap`) produce a deterministic tree. The sort is stable.
+    /// (for example a `HashMap`) produce a deterministic tree. Keys whose bounded labels are equal
+    /// (for example long strings sharing a prefix) are ordered by their full JSON rendering.
     pub fn map_sorted(mut entries: Vec<(InspectNode, InspectNode)>) -> Self {
-        entries.sort_by_cached_key(|(k, _)| render::key_label(k));
+        entries.sort_by_cached_key(|(k, _)| (render::key_label(k), render::render_json(k)));
         Self::Map(entries)
     }
 

@@ -5,6 +5,10 @@ use crate::node::{fingerprint_label, BytesPreview, InspectNode, RedactionHint};
 /// Nesting at which [`render_json`] stops and writes `{"truncated":true}`.
 pub const JSON_MAX_DEPTH: usize = 128;
 
+/// Hard ceiling on [`RenderOptions::max_depth`]: the tree and single-line renderers recurse, so a
+/// larger caller-supplied depth (for example `usize::MAX`) is clamped to this before traversal.
+pub const MAX_RENDER_DEPTH: usize = 64;
+
 /// Largest per-level indentation honoured by [`render_tree`]; larger `indent` values are clamped.
 pub const MAX_INDENT: usize = 32;
 
@@ -15,7 +19,8 @@ pub struct RenderOptions {
     pub indent: usize,
     /// Longest text shown, in characters; longer text ends in an ellipsis.
     pub max_text_width: usize,
-    /// Containers nested deeper than this show `…` instead of their children.
+    /// Containers nested deeper than this show `…` instead of their children; clamped to
+    /// [`MAX_RENDER_DEPTH`].
     pub max_depth: usize,
     /// Children shown per container before `… N more`.
     pub max_items: usize,
@@ -182,7 +187,7 @@ fn tree_node(
         return;
     }
     let child_pad = padding(options, level.saturating_add(1));
-    if level >= options.max_depth {
+    if level >= options.max_depth.min(MAX_RENDER_DEPTH) {
         lines.push(format!("{child_pad}…"));
         return;
     }
@@ -287,7 +292,7 @@ fn compact_seq(
     if len == 0 {
         return;
     }
-    if depth >= options.max_depth {
+    if depth >= options.max_depth.min(MAX_RENDER_DEPTH) {
         out.push('…');
         return;
     }

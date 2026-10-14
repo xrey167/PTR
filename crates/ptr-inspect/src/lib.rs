@@ -22,5 +22,6 @@ pub use redact::{
 };
 pub use render::{
     render_compact, render_json, render_tree, RenderOptions, JSON_MAX_DEPTH, MAX_INDENT,
+    MAX_RENDER_DEPTH,
 };
 pub use visit::{walk, Visitor, WalkError, WalkLimits, HARD_MAX_DEPTH};

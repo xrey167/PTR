@@ -75,3 +75,46 @@ fn renderers_stay_bounded_on_deep_trees() {
         dismantle(node);
     });
 }
+
+fn on_tiny_stack(f: impl FnOnce() + Send + 'static) {
+    std::thread::Builder::new()
+        .stack_size(256 * 1024)
+        .spawn(f)
+        .expect("spawn")
+        .join()
+        .expect("renderer must not overflow the stack");
+}
+
+#[test]
+fn unbounded_max_depth_is_clamped_in_tree_and_compact_renderers() {
+    on_tiny_stack(|| {
+        let node = deep(InspectNode::Null);
+        let options = RenderOptions {
+            max_depth: usize::MAX,
+            ..RenderOptions::default()
+        };
+        let tree = ptr_inspect::render_tree(&node, &options);
+        assert!(tree.contains('…'));
+        assert!(render_compact(&node, &options).contains('…'));
+        dismantle(node);
+    });
+}
+
+#[test]
+fn map_sorted_is_deterministic_for_keys_sharing_a_truncated_label() {
+    let prefix = "k".repeat(5000);
+    let keys: Vec<InspectNode> = ["a", "b", "c", "d"]
+        .iter()
+        .map(|s| InspectNode::text(format!("{prefix}{s}")))
+        .collect();
+    let build = |order: &[usize]| {
+        let entries = order
+            .iter()
+            .map(|&i| (keys[i].clone(), InspectNode::Int(i as i128)));
+        InspectNode::map_sorted(entries.collect())
+    };
+    let first = build(&[0, 1, 2, 3]);
+    for order in [[3, 2, 1, 0], [1, 3, 0, 2], [2, 0, 3, 1]] {
+        assert_eq!(build(&order), first);
+    }
+}
