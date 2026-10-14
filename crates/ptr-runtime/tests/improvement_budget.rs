@@ -1,25 +1,49 @@
-//! The improvement-cycle budget is counted from committed history: an aborted cycle and a
-//! running one spend it, a replayed runtime counts the same, a clock that goes back is refused.
-
+//! The improvement-cycle budget is counted from committed history and a clock the caller does not
+//! control: an aborted cycle and a running one spend it, a replayed runtime counts the same, a
+//! clock that goes back (or a history from the future) is refused, and going forward and back
+//! cannot buy a second cycle on a day.
 use ptr_config::PtrConfig;
 use ptr_feedback::{BudgetExhausted, ImprovementCycleBudget};
 use ptr_ledger::{ImprovementCycleOutcome, LedgerEvent};
-use ptr_runtime::adapter::{AdapterError, BeginImprovementCycle};
+use ptr_runtime::adapter::{AdapterError, BeginImprovementCycle, CycleClock};
 use ptr_runtime::{PtrRuntime, RuntimeError};
 use ptr_types::ProjectId;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
-fn begin(project: &str, day: u64) -> BeginImprovementCycle {
+/// A clock the test sets; `u64::MAX` reads as "cannot say".
+#[derive(Debug)]
+struct ManualClock(AtomicU64);
+
+impl ManualClock {
+    fn at(day: u64) -> Arc<Self> {
+        Arc::new(Self(AtomicU64::new(day)))
+    }
+
+    fn set(&self, day: u64) {
+        self.0.store(day, Ordering::SeqCst);
+    }
+}
+
+impl CycleClock for ManualClock {
+    fn today(&self) -> Option<u64> {
+        let day = self.0.load(Ordering::SeqCst);
+        (day != u64::MAX).then_some(day)
+    }
+}
+
+fn begin(project: &str) -> BeginImprovementCycle {
     BeginImprovementCycle {
         project: ProjectId::from(project),
-        day,
         policy_digest: [7; 32],
     }
 }
 
-fn runtime(per_day: u32) -> PtrRuntime {
+fn runtime(per_day: u32, day: u64) -> (PtrRuntime, Arc<ManualClock>) {
+    let clock = ManualClock::at(day);
     let mut runtime = PtrRuntime::new(PtrConfig::default()).expect("runtime");
-    runtime.set_improvement_budget(ImprovementCycleBudget::new(per_day));
-    runtime
+    runtime.set_improvement_budget(ImprovementCycleBudget::new(per_day), clock.clone());
+    (runtime, clock)
 }
 
 fn exhausted(day: u64, used: u64, per_day: u32) -> RuntimeError {
@@ -30,25 +54,42 @@ fn exhausted(day: u64, used: u64, per_day: u32) -> RuntimeError {
     }))
 }
 
+fn regressed(high_water_day: u64, today: u64) -> RuntimeError {
+    RuntimeError::Adapter(AdapterError::ClockRegressed {
+        high_water_day,
+        today,
+    })
+}
+
 #[test]
-fn no_cycle_is_admitted_without_a_configured_budget() {
+fn no_cycle_is_admitted_without_a_configured_budget_and_clock() {
     let mut runtime = PtrRuntime::new(PtrConfig::default()).expect("runtime");
     assert_eq!(
-        runtime.begin_improvement_cycle(begin("alpha", 10)),
+        runtime.begin_improvement_cycle(begin("alpha")),
         Err(RuntimeError::Adapter(AdapterError::NoImprovementBudget))
     );
-    let mut zero = self::runtime(0);
+    let (mut zero, _clock) = self::runtime(0, 10);
     assert_eq!(
-        zero.begin_improvement_cycle(begin("alpha", 10)),
+        zero.begin_improvement_cycle(begin("alpha")),
         Err(exhausted(10, 0, 0))
     );
 }
 
 #[test]
+fn an_unreadable_clock_admits_nothing() {
+    let (mut runtime, clock) = runtime(5, 10);
+    clock.set(u64::MAX);
+    assert_eq!(
+        runtime.begin_improvement_cycle(begin("alpha")),
+        Err(RuntimeError::Adapter(AdapterError::ClockUnavailable))
+    );
+}
+
+#[test]
 fn an_exhausted_budget_refuses_the_next_cycle_even_when_the_earlier_ones_aborted() {
-    let mut runtime = runtime(2);
+    let (mut runtime, _clock) = runtime(2, 10);
     let first = runtime
-        .begin_improvement_cycle(begin("alpha", 10))
+        .begin_improvement_cycle(begin("alpha"))
         .expect("first");
     runtime
         .record_improvement_cycle(
@@ -59,13 +100,13 @@ fn an_exhausted_budget_refuses_the_next_cycle_even_when_the_earlier_ones_aborted
         )
         .expect("records the abort");
     let second = runtime
-        .begin_improvement_cycle(begin("alpha", 10))
+        .begin_improvement_cycle(begin("alpha"))
         .expect("second");
     runtime
         .record_improvement_cycle(second, ImprovementCycleOutcome::Completed)
         .expect("records completion");
     assert_eq!(
-        runtime.begin_improvement_cycle(begin("alpha", 10)),
+        runtime.begin_improvement_cycle(begin("alpha")),
         Err(exhausted(10, 2, 2))
     );
     assert_eq!(
@@ -76,86 +117,126 @@ fn an_exhausted_budget_refuses_the_next_cycle_even_when_the_earlier_ones_aborted
 
 #[test]
 fn a_running_cycle_and_a_dropped_ticket_count_against_the_budget() {
-    let mut runtime = runtime(1);
+    let (mut runtime, _clock) = runtime(1, 10);
     let ticket = runtime
-        .begin_improvement_cycle(begin("alpha", 10))
+        .begin_improvement_cycle(begin("alpha"))
         .expect("admitted");
     assert_eq!(
-        runtime.begin_improvement_cycle(begin("alpha", 10)),
+        runtime.begin_improvement_cycle(begin("alpha")),
         Err(exhausted(10, 1, 1))
     );
     drop(ticket);
     assert_eq!(
-        runtime.begin_improvement_cycle(begin("alpha", 10)),
+        runtime.begin_improvement_cycle(begin("alpha")),
         Err(exhausted(10, 1, 1)),
         "a ticket nobody recorded stays counted"
     );
 }
 
 #[test]
+fn going_to_the_next_day_and_back_does_not_buy_a_second_cycle_on_the_first_day() {
+    // per_day = 1: a cycle runs on day 10, one is admitted on day 11, and then the clock reads
+    // day 10 again. The open count of day 10 was dropped when day 11 began; the high-water day
+    // is what refuses day 10 now.
+    let (mut runtime, clock) = runtime(1, 10);
+    let _running = runtime
+        .begin_improvement_cycle(begin("alpha"))
+        .expect("day 10");
+    clock.set(11);
+    let _next = runtime
+        .begin_improvement_cycle(begin("alpha"))
+        .expect("day 11 has its own budget");
+    clock.set(10);
+    assert_eq!(
+        runtime.begin_improvement_cycle(begin("alpha")),
+        Err(regressed(11, 10))
+    );
+    assert_eq!(
+        runtime.improvement_cycles_used(&ProjectId::from("alpha"), 11),
+        1
+    );
+}
+
+#[test]
+fn the_caller_cannot_count_upwards_to_a_fresh_budget() {
+    // There is no day in the request, and the clock says day 10 however often one asks.
+    let (mut runtime, _clock) = runtime(1, 10);
+    let _first = runtime
+        .begin_improvement_cycle(begin("alpha"))
+        .expect("admitted");
+    for _ in 0..5 {
+        assert_eq!(
+            runtime.begin_improvement_cycle(begin("alpha")),
+            Err(exhausted(10, 1, 1))
+        );
+    }
+}
+
+#[test]
 fn the_count_is_rebuilt_from_the_ledger_and_the_next_day_starts_fresh() {
-    let mut runtime = runtime(1);
+    let (mut runtime, _clock) = runtime(1, 10);
     let ticket = runtime
-        .begin_improvement_cycle(begin("alpha", 10))
+        .begin_improvement_cycle(begin("alpha"))
         .expect("admitted");
     runtime
         .record_improvement_cycle(ticket, ImprovementCycleOutcome::Completed)
         .expect("records");
     let history = runtime.committed_events().to_vec();
+
     let mut replayed = PtrRuntime::replay(PtrConfig::default(), &history).expect("replays");
-    replayed.set_improvement_budget(ImprovementCycleBudget::new(1));
+    let clock = ManualClock::at(10);
+    replayed.set_improvement_budget(ImprovementCycleBudget::new(1), clock.clone());
     assert_eq!(
         replayed.improvement_cycles_used(&ProjectId::from("alpha"), 10),
         1
     );
     assert_eq!(
-        replayed.begin_improvement_cycle(begin("alpha", 10)),
+        replayed.begin_improvement_cycle(begin("alpha")),
         Err(exhausted(10, 1, 1))
     );
+    clock.set(11);
     let _next_day = replayed
-        .begin_improvement_cycle(begin("alpha", 11))
+        .begin_improvement_cycle(begin("alpha"))
         .expect("a new day has a fresh budget");
 }
 
 #[test]
-fn a_clock_that_goes_back_does_not_hand_out_a_fresh_budget() {
-    let mut runtime = runtime(1);
+fn a_history_from_the_future_refuses_cycles_until_the_clock_catches_up() {
+    let (mut runtime, _clock) = runtime(1, 20);
     let ticket = runtime
-        .begin_improvement_cycle(begin("alpha", 10))
+        .begin_improvement_cycle(begin("alpha"))
         .expect("admitted");
     runtime
         .record_improvement_cycle(ticket, ImprovementCycleOutcome::Completed)
         .expect("records");
-    let ticket = runtime
-        .begin_improvement_cycle(begin("alpha", 11))
-        .expect("next day");
-    runtime
-        .record_improvement_cycle(ticket, ImprovementCycleOutcome::Completed)
-        .expect("records");
+    let history = runtime.committed_events().to_vec();
+
+    let mut replayed = PtrRuntime::replay(PtrConfig::default(), &history).expect("replays");
+    let clock = ManualClock::at(19);
+    replayed.set_improvement_budget(ImprovementCycleBudget::new(1), clock.clone());
     assert_eq!(
-        runtime.begin_improvement_cycle(begin("alpha", 10)),
-        Err(RuntimeError::Adapter(AdapterError::ClockRegressed {
-            recorded_day: 11,
-            requested_day: 10,
-        }))
+        replayed.begin_improvement_cycle(begin("alpha")),
+        Err(regressed(20, 19))
     );
+    clock.set(21);
+    assert!(replayed.begin_improvement_cycle(begin("alpha")).is_ok());
 }
 
 #[test]
 fn budgets_are_per_project() {
-    let mut runtime = runtime(1);
+    let (mut runtime, _clock) = runtime(1, 10);
     let _alpha = runtime
-        .begin_improvement_cycle(begin("alpha", 10))
+        .begin_improvement_cycle(begin("alpha"))
         .expect("alpha");
     let _beta = runtime
-        .begin_improvement_cycle(begin("beta", 10))
+        .begin_improvement_cycle(begin("beta"))
         .expect("beta has its own budget");
 }
 
 #[test]
 fn a_zero_policy_digest_and_the_public_commit_are_refused() {
-    let mut runtime = runtime(3);
-    let mut request = begin("alpha", 10);
+    let (mut runtime, _clock) = runtime(3, 10);
+    let mut request = begin("alpha");
     request.policy_digest = [0; 32];
     assert_eq!(
         runtime.begin_improvement_cycle(request),
@@ -174,9 +255,9 @@ fn a_zero_policy_digest_and_the_public_commit_are_refused() {
 
 #[test]
 fn a_malformed_abort_reason_is_refused_and_leaves_the_cycle_counted() {
-    let mut runtime = runtime(1);
+    let (mut runtime, _clock) = runtime(1, 10);
     let ticket = runtime
-        .begin_improvement_cycle(begin("alpha", 10))
+        .begin_improvement_cycle(begin("alpha"))
         .expect("admitted");
     assert!(runtime
         .record_improvement_cycle(
@@ -187,7 +268,7 @@ fn a_malformed_abort_reason_is_refused_and_leaves_the_cycle_counted() {
         )
         .is_err());
     assert_eq!(
-        runtime.begin_improvement_cycle(begin("alpha", 10)),
+        runtime.begin_improvement_cycle(begin("alpha")),
         Err(exhausted(10, 1, 1))
     );
 }
@@ -199,32 +280,32 @@ fn the_tracked_projects_are_bounded_for_admitted_and_for_recorded_cycles() {
         limit: MAX_TRACKED_CYCLE_PROJECTS,
     });
 
-    // Admitted and never recorded: the open table stops at the bound.
-    let mut open = runtime(1);
+    // Admitted and never recorded: the table stops at the bound.
+    let (mut open, _clock) = runtime(1, 1);
     let mut held = Vec::new();
     for n in 0..MAX_TRACKED_CYCLE_PROJECTS {
         held.push(
-            open.begin_improvement_cycle(begin(&format!("p{n}"), 1))
+            open.begin_improvement_cycle(begin(&format!("p{n}")))
                 .expect("within the bound"),
         );
     }
     assert_eq!(
-        open.begin_improvement_cycle(begin("one-more", 1)),
+        open.begin_improvement_cycle(begin("one-more")),
         Err(too_many.clone())
     );
 
-    // Recorded: the table of latest days stops at the bound too.
-    let mut recorded = runtime(1);
+    // Recorded: the same bound holds.
+    let (mut recorded, _clock) = runtime(1, 1);
     for n in 0..MAX_TRACKED_CYCLE_PROJECTS {
         let ticket = recorded
-            .begin_improvement_cycle(begin(&format!("p{n}"), 1))
+            .begin_improvement_cycle(begin(&format!("p{n}")))
             .expect("within the bound");
         recorded
             .record_improvement_cycle(ticket, ImprovementCycleOutcome::Completed)
             .expect("records");
     }
     assert_eq!(
-        recorded.begin_improvement_cycle(begin("one-more", 1)),
+        recorded.begin_improvement_cycle(begin("one-more")),
         Err(too_many)
     );
 }

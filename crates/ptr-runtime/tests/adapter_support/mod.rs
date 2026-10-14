@@ -1,7 +1,7 @@
 //! Builders shared by the adapter promotion and improvement budget tests. No test lives here.
 use ptr_lineage::{
-    AccuracyMatrix, AdapterId, AdapterRecord, AdapterStatus, BaseModel, ForgettingGate,
-    GateSubject, Origin, PromotionProposal, PromotionSuite, SplitLock,
+    promotion_operation_id, AccuracyMatrix, AdapterId, AdapterRecord, AdapterStatus, BaseModel,
+    ForgettingGate, GateSubject, Origin, PromotionProposal, PromotionSuite, SplitLock,
 };
 use ptr_types::ArtifactId;
 use sha2::{Digest, Sha256};
@@ -52,10 +52,20 @@ pub fn proposal_with_baseline(
     weights: &[u8],
     serving: Option<f64>,
 ) -> Result<PromotionProposal, ptr_lineage::LineageError> {
+    proposal_for("alpha", id, weights, serving)
+}
+
+/// A proposal evaluated for `project`.
+pub fn proposal_for(
+    project: &str,
+    id: &str,
+    weights: &[u8],
+    serving: Option<f64>,
+) -> Result<PromotionProposal, ptr_lineage::LineageError> {
     let matrix = AccuracyMatrix::new(vec![vec![0.9, 0.0], vec![0.9, 0.8]]).expect("matrix");
     let subject = GateSubject::new(
         [1; 32],
-        [2; 32],
+        promotion_operation_id(project, id),
         digest(weights),
         base_digest(),
         SplitLock::of_manifest(SPLITS).sha256(),
@@ -71,7 +81,7 @@ pub fn proposal_with_baseline(
         )
         .expect("evaluates")
         .bind(subject);
-    PromotionProposal::new(&record(id, weights), base_digest(), report)
+    PromotionProposal::new(&record(id, weights), project, base_digest(), report)
 }
 
 pub fn proposal(id: &str) -> PromotionProposal {

@@ -67,8 +67,11 @@ a replay is seen at the next use (invariant 3). The runtime holds at most 4096 a
   compact its log until a snapshot section carries them.
 - The runtime proves that the weights it was given hash to the digest the gate was bound to. It does not prove they are
   the artifact in `ptr-storage`, and the gate subject's digests are the trusted evaluator's claim.
-- `evaluate` with a placeholder serving score still yields a report `PromotionProposal` accepts. The evaluator must be
-  the party that calls `evaluate_promotion`.
+- `PromotionProposal` accepts only a report produced by `evaluate_promotion` in this process
+  (`GateReport::promotion_evaluated`, a flag outside the canonical encoding): a passing report from the plain `evaluate`
+  path, where a placeholder serving score is possible, and a decoded report are `BaselineNotChecked`. The project is bound
+  into the digested subject through its operation id, `promotion_operation_id(project, adapter)`, and `promote_adapter`
+  refuses a proposal evaluated for another project (`ProjectMismatch`).
 - Nothing routes a request to an adapter yet. The first adapter's baseline (the base model's public-suite score) is
   supplied by the caller.
 - The Postgres mapping (`ptr-pg`) of the new events compiles and shares the `ptr-state` projection; it was not run
@@ -79,14 +82,18 @@ a replay is seen at the next use (invariant 3). The runtime holds at most 4096 a
 A self-improvement cycle proposes a change to the system's own adaptation and measures it. `ImprovementCycleBudget
 { per_day }` is the rule; the count comes from the ledger.
 
-- `begin_improvement_cycle` admits a cycle for a project and a day (days since the epoch) and returns a ticket that
+- `begin_improvement_cycle` admits a cycle for a project, on the day the runtime clock reports, and returns a ticket that
   counts as in flight until it is recorded. `record_improvement_cycle` commits `ImprovementCycleRecorded` (tag 41),
   `Completed` or `Aborted { reason }`.
 - The day's count is the committed events plus the open tickets. An aborted cycle, a running cycle and a ticket that
   was dropped without a record all spend budget; a replayed runtime counts the same.
 - With no budget configured nothing is admitted; a budget of zero admits nothing.
-- A day before the project's latest recorded day is refused (`ClockRegressed`), so a clock that goes back does not hand
-  out a fresh budget. At most 1024 projects are tracked.
+- The caller does not choose the day. The runtime reads a `CycleClock` (days since the epoch; an unreadable clock admits
+  nothing, `ClockUnavailable`). A project's high-water day is the latest day it has a cycle admitted or recorded for; a
+  day before it is refused (`ClockRegressed`). So going to the next day and back does not reopen the first day, counting
+  `day` upwards is impossible, and a history from the future refuses cycles until the clock passes it. A replayed
+  runtime rebuilds the same counts and high-water days from the ledger. At most 1024 projects and 1024 open
+  (project, day) pairs are tracked.
 
 **Limit.** An admitted cycle whose process crashes before it is recorded is not counted after the restart. The budget
 bounds recorded and running cycles, not crashed ones.
@@ -101,7 +108,7 @@ and charged to neither. `backtest(pool, error_bound=...)` holds each generation 
 - a generation whose decisions the remaining history does not identify is skipped with `not_identified`, never counted;
 - `degenerate` is set when the model has at least as many parameters as the history has generations, which is when the
   in-sample fit is arithmetic;
-- `pipeline_ran` (the backtest completed) and `predictive` (at least one generation predicted out of sample with every
+- `pipeline_ran` (the backtest completed) and `predictive` (at least `min_within_bound` generations predicted out of sample, and at least `min_within_fraction` of the predictable ones, each with every
   family within the bound) are separate claims;
 - `choose_winner` aborts with `NotPredictive` on a history that predicted nothing, and with `ExtrapolationAbort` when
   the best policy asks for a decision level the history never showed.
@@ -116,7 +123,7 @@ simulator training happens in PTR until `predictive` has been true on a real gen
 
 - **Bounded (invariant 8).** The queue holds at most `queue_capacity` requests (65536 at most). A full queue answers
   `ModelError::overloaded()` before anything grows.
-- **Keys.** Requests are grouped by `BatchKey { adapter, principal, generation }`; different keys never share a model
+- **Keys.** Requests are grouped by `BatchKey { project, adapter, principal, generation }`; different keys never share a model
   call. The plain `infer` uses the unscoped key; `infer_with` takes a `BatchAdmission` with the key, an optional
   deadline and an optional `CancelFlag`.
 - **Dispatch.** A group goes when it holds `max_batch` requests, when its oldest request has waited `max_wait`, or when
@@ -125,13 +132,17 @@ simulator training happens in PTR until `predictive` has been true on a real gen
   clock is Unix milliseconds; if it cannot be read it answers `u64::MAX`, so nothing with a deadline is served on a time
   nobody knows.
 - **Generation at use (invariant 3).** A `BatchGate` is asked about the key of every batch immediately before the model
-  runs; a revoked generation is refused at that use (`ModelError::revoked()`), not only when it was queued.
+  runs; a revoked generation is refused at that use (`ModelError::revoked()`), not only when it was queued. A key that
+  names an adapter is refused when the batcher was built without a gate (there is no admit-all default), and a `resume`
+  passes the gate too.
 - **Failure containment.** A backend panic or a wrong-length answer fails its batch and the batcher keeps serving; every
   caller gets exactly one answer, also on drop. Request text is never printed by `Debug`.
 
 `ReplicaRouter` rotates over 1 to 64 interchangeable replicas and fails over to at most `max_failover` others, each tried
-once, only for errors another replica can change (overload, backend failure). A passed deadline, a cancellation, a
-revoked generation and a closed backend end the request (`ModelError::refuses_failover`). Counters per replica:
+once, by an allowlist on the typed `ModelErrorKind`: only overload and backend failure (`ModelError::allows_failover`).
+A refusal of the request itself (kind `Other`, the default of `ModelError::new`), a passed deadline, a cancellation, a
+revoked generation and a closed backend end the request; the message is never read. A `resume` tries one replica unless
+`ResumeFailover::Interchangeable` declares the replicas interchangeable for it. Counters per replica:
 attempts, failures, failovers. `ReplicaRouter(AdaptiveBatcher(backend))` composes.
 
 **Not done, and why.** `ptr-server` serializes requests behind the runtime lock, so a batcher in front of it would only

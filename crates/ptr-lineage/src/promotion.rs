@@ -33,6 +33,22 @@ impl SplitLock {
     }
 }
 
+const PROMOTION_OPERATION_DOMAIN: &[u8] = b"ptr.lineage.promotion-operation.v1";
+
+/// The operation id a trusted evaluator puts in the [`crate::GateSubject`] of a promotion of
+/// `adapter` in `project`. It binds the project into the digested subject: a report evaluated
+/// for one project's adapter has another operation id than the same adapter name in another
+/// project, so [`PromotionProposal::new`] refuses it there.
+pub fn promotion_operation_id(project: &str, adapter: &str) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(PROMOTION_OPERATION_DOMAIN);
+    for part in [project, adapter] {
+        hasher.update((part.len() as u64).to_le_bytes());
+        hasher.update(part.as_bytes());
+    }
+    hasher.finalize().into()
+}
+
 /// A request to let one registered adapter serve, built from the adapter's record and the
 /// bound report of a passing gate. This crate stops here: committing the proposal to the
 /// ledger is `ptr-runtime`'s `promote_adapter`, which also recomputes the artifact digest from
@@ -42,6 +58,7 @@ impl SplitLock {
 /// it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PromotionProposal {
+    project: String,
     adapter: AdapterId,
     base_digest: [u8; 32],
     artifact_sha256: [u8; 32],
@@ -49,11 +66,13 @@ pub struct PromotionProposal {
 }
 
 impl PromotionProposal {
-    /// Propose `record` for serving on the strength of `report`.
+    /// Propose `record` for serving in `project` on the strength of `report`.
     ///
     /// `base_digest` is the digest of the base model the record names, as the caller computed
     /// it; the report's subject must name the same one, the record's artifact digest and the
-    /// record's adapter.
+    /// record's adapter, and its operation id must be
+    /// [`promotion_operation_id`]`(project, adapter)`. The report must have been produced by
+    /// [`crate::ForgettingGate::evaluate_promotion`] in this process.
     ///
     /// # Errors
     /// [`LineageError::MissingBaseline`] when the report was evaluated without a serving
@@ -63,9 +82,15 @@ impl PromotionProposal {
     /// an all-zero digest.
     pub fn new(
         record: &AdapterRecord,
+        project: &str,
         base_digest: [u8; 32],
         report: BoundGateReport,
     ) -> Result<Self, LineageError> {
+        if !report.promotion_evaluated() {
+            return Err(LineageError::BaselineNotChecked {
+                id: record.id.to_string(),
+            });
+        }
         if report
             .report()
             .violations()
@@ -90,6 +115,11 @@ impl PromotionProposal {
                 field: "artifact digest",
             });
         }
+        if subject.operation_id != promotion_operation_id(project, &record.id.0) {
+            return Err(LineageError::SubjectMismatch {
+                field: "operation id (project)",
+            });
+        }
         if subject.base_model_digest != base_digest {
             return Err(LineageError::SubjectMismatch {
                 field: "base model digest",
@@ -102,11 +132,17 @@ impl PromotionProposal {
             });
         }
         Ok(Self {
+            project: project.to_owned(),
             adapter: record.id.clone(),
             base_digest,
             artifact_sha256: record.artifact_sha256,
             report,
         })
+    }
+
+    /// The project the promotion was evaluated for.
+    pub fn project(&self) -> &str {
+        &self.project
     }
 
     pub fn adapter(&self) -> &AdapterId {
@@ -192,7 +228,13 @@ mod tests {
     }
 
     fn subject(artifact: [u8; 32], base: [u8; 32]) -> GateSubject {
-        GateSubject::new([1; 32], [2; 32], artifact, base, [5; 32])
+        GateSubject::new(
+            [1; 32],
+            promotion_operation_id("proj", "a1"),
+            artifact,
+            base,
+            [5; 32],
+        )
     }
 
     #[test]
@@ -204,7 +246,7 @@ mod tests {
             .violations()
             .contains(&GateViolation::MissingBaseline));
         assert_eq!(
-            PromotionProposal::new(&record([3; 32]), [4; 32], report),
+            PromotionProposal::new(&record([3; 32]), "proj", [4; 32], report),
             Err(LineageError::MissingBaseline { id: "a1".into() })
         );
     }
@@ -212,8 +254,8 @@ mod tests {
     #[test]
     fn a_passing_report_with_a_baseline_yields_a_proposal_bound_to_its_subject() {
         let report = bound(Some(0.7), subject([3; 32], [4; 32]));
-        let proposal =
-            PromotionProposal::new(&record([3; 32]), [4; 32], report.clone()).expect("proposal");
+        let proposal = PromotionProposal::new(&record([3; 32]), "proj", [4; 32], report.clone())
+            .expect("proposal");
         assert_eq!(proposal.gate_report_digest(), report.digest());
         assert_eq!(proposal.split_lock(), SplitLock::from_digest([5; 32]));
         assert_eq!(proposal.artifact_sha256(), [3; 32]);
@@ -223,14 +265,14 @@ mod tests {
     fn a_subject_for_another_artifact_or_base_is_refused() {
         let other_artifact = bound(Some(0.7), subject([8; 32], [4; 32]));
         assert_eq!(
-            PromotionProposal::new(&record([3; 32]), [4; 32], other_artifact),
+            PromotionProposal::new(&record([3; 32]), "proj", [4; 32], other_artifact),
             Err(LineageError::SubjectMismatch {
                 field: "artifact digest"
             })
         );
         let other_base = bound(Some(0.7), subject([3; 32], [8; 32]));
         assert_eq!(
-            PromotionProposal::new(&record([3; 32]), [4; 32], other_base),
+            PromotionProposal::new(&record([3; 32]), "proj", [4; 32], other_base),
             Err(LineageError::SubjectMismatch {
                 field: "base model digest"
             })
@@ -243,7 +285,7 @@ mod tests {
         other.id = AdapterId::from("a2");
         let report = bound(Some(0.7), subject([3; 32], [4; 32]));
         assert_eq!(
-            PromotionProposal::new(&other, [4; 32], report),
+            PromotionProposal::new(&other, "proj", [4; 32], report),
             Err(LineageError::SubjectMismatch { field: "adapter" })
         );
     }
@@ -262,7 +304,7 @@ mod tests {
             .expect("evaluates")
             .bind(subject([3; 32], [4; 32]));
         assert_eq!(
-            PromotionProposal::new(&record([3; 32]), [4; 32], report),
+            PromotionProposal::new(&record([3; 32]), "proj", [4; 32], report),
             Err(LineageError::GateFailed { id: "a1".into() })
         );
     }
@@ -272,7 +314,8 @@ mod tests {
         let report = bound(None, subject([3; 32], [4; 32]));
         let decoded =
             BoundGateReport::decode_canonical(&report.encode_canonical()).expect("decode");
-        assert_eq!(decoded, report);
+        assert_eq!(decoded.encode_canonical(), report.encode_canonical());
+        assert_eq!(decoded.digest(), report.digest());
     }
 
     #[test]
@@ -289,5 +332,53 @@ mod tests {
                 )
                 .is_err());
         }
+    }
+
+    #[test]
+    fn a_passing_report_from_the_plain_evaluate_path_cannot_justify_a_promotion() {
+        // The old path takes a serving score that cannot be absent; a placeholder passes.
+        let report = gate()
+            .evaluate(
+                &AdapterId::from("a1"),
+                &matrix(),
+                crate::PublicSuite {
+                    serving: 0.0,
+                    candidate: 0.7,
+                },
+            )
+            .expect("evaluates")
+            .bind(subject([3; 32], [4; 32]));
+        assert!(report.passed());
+        assert_eq!(
+            PromotionProposal::new(&record([3; 32]), "proj", [4; 32], report),
+            Err(LineageError::BaselineNotChecked { id: "a1".into() })
+        );
+    }
+
+    #[test]
+    fn a_decoded_report_cannot_justify_a_promotion() {
+        let report = bound(Some(0.7), subject([3; 32], [4; 32]));
+        let decoded =
+            BoundGateReport::decode_canonical(&report.encode_canonical()).expect("decode");
+        assert_eq!(
+            PromotionProposal::new(&record([3; 32]), "proj", [4; 32], decoded),
+            Err(LineageError::BaselineNotChecked { id: "a1".into() })
+        );
+    }
+
+    #[test]
+    fn a_report_evaluated_for_another_project_is_refused() {
+        let report = bound(Some(0.7), subject([3; 32], [4; 32]));
+        assert_eq!(
+            PromotionProposal::new(&record([3; 32]), "other-project", [4; 32], report),
+            Err(LineageError::SubjectMismatch {
+                field: "operation id (project)"
+            })
+        );
+        assert_ne!(
+            promotion_operation_id("a", "bc"),
+            promotion_operation_id("ab", "c"),
+            "the parts are length-prefixed"
+        );
     }
 }

@@ -190,9 +190,20 @@ pub struct GateReport {
     /// Digest of the gate configuration that produced this verdict, stored by
     /// [`ForgettingGate::evaluate`] so a report cannot be bound to another gate.
     gate_config_digest: [u8; 32],
+    /// Whether [`ForgettingGate::evaluate_promotion`] produced this report. It is not part of
+    /// the canonical encoding or the digest, so a decoded report never has it: a promotion is
+    /// justified only by a report evaluated here, in this process.
+    promotion_evaluated: bool,
 }
 
 impl GateReport {
+    /// Whether this report came from [`ForgettingGate::evaluate_promotion`], the one path that
+    /// can say a baseline is missing. A report from [`ForgettingGate::evaluate`] (whose serving
+    /// score cannot be absent) or one decoded from bytes is not, and cannot justify a promotion.
+    pub fn promotion_evaluated(&self) -> bool {
+        self.promotion_evaluated
+    }
+
     /// The adapter named when this report was evaluated.
     pub fn adapter(&self) -> &AdapterId {
         &self.adapter
@@ -285,6 +296,11 @@ impl BoundGateReport {
 
     pub fn passed(&self) -> bool {
         self.report.passed()
+    }
+
+    /// See [`GateReport::promotion_evaluated`].
+    pub fn promotion_evaluated(&self) -> bool {
+        self.report.promotion_evaluated()
     }
 
     /// SHA-256 over the domain tag, the subject, the gate configuration
@@ -537,6 +553,7 @@ impl BoundGateReport {
             adapter: AdapterId(adapter),
             violations,
             gate_config_digest,
+            promotion_evaluated: false,
         }
         .bind(subject);
         if passed != u8::from(report.passed()) {
@@ -657,7 +674,13 @@ impl ForgettingGate {
         matrix: &AccuracyMatrix,
         public: PublicSuite,
     ) -> Result<GateReport, LineageError> {
-        self.evaluate_scores(adapter, matrix, Some(public.serving), public.candidate)
+        self.evaluate_scores(
+            adapter,
+            matrix,
+            Some(public.serving),
+            public.candidate,
+            false,
+        )
     }
 
     /// Like [`ForgettingGate::evaluate`] for a promotion, whose serving baseline may be
@@ -673,7 +696,7 @@ impl ForgettingGate {
         matrix: &AccuracyMatrix,
         suite: PromotionSuite,
     ) -> Result<GateReport, LineageError> {
-        self.evaluate_scores(adapter, matrix, suite.serving, suite.candidate)
+        self.evaluate_scores(adapter, matrix, suite.serving, suite.candidate, true)
     }
 
     fn evaluate_scores(
@@ -682,6 +705,7 @@ impl ForgettingGate {
         matrix: &AccuracyMatrix,
         serving: Option<f64>,
         candidate: f64,
+        promotion_evaluated: bool,
     ) -> Result<GateReport, LineageError> {
         self.check()?;
         let gate_config_digest = self.config_digest()?;
@@ -730,6 +754,7 @@ impl ForgettingGate {
             adapter: adapter.clone(),
             violations,
             gate_config_digest,
+            promotion_evaluated,
         })
     }
 }

@@ -49,10 +49,12 @@ pub const MAX_QUEUE_CAPACITY: usize = 65_536;
 /// The longest a request may be held back for company, in milliseconds.
 pub const MAX_WAIT_LIMIT_MILLIS: u64 = 10_000;
 
-/// What requests must share to run in one batch: the same adapter, the same principal and the
-/// same generation of both.
+/// What requests must share to run in one batch: the same project, adapter, principal and
+/// generation. The project is part of the key because adapter names are only unique within a
+/// project: two projects' adapters of one name must never share a batch or a gate answer.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct BatchKey {
+    pub project: Option<String>,
     pub adapter: Option<String>,
     pub principal: Option<String>,
     pub generation: Generation,
@@ -62,6 +64,7 @@ impl BatchKey {
     /// The key of a request that names no adapter and no principal.
     pub fn unscoped() -> Self {
         Self {
+            project: None,
             adapter: None,
             principal: None,
             generation: Generation(0),
@@ -183,19 +186,10 @@ impl BatchClock for SystemClock {
 }
 
 /// Whether a batch under `key` may still run. Asked immediately before every model call; the
-/// host answers it from its lifecycle authority.
+/// host answers it from its lifecycle authority. A key that names an adapter is never served
+/// without a gate: a batcher built without one refuses it.
 pub trait BatchGate: Send + Sync {
     fn admits(&self, key: &BatchKey) -> bool;
-}
-
-/// A gate that admits everything: for a backend with no adapters.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct AdmitAll;
-
-impl BatchGate for AdmitAll {
-    fn admits(&self, _key: &BatchKey) -> bool {
-        true
-    }
 }
 
 /// A backend that can run several requests in one call.
@@ -275,7 +269,7 @@ struct State {
 struct Shared<B> {
     backend: Arc<B>,
     clock: Arc<dyn BatchClock>,
-    gate: Arc<dyn BatchGate>,
+    gate: Option<Arc<dyn BatchGate>>,
     state: Mutex<State>,
     wake: Condvar,
     counters: Counters,
@@ -309,12 +303,13 @@ impl<B: BatchInferenceBackend + 'static> fmt::Debug for AdaptiveBatcher<B> {
 }
 
 impl<B: BatchInferenceBackend + 'static> AdaptiveBatcher<B> {
-    /// A batcher on the system clock that admits every key.
+    /// A batcher on the system clock with no gate: it serves only keys that name no adapter and
+    /// refuses a key that does ([`ModelError::revoked`]), because nothing vouches for it.
     ///
     /// # Errors
     /// As [`AdaptiveBatcher::with_parts`].
     pub fn new(backend: Arc<B>, policy: BatchPolicy) -> Result<Self, BatchError> {
-        Self::with_parts(backend, policy, Arc::new(SystemClock), Arc::new(AdmitAll))
+        Self::with_parts(backend, policy, Arc::new(SystemClock), None)
     }
 
     /// # Errors
@@ -323,7 +318,7 @@ impl<B: BatchInferenceBackend + 'static> AdaptiveBatcher<B> {
         backend: Arc<B>,
         policy: BatchPolicy,
         clock: Arc<dyn BatchClock>,
-        gate: Arc<dyn BatchGate>,
+        gate: Option<Arc<dyn BatchGate>>,
     ) -> Result<Self, BatchError> {
         policy.validate()?;
         let shared = Arc::new(Shared {
@@ -361,6 +356,10 @@ impl<B: BatchInferenceBackend + 'static> AdaptiveBatcher<B> {
         admission: BatchAdmission,
     ) -> Result<Vec<ModelEvent>, ModelError> {
         let counters = &self.shared.counters;
+        if admission.key.adapter.is_some() && self.shared.gate.is_none() {
+            bump(&counters.revoked, 1);
+            return Err(ModelError::revoked());
+        }
         let now = self.shared.clock.now().0;
         let deadline = admission.deadline.map(|deadline| deadline.0);
         if deadline.is_some_and(|deadline| deadline <= now) {
@@ -450,8 +449,15 @@ impl<B: BatchInferenceBackend + ResumableInferenceBackend + 'static> ResumableIn
     for AdaptiveBatcher<B>
 {
     /// A resume carries its whole observation, so it is not batched: it goes straight to the
-    /// backend.
+    /// backend, after the gate (if there is one) has admitted the unscoped key, so a host that
+    /// has closed the gate stops resumes too.
     fn resume(&self, request: &ModelResumeRequest) -> Result<Vec<ModelEvent>, ModelError> {
+        if let Some(gate) = &self.shared.gate {
+            if !gate.admits(&BatchKey::unscoped()) {
+                bump(&self.shared.counters.revoked, 1);
+                return Err(ModelError::revoked());
+            }
+        }
         self.shared.backend.resume(request)
     }
 }
@@ -508,10 +514,12 @@ fn run_worker<B: BatchInferenceBackend + 'static>(shared: &Shared<B>) {
 
 fn run_batch<B: BatchInferenceBackend + 'static>(shared: &Shared<B>, batch: Vec<Entry<Job>>) {
     let counters = &shared.counters;
-    // Asked for every batch, at the moment of use.
-    let admitted = batch
-        .first()
-        .is_some_and(|first| shared.gate.admits(&first.key));
+    // Asked for every batch, at the moment of use. Without a gate only a key that names no
+    // adapter can have been queued; anything else is refused here as well.
+    let admitted = batch.first().is_some_and(|first| match &shared.gate {
+        Some(gate) => gate.admits(&first.key),
+        None => first.key.adapter.is_none(),
+    });
     if !admitted {
         bump(&counters.revoked, batch.len());
         for entry in batch {

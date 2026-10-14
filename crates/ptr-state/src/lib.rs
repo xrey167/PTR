@@ -401,7 +401,9 @@ pub fn projection_entries(committed: &CommittedEvent) -> Vec<(String, String)> {
             generation,
             ..
         } => vec![(
-            format!("revoked:ptr-adapter:{project}/{adapter}"),
+            // One row per revoked generation, so revoking generation 3 and then 2 leaves 3
+            // revoked: the runtime and ptr-pg keep a set of (key, generation) tombstones.
+            format!("revoked:ptr-adapter:{project}/{adapter}:{}", generation.0),
             generation.0.to_string(),
         )],
         // The cycle count is derived from the ledger by the runtime; the projection keeps no

@@ -195,6 +195,7 @@ mod tests {
 
     fn key(adapter: &str) -> BatchKey {
         BatchKey {
+            project: None,
             adapter: Some(adapter.into()),
             principal: None,
             generation: Generation(1),

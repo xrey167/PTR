@@ -26,7 +26,8 @@
 //! adapter or improvement-cycle state exists ([`AdapterError::CompactionUnsupported`]).
 //!
 //! **Improvement cycles (Invariants 8, 12).** A self-improvement cycle is admitted by
-//! [`PtrRuntime::begin_improvement_cycle`] against an [`ImprovementCycleBudget`] and ends in
+//! [`PtrRuntime::begin_improvement_cycle`] against an [`ImprovementCycleBudget`], on the day the
+//! runtime's [`CycleClock`] reports (the caller does not choose it), and ends in
 //! one [`LedgerEvent::ImprovementCycleRecorded`], completed or aborted. The count of a day is
 //! the number of events committed for it plus the cycles admitted and not yet recorded, so an
 //! aborted cycle and a cycle still running spend budget like a completed one, and the count is
@@ -42,6 +43,7 @@ use ptr_types::{CommitIndex, Generation, ProjectId, Validity};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::Arc;
 
 /// The most `(project, adapter)` bindings the runtime keeps.
 pub const MAX_PROMOTED_ADAPTERS: usize = 4096;
@@ -87,12 +89,14 @@ pub enum AdapterError {
     NoImprovementBudget,
     /// The day's budget is spent.
     BudgetExhausted(BudgetExhausted),
-    /// The cycle day is earlier than a day already recorded for the project. A clock that went
-    /// backwards must not hand out a fresh budget.
-    ClockRegressed {
-        recorded_day: u64,
-        requested_day: u64,
-    },
+    /// The clock's day is earlier than a day the project already has a cycle admitted or
+    /// recorded for (its high-water day). A clock that went back, or a history from the
+    /// future, must not hand out a fresh budget.
+    ClockRegressed { high_water_day: u64, today: u64 },
+    /// The runtime's cycle clock cannot say what day it is, or none was configured.
+    ClockUnavailable,
+    /// The proposal was evaluated for another project than the one the promotion names.
+    ProjectMismatch { expected: String, actual: String },
     /// The runtime already tracks [`MAX_TRACKED_CYCLE_PROJECTS`] projects.
     TooManyCycleProjects { limit: usize },
     /// The policy digest of a cycle is all zero.
@@ -172,12 +176,31 @@ pub struct ImprovementCycleTicket {
     policy_digest: [u8; 32],
 }
 
-/// A request to admit one improvement cycle.
+/// What day it is, as the runtime's improvement budget counts days: whole days since the Unix
+/// epoch. The caller of a cycle does not choose the day; the runtime reads this clock, so a
+/// caller cannot count upwards to get a fresh budget or go back to an old one. `None` means the
+/// clock cannot be read, and then no cycle is admitted.
+pub trait CycleClock: Send + Sync + fmt::Debug {
+    fn today(&self) -> Option<u64>;
+}
+
+/// Days since the Unix epoch on the system clock; `None` when the clock is before the epoch.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SystemCycleClock;
+
+impl CycleClock for SystemCycleClock {
+    fn today(&self) -> Option<u64> {
+        let elapsed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?;
+        Some(elapsed.as_secs() / 86_400)
+    }
+}
+
+/// A request to admit one improvement cycle. The day is the runtime clock's.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BeginImprovementCycle {
     pub project: ProjectId,
-    /// Days since the Unix epoch, from the host's clock.
-    pub day: u64,
     /// Digest of the improvement policy the cycle runs under.
     pub policy_digest: [u8; 32],
 }
@@ -195,7 +218,11 @@ pub(crate) struct AdapterProjection {
     promoted: BTreeMap<String, PromotedAdapter>,
     cycle_days: BTreeMap<String, CycleDay>,
     open_cycles: BTreeMap<(String, u64), u32>,
+    /// The latest day a project has a cycle admitted or recorded for. A cycle is refused on any
+    /// earlier day, so the open counts of earlier days can be dropped without opening a way back.
+    high_water: BTreeMap<String, u64>,
     budget: Option<ImprovementCycleBudget>,
+    clock: Option<Arc<dyn CycleClock>>,
 }
 
 impl AdapterProjection {
@@ -256,6 +283,13 @@ impl PtrRuntime {
             generation,
             artifact,
         } = request;
+        if proposal.project() != project.0 {
+            return Err(AdapterError::ProjectMismatch {
+                expected: proposal.project().to_owned(),
+                actual: project.0,
+            }
+            .into());
+        }
         let report = proposal.report();
         if !report.passed()
             || report
@@ -367,10 +401,16 @@ impl PtrRuntime {
         Ok(binding)
     }
 
-    /// Set the number of improvement cycles admitted per day. Host configuration, not history:
-    /// a runtime rebuilt from its log has none, and none admits no cycle.
-    pub fn set_improvement_budget(&mut self, budget: ImprovementCycleBudget) {
+    /// Set the number of improvement cycles admitted per day and the clock that says what day it
+    /// is. Host configuration, not history: a runtime rebuilt from its log has neither, and
+    /// without them no cycle is admitted.
+    pub fn set_improvement_budget(
+        &mut self,
+        budget: ImprovementCycleBudget,
+        clock: Arc<dyn CycleClock>,
+    ) {
         self.adapters.budget = Some(budget);
+        self.adapters.clock = Some(clock);
     }
 
     /// Cycles counted against `day` of `project`: committed ones plus admitted ones not yet
@@ -392,24 +432,27 @@ impl PtrRuntime {
     ) -> Result<ImprovementCycleTicket, RuntimeError> {
         let BeginImprovementCycle {
             project,
-            day,
             policy_digest,
         } = request;
-        let Some(budget) = self.adapters.budget else {
+        let (Some(budget), Some(clock)) = (self.adapters.budget, self.adapters.clock.clone())
+        else {
             return Err(AdapterError::NoImprovementBudget.into());
         };
         if policy_digest == [0; 32] {
             return Err(AdapterError::ZeroPolicyDigest.into());
         }
-        match self.adapters.cycle_days.get(&project.0) {
-            Some(latest) if day < latest.day => {
+        let Some(day) = clock.today() else {
+            return Err(AdapterError::ClockUnavailable.into());
+        };
+        match self.adapters.high_water.get(&project.0) {
+            Some(high_water) if day < *high_water => {
                 return Err(AdapterError::ClockRegressed {
-                    recorded_day: latest.day,
-                    requested_day: day,
+                    high_water_day: *high_water,
+                    today: day,
                 }
                 .into());
             }
-            None if self.adapters.cycle_days.len() >= MAX_TRACKED_CYCLE_PROJECTS => {
+            None if self.adapters.high_water.len() >= MAX_TRACKED_CYCLE_PROJECTS => {
                 return Err(AdapterError::TooManyCycleProjects {
                     limit: MAX_TRACKED_CYCLE_PROJECTS,
                 }
@@ -420,10 +463,6 @@ impl PtrRuntime {
         budget
             .check_budget(day, self.adapters.used(&project.0, day))
             .map_err(AdapterError::BudgetExhausted)?;
-        // Open counts of earlier days no longer matter for any admissible day.
-        self.adapters
-            .open_cycles
-            .retain(|(open_project, open_day), _| open_project != &project.0 || *open_day >= day);
         // The open table is bounded like the recorded one, and before it grows.
         let open_key = (project.0.clone(), day);
         if !self.adapters.open_cycles.contains_key(&open_key)
@@ -434,6 +473,12 @@ impl PtrRuntime {
             }
             .into());
         }
+        // Nothing can fail from here. Earlier days are refused from now on (the high-water day
+        // moves to today), so their open counts can no longer matter and are dropped.
+        self.adapters.high_water.insert(project.0.clone(), day);
+        self.adapters
+            .open_cycles
+            .retain(|(open_project, open_day), _| open_project != &project.0 || *open_day >= day);
         let open = self.adapters.open_cycles.entry(open_key).or_insert(0);
         *open = open.saturating_add(1);
         Ok(ImprovementCycleTicket {
@@ -566,6 +611,12 @@ impl PtrRuntime {
                     .insert((adapter_key(project, adapter), *generation));
             }
             LedgerEvent::ImprovementCycleRecorded { project, day, .. } => {
+                let high_water = self
+                    .adapters
+                    .high_water
+                    .entry(project.0.clone())
+                    .or_insert(0);
+                *high_water = (*high_water).max(*day);
                 let latest = self
                     .adapters
                     .cycle_days

@@ -1602,7 +1602,7 @@ impl PtrRuntime {
         let raw_taint = self.input_kv_taint(&request_id, &raw_text);
         let _revision = self.ingest_text(request_id.clone(), raw_text)?;
         let model_run = infer(self.snapshot().semantic_context())
-            .map_err(|error| RuntimeError::Model(error.0))?;
+            .map_err(|error| RuntimeError::Model(error.message().to_owned()))?;
         // The only place a ModelRun becomes a ResumableRun (KV taint is recorded here).
         let run = self.ingest_model_run_with_input(&request_id, raw_taint, &model_run)?;
         if model_run
@@ -1656,7 +1656,7 @@ impl PtrRuntime {
                 semantic_context: self.snapshot().semantic_context(),
                 raw_text,
             })
-            .map_err(|error| RuntimeError::Model(error.0))?;
+            .map_err(|error| RuntimeError::Model(error.message().to_owned()))?;
         // Approximate input: the request, the generated text and every action are recorded
         // taint-first before the events are returned (and so before any Pod output of the
         // request can be promoted). Exact input appends nothing.

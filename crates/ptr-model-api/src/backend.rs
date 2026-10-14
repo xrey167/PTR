@@ -1,73 +1,125 @@
 use crate::{ModelEvent, ModelRequest, ModelResumeRequest};
 use ptr_types::{ActionIr, CapabilityId, Effect, Generation, TypeId};
+use std::fmt;
 
+/// What kind of failure a [`ModelError`] is. Routing decisions (failover) read the kind and
+/// never the message.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum ModelErrorKind {
+    /// A bounded queue was full; nothing was run.
+    Overloaded,
+    /// The request's deadline had passed before the model was called.
+    DeadlineExceeded,
+    /// The caller withdrew the request before the model was called.
+    Cancelled,
+    /// The adapter or principal generation the request was admitted under is no longer admitted,
+    /// or no gate vouches for it.
+    Revoked,
+    /// The backend was shut down.
+    Closed,
+    /// The backend failed for a reason that is not the request's (a panic, a malformed batch
+    /// answer, an unreachable replica).
+    BackendFailure,
+    /// Any other failure, including a refusal of the request itself (validation, policy). The
+    /// default of [`ModelError::new`].
+    Other,
+}
+
+/// A failed model call: a kind, which decides what may be done about it, and a message for
+/// people.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ModelError(pub String);
+pub struct ModelError {
+    kind: ModelErrorKind,
+    message: String,
+}
+
+impl fmt::Display for ModelError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ModelError {}
 
 impl ModelError {
-    const OVERLOADED: &'static str = "model backend overloaded";
-    const DEADLINE_EXCEEDED: &'static str = "request deadline exceeded";
-    const CANCELLED: &'static str = "request cancelled";
-    const REVOKED: &'static str = "adapter generation no longer admitted";
-    const CLOSED: &'static str = "model backend closed";
-    const BACKEND_FAILURE: &'static str = "model backend failed";
+    /// An error of kind [`ModelErrorKind::Other`]: it is not retried on another replica.
+    pub fn new(message: impl Into<String>) -> Self {
+        Self::with_kind(ModelErrorKind::Other, message)
+    }
 
-    /// A bounded queue was full; nothing was run.
+    pub fn with_kind(kind: ModelErrorKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+        }
+    }
+
+    pub fn kind(&self) -> ModelErrorKind {
+        self.kind
+    }
+
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
     pub fn overloaded() -> Self {
-        Self(Self::OVERLOADED.into())
+        Self::with_kind(ModelErrorKind::Overloaded, "model backend overloaded")
     }
 
-    /// The request's deadline had passed before the model was called.
     pub fn deadline_exceeded() -> Self {
-        Self(Self::DEADLINE_EXCEEDED.into())
+        Self::with_kind(
+            ModelErrorKind::DeadlineExceeded,
+            "request deadline exceeded",
+        )
     }
 
-    /// The caller withdrew the request before the model was called.
     pub fn cancelled() -> Self {
-        Self(Self::CANCELLED.into())
+        Self::with_kind(ModelErrorKind::Cancelled, "request cancelled")
     }
 
-    /// The adapter or principal generation the request was admitted under is no longer
-    /// admitted.
     pub fn revoked() -> Self {
-        Self(Self::REVOKED.into())
+        Self::with_kind(
+            ModelErrorKind::Revoked,
+            "adapter generation no longer admitted",
+        )
     }
 
-    /// The backend was shut down.
     pub fn closed() -> Self {
-        Self(Self::CLOSED.into())
+        Self::with_kind(ModelErrorKind::Closed, "model backend closed")
     }
 
-    /// The backend failed without a more specific reason (a panic or a malformed batch
-    /// answer).
     pub fn backend_failure() -> Self {
-        Self(Self::BACKEND_FAILURE.into())
+        Self::with_kind(ModelErrorKind::BackendFailure, "model backend failed")
     }
 
     pub fn is_overloaded(&self) -> bool {
-        self.0 == Self::OVERLOADED
+        self.kind == ModelErrorKind::Overloaded
     }
 
     pub fn is_deadline_exceeded(&self) -> bool {
-        self.0 == Self::DEADLINE_EXCEEDED
+        self.kind == ModelErrorKind::DeadlineExceeded
     }
 
     pub fn is_cancelled(&self) -> bool {
-        self.0 == Self::CANCELLED
+        self.kind == ModelErrorKind::Cancelled
     }
 
     pub fn is_revoked(&self) -> bool {
-        self.0 == Self::REVOKED
+        self.kind == ModelErrorKind::Revoked
     }
 
     pub fn is_closed(&self) -> bool {
-        self.0 == Self::CLOSED
+        self.kind == ModelErrorKind::Closed
     }
 
-    /// Whether trying the request on another replica is pointless or wrong: its deadline
-    /// passed, it was cancelled, its generation was revoked, or the backend is closed.
-    pub fn refuses_failover(&self) -> bool {
-        self.is_deadline_exceeded() || self.is_cancelled() || self.is_revoked() || self.is_closed()
+    /// Whether another replica may be tried: only for overload and for a backend failure, the
+    /// two kinds a different replica can change. Every other kind, a refusal of the request
+    /// itself included, ends the request.
+    pub fn allows_failover(&self) -> bool {
+        matches!(
+            self.kind,
+            ModelErrorKind::Overloaded | ModelErrorKind::BackendFailure
+        )
     }
 }
 

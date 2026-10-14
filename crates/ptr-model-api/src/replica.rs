@@ -5,14 +5,16 @@
 //! be tried on up to `max_failover` others, each at most once. Counters per replica say how
 //! many calls reached it, how many failed and how many were failovers onto it.
 //!
-//! **Which failures fail over.** Only the ones another replica can change: overload and a
-//! backend failure. A deadline that passed, a cancellation, a revoked generation and a closed
-//! replica end the request (see [`ModelError::refuses_failover`]): retrying them elsewhere
-//! would spend work on an answer nobody can use, or step around a refusal that was the point.
+//! **Which failures fail over.** An allowlist, not a denylist: only overload and a backend
+//! failure ([`ModelError::allows_failover`]), the two kinds another replica can change. A
+//! refusal of the request itself (validation, policy, kind `Other`), a passed deadline, a
+//! cancellation, a revoked generation and a closed replica end the request. The kind is a typed
+//! field of the error; the message is never read.
 //!
-//! **Replicas must be interchangeable.** `resume` may land on another replica than the `infer`
-//! it continues, which is correct only because a resume request carries its whole observation.
-//! A replica that keeps state between the two does not belong behind this router.
+//! **Resume does not fail over by default.** A `resume` continues a run that started on some
+//! replica; whether another replica may take it over is a property of the replicas, so it is
+//! chosen explicitly with [`ResumeFailover::Interchangeable`], and
+//! [`ResumeFailover::Never`] tries the rotation's replica once.
 
 use crate::{
     InferenceBackend, ModelError, ModelEvent, ModelRequest, ModelResumeRequest,
@@ -57,6 +59,24 @@ impl fmt::Display for ReplicaError {
 
 impl std::error::Error for ReplicaError {}
 
+/// Whether a `resume` may be retried on another replica.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ResumeFailover {
+    /// One replica, one try.
+    Never,
+    /// The replicas are interchangeable for a resume (it carries its whole observation), so it
+    /// fails over like `infer`.
+    Interchangeable,
+}
+
+/// How a router fails over.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ReplicaPolicy {
+    /// The most replicas, other than the first, one `infer` may be tried on.
+    pub max_failover: u8,
+    pub resume: ResumeFailover,
+}
+
 /// Counters of one replica since the router was built.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ReplicaStats {
@@ -84,7 +104,7 @@ struct Replica {
 pub struct ReplicaRouter {
     replicas: Vec<Replica>,
     next: AtomicUsize,
-    max_failover: u8,
+    policy: ReplicaPolicy,
 }
 
 impl fmt::Debug for ReplicaRouter {
@@ -92,7 +112,7 @@ impl fmt::Debug for ReplicaRouter {
         formatter
             .debug_struct("ReplicaRouter")
             .field("replicas", &self.replicas.len())
-            .field("max_failover", &self.max_failover)
+            .field("policy", &self.policy)
             .finish_non_exhaustive()
     }
 }
@@ -103,8 +123,9 @@ impl ReplicaRouter {
     /// is not below the replica count.
     pub fn new(
         replicas: Vec<Arc<dyn ResumableInferenceBackend>>,
-        max_failover: u8,
+        policy: ReplicaPolicy,
     ) -> Result<Self, ReplicaError> {
+        let max_failover = policy.max_failover;
         if replicas.is_empty() {
             return Err(ReplicaError::NoReplicas);
         }
@@ -129,7 +150,7 @@ impl ReplicaRouter {
                 })
                 .collect(),
             next: AtomicUsize::new(0),
-            max_failover,
+            policy,
         })
     }
 
@@ -148,11 +169,12 @@ impl ReplicaRouter {
 
     fn route<T>(
         &self,
+        max_failover: u8,
         call: impl Fn(&dyn ResumableInferenceBackend) -> Result<T, ModelError>,
     ) -> Result<T, ModelError> {
         let start = self.next.fetch_add(1, Ordering::Relaxed) % self.replicas.len();
         let mut last_error = ModelError::backend_failure();
-        for step in 0..=usize::from(self.max_failover) {
+        for step in 0..=usize::from(max_failover) {
             let replica = &self.replicas[(start + step) % self.replicas.len()];
             replica.counters.attempts.fetch_add(1, Ordering::Relaxed);
             if step > 0 {
@@ -162,7 +184,7 @@ impl ReplicaRouter {
                 Ok(value) => return Ok(value),
                 Err(error) => {
                     replica.counters.failures.fetch_add(1, Ordering::Relaxed);
-                    if error.refuses_failover() {
+                    if !error.allows_failover() {
                         return Err(error);
                     }
                     last_error = error;
@@ -179,12 +201,16 @@ impl InferenceBackend for ReplicaRouter {
     }
 
     fn infer(&self, request: &ModelRequest) -> Result<Vec<ModelEvent>, ModelError> {
-        self.route(|backend| backend.infer(request))
+        self.route(self.policy.max_failover, |backend| backend.infer(request))
     }
 }
 
 impl ResumableInferenceBackend for ReplicaRouter {
     fn resume(&self, request: &ModelResumeRequest) -> Result<Vec<ModelEvent>, ModelError> {
-        self.route(|backend| backend.resume(request))
+        let max_failover = match self.policy.resume {
+            ResumeFailover::Never => 0,
+            ResumeFailover::Interchangeable => self.policy.max_failover,
+        };
+        self.route(max_failover, |backend| backend.resume(request))
     }
 }

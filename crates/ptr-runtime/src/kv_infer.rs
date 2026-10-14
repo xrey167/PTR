@@ -367,7 +367,7 @@ impl From<TokenContractError> for ReferenceKvError {
 
 impl From<ReferenceKvError> for ModelError {
     fn from(error: ReferenceKvError) -> Self {
-        ModelError(error.to_string())
+        ModelError::new(error.to_string())
     }
 }
 

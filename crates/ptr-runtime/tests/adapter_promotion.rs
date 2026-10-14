@@ -2,10 +2,15 @@
 //! generation order, project scoping, revocation at every use, replay and the closed write path.
 mod adapter_support;
 
-use adapter_support::{digest, proposal, proposal_with_baseline, SPLITS, WEIGHTS};
+use adapter_support::{
+    base_digest, digest, proposal, proposal_for, proposal_with_baseline, record, SPLITS, WEIGHTS,
+};
 use ptr_config::PtrConfig;
 use ptr_ledger::LedgerEvent;
-use ptr_lineage::{LineageError, SplitLock};
+use ptr_lineage::{
+    AccuracyMatrix, AdapterId, ForgettingGate, GateSubject, LineageError, PromotionProposal,
+    PublicSuite, SplitLock,
+};
 use ptr_runtime::adapter::{AdapterError, PromoteAdapter, RevokeAdapter};
 use ptr_runtime::{PtrRuntime, RuntimeError};
 use ptr_types::{CapsuleId, Generation, ProjectId, Validity};
@@ -237,8 +242,13 @@ fn another_projects_adapter_of_the_same_name_is_neither_served_nor_revoked() {
 #[test]
 fn the_lifecycle_key_cannot_be_forged_through_a_name_with_a_slash() {
     let mut runtime = runtime();
-    let mut forged = request("coder", 1, WEIGHTS);
-    forged.project = project("alpha/coder");
+    let forged = PromoteAdapter {
+        project: project("alpha/coder"),
+        proposal: proposal_for("alpha/coder", "coder", WEIGHTS, Some(0.7)).expect("proposal"),
+        frozen_splits: SplitLock::of_manifest(SPLITS),
+        generation: Generation(1),
+        artifact: WEIGHTS,
+    };
     assert!(matches!(
         runtime.promote_adapter(forged),
         Err(RuntimeError::Ledger(_))
@@ -291,4 +301,55 @@ fn a_promotion_request_prints_no_weights() {
     let printed = format!("{:?}", request("coder", 1, WEIGHTS));
     assert!(printed.contains("artifact_len"));
     assert!(!printed.contains("adapter weights"));
+}
+
+#[test]
+fn a_proposal_evaluated_for_another_project_is_refused_and_appends_nothing() {
+    let mut runtime = runtime();
+    let mut other = request("coder", 1, WEIGHTS);
+    other.project = project("beta");
+    assert_eq!(
+        runtime.promote_adapter(other),
+        Err(RuntimeError::Adapter(AdapterError::ProjectMismatch {
+            expected: "alpha".into(),
+            actual: "beta".into(),
+        }))
+    );
+    assert!(runtime.committed_events().is_empty());
+}
+
+#[test]
+fn a_report_from_the_plain_evaluate_path_cannot_become_a_proposal() {
+    // evaluate cannot say a baseline is missing: a placeholder serving score passes. Such a
+    // report is refused as a promotion's justification, whatever its subject says.
+    let gate = ForgettingGate {
+        max_average_forgetting: 0.1,
+        max_task_forgetting: 0.2,
+        min_backward_transfer: -0.05,
+        max_public_regression: 0.02,
+    };
+    let matrix = AccuracyMatrix::new(vec![vec![0.9, 0.0], vec![0.9, 0.8]]).expect("matrix");
+    let subject = GateSubject::new(
+        [1; 32],
+        ptr_lineage::promotion_operation_id("alpha", "coder"),
+        digest(WEIGHTS),
+        base_digest(),
+        SplitLock::of_manifest(SPLITS).sha256(),
+    );
+    let report = gate
+        .evaluate(
+            &AdapterId::from("coder"),
+            &matrix,
+            PublicSuite {
+                serving: 0.0,
+                candidate: 0.7,
+            },
+        )
+        .expect("evaluates")
+        .bind(subject);
+    assert!(report.passed());
+    assert_eq!(
+        PromotionProposal::new(&record("coder", WEIGHTS), "alpha", base_digest(), report),
+        Err(LineageError::BaselineNotChecked { id: "coder".into() })
+    );
 }

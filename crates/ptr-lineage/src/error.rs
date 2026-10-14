@@ -42,6 +42,9 @@ pub enum LineageError {
     GateFailed { id: String },
     /// A promotion was evaluated without a serving baseline on the public suite.
     MissingBaseline { id: String },
+    /// A promotion was offered a report that did not come from `evaluate_promotion` (one from
+    /// `evaluate`, or one decoded from bytes), so nothing shows its baseline was checked.
+    BaselineNotChecked { id: String },
     /// A promotion proposal's gate subject names another artifact, base model or adapter than
     /// the one proposed.
     SubjectMismatch { field: &'static str },
@@ -75,6 +78,7 @@ impl LineageError {
             Self::GateFailed { .. } => "PTR_LINEAGE_GATE_FAILED",
             Self::MissingBaseline { .. } => "PTR_LINEAGE_MISSING_BASELINE",
             Self::SubjectMismatch { .. } => "PTR_LINEAGE_SUBJECT_MISMATCH",
+            Self::BaselineNotChecked { .. } => "PTR_LINEAGE_BASELINE_NOT_CHECKED",
             Self::HeldOutSample { .. } => "PTR_LINEAGE_HELD_OUT_SAMPLE",
             Self::DuplicateSample { .. } => "PTR_LINEAGE_DUPLICATE_SAMPLE",
             Self::UnknownSample { .. } => "PTR_LINEAGE_UNKNOWN_SAMPLE",
@@ -119,6 +123,10 @@ impl fmt::Display for LineageError {
             Self::MissingBaseline { id } => write!(
                 formatter,
                 "adapter {id:?} was evaluated without a serving baseline"
+            ),
+            Self::BaselineNotChecked { id } => write!(
+                formatter,
+                "adapter {id:?}: the report was not evaluated by evaluate_promotion"
             ),
             Self::SubjectMismatch { field } => {
                 write!(formatter, "gate subject {field} is not the proposed one")

@@ -20,10 +20,13 @@ not let that pass as evidence:
   generations, which is when the in-sample fit is arithmetic.
 * A policy that asks for a level of a decision the history never showed is flagged
   ``extrapolation``. A winner that extrapolates aborts the selection.
-* ``predictive`` is true only if at least one generation was predicted out of sample with
-  every family within the pinned error bound. ``pipeline_ran`` says only that the backtest
-  completed; it is a different claim and is reported separately. No policy is selected from a
-  history that is not ``predictive``.
+* ``predictive`` is true only if at least ``min_within_bound`` generations were predicted out of
+  sample with every family within the pinned error bound, and those are at least
+  ``min_within_fraction`` of the generations that could be predicted at all. Both numbers are
+  pinned with the error bound before the first run; a single lucky generation among many bad
+  ones is not predictive. ``pipeline_ran`` says only that the backtest completed; it is a
+  different claim and is reported separately. No policy is selected from a history that is not
+  ``predictive``.
 
 Dreams are estimates, never evidence: a real training run is the only thing that measures an
 outcome.
@@ -305,6 +308,8 @@ class BacktestReport:
     parameters: int
     degenerate: bool
     error_bound: float
+    min_within_bound: int
+    min_within_fraction: float
     predicted: int
     within_bound: int
     max_abs_error: float | None
@@ -322,6 +327,10 @@ class BacktestReport:
             "parameters": self.parameters,
             "degenerate": self.degenerate,
             "error_bound": self.error_bound,
+            "predictive_rule": {
+                "min_within_bound": self.min_within_bound,
+                "min_within_fraction": self.min_within_fraction,
+            },
             "out_of_sample": {
                 "predicted": self.predicted,
                 "within_bound": self.within_bound,
@@ -337,17 +346,38 @@ class BacktestReport:
         }
 
 
-def backtest(pool: HistoryPool, *, error_bound: float) -> BacktestReport:
+def backtest(
+    pool: HistoryPool,
+    *,
+    error_bound: float,
+    min_within_bound: int,
+    min_within_fraction: float,
+) -> BacktestReport:
     """Leave each generation out and predict it from the rest.
 
     ``error_bound`` is the largest absolute rate error, per family, that still counts as a
-    prediction. It has no default: it is pinned by whoever preregisters the claim, before the
-    first run, and a pilot number is never a reason to change it.
+    prediction. ``min_within_bound`` is the fewest generations that must be predicted within it
+    and ``min_within_fraction`` the smallest share of the predictable generations they must
+    make up. None of the three has a default: they are pinned by whoever preregisters the
+    claim, before the first run, and a pilot number is never a reason to change them.
     """
     if isinstance(error_bound, bool) or not isinstance(error_bound, (int, float)):
         raise ValueError("error_bound must be a number")
     if not math.isfinite(error_bound) or not 0.0 < error_bound <= 1.0:
         raise ValueError("error_bound must be in (0, 1]")
+    if (
+        isinstance(min_within_bound, bool)
+        or not isinstance(min_within_bound, int)
+        or min_within_bound < 1
+    ):
+        raise ValueError("min_within_bound must be an int of at least 1")
+    if (
+        isinstance(min_within_fraction, bool)
+        or not isinstance(min_within_fraction, (int, float))
+        or not math.isfinite(min_within_fraction)
+        or not 0.0 < min_within_fraction <= 1.0
+    ):
+        raise ValueError("min_within_fraction must be in (0, 1]")
     if not pool.generations:
         raise HistoryError("the history pool is empty")
 
@@ -404,11 +434,15 @@ def backtest(pool: HistoryPool, *, error_bound: float) -> BacktestReport:
 
     return BacktestReport(
         pipeline_ran=True,
-        predictive=within >= 1,
+        predictive=(
+            within >= min_within_bound and within >= min_within_fraction * predicted
+        ),
         generations=len(pool.generations),
         parameters=parameters,
         degenerate=parameters >= len(full.generations),
         error_bound=float(error_bound),
+        min_within_bound=min_within_bound,
+        min_within_fraction=float(min_within_fraction),
         predicted=predicted,
         within_bound=within,
         max_abs_error=round(max(out_errors), 6) if out_errors else None,

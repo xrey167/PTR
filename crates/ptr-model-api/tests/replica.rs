@@ -4,11 +4,18 @@ mod common;
 
 use common::{request, resume_request, FlakyReplica};
 use ptr_model_api::{
-    InferenceBackend, ModelError, ModelEvent, ReplicaError, ReplicaRouter, ReplicaStats,
-    ResumableInferenceBackend, MAX_REPLICAS,
+    InferenceBackend, ModelError, ModelErrorKind, ModelEvent, ReplicaError, ReplicaPolicy,
+    ReplicaRouter, ReplicaStats, ResumableInferenceBackend, ResumeFailover, MAX_REPLICAS,
 };
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+
+fn policy(max_failover: u8) -> ReplicaPolicy {
+    ReplicaPolicy {
+        max_failover,
+        resume: ResumeFailover::Interchangeable,
+    }
+}
 
 fn router(replicas: &[Arc<FlakyReplica>], max_failover: u8) -> ReplicaRouter {
     ReplicaRouter::new(
@@ -16,7 +23,7 @@ fn router(replicas: &[Arc<FlakyReplica>], max_failover: u8) -> ReplicaRouter {
             .iter()
             .map(|r| Arc::clone(r) as Arc<dyn ResumableInferenceBackend>)
             .collect(),
-        max_failover,
+        policy(max_failover),
     )
     .expect("router")
 }
@@ -117,12 +124,12 @@ fn resume_rotates_and_fails_over_like_infer() {
 #[test]
 fn a_router_needs_replicas_within_bounds() {
     assert_eq!(
-        ReplicaRouter::new(Vec::new(), 0).err(),
+        ReplicaRouter::new(Vec::new(), policy(0)).err(),
         Some(ReplicaError::NoReplicas)
     );
     let one = healthy("a");
     assert_eq!(
-        ReplicaRouter::new(vec![one as Arc<dyn ResumableInferenceBackend>], 1).err(),
+        ReplicaRouter::new(vec![one as Arc<dyn ResumableInferenceBackend>], policy(1)).err(),
         Some(ReplicaError::FailoverExceedsReplicas {
             max_failover: 1,
             replicas: 1
@@ -132,7 +139,7 @@ fn a_router_needs_replicas_within_bounds() {
         .map(|_| healthy("x") as Arc<dyn ResumableInferenceBackend>)
         .collect();
     assert_eq!(
-        ReplicaRouter::new(many, 0).err(),
+        ReplicaRouter::new(many, policy(0)).err(),
         Some(ReplicaError::TooManyReplicas {
             limit: MAX_REPLICAS,
             actual: MAX_REPLICAS + 1
@@ -155,7 +162,7 @@ fn a_router_composes_over_an_adaptive_batcher() {
     .expect("batcher");
     let router = ReplicaRouter::new(
         vec![Arc::new(batcher) as Arc<dyn ResumableInferenceBackend>],
-        0,
+        policy(0),
     )
     .expect("router");
     let events = router.infer(&request("r0")).expect("served");
@@ -163,4 +170,79 @@ fn a_router_composes_over_an_adaptive_batcher() {
         events.first(),
         Some(&ModelEvent::Token("text of r0".into()))
     );
+}
+
+#[test]
+fn a_refusal_of_the_request_itself_is_not_repeated_on_another_replica() {
+    // Validation and policy errors are kind Other; so is any error built with ModelError::new.
+    for error in [
+        ModelError::new("request refused by policy"),
+        ModelError::with_kind(ModelErrorKind::Other, "invalid input"),
+    ] {
+        let first = Arc::new(FlakyReplica::new("a", 1, error.clone()));
+        let second = healthy("b");
+        let router = router(&[Arc::clone(&first), Arc::clone(&second)], 1);
+        assert_eq!(router.infer(&request("r0")), Err(error));
+        assert_eq!(second.calls.load(Ordering::SeqCst), 0, "no second try");
+    }
+}
+
+#[test]
+fn only_overload_and_backend_failure_fail_over() {
+    for kind in [ModelErrorKind::Overloaded, ModelErrorKind::BackendFailure] {
+        let first = Arc::new(FlakyReplica::new("a", 1, ModelError::with_kind(kind, "x")));
+        let router = router(&[first, healthy("b")], 1);
+        assert_eq!(label(router.infer(&request("r0")).expect("served")), "b");
+    }
+}
+
+#[test]
+fn a_message_that_looks_like_overload_does_not_make_an_error_fail_over() {
+    let lookalike = ModelError::new("model backend overloaded");
+    let second = healthy("b");
+    let router = router(
+        &[
+            Arc::new(FlakyReplica::new("a", 1, lookalike.clone())),
+            Arc::clone(&second),
+        ],
+        1,
+    );
+    assert_eq!(router.infer(&request("r0")), Err(lookalike));
+    assert_eq!(second.calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn resume_does_not_fail_over_unless_the_replicas_are_declared_interchangeable() {
+    let replicas = |failures| {
+        vec![
+            Arc::new(FlakyReplica::new(
+                "a",
+                failures,
+                ModelError::backend_failure(),
+            )) as Arc<dyn ResumableInferenceBackend>,
+            healthy("b") as Arc<dyn ResumableInferenceBackend>,
+        ]
+    };
+    let strict = ReplicaRouter::new(
+        replicas(1),
+        ReplicaPolicy {
+            max_failover: 1,
+            resume: ResumeFailover::Never,
+        },
+    )
+    .expect("router");
+    assert_eq!(
+        strict.resume(&resume_request("r0")),
+        Err(ModelError::backend_failure())
+    );
+    // infer still fails over under the same policy.
+    let still = ReplicaRouter::new(
+        replicas(1),
+        ReplicaPolicy {
+            max_failover: 1,
+            resume: ResumeFailover::Never,
+        },
+    )
+    .expect("router");
+    assert_eq!(label(still.infer(&request("r0")).expect("served")), "b");
 }

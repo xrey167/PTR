@@ -13,6 +13,9 @@ from ptr_training.replay import (
 )
 
 
+RULE = {"min_within_bound": 2, "min_within_fraction": 0.5}
+
+
 def outcome(rate_permille: int, family: str = "typed") -> dict[str, Outcome]:
     return {family: Outcome(correct=rate_permille, total=1000)}
 
@@ -91,7 +94,7 @@ class PoolTests(unittest.TestCase):
 
 class BacktestTests(unittest.TestCase):
     def test_a_linear_history_is_predicted_and_the_extrapolating_end_is_flagged(self):
-        report = backtest(linear_pool(), error_bound=0.01)
+        report = backtest(linear_pool(), error_bound=0.01, **RULE)
         self.assertTrue(report.pipeline_ran)
         self.assertTrue(report.predictive)
         # g0 has no level-zero generation left once it is held out, so it is not identified.
@@ -103,8 +106,25 @@ class BacktestTests(unittest.TestCase):
         self.assertTrue(last["predicted"])
         self.assertEqual(last["extrapolation"][0]["decision"], "x")
 
+    def test_one_good_generation_among_many_bad_ones_is_not_predictive(self):
+        # Under the old rule (at least one within the bound) this history was predictive.
+        pool = linear_pool((200, 300, 400, 800, 500))
+        loose = backtest(pool, error_bound=0.15, min_within_bound=1, min_within_fraction=0.01)
+        strict = backtest(pool, error_bound=0.15, min_within_bound=1, min_within_fraction=0.9)
+        self.assertGreaterEqual(loose.within_bound, 1)
+        self.assertLess(loose.within_bound, loose.predicted)
+        self.assertTrue(loose.predictive)
+        self.assertEqual((strict.predicted, strict.within_bound), (loose.predicted, loose.within_bound))
+        self.assertFalse(strict.predictive)
+
+    def test_too_few_generations_within_the_bound_is_not_predictive(self):
+        pool = linear_pool()
+        report = backtest(pool, error_bound=0.01, min_within_bound=4, min_within_fraction=0.5)
+        self.assertEqual(report.within_bound, 3)
+        self.assertFalse(report.predictive)
+
     def test_nothing_predicted_means_not_predictive_although_the_pipeline_ran(self):
-        report = backtest(research_pool(), error_bound=0.5)
+        report = backtest(research_pool(), error_bound=0.5, **RULE)
         self.assertTrue(report.pipeline_ran)
         self.assertFalse(report.predictive)
         self.assertEqual(report.predicted, 0)
@@ -121,32 +141,40 @@ class BacktestTests(unittest.TestCase):
         self.assertFalse(simulator.simulate({"a": 1})["typed"].identified)
 
     def test_predictions_outside_the_bound_are_not_predictive(self):
-        report = backtest(linear_pool((200, 300, 500, 900)), error_bound=0.01)
+        report = backtest(linear_pool((200, 300, 500, 900)), error_bound=0.01, **RULE)
         self.assertTrue(report.pipeline_ran)
         self.assertGreater(report.predicted, 0)
         self.assertEqual(report.within_bound, 0)
         self.assertFalse(report.predictive)
 
     def test_the_in_sample_fit_is_reported_but_flagged_degenerate(self):
-        report = backtest(linear_pool(), error_bound=0.01)
+        report = backtest(linear_pool(), error_bound=0.01, **RULE)
         self.assertEqual(report.in_sample_max_abs_error, 0.0)
         self.assertFalse(report.degenerate)
-        self.assertTrue(backtest(research_pool(), error_bound=0.5).degenerate)
+        self.assertTrue(backtest(research_pool(), error_bound=0.5, **RULE).degenerate)
 
     def test_the_error_bound_has_no_default_and_must_be_a_proper_fraction(self):
         pool = linear_pool()
         with self.assertRaises(TypeError):
             backtest(pool)  # type: ignore[call-arg]
+        with self.assertRaises(TypeError):
+            backtest(pool, error_bound=0.1)  # type: ignore[call-arg]
         for bound in (0, -0.1, 1.5, math.nan, math.inf, True, "0.1", None):
             with self.assertRaises(ValueError, msg=repr(bound)):
-                backtest(pool, error_bound=bound)
+                backtest(pool, error_bound=bound, **RULE)
+        for count in (0, -1, True, 1.5, None):
+            with self.assertRaises(ValueError, msg=repr(count)):
+                backtest(pool, error_bound=0.1, min_within_bound=count, min_within_fraction=0.5)
+        for fraction in (0, -0.5, 1.5, math.nan, True, None):
+            with self.assertRaises(ValueError, msg=repr(fraction)):
+                backtest(pool, error_bound=0.1, min_within_bound=1, min_within_fraction=fraction)
 
     def test_an_empty_history_is_refused(self):
         with self.assertRaises(HistoryError):
-            backtest(HistoryPool(), error_bound=0.1)
+            backtest(HistoryPool(), error_bound=0.1, **RULE)
 
     def test_the_report_serialises_both_claims_separately(self):
-        record = backtest(research_pool(), error_bound=0.5).to_dict()
+        record = backtest(research_pool(), error_bound=0.5, **RULE).to_dict()
         self.assertIs(record["pipeline_ran"], True)
         self.assertIs(record["predictive"], False)
         self.assertEqual(record["pool_fingerprint"], research_pool().fingerprint())
@@ -156,7 +184,7 @@ class WinnerTests(unittest.TestCase):
     def setUp(self):
         self.pool = linear_pool()
         self.simulator = ReplaySimulator(self.pool)
-        self.report = backtest(self.pool, error_bound=0.01)
+        self.report = backtest(self.pool, error_bound=0.01, **RULE)
 
     def test_the_best_identified_policy_in_the_observed_range_wins(self):
         winner = choose_winner(self.simulator, self.report, [{"x": 1}, {"x": 3}, {"x": 2}])
@@ -168,12 +196,12 @@ class WinnerTests(unittest.TestCase):
 
     def test_no_policy_is_chosen_from_a_history_that_is_not_predictive(self):
         pool = research_pool()
-        report = backtest(pool, error_bound=0.5)
+        report = backtest(pool, error_bound=0.5, **RULE)
         with self.assertRaises(NotPredictive):
             choose_winner(ReplaySimulator(pool), report, [{"oversample": 3, "anchor": 1}])
 
     def test_a_report_of_another_history_is_refused(self):
-        other = backtest(linear_pool((200, 300, 400, 501)), error_bound=0.01)
+        other = backtest(linear_pool((200, 300, 400, 501)), error_bound=0.01, **RULE)
         with self.assertRaises(ValueError):
             choose_winner(self.simulator, other, [{"x": 1}])
 

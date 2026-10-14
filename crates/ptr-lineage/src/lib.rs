@@ -39,7 +39,7 @@ pub use lineage::{
     AdapterId, AdapterRecord, AdapterStatus, BaseModel, ConsolidationPolicy, Lineage, Origin,
 };
 pub use merge::ties_merge;
-pub use promotion::{PromotionProposal, SplitLock};
+pub use promotion::{promotion_operation_id, PromotionProposal, SplitLock};
 pub use replay::{
     retrievability, MemoryState, ModelTime, NewSample, ReplayParams, ReplayPool, ReplaySample,
     Split,

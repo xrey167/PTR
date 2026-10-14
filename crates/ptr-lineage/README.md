@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-14  
-**Code footprint:** 10 Rust source files · 4906 nonblank source lines · 7 integration-test files · 127 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 10 Rust source files · 5022 nonblank source lines · 7 integration-test files · 130 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -26,7 +26,7 @@
 - Internal, no behaviour change: #[allow(clippy::manual_is_multiple_of)] on test helpers only (values_of_every_magnitude in src/scale.rs, forgotten_samples_are_drawn_far_more_often_than_retained_ones in tests/replay.rs), so the newer toolchain lints stay clean; no library code changed
 - GateReport::bind(subject) attaches a GateSubject (proposal id, operation id, artifact digest, base model digest, evaluation manifest digest, all supplied by the trusted evaluator) and the config digest of the gate that evaluated the report, stored by ForgettingGate::evaluate (domain tag and the four finite thresholds as f64 bits, -0.0 hashed as 0.0; config_digest refuses a nonfinite threshold) and yields a BoundGateReport with private fields (compile-fail doctest against a literal) and a SHA-256 digest over a domain tag, every field, the adapter and the violations; the digest pins what was claimed, not that the measurements were taken on that artifact; BoundGateReport::encode_canonical/decode_canonical give it a versioned canonical encoding (magic PTRBGR01, at most 1 MiB) whose decode re-derives the digest, checks the passed flag and rejects non-canonical bytes (-0.0, odd NaN), trailing or truncated input; a decoded report is not proof of a trusted evaluator
 - GateViolation::MissingBaseline (codec tag 4, no fields; the canonical report's violation-count bound is now one byte per violation) and ForgettingGate::evaluate_promotion over PromotionSuite { serving: Option<f64>, candidate }: an absent serving score on the public suite is a violation in place of the regression comparison, so a report without a baseline cannot pass and a missing baseline is never read as zero; a nonfinite score that is present is refused as in evaluate (PublicSuite and evaluate are unchanged, they always hold a serving score)
-- PromotionProposal::new(record, base_digest, bound_report) builds the request ptr-runtime commits: a report with a missing baseline is LineageError::MissingBaseline, any other failing report GateFailed, and a report bound to another adapter, weights digest or base-model digest than the record's SubjectMismatch; SplitLock (SHA-256 of the frozen split manifest, the bound report's eval_manifest_digest) travels with it. The crate depends on no ledger type; the digest in the record is still not recomputed here (ptr-runtime does that from the weights)
+- PromotionProposal::new(record, project, base_digest, bound_report) builds the request ptr-runtime commits: a report with a missing baseline is LineageError::MissingBaseline, any other failing report GateFailed, and a report bound to another adapter, weights digest or base-model digest than the record's SubjectMismatch; SplitLock (SHA-256 of the frozen split manifest, the bound report's eval_manifest_digest) travels with it. The crate depends on no ledger type; the digest in the record is still not recomputed here (ptr-runtime does that from the weights) It accepts only a report produced by ForgettingGate::evaluate_promotion in this process (GateReport::promotion_evaluated, a flag outside the canonical encoding and the digest: false on the evaluate path and after decode_canonical, LineageError::BaselineNotChecked), so a placeholder serving score on the evaluate path cannot justify a promotion; and it binds the project: the subject's operation id must be promotion_operation_id(project, adapter), a length-prefixed SHA-256 the trusted evaluator computes (SubjectMismatch otherwise), and PromotionProposal::project() names it.
 
 ### Missing for the target architecture
 
@@ -36,7 +36,6 @@
 - Replay samples and probes keyed by the training chain whose weights and clock they were measured on, not by base model and revision, so concurrent chains on one base model keep separate clocks
 - An adapter's function_accuracy on uniform gold absent from its data manifest recorded as a metric of its evaluation run and usable as a task score of the forgetting gate
 - A multi-adapter serving router: ptr-runtime commits AdapterPromoted and AdapterRevoked and checks a use against them (check_adapter_use), but nothing routes a request to an adapter, and the serving baseline of a first adapter (the base model's public-suite score) is supplied by the caller and not measured here
-- evaluate_promotion is not the only way to a passing report: evaluate with a placeholder serving score still yields a report that PromotionProposal accepts, so the evaluator must be the one that calls evaluate_promotion
 
 ### Next milestones
 
@@ -67,7 +66,7 @@
 - tests/aimer.rs AIMER score cases (uniform, one-hot, hand-computed, scale invariance at 1e300 and 1e-300, permutation invariance, refusals) and pruning order with a deterministic tie, permuted-weight ties and mismatched weight counts
 - workspace fmt/check/test/clippy
 - forgetting::tests bound_report_digest_* pin one bound-report digest and one gate-config digest and show the digest changing with each subject field, each of the four thresholds, the verdict and the adapter
-- src/promotion.rs tests: a missing serving baseline is red and yields no proposal (MissingBaseline), a passing report with a baseline yields a proposal whose digest and split lock are the report's, a subject for another artifact, base model or adapter is SubjectMismatch, a regressing candidate is GateFailed and not MissingBaseline, a missing baseline survives the canonical codec, a nonfinite baseline is refused
+- src/promotion.rs tests: a missing serving baseline is red and yields no proposal (MissingBaseline), a passing report with a baseline yields a proposal whose digest and split lock are the report's, a subject for another artifact, base model or adapter is SubjectMismatch, a regressing candidate is GateFailed and not MissingBaseline, a missing baseline survives the canonical codec, a nonfinite baseline is refused; a passing report from the plain evaluate path and a decoded report are BaselineNotChecked; a report evaluated for another project is SubjectMismatch and the operation-id parts are length-prefixed
 
 <!-- PTR:STATUS:END -->
 
