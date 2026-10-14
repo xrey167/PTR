@@ -107,19 +107,26 @@ generation; doc 36 section D), the **destination placement** (the consumer stage
 its epoch at the time the operation started) together with the **consumer worker's session id**
 (a random value the supervisor draws at every spawn of that worker), and
 the **expected model-side chain** (stage, base model, adapters and experts with identity,
-generation, digest and fence epoch) and the **payload types** the operation accepts. Admission and
+generation, digest and fence epoch), the **payload types** the operation accepts, and the
+**authority-derived project** (`ProjectId`) the operation runs in. Pod and stage ids are unique
+only within a project (`PodRegistry` allows the same Pod id in two projects), so every lookup of
+the record's placement, inputs and worker session is keyed by that project, and a handle whose
+consumer placement, inputs or worker session belong to another project is refused. Admission and
 consumption both ask the authority whether the operation is known, every input is still live at
 the current committed anchor, every Raw ancestor is still present (not erased) with its recorded
 digest, the consumer stage still holds the recorded destination placement and epoch and is
-served by the worker session the record names (so a handle delivered to a replacement worker
+served by the worker session the record names, all within the recorded project (so a handle delivered to a replacement worker
 after the consumer's device failed, its stage was re-placed or its worker crashed and was
 respawned for the same placement is refused, and each of those events cancels every operation
 addressed to the old placement or session), the handle's chain **equals** the expected chain exactly (a
 different but live adapter or expert is refused) and the handle's `payload_type` is one the
 operation accepts. Otherwise the handle is refused and the locator is never released. This keeps
 the stale-generation invariant without trusting a worker to report its own lineage. Operation
-records are bounded: a global and per-principal cap with a typed saturation refusal when a new
-operation is started, and retention until the operation's last possible handle deadline plus skew,
+records are bounded in number and in size: a global and per-principal cap on the number of
+records, and per record a cap on the count of each input category (semantic, memory, derived,
+Raw ancestors, chain elements, payload types), a cap on the size of each identity, and a cap on
+the record's total encoded bytes, plus a global cap on the bytes of all live records; any of
+these exceeded gives a typed saturation refusal when the operation is started, and retention until the operation's last possible handle deadline plus skew,
 after which the record is removed deterministically (so a live handle never meets a missing
 record, and abandoned calls cannot accumulate).
 Codec v1 handles are **Exact only**, as `admit_frame` refuses any non-Exact upstream today
@@ -286,10 +293,18 @@ Rules, each the same as the one already enforced for frames and KV pages, restat
    the guardian's CUDA context; the authority's operation records name the
    supervisor's session, so every operation of the old session is refused after a restart.
    A crash of the guardian itself also terminates every worker domain (the worker scopes are
-   bound to it as well), but its context is gone before the importers are; that window is the
-   one case where an import can outlive its allocation, and it is named as a residual risk
-   (section 8). The guardian's small surface (no model, no worker input) is the mitigation.
-   Where that shared failure lifecycle cannot be enforced, the CUDA carriers are disabled.
+   bound to it as well), and its context is gone before the importers are. That is safe only
+   because the guardian exports **only in VMM form**: a VMM import
+   (`cuMemImportFromShareableHandle`) holds its own reference to the physical allocation, and the
+   driver frees physical memory only after every mapping is unmapped and every handle,
+   shareable ones included, is released, so the guardian's death cannot free memory a worker
+   still maps. A legacy `cuIpc*` import holds no such reference, so the legacy form is never
+   used on the guardian path; it stays only for trusted in-authority processes whose exporter
+   and importer are one failure domain. Where VMM export is unavailable, the CUDA carriers are
+   disabled for workers (they fall back to `PinnedHost` or `Bytes`), and so they are where that
+   shared failure lifecycle cannot be enforced. E009's GPU cell kills the guardian while a worker
+   holds a VMM import and requires the worker's mapped bytes to stay readable and unchanged
+   until the worker is reaped.
    E009 has a broker-death arm that kills the broker with `SIGKILL` while a worker holds an
    import and tries to leave a descendant behind: the process creation must be refused, and
    the recorded order must be worker domains empty first, guardian exit second.
@@ -584,10 +599,10 @@ one card) is a later experiment on the F-series hardware plan and is not claimed
   Rule 3 (producer owns until acknowledged) and E009 are the mitigation; the admitted scope is
   the only place a pointer exists.
 - **Guardian crash.** If the guardian that holds the CUDA staging allocations crashes, its
-  context is destroyed before the reaper has terminated the importing workers (rule 3b). For
-  that short window an import can outlive its allocation, which CUDA leaves undefined. The
-  guardian has no model and takes no worker input, so it should rarely crash; every worker
-  domain is still terminated, and no operation of the old session is admitted again.
+  context is destroyed before the reaper has terminated the importing workers (rule 3b). This
+  is safe only through the reference counting of VMM imports, which is documented driver
+  behaviour but not yet observed on the owner's cards; E009's guardian-crash arm checks it on
+  each PC, and if it fails, the CUDA carriers stay disabled for workers.
 - **Consumer GPUs.** Peer access on consumer cards is driver-dependent and driver patches that
   enable it are out of scope; the plan never depends on it.
 - **Scope creep toward a serving engine.** vLLM, SGLang and Mooncake already move KV and weights

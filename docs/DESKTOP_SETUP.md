@@ -18,8 +18,11 @@ claims a research result: the smoke runs are pipeline evidence only (see step 7)
 
 **The owner has two PCs with one card each: an RTX 3090 (`hardware/rtx3090.toml`) and an RTX
 4090 (`hardware/rtx4090.toml`).** Follow steps 1 to 9 on each PC with that PC's profile. The text
-below says 4090 where it was written for the reference card; on the 3090 PC use the `-rtx3090`
-variants named in section 10. Section 10 also keeps the notes for the superseded two-3090 machine.
+below says 4090 where it was written for the reference card. The Makefile selects the config
+set with `GPU_PROFILE`, whose default is `rtx3090`: on the 3090 PC run the targets as written,
+and on the 4090 PC pass `GPU_PROFILE=rtx4090` to every GPU target (for example
+`make smoke-gpu GPU_PROFILE=rtx4090`), so the run uses the 4090 configs and records
+`hardware/rtx4090.toml`. Section 10 also keeps the notes for the superseded two-3090 machine.
 
 Everything below was written and unit-tested on a machine without a GPU. The commands that
 need the GPU (driver install, `make smoke-gpu`, `make olmoe-sft-smoke`) have not been run
@@ -146,11 +149,13 @@ Runs refuse a dirty tracked worktree (`--execute`), so commit or stash tracked c
 first. Always `make gpu-doctor` before a run.
 
 1. **`make smoke-gpu`**: the WP8 tiny-random OLMoE smoke on the GPU
-   (`SMOKE_GPU_CONFIG ?= training/configs/stage-moe-smoke-gpu.toml`). Minutes. It checks the
+   (`stage-moe-smoke-gpu-rtx3090.toml` by default, `stage-moe-smoke-gpu.toml` with
+   `GPU_PROFILE=rtx4090` on the 4090 PC). Minutes. It checks the
    pipeline (SFT, GSPO and SAPO, routing metrics, `ptr_py` gates) runs on CUDA.
 2. **`make olmoe-sft-smoke`**: real OLMoE-1B-7B, SFT only, LoRA, bf16, gradient
    checkpointing, one 24 GB GPU
-   (`OLMOE_SFT_CONFIG ?= training/configs/stage-moe-olmoe-sft-smoke.toml`). Override either
+   (`stage-moe-olmoe-sft-smoke-rtx3090.toml` by default, without the suffix under
+   `GPU_PROFILE=rtx4090`). Override either
    variable on the command line: `make smoke-gpu SMOKE_GPU_CONFIG=path.toml`.
 3. **M011**: experiment M011 is registered as *planned*. Its entrypoint is set only when
    its run is prepared, so do not look for a `make` target: ask Claude Code (step 8) to prepare
