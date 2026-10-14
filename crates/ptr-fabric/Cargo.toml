@@ -16,6 +16,9 @@ worker-channel = ["shm-backend", "rustix/net", "rustix/event"]
 # Descriptor confinement for a worker: the host probe, the confinement value, the carrier
 # policy and the seccomp allowlist (doc 42 stage S1). Linux only.
 worker-confine = ["worker-channel", "dep:libc"]
+# The worker supervisor: spawn a confined worker process, watch it, reap its whole cgroup and
+# drain its channel (doc 42 stage S1). Linux only.
+worker-supervisor = ["worker-confine"]
 
 [dependencies]
 # The handle, its locators and the digest rule the carriers check against.
@@ -51,3 +54,8 @@ required-features = ["worker-channel"]
 name = "worker_confine"
 path = "tests/worker_confine.rs"
 required-features = ["worker-confine"]
+
+[[test]]
+name = "worker_supervisor"
+path = "tests/worker_supervisor.rs"
+required-features = ["worker-supervisor"]

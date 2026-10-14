@@ -425,6 +425,123 @@ fn probe_net_namespace() -> Availability {
     }
 }
 
+/// The directory of this process's own cgroup-v2 group, where a supervisor creates the child
+/// group of a worker. `None` when there is no `cgroup2` mount or no unified group.
+pub(crate) fn own_cgroup_directory() -> Option<PathBuf> {
+    let mountinfo = fs::read_to_string("/proc/self/mountinfo").ok()?;
+    let (root, mount_point) = cgroup2_mount(&mountinfo)?;
+    let own = own_cgroup_path(&fs::read_to_string("/proc/self/cgroup").ok()?)?;
+    Some(cgroup_directory(&root, &mount_point, &own))
+}
+
+/// One call a confined worker must not be able to make, and what happened when it tried.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ForbiddenCall {
+    pub name: &'static str,
+    /// The `errno` of the refused call, or 0 when the call succeeded (the worker is not
+    /// confined).
+    pub errno: i32,
+}
+
+/// Try the calls the allowlist must refuse and report each outcome: `socket`, `socketpair`,
+/// `fork`, `open`, `io_uring_setup`, `process_vm_readv` and `pidfd_open`. A worker runs this after
+/// [`install_worker_seccomp`] to show that the filter is in force (every `errno` is `EPERM`).
+/// In an unconfined process the calls succeed or fail for ordinary reasons and are undone at
+/// once (a socket is closed, a forked child exits immediately and is reaped), so calling it
+/// there is harmless but shows nothing.
+pub fn probe_forbidden_calls() -> Vec<ForbiddenCall> {
+    let mut report = Vec::new();
+    let errno_of = |result: c_long| if result >= 0 { 0 } else { last_errno() };
+    // SAFETY (all blocks below): each call takes plain integers or a valid NUL-terminated
+    // path, and every descriptor or child it creates is closed or reaped before the next call.
+    let socket = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
+    let socket_errno = errno_of(c_long::from(socket));
+    if socket >= 0 {
+        unsafe { libc::close(socket) };
+    }
+    report.push(ForbiddenCall {
+        name: "socket",
+        errno: socket_errno,
+    });
+    let mut pair = [0 as c_int; 2];
+    let result =
+        unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, pair.as_mut_ptr()) };
+    let pair_errno = errno_of(c_long::from(result));
+    if result == 0 {
+        unsafe {
+            libc::close(pair[0]);
+            libc::close(pair[1]);
+        }
+    }
+    report.push(ForbiddenCall {
+        name: "socketpair",
+        errno: pair_errno,
+    });
+    let pid = unsafe { libc::fork() };
+    if pid == 0 {
+        // The child of a successful fork: leave at once.
+        unsafe { libc::_exit(0) };
+    }
+    let fork_errno = errno_of(c_long::from(pid));
+    if pid > 0 {
+        let mut status: c_int = 0;
+        unsafe { libc::waitpid(pid, &mut status, 0) };
+    }
+    report.push(ForbiddenCall {
+        name: "fork",
+        errno: fork_errno,
+    });
+    let path = c"/proc/self/status";
+    let fd = unsafe { libc::open(path.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
+    let open_errno = errno_of(c_long::from(fd));
+    if fd >= 0 {
+        unsafe { libc::close(fd) };
+    }
+    report.push(ForbiddenCall {
+        name: "open",
+        errno: open_errno,
+    });
+    let ring = unsafe { libc::syscall(libc::SYS_io_uring_setup, 1 as c_ulong, 0 as c_ulong) };
+    let ring_errno = errno_of(ring);
+    if ring >= 0 {
+        unsafe { libc::close(ring as c_int) };
+    }
+    report.push(ForbiddenCall {
+        name: "io_uring_setup",
+        errno: ring_errno,
+    });
+    // A read of zero bytes from this very process: harmless where the call is allowed.
+    let empty = libc::iovec {
+        iov_base: std::ptr::null_mut(),
+        iov_len: 0,
+    };
+    let vm = unsafe {
+        libc::syscall(
+            libc::SYS_process_vm_readv,
+            libc::getpid() as c_ulong,
+            &empty as *const libc::iovec,
+            1 as c_ulong,
+            &empty as *const libc::iovec,
+            1 as c_ulong,
+            0 as c_ulong,
+        )
+    };
+    report.push(ForbiddenCall {
+        name: "process_vm_readv",
+        errno: errno_of(vm),
+    });
+    let pidfd = unsafe { libc::syscall(libc::SYS_pidfd_open, 1 as c_ulong, 0 as c_ulong) };
+    let pidfd_errno = errno_of(pidfd);
+    if pidfd >= 0 {
+        unsafe { libc::close(pidfd as c_int) };
+    }
+    report.push(ForbiddenCall {
+        name: "pidfd_open",
+        errno: pidfd_errno,
+    });
+    report
+}
+
 // --- the seccomp allowlist ---------------------------------------------------------------
 
 /// What a denied system call does.
