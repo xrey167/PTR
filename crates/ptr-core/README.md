@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-14  
-**Code footprint:** 20 Rust source files · 3842 nonblank source lines · 4 integration-test files · 80 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 20 Rust source files · 3917 nonblank source lines · 4 integration-test files · 83 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -28,6 +28,7 @@
 - Shared refinement block (attention, MLP, residual, post layer norm) applied up to min(ReasoningBudget::steps, max_latent_steps) times with ACT-style halting (stop when the cumulative halting probability reaches 1 - epsilon; no remainder-weighted averaging), per-step traces, and step accounting into EpistemicWorkspace.step
 - Operator router head (pooled admitted-slot mean to softmax over the ptr-types ReasoningOperator codes, returned as RouterDecision), verifier-head pass probability, and an ActionIR head that only ranks a caller-supplied ActionIr list (never constructs target/revision/generation) and never selects a candidate rejected by a supplied deterministic check
 - Toy training of one head only: exact analytic softmax cross-entropy gradient for the linear router head with a frozen random backbone, full-batch gradient descent on a seeded synthetic task whose label is the plurality slot role; tested for loss decrease and against f64 finite differences (relative error < 1e-3). Not task training
+- router_gradient and router_loss_f64 refuse non-finite features and non-finite router weights/bias with CoreError::NonFinite before the forward pass, and router_gradient also reports overflowing logits or loss instead of returning them as Ok (train_router_head already validated its learning rate); the pinned golden values and the finite-difference check are unchanged
 - Matrix::matmul validates the product shape (checked rows x cols against MAX_ELEMENTS) before allocating the output, so two valid operands can no longer request an oversized buffer; the router-head loss is a stable log-sum-exp from the logits (f64), so it stays exact when the softmax target probability underflows
 - PTR-Diff reference step: discrete masked denoising on a small vocabulary with a deterministic ceil(masked/steps_remaining) unmasking schedule, top-k most-confident unmasking, tested for monotone unmasking, no rewrite of known tokens and termination; there is no training objective
 - Checkpoint save/load: ptr-types CheckpointHeader (format 3, codebook, slot encoding, architecture binding) plus a little-endian parameter manifest (name, shape, in-crate CRC-32 per tensor and for the payload); load rejects wrong magic, model name, codebook, architecture, manifest, shape, checksum and non-finite values with typed errors; forward after save then load is bit-identical, and a tiny-config golden test pins outputs (CRC-32 detects corruption, it is not authentication)
