@@ -23,6 +23,7 @@ use super::expert::{
     ExpertAuthorityStanding, ExpertDependencyIndex, ExpertEntry, ExpertInputSet,
     ExpertRegistryProjection, FenceStanding,
 };
+use super::scopes::{CompactedScopes, ExecutionScope, ScopeRegistry, ScopeState};
 use super::{PtrRuntime, RuntimeError, RuntimeLedger};
 use ptr_config::PtrConfig;
 use ptr_ledger::integrity::{self, LogAnchor};
@@ -35,7 +36,10 @@ use ptr_pods::{
 };
 use ptr_semdb::{SemanticDelta, SemanticHost};
 use ptr_state::MaterializedState;
-use ptr_types::{CommitIndex, Effect, Generation, ProjectId, Revision};
+use ptr_types::{
+    CommitIndex, Effect, Generation, PodId, ProjectId, Revision, ScopeId, ScopeLeaseBinding,
+    SessionId, StateId, Timestamp,
+};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// PTRCS009 is written only when an evidence authority has a standing, that is, a committed
@@ -57,6 +61,14 @@ use std::collections::{BTreeMap, BTreeSet};
 /// strictly ascending order, names registered experts, holds no all-zero entry and no epoch above
 /// the current standing of its kind.
 const AUTHORITY_MAGIC: &[u8; 8] = b"PTRCS009";
+/// PTRCS010 is written only when the execution section is PTREX003, that is, when the history
+/// holds a scope (issue #141); a snapshot without one is written under the outer magic it had
+/// before, byte for byte. So a build from before the scope block stops at the outer magic, as
+/// with every earlier layout change. The outer magic no longer names the lifecycle layout: a
+/// PTRCS010 snapshot's lifecycle section is any layout this build writes (PTRLC004 to PTRLC007),
+/// taken from that section's own magic. Its execution section must be PTREX003, and a PTREX003
+/// section is refused under any other outer magic.
+const SCOPE_MAGIC: &[u8; 8] = b"PTRCS010";
 /// The lifecycle section of a PTRCS009 snapshot.
 const AUTHORITY_LIFECYCLE_MAGIC: &[u8; 8] = b"PTRLC007";
 /// Opens the authority block at the end of a PTRLC007 section.
@@ -163,6 +175,22 @@ const PRE_ATTESTATION_MAGIC: &[u8; 8] = b"PTRCS003";
 /// action nor named by its attempt, and a section in that layout is refused by
 /// version.
 const EXECUTION_MAGIC: &[u8; 8] = b"PTREX002";
+/// PTREX003 is PTREX002 followed by the scope block ([`SCOPE_BLOCK_MAGIC`], issue #141): every
+/// scope of the committed history, released ones included, with its parent, session, project,
+/// creation time, deadline, state, cancellation flag and lease binding, and the revision of the
+/// last scope record. It is written only when the history holds a scope; a snapshot without one
+/// is written as PTREX002, byte for byte as before. A build from before this layout stops at
+/// this magic (by version) exactly when it would otherwise restore a runtime that forgot the
+/// scopes created below the floor, and with them the recovery of every one left unreleased.
+///
+/// A PTREX002 section is read with no scope: its writer never carried them, so a snapshot
+/// written before this layout restores as it did (the scopes below its floor are not known).
+/// Restore checks what is derivable ([`ScopeRegistry::from_compacted_parts`](crate::scopes)),
+/// that the last scope revision is not above the snapshot's revision, and marks every
+/// unreleased scope recovery-required, as a replay does.
+const EXECUTION_SCOPE_MAGIC: &[u8; 8] = b"PTREX003";
+/// Opens the scope block at the end of a PTREX003 section.
+const SCOPE_BLOCK_MAGIC: &[u8; 8] = b"PTRSC001";
 /// PTRLC003, the lifecycle section of a PTRCS005 snapshot.
 const LIFECYCLE_MAGIC: &[u8; 8] = b"PTRLC003";
 /// The lifecycle section of a PTRCS003 snapshot, read only inside one.
@@ -1461,6 +1489,163 @@ fn check_ascending(previous: &mut Option<String>, key: &str) -> Result<(), Runti
 struct ExecutionObligations {
     unsettled: BTreeMap<CommitIndex, UnsettledEffect>,
     settled: BTreeMap<String, SettledOutcome>,
+    /// The scope registry's committed state (PTREX003); empty in a PTREX002 section.
+    scopes: CompactedScopes,
+    /// The revision of the last applied scope record; present exactly when `scopes` is not
+    /// empty.
+    scope_revision: Option<Revision>,
+}
+
+fn scope_state_tag(state: ScopeState) -> u64 {
+    match state {
+        ScopeState::Created => 0,
+        ScopeState::Admitted => 1,
+        ScopeState::Started => 2,
+        ScopeState::Completed => 3,
+        ScopeState::Failed => 4,
+        ScopeState::Cancelled => 5,
+        ScopeState::TimedOut => 6,
+        ScopeState::Revoked => 7,
+        ScopeState::Released => 8,
+    }
+}
+
+fn scope_state_from_tag(tag: u64) -> Result<ScopeState, RuntimeError> {
+    Ok(match tag {
+        0 => ScopeState::Created,
+        1 => ScopeState::Admitted,
+        2 => ScopeState::Started,
+        3 => ScopeState::Completed,
+        4 => ScopeState::Failed,
+        5 => ScopeState::Cancelled,
+        6 => ScopeState::TimedOut,
+        7 => ScopeState::Revoked,
+        8 => ScopeState::Released,
+        _ => return Err(invalid(CompactedError::UnknownTag)),
+    })
+}
+
+/// An optional value as a one-number presence flag (0 or 1) and the value.
+fn put_optional<T>(
+    out: &mut Writer,
+    value: Option<T>,
+    put: impl FnOnce(&mut Writer, T) -> Result<(), RuntimeError>,
+) -> Result<(), RuntimeError> {
+    match value {
+        Some(value) => {
+            out.number(1)?;
+            put(out, value)
+        }
+        None => out.number(0),
+    }
+}
+
+fn take_optional<T>(
+    reader: &mut Reader<'_>,
+    take: impl FnOnce(&mut Reader<'_>) -> Result<T, RuntimeError>,
+) -> Result<Option<T>, RuntimeError> {
+    match reader.number()? {
+        0 => Ok(None),
+        1 => take(reader).map(Some),
+        _ => Err(invalid(CompactedError::NoncanonicalSection)),
+    }
+}
+
+/// Write the scope block: the scopes in ascending id order, then the last scope revision.
+fn encode_scope_block(
+    out: &mut Writer,
+    scopes: &CompactedScopes,
+    revision: Option<Revision>,
+) -> Result<(), RuntimeError> {
+    out.raw(SCOPE_BLOCK_MAGIC)?;
+    out.count(scopes.len())?;
+    for (id, (scope, lease)) in scopes {
+        out.field(&id.0)?;
+        put_optional(out, scope.parent.as_ref(), |out, parent| {
+            out.field(&parent.0)
+        })?;
+        out.field(&scope.session.0)?;
+        out.field(&scope.project.0)?;
+        out.number(scope.created_at.0)?;
+        put_optional(out, scope.deadline, |out, deadline| out.number(deadline.0))?;
+        out.number(scope_state_tag(scope.state))?;
+        out.number(u64::from(scope.cancellation_requested))?;
+        put_optional(out, lease.state_id.as_ref(), |out, v| out.field(&v.0))?;
+        put_optional(out, lease.pod_id.as_ref(), |out, v| out.field(&v.0))?;
+        put_optional(out, lease.placement_epoch, Writer::number)?;
+        put_optional(out, lease.fencing_token, |out, v| out.raw(&v.to_le_bytes()))?;
+        put_optional(out, lease.generation, |out, v| out.number(v.0))?;
+        put_optional(out, lease.resource_lease_id.as_ref(), |out, v| out.field(v))?;
+    }
+    put_optional(out, revision, |out, v| out.number(v.0))
+}
+
+/// Read the scope block. Ids are strictly ascending and the block holds at least one scope (the
+/// writer emits it only then); the registry checks the rest when it is rebuilt.
+fn decode_scope_block(
+    reader: &mut Reader<'_>,
+) -> Result<(CompactedScopes, Option<Revision>), RuntimeError> {
+    if reader.take(8)? != SCOPE_BLOCK_MAGIC {
+        return Err(invalid(CompactedError::UnsupportedVersion));
+    }
+    let mut scopes = CompactedScopes::new();
+    let mut previous: Option<String> = None;
+    let count = reader.count()?;
+    if count == 0 {
+        return Err(invalid(CompactedError::NoncanonicalSection));
+    }
+    for _ in 0..count {
+        let id = reader.field()?;
+        if previous.as_ref().is_some_and(|last| &id <= last) {
+            return Err(invalid(CompactedError::NoncanonicalSection));
+        }
+        previous = Some(id.clone());
+        let parent = take_optional(reader, |r| r.field().map(ScopeId))?;
+        let session = SessionId(reader.field()?);
+        let project = ProjectId(reader.field()?);
+        let created_at = Timestamp(reader.number()?);
+        let deadline = take_optional(reader, |r| r.number().map(Timestamp))?;
+        let state = scope_state_from_tag(reader.number()?)?;
+        let cancellation_requested = match reader.number()? {
+            0 => false,
+            1 => true,
+            _ => return Err(invalid(CompactedError::NoncanonicalSection)),
+        };
+        let lease = ScopeLeaseBinding {
+            state_id: take_optional(reader, |r| r.field().map(StateId))?,
+            pod_id: take_optional(reader, |r| r.field().map(PodId))?,
+            placement_epoch: take_optional(reader, |r| r.number())?,
+            fencing_token: take_optional(reader, |r| {
+                Ok(u128::from_le_bytes(
+                    r.take(16)?.try_into().expect("fixed token"),
+                ))
+            })?,
+            generation: take_optional(reader, |r| r.number().map(Generation))?,
+            resource_lease_id: take_optional(reader, |r| r.field())?,
+        };
+        let scope_id = ScopeId(id);
+        scopes.insert(
+            scope_id.clone(),
+            (
+                ExecutionScope {
+                    id: scope_id,
+                    parent,
+                    session,
+                    project,
+                    created_at,
+                    deadline,
+                    state,
+                    cancellation_requested,
+                },
+                lease,
+            ),
+        );
+    }
+    let revision = take_optional(reader, |r| r.number().map(Revision))?;
+    if revision.is_none() {
+        return Err(invalid(CompactedError::NoncanonicalSection));
+    }
+    Ok((scopes, revision))
 }
 
 /// Effect tags, matching the ledger's own numbering so the two cannot drift
@@ -1487,11 +1672,249 @@ fn effect_from_tag(tag: u64) -> Result<Effect, RuntimeError> {
     }
 }
 
+/// Bytes of one encoded [`ActionIdentity`] (`Writer::identity`).
+fn identity_bytes(identity: &ActionIdentity) -> usize {
+    4 + identity.project.0.len() + 4 + identity.principal.len() + 8 + 8 + DIGEST_BYTES
+}
+
+/// Bytes of one unsettled attempt in the execution section (`ExecutionObligations::encode`).
+pub(crate) fn unsettled_entry_bytes(effect: &UnsettledEffect) -> usize {
+    8 + 8
+        + 8
+        + effect.key.as_ref().map_or(0, |key| 4 + key.len())
+        + 4
+        + effect.target.len()
+        + 4
+        + effect.operation.len()
+        + 8
+        + identity_bytes(&effect.identity)
+}
+
+/// Bytes of one settled key in the execution section.
+pub(crate) fn settled_entry_bytes(key: &str, outcome: &SettledOutcome) -> usize {
+    4 + key.len()
+        + 8
+        + match outcome {
+            SettledOutcome::Applied {
+                identity, response, ..
+            } => 8 + identity_bytes(identity) + 4 + response.len(),
+            SettledOutcome::AppliedWithoutResponse { identity, .. } => 8 + identity_bytes(identity),
+            SettledOutcome::NotApplied => 0,
+        }
+}
+
+/// The room a keyed unsettled attempt reserves for its settlement: its settled entry without
+/// a response, the largest a settlement is ever allowed to take when the section is full (a
+/// response that no longer fits is not retained, see [`PtrRuntime::settlement_retains_response`]).
+///
+/// A key that is already settled (an attempt after a `NotApplied` reconciliation) is replaced
+/// rather than added: it reserves only the difference to the entry it replaces and adds no
+/// item. Returns the reserved bytes and whether the settlement adds a settled item.
+fn reserved_settlement(
+    effect: &UnsettledEffect,
+    settled: &BTreeMap<String, SettledOutcome>,
+) -> (usize, bool) {
+    let Some(key) = effect.key.as_ref() else {
+        return (0, false);
+    };
+    let entry = 4 + key.len() + 8 + 8 + identity_bytes(&effect.identity);
+    match settled.get(key) {
+        Some(existing) => (
+            entry.saturating_sub(settled_entry_bytes(key, existing)),
+            false,
+        ),
+        None => (entry, true),
+    }
+}
+
+/// The execution section a compacted snapshot of this runtime would carry, with every keyed
+/// unsettled attempt's settlement reserved: its bytes and its list lengths.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct SectionUse {
+    pub(crate) bytes: usize,
+    pub(crate) unsettled: usize,
+    /// Settled keys plus the keyed attempts that will settle into one.
+    pub(crate) settled: usize,
+    pub(crate) scopes: usize,
+}
+
+impl SectionUse {
+    fn fits(&self) -> bool {
+        self.bytes <= MAX_SECTION_BYTES
+            && self.unsettled <= MAX_SECTION_ITEMS
+            && self.settled <= MAX_SECTION_ITEMS
+            && self.scopes <= MAX_SECTION_ITEMS
+    }
+
+    fn refusal(&self) -> RuntimeError {
+        RuntimeError::ExecutionSectionFull {
+            bytes: self.bytes,
+            items: self.unsettled.max(self.settled).max(self.scopes),
+        }
+    }
+}
+
+/// How far the execution section of a runtime's committed history exceeds what a compacted
+/// snapshot can carry ([`PtrRuntime::execution_section_overflow`]).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ExecutionSectionOverflow {
+    /// The bytes the section would take.
+    pub bytes: usize,
+    /// The longest of its lists, in items.
+    pub items: usize,
+}
+
+impl PtrRuntime {
+    /// `Some` when the execution section of this runtime's committed history (unsettled
+    /// attempts, settled keys, scopes) does not fit a compacted snapshot. A runtime that
+    /// committed every record itself never gets here (each commit is held to the budget), but
+    /// replay, a durable open and a compacted restore accept a history written before the
+    /// budget existed, so a host checks this after opening and before it plans a compaction:
+    /// [`PtrRuntime::export_compacted_snapshot`] refuses such a history with
+    /// [`RuntimeError::CompactionBlocked`], never with a generic section limit, and every new
+    /// attempt or scope is refused with [`RuntimeError::ExecutionSectionFull`]. The runtime
+    /// itself opens: its log stays authoritative and complete, only compaction is closed to it.
+    pub fn execution_section_overflow(&self) -> Option<ExecutionSectionOverflow> {
+        let encoded = self.execution_section(false);
+        (!encoded.fits()).then(|| ExecutionSectionOverflow {
+            bytes: encoded.bytes,
+            items: encoded.unsettled.max(encoded.settled).max(encoded.scopes),
+        })
+    }
+
+    /// The execution section's use now (`ExecutionObligations::encode` exactly, plus the
+    /// settlement reservations).
+    pub(crate) fn execution_section_use(&self) -> SectionUse {
+        self.execution_section(true)
+    }
+
+    /// The section as encoded, plus the settlement reservations when `reserve` is set.
+    fn execution_section(&self, reserve: bool) -> SectionUse {
+        let (unsettled, settled) = self.execution.retained_obligations();
+        let keyed = unsettled
+            .values()
+            .filter(|effect| reserve && reserved_settlement(effect, settled).1)
+            .count();
+        SectionUse {
+            bytes: 8
+                + 4
+                + unsettled
+                    .values()
+                    .map(|effect| {
+                        unsettled_entry_bytes(effect)
+                            + if reserve {
+                                reserved_settlement(effect, settled).0
+                            } else {
+                                0
+                            }
+                    })
+                    .sum::<usize>()
+                + 4
+                + settled
+                    .iter()
+                    .map(|(key, outcome)| settled_entry_bytes(key, outcome))
+                    .sum::<usize>()
+                + self.scopes.snapshot_bytes(),
+            unsettled: unsettled.len(),
+            settled: settled.len() + keyed,
+            scopes: self.scopes.compacted_len(),
+        }
+    }
+
+    /// Refuse a new record that would take the execution section past its bounds: an attempt
+    /// (its entry and the room its settlement reserves) or a new scope. Settlements never
+    /// grow the section past what their attempt reserved, so they are never refused here.
+    pub(crate) fn check_execution_section_growth(
+        &self,
+        event: &ptr_ledger::LedgerEvent,
+    ) -> Result<(), RuntimeError> {
+        let projected = match event {
+            ptr_ledger::LedgerEvent::EffectAttempted {
+                key,
+                project,
+                principal,
+                target,
+                operation,
+                effect,
+                generation,
+                revision,
+                action_digest,
+                ..
+            } => {
+                let attempt = UnsettledEffect {
+                    attempt: CommitIndex(0),
+                    key: key.clone(),
+                    target: target.clone(),
+                    operation: operation.clone(),
+                    effect: *effect,
+                    identity: ActionIdentity {
+                        project: project.clone(),
+                        principal: principal.clone(),
+                        revision: *revision,
+                        generation: *generation,
+                        action_digest: *action_digest,
+                    },
+                };
+                let mut use_ = self.execution_section_use();
+                let (reserved, adds_item) =
+                    reserved_settlement(&attempt, self.execution.retained_obligations().1);
+                use_.bytes += unsettled_entry_bytes(&attempt) + reserved;
+                use_.unsettled += 1;
+                use_.settled += usize::from(adds_item);
+                use_
+            }
+            ptr_ledger::LedgerEvent::ScopeLifecycle(scope) => {
+                let growth = self.scopes.growth_bytes(scope);
+                if growth == 0 {
+                    return Ok(());
+                }
+                let mut use_ = self.execution_section_use();
+                use_.bytes += growth;
+                use_.scopes += 1;
+                use_
+            }
+            _ => return Ok(()),
+        };
+        if projected.fits() {
+            Ok(())
+        } else {
+            Err(projected.refusal())
+        }
+    }
+
+    /// Whether settling `attempt` may retain a response of `len` bytes: the section with the
+    /// attempt replaced by its settled entry (and any earlier entry under its key replaced)
+    /// still fits. Otherwise the settlement records the outcome without the response, which
+    /// always fits in the room the attempt reserved.
+    pub(crate) fn settlement_retains_response(&self, attempt: CommitIndex, len: usize) -> bool {
+        let (unsettled, settled) = self.execution.retained_obligations();
+        let Some(effect) = unsettled.get(&attempt) else {
+            return true;
+        };
+        let Some(key) = effect.key.as_ref() else {
+            return true;
+        };
+        let current = self.execution_section_use();
+        let replaced = settled
+            .get(key)
+            .map_or(0, |outcome| settled_entry_bytes(key, outcome));
+        let with_response = 4 + key.len() + 8 + 8 + identity_bytes(&effect.identity) + 4 + len;
+        let freed =
+            unsettled_entry_bytes(effect) + reserved_settlement(effect, settled).0 + replaced;
+        (current.bytes + with_response).saturating_sub(freed) <= MAX_SECTION_BYTES
+    }
+}
+
 impl ExecutionObligations {
     /// Encode both maps in deterministic key order, unsettled attempts first.
     fn encode(&self) -> Result<Vec<u8>, RuntimeError> {
         let mut out = Writer(Vec::new());
-        out.raw(EXECUTION_MAGIC)?;
+        let has_scope_block = !self.scopes.is_empty();
+        out.raw(if has_scope_block {
+            EXECUTION_SCOPE_MAGIC
+        } else {
+            EXECUTION_MAGIC
+        })?;
         out.count(self.unsettled.len())?;
         for (attempt, effect) in &self.unsettled {
             out.number(attempt.0)?;
@@ -1535,19 +1958,25 @@ impl ExecutionObligations {
                 SettledOutcome::NotApplied => out.number(2)?,
             }
         }
+        if has_scope_block {
+            encode_scope_block(&mut out, &self.scopes, self.scope_revision)?;
+        }
         Ok(out.0)
     }
 
     /// Strict ascending key order per map, so each state has exactly one
     /// encoding and a reordered or duplicated entry fails closed.
-    fn decode(bytes: &[u8]) -> Result<Self, RuntimeError> {
+    /// `scoped`: the outer magic is PTRCS010, which requires PTREX003 and nothing else does.
+    fn decode(bytes: &[u8], scoped: bool) -> Result<Self, RuntimeError> {
         if bytes.len() > MAX_SECTION_BYTES {
             return Err(invalid(CompactedError::SizeLimit));
         }
         let mut reader = Reader { bytes, offset: 0 };
-        if reader.take(8)? != EXECUTION_MAGIC {
-            return Err(invalid(CompactedError::UnsupportedVersion));
-        }
+        let has_scope_block = match reader.take(8)? {
+            magic if magic == EXECUTION_SCOPE_MAGIC && scoped => true,
+            magic if magic == EXECUTION_MAGIC && !scoped => false,
+            _ => return Err(invalid(CompactedError::UnsupportedVersion)),
+        };
         let mut state = Self::default();
 
         let mut previous: Option<u64> = None;
@@ -1606,6 +2035,9 @@ impl ExecutionObligations {
             state.settled.insert(key, outcome);
         }
 
+        if has_scope_block {
+            (state.scopes, state.scope_revision) = decode_scope_block(&mut reader)?;
+        }
         if !reader.finished() {
             return Err(invalid(CompactedError::LengthMismatch));
         }
@@ -1633,6 +2065,14 @@ impl PtrRuntime {
     /// Compact the log to this floor afterwards, not before — the snapshot must be
     /// durable before the records it replaces are discarded.
     pub fn export_compacted_snapshot(&self) -> Result<CompactedSnapshot, RuntimeError> {
+        // A history written before the execution-section budget can hold more than a snapshot
+        // carries: refuse it by name, before anything is encoded.
+        if let Some(overflow) = self.execution_section_overflow() {
+            return Err(RuntimeError::CompactionBlocked {
+                bytes: overflow.bytes,
+                items: overflow.items,
+            });
+        }
         let floor = self.journal_anchor()?;
         if self.state.last_applied != floor.index.0 {
             return Err(invalid(CompactedError::StateMismatch));
@@ -1646,9 +2086,12 @@ impl PtrRuntime {
         // Compaction is what removes the records these are derived from, so they
         // travel with the snapshot or they are lost.
         let (unsettled, settled) = self.execution.retained_obligations();
+        let (scopes, scope_revision) = self.scopes.compacted_parts();
         let execution = ExecutionObligations {
             unsettled: unsettled.clone(),
             settled: settled.clone(),
+            scopes,
+            scope_revision,
         }
         .encode()?;
         if semantic.len() > MAX_SECTION_BYTES
@@ -1660,7 +2103,9 @@ impl PtrRuntime {
         let mut bytes = Vec::with_capacity(
             HEADER + semantic.len() + lifecycle.len() + execution.len() + DIGEST_BYTES,
         );
-        bytes.extend_from_slice(if lifecycle.starts_with(AUTHORITY_LIFECYCLE_MAGIC) {
+        bytes.extend_from_slice(if execution.starts_with(EXECUTION_SCOPE_MAGIC) {
+            SCOPE_MAGIC
+        } else if lifecycle.starts_with(AUTHORITY_LIFECYCLE_MAGIC) {
             AUTHORITY_MAGIC
         } else if lifecycle.starts_with(DEPENDENCY_LIFECYCLE_MAGIC) {
             DEPENDENCY_MAGIC
@@ -1732,13 +2177,23 @@ impl PtrRuntime {
         above_floor: &[CommittedEvent],
         attestors: super::expert::ExpertAttestorRegistry,
     ) -> Result<Self, RuntimeError> {
-        let (layout, (semantic, lifecycle, execution)) = compacted_sections(bytes, trusted)?;
+        let (layout, scoped, (semantic, lifecycle, execution)) =
+            compacted_sections(bytes, trusted)?;
         let semantic = SemanticDelta::decode(semantic).map_err(RuntimeError::Semantic)?;
         let lifecycle = LifecycleState::decode(lifecycle, layout)?;
         let semdb =
             SemanticHost::restore(trusted.revision, semantic).map_err(RuntimeError::Semantic)?;
 
-        let execution = ExecutionObligations::decode(execution)?;
+        let execution = ExecutionObligations::decode(execution, scoped)?;
+        if execution
+            .scope_revision
+            .is_some_and(|revision| revision > trusted.revision)
+        {
+            return Err(invalid(CompactedError::StateMismatch));
+        }
+        let scopes =
+            ScopeRegistry::from_compacted_parts(execution.scopes, execution.scope_revision)
+                .map_err(|_| invalid(CompactedError::StateMismatch))?;
 
         let mut runtime = Self::new_with_attestors(config, attestors)?;
         runtime.semdb = semdb;
@@ -1747,6 +2202,9 @@ impl PtrRuntime {
         runtime
             .execution
             .restore_obligations(execution.unsettled, execution.settled);
+        // The scopes created below the floor, so the records above it and the recovery of every
+        // unreleased one find them (marked recovery-required again after the replay below).
+        runtime.scopes = scopes;
         // The taint registry is a projection of the `kv-taint:` entries; a malformed one fails
         // closed rather than restoring a registry that forgets a taint.
         runtime.taint = super::kv_taint::TaintRegistry::from_materialized(&lifecycle.materialized)?;
@@ -1812,11 +2270,15 @@ type CompactedSections<'a> = (&'a [u8], &'a [u8], &'a [u8]);
 fn compacted_sections(
     bytes: &[u8],
     trusted: CompactedAnchor,
-) -> Result<(Layout, CompactedSections<'_>), RuntimeError> {
+) -> Result<(Layout, bool, CompactedSections<'_>), RuntimeError> {
     if bytes.len() < HEADER + DIGEST_BYTES || bytes.len() > MAX_COMPACTED_BYTES {
         return Err(invalid(CompactedError::SizeLimit));
     }
+    let scoped = &bytes[..8] == SCOPE_MAGIC;
+    // Under PTRCS010 the layout is the lifecycle section's own (read once the framing is
+    // checked, below); `Evidence` stands in until then.
     let layout = match &bytes[..8] {
+        magic if magic == SCOPE_MAGIC => Layout::Evidence,
         magic if magic == AUTHORITY_MAGIC => Layout::Authority,
         magic if magic == DEPENDENCY_MAGIC => Layout::Dependency,
         magic if magic == FENCE_CAUSE_MAGIC => Layout::FenceCause,
@@ -1865,8 +2327,20 @@ fn compacted_sections(
     }
     let semantic_end = HEADER + semantic_len as usize;
     let lifecycle_end = semantic_end + lifecycle_len as usize;
+    let layout = if scoped {
+        match bytes[semantic_end..lifecycle_end].get(..8) {
+            Some(magic) if magic == AUTHORITY_LIFECYCLE_MAGIC => Layout::Authority,
+            Some(magic) if magic == DEPENDENCY_LIFECYCLE_MAGIC => Layout::Dependency,
+            Some(magic) if magic == FENCE_LIFECYCLE_MAGIC => Layout::FenceCause,
+            Some(magic) if magic == EVIDENCE_LIFECYCLE_MAGIC => Layout::Evidence,
+            _ => return Err(invalid(CompactedError::UnsupportedVersion)),
+        }
+    } else {
+        layout
+    };
     Ok((
         layout,
+        scoped,
         (
             &bytes[HEADER..semantic_end],
             &bytes[semantic_end..lifecycle_end],
@@ -2847,6 +3321,191 @@ mod authority_tests {
         assert!(matches!(
             LifecycleState::decode(&swapped, Layout::Authority),
             Err(RuntimeError::Compacted(CompactedError::NoncanonicalSection))
+        ));
+    }
+}
+
+#[cfg(test)]
+mod scope_block_tests {
+    use super::*;
+    use crate::scopes::SCOPE_BLOCK_OVERHEAD;
+
+    /// The registry's byte accounting is exactly what the scope block encodes, so the capacity
+    /// check bounds the real export.
+    #[test]
+    fn the_registry_accounts_exactly_the_bytes_the_scope_block_takes() {
+        let mut scopes = CompactedScopes::new();
+        for (i, parent, lease) in [
+            (0, None, ScopeLeaseBinding::default()),
+            (
+                1,
+                Some("s0"),
+                ScopeLeaseBinding {
+                    state_id: Some(StateId::from("state")),
+                    pod_id: Some(PodId::from("pod")),
+                    placement_epoch: Some(3),
+                    fencing_token: Some(7),
+                    generation: Some(Generation(2)),
+                    resource_lease_id: Some("lease-xyz".into()),
+                },
+            ),
+        ] {
+            let id = ScopeId(format!("s{i}"));
+            scopes.insert(
+                id.clone(),
+                (
+                    ExecutionScope {
+                        id,
+                        parent: parent.map(ScopeId::from),
+                        session: SessionId::from("session"),
+                        project: ProjectId::from("project"),
+                        created_at: Timestamp(1),
+                        deadline: (i == 1).then_some(Timestamp(9)),
+                        state: ScopeState::Created,
+                        cancellation_requested: false,
+                    },
+                    lease,
+                ),
+            );
+        }
+        let registry =
+            ScopeRegistry::from_compacted_parts(scopes.clone(), Some(Revision(1))).unwrap();
+        let mut out = Writer(Vec::new());
+        encode_scope_block(&mut out, &scopes, Some(Revision(1))).unwrap();
+        assert_eq!(out.0.len(), registry.snapshot_bytes());
+        assert!(registry.snapshot_bytes() > SCOPE_BLOCK_OVERHEAD);
+        assert_eq!(ScopeRegistry::default().snapshot_bytes(), 0);
+    }
+
+    /// Review of #141 (round 3): the per-entry accounting of the whole execution section
+    /// (unsettled attempts, settled keys of every outcome, the scope block and the framing) is
+    /// exactly what `ExecutionObligations::encode` writes.
+    #[test]
+    fn the_execution_section_accounting_is_exactly_the_encoded_section() {
+        let identity = |p: &str| ActionIdentity {
+            project: ProjectId::from(p),
+            principal: "principal".into(),
+            revision: Revision(3),
+            generation: Generation(2),
+            action_digest: [9; 32],
+        };
+        let mut unsettled = BTreeMap::new();
+        for (i, key) in [(1u64, Some("k1")), (2, None)] {
+            unsettled.insert(
+                CommitIndex(i),
+                UnsettledEffect {
+                    attempt: CommitIndex(i),
+                    key: key.map(str::to_owned),
+                    target: "capsule:a".into(),
+                    operation: "write".into(),
+                    effect: Effect::Mutation,
+                    identity: identity("project"),
+                },
+            );
+        }
+        let mut settled = BTreeMap::new();
+        settled.insert(
+            "a".to_owned(),
+            SettledOutcome::Applied {
+                attempt: CommitIndex(5),
+                identity: identity("p"),
+                response: vec![7; 33],
+            },
+        );
+        settled.insert(
+            "b".to_owned(),
+            SettledOutcome::AppliedWithoutResponse {
+                attempt: CommitIndex(6),
+                identity: identity(""),
+            },
+        );
+        settled.insert("c".to_owned(), SettledOutcome::NotApplied);
+        let accounted = |obligations: &ExecutionObligations, scope_bytes: usize| {
+            8 + 4
+                + obligations
+                    .unsettled
+                    .values()
+                    .map(unsettled_entry_bytes)
+                    .sum::<usize>()
+                + 4
+                + obligations
+                    .settled
+                    .iter()
+                    .map(|(key, outcome)| settled_entry_bytes(key, outcome))
+                    .sum::<usize>()
+                + scope_bytes
+        };
+        let plain = ExecutionObligations {
+            unsettled: unsettled.clone(),
+            settled: settled.clone(),
+            scopes: CompactedScopes::new(),
+            scope_revision: None,
+        };
+        assert_eq!(plain.encode().unwrap().len(), accounted(&plain, 0));
+        let mut scopes = CompactedScopes::new();
+        let id = ScopeId::from("scope");
+        scopes.insert(
+            id.clone(),
+            (
+                ExecutionScope {
+                    id,
+                    parent: None,
+                    session: SessionId::from("session"),
+                    project: ProjectId::from("project"),
+                    created_at: Timestamp(1),
+                    deadline: None,
+                    state: ScopeState::Created,
+                    cancellation_requested: false,
+                },
+                ScopeLeaseBinding::default(),
+            ),
+        );
+        let registry =
+            ScopeRegistry::from_compacted_parts(scopes.clone(), Some(Revision(1))).unwrap();
+        let scoped = ExecutionObligations {
+            unsettled,
+            settled,
+            scopes,
+            scope_revision: Some(Revision(1)),
+        };
+        assert_eq!(
+            scoped.encode().unwrap().len(),
+            accounted(&scoped, registry.snapshot_bytes())
+        );
+    }
+
+    /// Review of #141 (round 4): at the settled-item bound, an attempt under a key that is
+    /// already settled (a retry after a `NotApplied` reconciliation) replaces that entry and is
+    /// admitted; an attempt under a new key would add an item and is refused.
+    #[test]
+    fn a_retry_of_a_settled_key_is_admitted_at_the_item_bound() {
+        let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+        let settled: BTreeMap<String, SettledOutcome> = (0..MAX_SECTION_ITEMS)
+            .map(|i| (format!("k{i:05}"), SettledOutcome::NotApplied))
+            .collect();
+        runtime
+            .execution
+            .restore_obligations(BTreeMap::new(), settled);
+        let attempt = |key: &str| ptr_ledger::LedgerEvent::EffectAttempted {
+            key: Some(key.to_owned()),
+            project: ProjectId::from("p"),
+            principal: "alice".into(),
+            target: "capsule:a".into(),
+            operation: "write".into(),
+            capability: ptr_types::CapabilityId::from("file.write"),
+            effect: Effect::Mutation,
+            generation: Generation(1),
+            revision: Revision(1),
+            verification: ptr_types::VerificationLevel::Deterministic,
+            action_digest: [1; 32],
+        };
+        assert!(runtime.execution_section_use().settled == MAX_SECTION_ITEMS);
+        runtime
+            .check_execution_section_growth(&attempt("k00007"))
+            .unwrap();
+        assert!(matches!(
+            runtime.check_execution_section_growth(&attempt("fresh")),
+            Err(RuntimeError::ExecutionSectionFull { items, .. }) if items == MAX_SECTION_ITEMS + 1
         ));
     }
 }
