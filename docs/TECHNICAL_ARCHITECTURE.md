@@ -44,7 +44,7 @@ The plane model of [00](architecture/00-system.md) is the target. What each plan
 
 | Plane | In code | Planned |
 |---|---|---|
-| Ingress | `PtrRuntime::ingest_text` commits the raw request text as a `Request`-origin semantic delta | typed interpretation and raw↔typed cross-check (`ptr-ingress` is a scaffold no crate uses) |
+| Ingress | `PtrRuntime::ingest_text` commits the raw request text as a `Request`-origin semantic delta | typed interpretation and raw↔typed cross-check (`ptr-ingress` has a std-only prototype pipeline; `ptr-server` runs it only as opt-in advisory diagnostics and `ptrctl ingest` exposes it, while the runtime still commits only the raw text) |
 | Semantic | `ptr-semdb`: revisioned store, dependency invalidation, immutable snapshots, canonical delta codec | memoized derived queries |
 | Cognitive | `ptr-core` data structures; `model/burn-a0` trainable toy | a model on the request path (ADR-0022, S8: not until an A0 study passes) |
 | Routing | `ptr-router`: project-scoped Pod selection with keyed sampling and logged propensities; finding router; OPE; policy book | reasoning/search/symbolic operator routing |

@@ -14,7 +14,7 @@ Sources: component count from [docs/components/STATUS.md](docs/components/STATUS
 
 ## Implemented and validated
 
-- 34 Rust workspace crates plus four binaries (`ptr-bench`, `ptr-worker`, `ptrctl`, `ptrd`), including typed file/environment/CLI configuration and a central `ptr-runtime` orchestrator; [docs/components/STATUS.md](docs/components/STATUS.md) is the generated inventory and the authority for the count (34 components: 1 foundation, 22 prototype, 1 research-scaffold, 10 scaffold, as generated on this branch; `crates/` holds exactly those 34 `ptr-*` crates, the four binaries are not components)
+- 34 Rust workspace crates plus four binaries (`ptr-bench`, `ptr-worker`, `ptrctl`, `ptrd`), including typed file/environment/CLI configuration and a central `ptr-runtime` orchestrator; [docs/components/STATUS.md](docs/components/STATUS.md) is the generated inventory and the authority for the count (34 components: 1 foundation, 33 prototype, as generated on this branch since 2026-10-14, when the last ten scaffold crates and the ptr-core research scaffold gained executable, tested behaviour; the label does not mean task-trained or wired into the request path, see each crate's `missing` list; `crates/` holds exactly those 34 `ptr-*` crates, the four binaries are not components)
 - foundational domain types, semantic revision/snapshot prototype and dependency invalidation
 - bounded-mailbox/isolate contracts and Pod lease typestate
 - typed model → semantic Pod registry → Pod → verifier → SemDB observation loop for Pure/Read cognitive Pods

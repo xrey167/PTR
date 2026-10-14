@@ -1,14 +1,24 @@
 pub mod action_head;
 pub mod branch_reasoner;
+pub mod checkpoint;
+pub mod config;
+pub mod core_model;
 pub mod epistemic_workspace;
+pub mod error;
 pub mod latent_reasoner;
+pub mod layers;
 pub mod model;
 pub mod operator_router;
 pub mod probabilistic_reasoner;
 pub mod ptr_ar;
 pub mod ptr_diff;
 pub mod semantic_slots;
+pub mod tensor;
+pub mod training;
 pub mod typed_attention;
 pub mod verifier_head;
 
+pub use config::{ConfigError, CoreConfig};
+pub use core_model::{CoreModel, ForwardOutput};
+pub use error::CoreError;
 pub use model::PtrCoreConfig;

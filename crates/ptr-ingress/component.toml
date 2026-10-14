@@ -1,26 +1,38 @@
 version = 1
 id = "ptr-ingress"
-maturity = "scaffold"
-last_reviewed = "2026-09-18"
+maturity = "prototype"
+last_reviewed = "2026-10-14"
 
 implemented = [
   "RawInput variants for text, bytes and artifact references",
   "ArtifactKind taxonomy",
   "SemanticProposal label scores and semantic issues",
   "Basic raw↔typed cross-check status function",
+  "Deterministic magic-byte MIME/kind sniffer (PDF, PNG, JPEG, GIF, WebP, WAV, MP3/ID3, OGG, FLAC, MP4/ISO-BMFF, ZIP, gzip, tar, 7z, SQLite, UTF-8/UTF-16/legacy single-byte text) with confidence over a bounded 8 KiB window",
+  "Std-only text normalizer: BOM detection, strict UTF-8, UTF-16LE/BE, Windows-1252 fallback (a leading UTF-8 BOM is still consumed, so offsets stay raw-relative) with an explicit lossy flag, CRLF to LF, NUL reject/strip policy, and a per-character offset map back to raw bytes",
+  "Deterministic structural parser: depth-limited strict JSON recognizer plus Markdown headings/code fences, source code (rust/python/javascript/shell), key=value/TOML-like, CSV and prose segmentation with a segment bound; a hit segment cap is reported to the policy as an unclassified remainder and escalates the decision to needs-full-check",
+  "Pluggable SemanticClassifier trait with a rule-based lexicon reference classifier (task, reasoning and read-only/write/network/exec effect labels, normalized probabilities) and a document-shape prior classifier as a second opinion",
+  "Span-level provenance: every segment and label evidence carries a RawSpan into the original raw bytes, verified to round-trip for UTF-8, UTF-16 and CRLF input",
+  "Risk/disagreement verification policy producing Agree/SampleVerified/Disputed/NeedsFullCheck with typed reasons (kind/extension mismatch, invalid or too-deep JSON, classifier disagreement, probability divergence, lossy decoding, always full check for write/network/exec effects)",
+  "PolicyConfig::validate and IngressPipeline::try_new reject NaN, infinite or out-of-[0, 1] policy thresholds with a typed PolicyConfigError; IngressPipeline::new and evaluate_policy stay infallible but fail closed by replacing an invalid threshold with the strictest valid value (0.0 risk/divergence, 1.0 minimum sniff confidence)",
+  "IngressPipeline producing an IngressRecord that keeps the untouched raw input next to kind, normalized text, segments, proposal, evidence and decision, with a configurable input size bound and typed errors",
 ]
 
 missing = [
-  "infer MIME adapter and encoding_rs normalization",
-  "GLiClass-rs classifier adapter and deterministic parser stack",
-  "Span-level provenance back to raw bytes/text",
-  "Risk/disagreement-driven verification policy",
+  "infer-crate MIME adapter: only a std-only magic-byte sniffer exists, with a fixed small signature table and no container-internal detection (for example OOXML versus plain ZIP)",
+  "encoding_rs adapter: only strict UTF-8, UTF-16 and a Windows-1252 fallback exist; no other legacy encodings or charset sniffing",
+  "Unicode NFC (or any other Unicode normalization form) is not applied",
+  "GLiClass-rs (learned) classifier adapter: only a lexicon/rule reference classifier and a shape prior exist, with no calibration and no measured accuracy",
+  "Parsers beyond heuristics: no YAML/XML/HTML parsing, no real language parsers for source code, and scalar-only JSON documents are not recognized as JSON",
+  "Non-text artifacts (images, audio, PDF, archives) are sniffed but not decoded, so they receive no typed interpretation and always need a full check",
+  "Artifact references (RawInput::Artifact) cannot be ingested until a resolver supplies their bytes",
+  "Corruption/ambiguity benchmark with measured detection rates for the ingress-classifier evaluation (E001/E004 not run)",
 ]
 
 next = [
-  "Implement byte→artifact→normalized-text pipeline",
-  "Add pluggable semantic classifier contract",
-  "Create corruption/ambiguity benchmark cases for raw↔typed disagreement",
+  "Create corruption/ambiguity benchmark cases for raw↔typed disagreement and run them through the ingress-classifier evaluation",
+  "Add a learned classifier adapter behind the SemanticClassifier trait and compare it with the rule baseline",
+  "Add an artifact resolver port so RawInput::Artifact can be ingested",
 ]
 
 experiments = [
