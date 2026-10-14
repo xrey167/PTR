@@ -4867,7 +4867,11 @@ name = "ptrctl"
 version = "0.1.0"
 dependencies = [
  "ptr-config",
+ "ptr-events",
+ "ptr-ingress",
+ "ptr-inspect",
  "ptr-ledger",
+ "ptr-observe",
  "ptr-runtime",
  "ptr-semdb",
  "ptr-types",
