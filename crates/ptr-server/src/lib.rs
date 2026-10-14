@@ -31,7 +31,15 @@ use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+mod ingress_diagnostics;
+mod options;
+mod request_tracing;
 pub mod vcw;
+
+pub use options::{
+    IngressDiagnosticsMode, RequestTracingOptions, ServerOptions, ServerOptionsError,
+    DEFAULT_MAX_TRACE_EXPORT_BYTES,
+};
 
 pub use vcw::{
     VcwApiError, VcwBuildError, VcwResponse, VcwService, VcwServiceParts, VcwTaskRequest,
@@ -298,6 +306,8 @@ pub struct ServerState {
     admission: Arc<RequestAdmission>,
     /// The verifier-closed path; `None` unless installed with [`ServerState::with_vcw`].
     vcw: Option<Arc<VcwService>>,
+    /// Opt-in capabilities; all off unless installed with [`ServerState::with_options`].
+    options: options::ActiveOptions,
 }
 
 impl ServerState {
@@ -353,7 +363,35 @@ impl ServerState {
             effect_grants,
             admission,
             vcw: None,
+            options: options::ActiveOptions::default(),
         }
+    }
+
+    /// Enable the opt-in capabilities of `options` (redacted request tracing, advisory ingress
+    /// diagnostics). `ServerOptions::default()` changes nothing.
+    ///
+    /// # Errors
+    /// [`ServerOptionsError`] when the trace export cap is zero or its file is unusable.
+    pub fn with_options(mut self, options: ServerOptions) -> Result<Self, ServerOptionsError> {
+        self.options = options::ActiveOptions::build(options)?;
+        Ok(self)
+    }
+
+    /// Span batches dropped because the trace export file reached its byte cap
+    /// (0 when tracing is off).
+    pub fn dropped_trace_exports(&self) -> u64 {
+        self.options
+            .tracing
+            .as_ref()
+            .map_or(0, |tracing| tracing.dropped_exports())
+    }
+
+    /// Span batches lost to a write error on the trace export file (0 when tracing is off).
+    pub fn trace_export_errors(&self) -> u64 {
+        self.options
+            .tracing
+            .as_ref()
+            .map_or(0, |tracing| tracing.export_errors())
     }
 
     /// Serve the verifier-closed path (`POST /v1/vcw/tasks`) from this state. The service's
@@ -469,6 +507,14 @@ fn router_with_state(state: ServerState) -> Router {
     } else {
         routes
     };
+    // Only when tracing is enabled; route_layer so the matched route pattern is known.
+    let routes = match state.options.tracing.clone() {
+        Some(tracing) => routes.route_layer(axum::middleware::from_fn_with_state(
+            tracing,
+            request_tracing::trace_request,
+        )),
+        None => routes,
+    };
     routes.with_state(state)
 }
 
@@ -561,15 +607,45 @@ async fn request(
     // so it stays held until that work ends even if this future is cancelled,
     // and async workers stay free to refuse excess requests and serve /health.
     let slot = state.admission.try_enter().ok_or(ApiError::Saturated)?;
-    tokio::task::spawn_blocking(move || {
+    // Only the id is kept for the tracing layer; never the text.
+    let traced_id = state
+        .options
+        .tracing
+        .is_some()
+        .then(|| request_tracing::TracedRequestId(input.id.clone()));
+    let result = tokio::task::spawn_blocking(move || {
         let _slot = slot;
-        process_request(&state, input)
+        // Advisory only, computed before and apart from the runtime call, which receives
+        // `input` unchanged.
+        let diagnostics = state
+            .options
+            .ingress
+            .as_ref()
+            .map(|runner| runner.diagnose(&input.text));
+        process_request_with(&state, input, diagnostics)
     })
     .await
-    .map_err(|error| ApiError::Internal(format!("request task failed: {error}")))?
+    .map_err(|error| ApiError::Internal(format!("request task failed: {error}")))?;
+    match traced_id {
+        Some(id) => {
+            let mut response = result.into_response();
+            response.extensions_mut().insert(id);
+            Ok(response)
+        }
+        None => result,
+    }
 }
 
+#[cfg(test)]
 fn process_request(state: &ServerState, input: ApiRequest) -> Result<Response, ApiError> {
+    process_request_with(state, input, None)
+}
+
+fn process_request_with(
+    state: &ServerState,
+    input: ApiRequest,
+    diagnostics: Option<ingress_diagnostics::IngressDiagnostics>,
+) -> Result<Response, ApiError> {
     let mut runtime = state
         .runtime
         .lock()
@@ -666,7 +742,7 @@ fn process_request(state: &ServerState, input: ApiRequest) -> Result<Response, A
         })
         .collect::<String>();
 
-    let body = Json(ApiResponse {
+    let response = ApiResponse {
         id: input.id,
         revision: runtime.revision().0,
         text,
@@ -676,7 +752,15 @@ fn process_request(state: &ServerState, input: ApiRequest) -> Result<Response, A
             .map(|output| format!("{}:{}", output.type_id, output.bytes.len()))
             .collect(),
         effect,
-    });
+    };
+    let body = match diagnostics {
+        None => Json(response).into_response(),
+        Some(ingress_diagnostics) => Json(ingress_diagnostics::WithDiagnostics {
+            response: &response,
+            ingress_diagnostics,
+        })
+        .into_response(),
+    };
     // Read-only report of the KV path; absent for a plain backend.
     Ok(match kv_hit_tokens.get() {
         Some(hits) => ([(KV_HIT_TOKENS_HEADER, hits.to_string())], body).into_response(),
