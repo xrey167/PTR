@@ -5,7 +5,7 @@
 
 **Component count:** 33  
 **Maturity distribution:** `foundation`: 1, `prototype`: 32  
-**Rust footprint:** 342 source files · 165504 nonblank source lines · 279 integration-test files · 3834 test markers (`#[test]`, `#[tokio::test]`)
+**Rust footprint:** 342 source files · 165585 nonblank source lines · 279 integration-test files · 3835 test markers (`#[test]`, `#[tokio::test]`)
 
 | Component | Maturity | Rust files | LOC | Test files | Tests | Implemented items | Missing items | Experiments | Evaluations |
 |---|---:|---:|---:|---:|---:|---:|---:|---|---|
@@ -18,7 +18,7 @@
 | [ptr-exec](../../crates/ptr-exec/README.md) | `prototype` | 3 | 458 | 2 | 18 | 7 | 7 | R001:frozen, E001:planned, E003:planned | execution-runtime:open |
 | [ptr-execwire](../../crates/ptr-execwire/README.md) | `prototype` | 5 | 1597 | 3 | 36 | 18 | 9 | — | — |
 | [ptr-fastmem](../../crates/ptr-fastmem/README.md) | `prototype` | 9 | 3189 | 4 | 85 | 13 | 3 | M008:frozen, L003:completed | fast-weight-memory:open |
-| [ptr-feedback](../../crates/ptr-feedback/README.md) | `prototype` | 11 | 4096 | 7 | 85 | 9 | 4 | F001:frozen, E001:planned | — |
+| [ptr-feedback](../../crates/ptr-feedback/README.md) | `prototype` | 11 | 4177 | 7 | 86 | 9 | 4 | F001:frozen, E001:planned | — |
 | [ptr-ingress](../../crates/ptr-ingress/README.md) | `prototype` | 9 | 3584 | 5 | 90 | 11 | 8 | E001:planned, E004:planned | ingress-classifier:open |
 | [ptr-inspect](../../crates/ptr-inspect/README.md) | `prototype` | 8 | 2218 | 2 | 47 | 11 | 5 | E001:planned | introspection:open |
 | [ptr-labeling](../../crates/ptr-labeling/README.md) | `prototype` | 6 | 1888 | 1 | 36 | 12 | 5 | F002:frozen | label-model:open |
