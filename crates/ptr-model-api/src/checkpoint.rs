@@ -249,7 +249,14 @@ fn put_blob(out: &mut Vec<u8>, data: &[u8]) {
     out.extend_from_slice(data);
 }
 
+#[cfg(test)]
+thread_local! {
+    static ENCODE_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 fn encode_resume_state(request: &ModelResumeRequest) -> Vec<u8> {
+    #[cfg(test)]
+    ENCODE_CALLS.with(|c| c.set(c.get() + 1));
     let mut out = Vec::new();
     put_blob(&mut out, request.request_id.0.as_bytes());
     out.extend_from_slice(&request.semantic_context.revision.0.to_le_bytes());
@@ -259,6 +266,23 @@ fn encode_resume_state(request: &ModelResumeRequest) -> Vec<u8> {
     put_blob(&mut out, request.observation.type_id.0.as_bytes());
     put_blob(&mut out, &request.observation.payload);
     out
+}
+
+/// Exact length `encode_resume_state` will produce, without materializing it. Keep the two
+/// in lockstep (a unit test asserts equality). `None` on arithmetic overflow.
+fn encoded_resume_state_len(request: &ModelResumeRequest) -> Option<usize> {
+    // Fixed fields: context revision (8), round (4), observation revision (8).
+    const FIXED: usize = 8 + 4 + 8;
+    // Each blob carries a u64 length prefix.
+    const PREFIX: usize = 8;
+    [
+        request.request_id.0.len(),
+        request.observation.source.len(),
+        request.observation.type_id.0.len(),
+        request.observation.payload.len(),
+    ]
+    .into_iter()
+    .try_fold(FIXED, |acc, len| acc.checked_add(PREFIX)?.checked_add(len))
 }
 
 fn decode_resume_state(
@@ -304,6 +328,11 @@ pub trait CheckpointableBackend: ResumableInferenceBackend {
         &self,
         request: &ModelResumeRequest,
     ) -> Result<CheckpointHandle, CheckpointError> {
+        match encoded_resume_state_len(request) {
+            Some(len) if len <= MAX_CHECKPOINT_STATE_BYTES => {}
+            Some(len) => return Err(CheckpointError::StateTooLarge { len }),
+            None => return Err(CheckpointError::StateTooLarge { len: usize::MAX }),
+        }
         CheckpointHandle::seal(self.name(), encode_resume_state(request))
     }
 
@@ -349,5 +378,83 @@ mod tests {
             CheckpointHandle::seal("x".repeat(257), vec![]),
             Err(CheckpointError::BackendIdTooLong { .. })
         ));
+    }
+
+    fn request(id: &str, source: &str, type_id: &str, payload: Vec<u8>) -> ModelResumeRequest {
+        ModelResumeRequest {
+            request_id: RequestId(id.into()),
+            semantic_context: SemanticContext {
+                revision: Revision(1),
+                entries: vec![],
+            },
+            round: 3,
+            observation: ModelObservation {
+                revision: Revision(2),
+                source: source.into(),
+                type_id: TypeId(type_id.into()),
+                payload,
+            },
+        }
+    }
+
+    #[test]
+    fn encoded_len_matches_encoding() {
+        for r in [
+            request("", "", "", vec![]),
+            request("req-1", "tool", "ptr.t.v1", vec![1, 2, 3]),
+            request(
+                "r\u{e9}q-\u{1f600}",
+                "s\u{fc}\u{4e2d}",
+                "t\u{3b1}",
+                vec![0; 1000],
+            ),
+        ] {
+            assert_eq!(
+                encoded_resume_state_len(&r),
+                Some(encode_resume_state(&r).len())
+            );
+        }
+    }
+
+    #[test]
+    fn oversized_request_is_rejected_before_encoding() {
+        let backend = ReferenceEchoBackend;
+        let big = request("r", "s", "t", vec![0; MAX_CHECKPOINT_STATE_BYTES + 1]);
+        ENCODE_CALLS.with(|c| c.set(0));
+        assert!(matches!(
+            backend.export_checkpoint(&big),
+            Err(CheckpointError::StateTooLarge { .. })
+        ));
+        assert_eq!(
+            ENCODE_CALLS.with(std::cell::Cell::get),
+            0,
+            "encoded before the cap check"
+        );
+        let ok = request("r", "s", "t", vec![0; 16]);
+        assert!(backend.export_checkpoint(&ok).is_ok());
+        assert_eq!(ENCODE_CALLS.with(std::cell::Cell::get), 1);
+    }
+
+    #[test]
+    fn declared_lengths_beyond_buffer_are_rejected_without_allocating() {
+        let mut state = Vec::new();
+        state.extend_from_slice(&u64::MAX.to_le_bytes());
+        assert!(matches!(
+            decode_resume_state(
+                &state,
+                SemanticContext {
+                    revision: Revision(1),
+                    entries: vec![]
+                }
+            ),
+            Err(CheckpointError::Malformed(_))
+        ));
+        let mut wire = CheckpointHandle::seal("b", vec![1]).unwrap().to_bytes();
+        let at = 4 + 4 + 4 + 1;
+        wire[at..at + 8].copy_from_slice(&(MAX_CHECKPOINT_STATE_BYTES as u64).to_le_bytes());
+        assert_eq!(
+            CheckpointHandle::from_bytes(&wire),
+            Err(CheckpointError::Malformed("truncated"))
+        );
     }
 }
