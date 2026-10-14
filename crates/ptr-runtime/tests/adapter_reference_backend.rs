@@ -59,15 +59,16 @@ fn promoted(backend: &ReferenceKvReuseBackend, generation: u64) -> LedgerEvent {
     promoted_with(
         generation,
         backend.adapter_artifact_digest(&adapter(backend, generation)),
+        backend.base_digest(),
     )
 }
 
-fn promoted_with(generation: u64, artifact_sha256: [u8; 32]) -> LedgerEvent {
+fn promoted_with(generation: u64, artifact_sha256: [u8; 32], base: [u8; 32]) -> LedgerEvent {
     LedgerEvent::AdapterPromoted {
         project: ProjectId::from("alpha"),
         adapter: "coder".into(),
         generation: Generation(generation),
-        base: [1; 32],
+        base,
         artifact_sha256,
         gate_report_digest: [3; 32],
     }
@@ -243,7 +244,7 @@ fn the_first_adapter_lifecycle_event_arms_the_rule_for_every_adapter_identity() 
         .is_ok());
     // One AdapterPromoted for another key arms the rule, with no explicit opt-in.
     backend
-        .apply_committed_event(&promoted_with(1, [2; 32]))
+        .apply_committed_event(&promoted_with(1, [2; 32], [1; 32]))
         .unwrap();
     let after = request(&backend);
     assert!(matches!(
@@ -297,7 +298,7 @@ fn other_weights_under_a_promoted_identity_and_generation_are_refused() {
         "the artifact digest is the SHA-256 of the canonical bytes"
     );
     backend
-        .apply_committed_event(&promoted_with(2, digest))
+        .apply_committed_event(&promoted_with(2, digest, backend.base_digest()))
         .unwrap();
     assert!(backend
         .infer_scoped_bound(&scope(), &req, None, &StackBinding::with_adapter(real))
@@ -316,7 +317,7 @@ fn other_weights_under_a_promoted_identity_and_generation_are_refused() {
     // So are foreign weights promoted under a digest that is not theirs.
     let other = backend_fresh();
     other
-        .apply_committed_event(&promoted_with(2, [2; 32]))
+        .apply_committed_event(&promoted_with(2, [2; 32], other.base_digest()))
         .unwrap();
     let probe = request(&other);
     assert!(matches!(
@@ -325,6 +326,45 @@ fn other_weights_under_a_promoted_identity_and_generation_are_refused() {
             &probe,
             None,
             &StackBinding::with_adapter(seeded(&other, 2, 20240607))
+        ),
+        Err(ReferenceKvError::Binding(BindingError::NotLive { .. }))
+    ));
+}
+
+#[test]
+fn an_adapter_promoted_for_one_base_is_refused_on_a_backend_with_another() {
+    let base_a = backend();
+    let base_b =
+        ReferenceKvReuseBackend::with_seed(ReferenceKvLimits::default(), scope(), 7).unwrap();
+    assert_ne!(base_a.base_digest(), base_b.base_digest());
+    // The adapter is promoted for base A, with the real digest of its weights.
+    let weights = seeded(&base_a, 2, 20240607);
+    let event = promoted_with(
+        2,
+        base_a.adapter_artifact_digest(&weights),
+        base_a.base_digest(),
+    );
+    base_a.apply_committed_event(&event).unwrap();
+    base_b.apply_committed_event(&event).unwrap();
+    // On base A it is served.
+    let req_a = request(&base_a);
+    assert!(base_a
+        .infer_scoped_bound(&scope(), &req_a, None, &StackBinding::with_adapter(weights))
+        .is_ok());
+    // On base B, where the same bytes would load, it is not live: it was promoted for base A.
+    let weights_b = seeded(&base_b, 2, 20240607);
+    assert_eq!(
+        base_b.adapter_artifact_digest(&weights_b),
+        base_a.adapter_artifact_digest(&seeded(&base_a, 2, 20240607)),
+        "the same adapter bytes, so only the base differs"
+    );
+    let req_b = request(&base_b);
+    assert!(matches!(
+        base_b.infer_scoped_bound(
+            &scope(),
+            &req_b,
+            None,
+            &StackBinding::with_adapter(weights_b)
         ),
         Err(ReferenceKvError::Binding(BindingError::NotLive { .. }))
     ));

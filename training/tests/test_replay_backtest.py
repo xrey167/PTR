@@ -483,3 +483,31 @@ class CategoryLengthTests(unittest.TestCase):
         self.assertEqual(pool.categories(), {"mode": ["a" * 256]})
         with self.assertRaises(HistoryError):
             ReplaySimulator(pool).simulate({"mode": "b" * 257})
+
+
+class KindPinningAndTextTests(unittest.TestCase):
+    def test_a_decision_keeps_the_kind_of_its_first_admission(self):
+        pool = HistoryPool()
+        pool.add_generation("g0", order=0, decisions={"mode": "off"}, outcome=outcome(200))
+        before = pool.fingerprint()
+        with self.assertRaises(HistoryError):
+            pool.add_generation("g1", order=1, decisions={"mode": 0}, outcome=outcome(300))
+        self.assertEqual(pool.fingerprint(), before)
+        self.assertEqual(pool.kinds(), {"mode": "categorical"})
+        with self.assertRaises(HistoryError):
+            ReplaySimulator(pool).simulate({"mode": 0})
+        # The other direction, and a bool counting as a number.
+        numbers = HistoryPool()
+        numbers.add_generation("g0", order=0, decisions={"x": 1}, outcome=outcome(200))
+        with self.assertRaises(HistoryError):
+            numbers.add_generation("g1", order=1, decisions={"x": "on"}, outcome=outcome(300))
+        numbers.add_generation("g1", order=1, decisions={"x": True}, outcome=outcome(300))
+
+    def test_an_unpaired_surrogate_is_a_history_error_and_leaves_the_pool_unchanged(self):
+        pool = HistoryPool()
+        pool.add_generation("g0", order=0, decisions={"mode": "off"}, outcome=outcome(200))
+        before = pool.fingerprint()
+        with self.assertRaises(HistoryError):
+            pool.add_generation("g1", order=1, decisions={"mode": "\ud800"}, outcome=outcome(300))
+        self.assertEqual(pool.fingerprint(), before)
+        self.assertEqual(len(pool.generations), 1)

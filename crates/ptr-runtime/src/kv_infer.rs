@@ -547,6 +547,14 @@ pub(crate) enum CacheUse {
     Enabled,
 }
 
+/// What a committed `AdapterPromoted` named for one adapter key.
+#[derive(Clone, Copy, Debug)]
+struct PromotedEntry {
+    generation: Generation,
+    artifact: [u8; 32],
+    base: [u8; 32],
+}
+
 /// Liveness as this backend knows it: an input is live unless it was revoked or its
 /// generation is below the floor a supersession set for its identity.
 #[derive(Debug, Default)]
@@ -555,7 +563,10 @@ pub(crate) struct RevokedInputs {
     floors: BTreeMap<String, Generation>,
     /// The one generation each promoted adapter key serves: an adapter dependency is live only
     /// at exactly this generation, not at any generation above the floor.
-    adapter_current: BTreeMap<String, (Generation, [u8; 32])>,
+    adapter_current: BTreeMap<String, PromotedEntry>,
+    /// Identity of this backend's base model (`ReferenceKvReuseBackend::base_digest`): a
+    /// promoted adapter is live only for the base it was promoted for.
+    base: Option<[u8; 32]>,
     /// Set once, by `require_promoted_adapters` or by the first adapter lifecycle event this
     /// backend applies: every adapter-kind dependency, whatever its identity, is then live only
     /// at the generation a committed promotion named. Never cleared.
@@ -642,18 +653,22 @@ impl RevokedInputs {
                 adapter,
                 generation,
                 artifact_sha256,
+                base,
                 ..
             } => {
                 self.strict_adapters = true;
                 let key = crate::adapter::adapter_key(project, adapter);
                 self.raise_floor(key.clone(), *generation);
-                // The promoted generation and the digest of the weights it was promoted with.
-                let current = self
-                    .adapter_current
-                    .entry(key)
-                    .or_insert((*generation, *artifact_sha256));
-                if *generation >= current.0 {
-                    *current = (*generation, *artifact_sha256);
+                // The promoted generation, the digest of the weights it was promoted with and the
+                // base model it was promoted for.
+                let promoted = PromotedEntry {
+                    generation: *generation,
+                    artifact: *artifact_sha256,
+                    base: *base,
+                };
+                let current = self.adapter_current.entry(key).or_insert(promoted);
+                if *generation >= current.generation {
+                    *current = promoted;
                 }
             }
             // Every other kind leaves no input dead. Listed, not wildcarded, so a new event
@@ -735,12 +750,15 @@ impl RevokedInputs {
         if !(namespaced || self.strict_adapters) {
             return true;
         }
-        // Identity, generation and the digest of the weights must all be the promoted entry's:
-        // other weights under a promoted identity and generation are not that adapter.
+        // Identity, generation and the digest of the weights must all be the promoted entry's
+        // (other weights under a promoted identity and generation are not that adapter), and it
+        // must have been promoted for this backend's own base model.
         self.adapter_current
             .get(&dependency.identity)
-            .is_some_and(|(generation, artifact)| {
-                *generation == dependency.generation && *artifact == dependency.content_digest
+            .is_some_and(|promoted| {
+                promoted.generation == dependency.generation
+                    && promoted.artifact == dependency.content_digest
+                    && self.base.is_none_or(|base| base == promoted.base)
             })
     }
 }
@@ -870,6 +888,15 @@ fn derive_chain(
     ))
 }
 
+/// See [`ReferenceKvReuseBackend::base_digest`].
+fn base_digest_of(chain: &KvChainId) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(b"ptr.kv.base-model.v1\0");
+    hasher.update(chain.0);
+    hasher.finalize().into()
+}
+
 impl ReferenceKvReuseBackend {
     /// A backend with the R005 reference weights (`REFERENCE_KV_WEIGHT_SEED`).
     pub fn new(
@@ -976,7 +1003,12 @@ impl ReferenceKvReuseBackend {
                 open_sessions: 0,
                 next_session: 0,
             }),
-            liveness: ReferenceKvLiveness::default(),
+            liveness: ReferenceKvLiveness {
+                inner: Arc::new(Mutex::new(RevokedInputs {
+                    base: Some(base_digest_of(&chain)),
+                    ..RevokedInputs::default()
+                })),
+            },
             oneshot: Mutex::new(()),
             positional: None,
         })
@@ -1260,6 +1292,14 @@ impl ReferenceKvReuseBackend {
             CacheUse::Disabled,
             &StackBinding::base(),
         )
+    }
+
+    /// Identity of this backend's base model: the SHA-256 of a domain tag and the chain id,
+    /// which is derived from the actual stack weights, the configuration, the tokenizer and the
+    /// build identity. An `AdapterPromoted` must name exactly this digest as its `base` for the
+    /// adapter to be live here; a promotion for another base never serves on this backend.
+    pub fn base_digest(&self) -> [u8; 32] {
+        base_digest_of(&self.chain)
     }
 
     /// The canonical bytes of `adapter` as an artifact of this stack, and the SHA-256 of them

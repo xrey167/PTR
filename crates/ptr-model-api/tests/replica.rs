@@ -350,3 +350,113 @@ fn a_placed_resume_without_failover_lands_on_the_replica_of_its_own_invocation_e
         "c never saw either run"
     );
 }
+
+#[test]
+fn placements_are_bound_to_their_invocation_router_request_and_context() {
+    use ptr_model_api::{ModelRequest, ModelResumeRequest};
+    use ptr_types::{Revision, SemanticContext};
+    let at = |revision: u64| SemanticContext {
+        revision: Revision(revision),
+        entries: vec![],
+    };
+    let call = |revision: u64| ModelRequest {
+        semantic_context: at(revision),
+        ..request("same-id")
+    };
+    let resume = |revision: u64| ModelResumeRequest {
+        semantic_context: at(revision),
+        ..resume_request("same-id")
+    };
+    let replicas = [healthy("a"), healthy("b"), healthy("c")];
+    let new_router = || {
+        ReplicaRouter::new(
+            replicas
+                .iter()
+                .map(|r| Arc::clone(r) as Arc<dyn ResumableInferenceBackend>)
+                .collect(),
+            ReplicaPolicy {
+                max_failover: 0,
+                resume: ResumeFailover::Never,
+            },
+        )
+        .expect("router")
+    };
+    let router = new_router();
+    // One request id, two invocations on different replicas, told apart by their context.
+    let first = router.infer_placed(&call(1)).expect("served");
+    let second = router.infer_placed(&call(2)).expect("served");
+    assert_eq!(label(first.events), "a");
+    assert_eq!(label(second.events), "b");
+    // Swapping the placements is refused: each belongs to the context of its own invocation.
+    assert_eq!(
+        router.resume_placed(second.placement, &resume(1)).err(),
+        Some(ModelError::scope_mismatch())
+    );
+    assert_eq!(
+        router.resume_placed(first.placement, &resume(2)).err(),
+        Some(ModelError::scope_mismatch())
+    );
+    // A refused attempt spends the placement; fresh invocations route to their own replica.
+    let first = router.infer_placed(&call(1)).expect("served");
+    let second = router.infer_placed(&call(2)).expect("served");
+    let on_first = router
+        .resume_placed(first.placement, &resume(1))
+        .expect("resumes");
+    let on_second = router
+        .resume_placed(second.placement, &resume(2))
+        .expect("resumes");
+    // The rotation gave the fresh pair c and a.
+    assert_eq!(label(on_first.events), "c");
+    assert_eq!(label(on_second.events), "a");
+    // Another router's placement is refused, and so is a different request id.
+    let other = new_router();
+    let foreign = other.infer_placed(&call(1)).expect("served");
+    assert_eq!(
+        router.resume_placed(foreign.placement, &resume(1)).err(),
+        Some(ModelError::scope_mismatch())
+    );
+    let own = router.infer_placed(&call(1)).expect("served");
+    assert_eq!(
+        router
+            .resume_placed(own.placement, &resume_request("another-id"))
+            .err(),
+        Some(ModelError::scope_mismatch())
+    );
+}
+
+#[test]
+fn open_placements_are_bounded_and_dropping_one_releases_it() {
+    use ptr_model_api::MAX_OPEN_PLACEMENTS;
+    let replicas = [healthy("a")];
+    let router = ReplicaRouter::new(
+        replicas
+            .iter()
+            .map(|r| Arc::clone(r) as Arc<dyn ResumableInferenceBackend>)
+            .collect(),
+        ReplicaPolicy {
+            max_failover: 0,
+            resume: ResumeFailover::Never,
+        },
+    )
+    .expect("router");
+    let mut held = Vec::new();
+    for n in 0..MAX_OPEN_PLACEMENTS {
+        held.push(
+            router
+                .infer_placed(&request(&format!("r{n}")))
+                .expect("served"),
+        );
+    }
+    let calls = replicas[0].calls.load(Ordering::SeqCst);
+    assert_eq!(
+        router.infer_placed(&request("one-too-many")).err(),
+        Some(ModelError::overloaded())
+    );
+    assert_eq!(
+        replicas[0].calls.load(Ordering::SeqCst),
+        calls,
+        "refused before any replica ran"
+    );
+    drop(held);
+    assert!(router.infer_placed(&request("after")).is_ok());
+}

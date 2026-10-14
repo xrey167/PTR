@@ -14,7 +14,9 @@
 //! **Resume does not fail over by default, and goes back where the run started.** A `resume`
 //! continues a run that started on some replica. [`ReplicaRouter::infer_placed`] returns the
 //! answer with a [`Placement`] (per invocation, so two calls under one request id are two
-//! placements), and [`ReplicaRouter::resume_placed`] consumes it: under
+//! placements; an unguessable token, bound in a bounded table to the router, the request id and
+//! the semantic context, released when the placement is dropped), and
+//! [`ReplicaRouter::resume_placed`] checks those and consumes it: under
 //! [`ResumeFailover::Never`] the resume goes to exactly that replica, once. The plain trait
 //! `resume` carries no placement and takes the rotation's replica, which a stateful replica
 //! will refuse. Whether another replica may take a run over is a property of the replicas, so
@@ -25,21 +27,69 @@ use crate::{
     InferenceBackend, ModelError, ModelEvent, ModelRequest, ModelResumeRequest,
     ResumableInferenceBackend,
 };
+use ptr_types::{RequestId, SemanticContext};
+use std::collections::HashMap;
 use std::fmt;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError, Weak};
 
 /// The most replicas one router fronts.
 pub const MAX_REPLICAS: usize = 64;
 
-/// The replica that answered one `infer`, handed back by [`ReplicaRouter::infer_placed`] and
-/// consumed by [`ReplicaRouter::resume_placed`]. It is per invocation, so two calls under the
-/// same request id keep separate placements; it is not `Clone`, has no public constructor, and
-/// the router keeps no table of it.
-#[derive(Debug)]
-pub struct Placement {
+/// The most placements one router keeps open at once. When the table is full, a new
+/// [`ReplicaRouter::infer_placed`] is refused with [`ModelError::overloaded`]; no open
+/// placement is evicted.
+pub const MAX_OPEN_PLACEMENTS: usize = 4096;
+
+/// What the router remembers about one open invocation.
+struct OpenPlacement {
     replica: usize,
+    request_id: RequestId,
+    context: [u8; 32],
+    /// A resume is running on it: it keeps its slot for the successor and cannot be used twice.
+    in_flight: bool,
+}
+
+#[derive(Default)]
+struct Placements {
+    entries: HashMap<u128, OpenPlacement>,
+    /// Slots promised to `infer_placed` calls whose replica is still running.
+    reserved: usize,
+}
+
+/// The replica that answered one invocation, handed back by [`ReplicaRouter::infer_placed`] and
+/// consumed by [`ReplicaRouter::resume_placed`]. It carries only an unguessable 128-bit
+/// invocation token, the id of the router that issued it and a weak reference to that router's
+/// table; the replica, the request id and the semantic context live in the table under the
+/// token. It is per invocation (two calls under one request id are two placements), not
+/// `Clone`, has no public constructor, and **dropping it releases its entry**.
+pub struct Placement {
+    token: u128,
+    router: u64,
+    table: Weak<Mutex<Placements>>,
+}
+
+impl Drop for Placement {
+    fn drop(&mut self) {
+        if let Some(table) = self.table.upgrade() {
+            let mut table = table.lock().unwrap_or_else(PoisonError::into_inner);
+            if table
+                .entries
+                .get(&self.token)
+                .is_some_and(|entry| !entry.in_flight)
+            {
+                table.entries.remove(&self.token);
+            }
+        }
+    }
+}
+
+// Not derived: the token is a credential.
+impl fmt::Debug for Placement {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.debug_struct("Placement").finish_non_exhaustive()
+    }
 }
 
 /// What [`ReplicaRouter::infer_placed`] returns.
@@ -48,6 +98,19 @@ pub struct PlacedAnswer {
     pub events: Vec<ModelEvent>,
     pub placement: Placement,
 }
+
+/// SHA-256 of the rendering of a semantic context: what binds a placement to its context.
+fn context_digest(context: &SemanticContext) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let rendered = format!("{context:?}");
+    let mut hasher = Sha256::new();
+    hasher.update(b"ptr-replica-context-v1");
+    hasher.update((rendered.len() as u64).to_le_bytes());
+    hasher.update(rendered.as_bytes());
+    hasher.finalize().into()
+}
+
+static NEXT_ROUTER: AtomicU64 = AtomicU64::new(1);
 
 /// Why a router could not be built.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -127,6 +190,16 @@ pub struct ReplicaRouter {
     replicas: Vec<Replica>,
     next: AtomicUsize,
     policy: ReplicaPolicy,
+    /// This router's identity, so a placement of another router is recognised.
+    instance: u64,
+    placements: Arc<Mutex<Placements>>,
+    /// Two independently keyed hashers and a counter make invocation tokens unique and
+    /// unguessable.
+    token_keys: (
+        std::collections::hash_map::RandomState,
+        std::collections::hash_map::RandomState,
+    ),
+    next_token: AtomicU64,
 }
 
 impl fmt::Debug for ReplicaRouter {
@@ -173,6 +246,13 @@ impl ReplicaRouter {
                 .collect(),
             next: AtomicUsize::new(0),
             policy,
+            instance: NEXT_ROUTER.fetch_add(1, Ordering::Relaxed),
+            placements: Arc::new(Mutex::new(Placements::default())),
+            token_keys: (
+                std::collections::hash_map::RandomState::new(),
+                std::collections::hash_map::RandomState::new(),
+            ),
+            next_token: AtomicU64::new(0),
         })
     }
 
@@ -240,44 +320,118 @@ impl InferenceBackend for ReplicaRouter {
 }
 
 impl ReplicaRouter {
-    /// Like `infer`, and also returns the [`Placement`] of the replica that answered.
+    fn table(&self) -> std::sync::MutexGuard<'_, Placements> {
+        self.placements
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn issue_token(&self) -> u128 {
+        use std::hash::BuildHasher;
+        let counter = self.next_token.fetch_add(1, Ordering::Relaxed);
+        (u128::from(self.token_keys.0.hash_one(counter)) << 64)
+            | u128::from(self.token_keys.1.hash_one(counter))
+    }
+
+    fn placement(&self, token: u128) -> Placement {
+        Placement {
+            token,
+            router: self.instance,
+            table: Arc::downgrade(&self.placements),
+        }
+    }
+
+    /// Like `infer`, and also returns the [`Placement`] of the replica that answered. The
+    /// router remembers the replica, the request id and the context under an unguessable
+    /// token in a table of at most [`MAX_OPEN_PLACEMENTS`]; a full table refuses the call
+    /// with [`ModelError::overloaded`] before any replica runs.
     ///
     /// # Errors
-    /// As `infer`.
+    /// As `infer`, and [`ModelError::overloaded`] for a full table.
     pub fn infer_placed(&self, request: &ModelRequest) -> Result<PlacedAnswer, ModelError> {
-        let (events, replica) = self.route(None, self.policy.max_failover, |backend| {
+        {
+            let mut table = self.table();
+            if table.entries.len() + table.reserved >= MAX_OPEN_PLACEMENTS {
+                return Err(ModelError::overloaded());
+            }
+            table.reserved += 1;
+        }
+        let routed = self.route(None, self.policy.max_failover, |backend| {
             backend.infer(request)
-        })?;
+        });
+        let mut table = self.table();
+        table.reserved = table.reserved.saturating_sub(1);
+        let (events, replica) = routed?;
+        let token = self.issue_token();
+        table.entries.insert(
+            token,
+            OpenPlacement {
+                replica,
+                request_id: request.request_id.clone(),
+                context: context_digest(&request.semantic_context),
+                in_flight: false,
+            },
+        );
+        drop(table);
         Ok(PlacedAnswer {
             events,
-            placement: Placement { replica },
+            placement: self.placement(token),
         })
     }
 
-    /// Resume on the replica `placement` names. Under [`ResumeFailover::Never`] that replica is
-    /// tried once; under [`ResumeFailover::Interchangeable`] it is tried first and the others
-    /// follow like for `infer`.
-    ///
-    /// The answer carries the [`Placement`] of the replica that served it, for the next round.
+    /// Resume on the replica `placement` names, once. The placement must be this router's, open
+    /// and unused, and `request` must carry the request id and the semantic context of the
+    /// invocation it was issued for; anything else is [`ModelError::scope_mismatch`] and no
+    /// replica runs. Under [`ResumeFailover::Never`] that replica is tried once; under
+    /// [`ResumeFailover::Interchangeable`] it is tried first and the others follow like for
+    /// `infer`. The answer carries the [`Placement`] of the replica that served it, for the next
+    /// round; the slot is held for it while the replica runs.
     ///
     /// # Errors
-    /// As `resume`.
+    /// As `resume`, and [`ModelError::scope_mismatch`].
     pub fn resume_placed(
         &self,
         placement: Placement,
         request: &ModelResumeRequest,
     ) -> Result<PlacedAnswer, ModelError> {
+        let replica = {
+            let mut table = self.table();
+            let usable = placement.router == self.instance
+                && table.entries.get(&placement.token).is_some_and(|entry| {
+                    !entry.in_flight
+                        && entry.request_id == request.request_id
+                        && entry.context == context_digest(&request.semantic_context)
+                });
+            if !usable {
+                return Err(ModelError::scope_mismatch());
+            }
+            let Some(entry) = table.entries.get_mut(&placement.token) else {
+                return Err(ModelError::scope_mismatch());
+            };
+            entry.in_flight = true;
+            entry.replica
+        };
         let max_failover = match self.policy.resume {
             ResumeFailover::Never => 0,
             ResumeFailover::Interchangeable => self.policy.max_failover,
         };
-        let (events, replica) = self.route(Some(placement.replica), max_failover, |backend| {
+        let routed = self.route(Some(replica), max_failover, |backend| {
             backend.resume(request)
-        })?;
-        // The placement of the next round: the replica that served this one.
+        });
+        let mut table = self.table();
+        let Some(mut entry) = table.entries.remove(&placement.token) else {
+            return Err(ModelError::scope_mismatch());
+        };
+        let (events, served) = routed?;
+        // The same slot, under a fresh token, on the replica that served this round.
+        let token = self.issue_token();
+        entry.replica = served;
+        entry.in_flight = false;
+        table.entries.insert(token, entry);
+        drop(table);
         Ok(PlacedAnswer {
             events,
-            placement: Placement { replica },
+            placement: self.placement(token),
         })
     }
 }

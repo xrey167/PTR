@@ -86,7 +86,10 @@ explicitly: the SHA-256 of its canonical bytes (`ReferenceKvReuseBackend::adapte
 generation, kind, first layer, rank, scale and the exact bits of every low-rank pair, each variable part framed by its length),
 available as `adapter_artifact_digest`. That is the same digest the KV catalog already records as the adapter's content digest,
 and it is what a promotion of such an adapter must name: `promote_adapter` hashes the artifact bytes it is handed, so the
-artifact handed to it is these canonical bytes. A training export of another adapter format has no mapping yet; until one is
+artifact handed to it is these canonical bytes. The promotion also binds the base model: the backend keeps the `base` of each `AdapterPromoted` and an adapter is live only when it
+equals the backend's own base identity, `ReferenceKvReuseBackend::base_digest`, the SHA-256 of a domain tag and the chain id (derived from the
+actual stack weights, configuration, tokenizer and build identity, which is how this backend already tells two bases apart); the
+`base_digest` of a `PromotionProposal` for such an adapter must be that value. A training export of another adapter format has no mapping yet; until one is
 defined, such an adapter cannot be served by this backend under a promotion.
 
 **Limits.**
@@ -137,7 +140,7 @@ bounds recorded and running cycles, not crashed ones.
 ### Replay backtest (`training/src/ptr_training/replay`)
 
 `HistoryPool` is append-only and chronological (a repeated name or an order that does not advance is refused before
-anything changes; 256 generations at most). Generation orders, outcome counts and integer decision levels are integers below 2**53 (in absolute value for levels), anything else is a `HistoryError`. A categorical value is at most 256 characters and 1024 UTF-8 bytes. `ReplaySimulator` fits an intercept and one response coefficient per
+anything changes; 256 generations at most). Generation orders, outcome counts and integer decision levels are integers below 2**53 (in absolute value for levels), anything else is a `HistoryError`. A categorical value is at most 256 characters and 1024 UTF-8 bytes and must be encodable text (an unpaired surrogate is a `HistoryError`). A decision keeps the kind (categorical or numeric) of its first admission; a later generation, or a policy asked about, with the other kind is a `HistoryError`. `ReplaySimulator` fits an intercept and one response coefficient per
 decision from consecutive generations in which exactly one decision moved; a transition that moves two is ambiguous
 and charged to neither. `backtest(pool, error_bound=...)` holds each generation out and predicts it from the rest:
 
@@ -217,7 +220,7 @@ simulator training happens in PTR until `predictive` has been true on a real gen
 once, by an allowlist on the typed `ModelErrorKind`: only overload and backend failure (`ModelError::allows_failover`).
 A refusal of the request itself (kind `Other`, the default of `ModelError::new`), a passed deadline, a cancellation, a
 revoked generation and a closed backend end the request; the message is never read. A `resume` tries one replica unless
-`ResumeFailover::Interchangeable` declares the replicas interchangeable for it, and `infer_placed` returns the answer with a per-invocation `Placement` (not `Clone`, no table) that `resume_placed` consumes and answers with the placement of the replica that served it, so every round keeps its affinity: under `Never` the resume goes to exactly that replica, once, so two calls under one request id keep separate placements. The plain trait `resume` carries no placement and takes the rotation's replica. Counters per replica:
+`ResumeFailover::Interchangeable` declares the replicas interchangeable for it, and `infer_placed` returns the answer with a per-invocation `Placement` (not `Clone`; an unguessable token bound, in a table of at most 4096 open placements, to the router, the request id and the semantic context; a full table refuses the call before any replica runs and dropping a placement releases its entry) that `resume_placed` checks (a placement of another router, another request id or another context is a `ScopeMismatch`) and consumes, and answers with the placement of the replica that served it, so every round keeps its affinity: under `Never` the resume goes to exactly that replica, once, so two calls under one request id keep separate placements. The plain trait `resume` carries no placement and takes the rotation's replica. Counters per replica:
 attempts, failures, failovers. `ReplicaRouter(AdaptiveBatcher(backend))` composes.
 
 **Not done, and why.** `ptr-server` serializes requests behind the runtime lock, so a batcher in front of it would only

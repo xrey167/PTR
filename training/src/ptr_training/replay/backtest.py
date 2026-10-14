@@ -139,7 +139,12 @@ def levels_of(
                 raise HistoryError(f"decision {name!r} is not finite")
             levels[name] = number
         elif isinstance(value, str):
-            if len(value) > MAX_CATEGORY_CHARS or len(value.encode("utf-8")) > MAX_CATEGORY_BYTES:
+            try:
+                encoded_length = len(value.encode("utf-8"))
+            except UnicodeEncodeError:
+                # An unpaired surrogate is not text any encoder can write or fingerprint.
+                raise HistoryError(f"decision {name!r}: a categorical value is not valid text") from None
+            if len(value) > MAX_CATEGORY_CHARS or encoded_length > MAX_CATEGORY_BYTES:
                 raise HistoryError(
                     f"decision {name!r}: a categorical value is at most "
                     f"{MAX_CATEGORY_CHARS} characters and {MAX_CATEGORY_BYTES} UTF-8 bytes"
@@ -156,6 +161,11 @@ def levels_of(
     return levels
 
 
+def value_kind(value: Any) -> str:
+    """Whether a decision value is a label or a number (a bool is a number)."""
+    return "categorical" if isinstance(value, str) else "numeric"
+
+
 def _check_name(kind: str, name: Any) -> None:
     if not isinstance(name, str) or not name or len(name) > MAX_NAME_CHARS:
         raise HistoryError(f"{kind} name must be a non-empty string of at most {MAX_NAME_CHARS}")
@@ -168,6 +178,12 @@ class HistoryPool:
         self._generations: list[Generation] = []
         self._categories: dict[str, list[str]] = {}
         self._zero_based: set[str] = set()
+        # The kind of each decision, pinned by its first admission.
+        self._kinds: dict[str, str] = {}
+
+    def kinds(self) -> dict[str, str]:
+        """``"categorical"`` or ``"numeric"`` per decision, as pinned by its first admission."""
+        return dict(self._kinds)
 
     def zero_based(self) -> set[str]:
         """Categorical decisions present in the first generation (their first value is level 0)."""
@@ -229,6 +245,14 @@ class HistoryPool:
         if not self._generations:
             zero_based = {n for n, v in decisions.items() if isinstance(v, str)}
         levels = levels_of(decisions, categories, zero_based, register=True)
+        kinds = dict(self._kinds)
+        for decision, value in decisions.items():
+            kind = value_kind(value)
+            if kinds.setdefault(decision, kind) != kind:
+                raise HistoryError(
+                    f"decision {decision!r} was admitted as {kinds[decision]} and cannot become {kind}"
+                )
+        self._kinds = kinds
         self._categories = categories
         self._zero_based = zero_based
         self._generations.append(
@@ -366,7 +390,16 @@ class ReplaySimulator:
                 return {f: generation.outcome[f].rate for f in self.families}
         return None
 
+    def _check_kinds(self, decisions: Mapping[str, Level]) -> None:
+        kinds = self.pool.kinds()
+        for name, value in decisions.items():
+            if kinds.get(name, value_kind(value)) != value_kind(value):
+                raise HistoryError(
+                    f"decision {name!r} is {kinds[name]} in the history, not {value_kind(value)}"
+                )
+
     def simulate(self, decisions: Mapping[str, Level]) -> dict[str, Prediction]:
+        self._check_kinds(decisions)
         levels = levels_of(decisions, dict(self._categories), self._zero_based)
         unknown = tuple(
             sorted(n for n, level in levels.items() if level != 0.0 and n not in self.responses)
@@ -395,6 +428,7 @@ class ReplaySimulator:
 
     def extrapolation(self, decisions: Mapping[str, Level]) -> list[dict[str, Any]]:
         """Levels asked for that the history never showed."""
+        self._check_kinds(decisions)
         beyond = []
         for name, level in levels_of(decisions, dict(self._categories), self._zero_based).items():
             low, high = self.limits.get(name, (0.0, 0.0))
