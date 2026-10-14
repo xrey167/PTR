@@ -955,3 +955,131 @@ fn an_attempt_the_ledger_cannot_record_is_an_audit_failure_and_reaches_no_execut
         Err(ExecutionError::RuntimeFenced)
     ));
 }
+
+/// Issue #153 (1): a settlement or reconciliation handed to the public `commit` is refused by
+/// name, whether or not an attempt is waiting for it, so a host cannot retain a response past
+/// the execution-section budget by writing the settlement itself. Nothing is appended, the
+/// attempt stays unsettled, the execution path settles it, and the export stays possible
+/// however often a host tries (twelve 1 MiB settlements would overflow the section).
+#[test]
+fn a_settlement_handed_to_commit_is_refused_and_export_stays_possible() {
+    let (mut runtime, _) = fixture();
+    let large = vec![7u8; 1_048_576];
+    let settled = |attempt: CommitIndex| LedgerEvent::EffectSettled {
+        attempt,
+        response: Some(large.clone()),
+        response_digest: response_digest_of(&large),
+    };
+    let reconciled = |attempt: CommitIndex| LedgerEvent::EffectReconciled {
+        attempt,
+        applied: true,
+        evidence: "checked".into(),
+    };
+
+    // With no attempt outstanding, refused by name rather than as an unknown attempt.
+    let events = runtime.committed_events().len();
+    for event in [settled(CommitIndex(99)), reconciled(CommitIndex(99))] {
+        assert_eq!(
+            runtime.commit(event).err(),
+            Some(RuntimeError::SettlementOutsideExecutionPath)
+        );
+    }
+    assert_eq!(runtime.committed_events().len(), events);
+
+    for i in 0..12 {
+        let attempt = runtime
+            .commit(attempt_with(Some(&format!("direct-{i}"))))
+            .unwrap();
+        let events = runtime.committed_events().len();
+        for event in [settled(attempt), reconciled(attempt)] {
+            assert_eq!(
+                runtime.commit(event).err(),
+                Some(RuntimeError::SettlementOutsideExecutionPath)
+            );
+            assert_eq!(runtime.committed_events().len(), events, "nothing appended");
+            assert_eq!(runtime.unsettled_effects().len(), 1);
+        }
+        runtime.reconcile_effect(attempt, true, "checked").unwrap();
+        assert!(runtime.unsettled_effects().is_empty());
+        assert_eq!(runtime.execution_section_overflow(), None);
+        runtime.export_compacted_snapshot().unwrap();
+    }
+}
+
+/// Issue #153 (2): a compacted snapshot carries an attempt's target and operation as strings of
+/// 1 to `MAX_ATTEMPT_FIELD_BYTES` bytes, so an attempt being committed with either empty or
+/// longer is refused with a typed error before anything is appended, from the public `commit`
+/// and from the execution path alike (before the adapter is reached). The bound itself is
+/// accepted, and replay still accepts a record a log already holds.
+#[test]
+fn an_attempt_whose_target_or_operation_a_snapshot_cannot_carry_is_refused_at_commit() {
+    let (mut runtime, action) = fixture();
+    let with = |target: &str, operation: &str| {
+        let mut event = attempt_with(Some("bounded"));
+        if let LedgerEvent::EffectAttempted {
+            target: t,
+            operation: o,
+            ..
+        } = &mut event
+        {
+            *t = target.to_owned();
+            *o = operation.to_owned();
+        }
+        event
+    };
+    let over = "o".repeat(MAX_ATTEMPT_FIELD_BYTES + 1);
+    let events = runtime.committed_events().len();
+    for (event, field, bytes) in [
+        (with("capsule:a", ""), EffectAttemptField::Operation, 0),
+        (
+            with("capsule:a", &over),
+            EffectAttemptField::Operation,
+            MAX_ATTEMPT_FIELD_BYTES + 1,
+        ),
+        (with("", "write"), EffectAttemptField::Target, 0),
+        (
+            with(&over, "write"),
+            EffectAttemptField::Target,
+            MAX_ATTEMPT_FIELD_BYTES + 1,
+        ),
+    ] {
+        assert_eq!(
+            runtime.commit(event).err(),
+            Some(RuntimeError::InvalidEffectAttemptField { field, bytes })
+        );
+        assert_eq!(runtime.committed_events().len(), events, "nothing appended");
+        assert!(runtime.unsettled_effects().is_empty());
+    }
+    runtime.export_compacted_snapshot().unwrap();
+
+    // Through the execution path: an action whose operation is past the bound (the action
+    // payload format admits up to 64 KiB) is refused before its attempt and its adapter.
+    let mut long = action.clone();
+    long.operation = over.clone();
+    let probe = Probe::default();
+    let session = session(&mut runtime, &long, &probe, "alice");
+    let permit = runtime
+        .prepare_execution(&session, &ProjectId::from("p"), &long, TTL)
+        .unwrap();
+    let refused = runtime.execute_prepared(&session, permit);
+    assert!(
+        matches!(&refused, Err(ExecutionError::Audit(error)) if matches!(**error, RuntimeError::InvalidEffectAttemptField { field: EffectAttemptField::Operation, .. })),
+        "{refused:?}"
+    );
+    assert!(
+        probe.calls.lock().unwrap().is_empty(),
+        "adapter not reached"
+    );
+    assert_eq!(runtime.committed_events().len(), events);
+    runtime.export_compacted_snapshot().unwrap();
+
+    // Exactly at the bound is accepted and exports.
+    let at = "o".repeat(MAX_ATTEMPT_FIELD_BYTES);
+    let attempt = runtime.commit(with(&at, &at)).unwrap();
+    runtime.reconcile_effect(attempt, true, "checked").unwrap();
+    runtime.export_compacted_snapshot().unwrap();
+
+    // Replay accepts a record a log already holds.
+    let replayed = replayed(vec![with("capsule:a", "")]).unwrap();
+    assert_eq!(replayed.unsettled_effects().len(), 1);
+}
