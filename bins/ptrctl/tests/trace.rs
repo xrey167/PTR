@@ -153,3 +153,61 @@ fn usage_errors_exit_two_and_help_exits_zero() {
     assert!(text.contains("usage: ptrctl trace"), "{text}");
     assert!(text.contains("exit codes:"), "{text}");
 }
+
+/// A valid chain of `count` spans where span `i` is the child of span `i - 1`, packed into one
+/// line with short ids so it stays under the 16 MiB file bound.
+fn chain_file(count: usize) -> String {
+    let mut spans = Vec::with_capacity(count);
+    for i in 1..=count {
+        let parent = if i == 1 {
+            String::new()
+        } else {
+            format!("\"parentSpanId\":\"{}\",", i - 1)
+        };
+        spans.push(format!(
+            "{{\"traceId\":\"t\",\"spanId\":\"{i}\",{parent}\"name\":\"n\",\
+             \"startTimeUnixNano\":\"1\",\"endTimeUnixNano\":\"2\",\"events\":[],\
+             \"status\":{{\"code\":0}}}}"
+        ));
+    }
+    format!(
+        "{{\"resourceSpans\":[{{\"scopeSpans\":[{{\"spans\":[{}]}}]}}]}}\n",
+        spans.join(",")
+    )
+}
+
+#[test]
+fn a_very_deep_parent_chain_renders_with_bounded_indentation_and_output() {
+    let dir = TempDir::new("trace-deep");
+    let content = chain_file(100_000);
+    assert!(content.len() < 16 * 1024 * 1024, "fixture must be accepted");
+    let path = dir.file("deep.jsonl", content.as_bytes());
+
+    let started = std::time::Instant::now();
+    let output = run(&[path.as_os_str()]);
+    assert_eq!(code(&output), 0, "{}", stderr(&output));
+    let text = stdout(&output);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(30),
+        "rendering took {:?}",
+        started.elapsed()
+    );
+    // Every span is still listed, but indentation is capped, so output stays linear.
+    assert_eq!(
+        text.lines().filter(|l| l.contains("span=")).count(),
+        100_000
+    );
+    assert!(
+        text.contains("[depth 100000]"),
+        "deep spans carry a depth marker"
+    );
+    assert!(
+        text.lines().all(|l| l.len() < 300),
+        "no line is longer than its fields"
+    );
+    assert!(
+        text.len() < 100_000 * 200,
+        "output is linear in spans, got {} bytes",
+        text.len()
+    );
+}

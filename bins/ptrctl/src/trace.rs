@@ -20,6 +20,8 @@ const USAGE: &str = "usage: ptrctl trace <otlp.jsonl>";
 const MAX_FILE_BYTES: u64 = 16 * 1024 * 1024;
 /// Most spans summarized.
 const MAX_SPANS: usize = 100_000;
+/// Deepest indentation drawn; spans below it carry a `[depth N]` marker instead.
+const MAX_INDENT_DEPTH: usize = 64;
 
 fn help() -> String {
     format!(
@@ -224,9 +226,15 @@ fn render_trace(out: &mut String, trace_id: &str, rows: &[SpanRow]) {
             }
             _ => String::new(),
         };
+        // Indentation is capped so a deep chain costs O(1) per line, not O(depth).
+        let marker = if depth > MAX_INDENT_DEPTH {
+            format!("[depth {depth}] ")
+        } else {
+            String::new()
+        };
         out.push_str(&format!(
-            "{}{} [{} ns] {} events={} span={}{orphan}\n",
-            "  ".repeat(depth),
+            "{}{marker}{} [{} ns] {} events={} span={}{orphan}\n",
+            "  ".repeat(depth.min(MAX_INDENT_DEPTH)),
             row.name.escape_debug(),
             row.end.saturating_sub(row.start),
             row.status,

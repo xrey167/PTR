@@ -48,7 +48,9 @@ consumer's committed offset and lag, the slowest registered consumer, then one r
 and has no read-only open. So the command works on a snapshot: it copies the `segment-*.log`
 files and `offsets.bin` (regular files only, at most 512 MiB) into a private temp directory,
 opens the copy and removes it afterwards. The source directory is never created, truncated or
-rewritten. If the snapshot has a torn tail, the command exits 1 with a message instead of
+rewritten. Each file is copied through a reader bounded to the size counted for the 512 MiB
+check; if a live writer grew a file in between, the command exits 1 ("grew beyond") instead of
+copying more. If the snapshot has a torn tail, the command exits 1 with a message instead of
 listing a log that a writer would repair. A directory with none of those files is refused. The
 snapshot is opened with the default record-size bound, and only the slowest consumer is listed
 unless `--consumer` names one (the crate exposes no consumer listing).
@@ -61,7 +63,8 @@ whose parent is not in the file is shown as a root and marked. ptr-observe has n
 `bins/ptrctl/src/trace.rs` and `json.rs` hold a small bounded reader (16 MiB, 100000 spans,
 nesting 32) for exactly the exporter's line layout; it is not a general OTLP reader. Times are
 the exporter's ticks plus its epoch offset, so durations are meaningful and absolute times may
-not be wall-clock.
+not be wall-clock. Indentation is capped at depth 64; deeper spans carry a `[depth N]` marker, so
+output is linear in the span count even for a 100000-deep parent chain.
 
 ## Tests
 
