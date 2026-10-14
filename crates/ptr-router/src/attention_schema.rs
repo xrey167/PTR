@@ -122,6 +122,21 @@ pub struct SchemaLimits {
     pub max_id_len: usize,
 }
 
+impl SchemaLimits {
+    /// Hard maximum of [`SchemaLimits::max_contexts`].
+    pub const HARD_MAX_CONTEXTS: usize = 1 << 14;
+    /// Hard maximum of [`SchemaLimits::max_pods_per_context`].
+    pub const HARD_MAX_PODS_PER_CONTEXT: usize = 1 << 10;
+    /// Hard maximum of [`SchemaLimits::window`].
+    pub const HARD_MAX_WINDOW: usize = 1 << 16;
+    /// Hard maximum of [`SchemaLimits::max_preferences`].
+    pub const HARD_MAX_PREFERENCES: usize = 1 << 12;
+    /// Hard maximum of [`SchemaLimits::dedup_window`].
+    pub const HARD_MAX_DEDUP_WINDOW: usize = 1 << 16;
+    /// Hard maximum of [`SchemaLimits::max_id_len`].
+    pub const HARD_MAX_ID_LEN: usize = 1024;
+}
+
 impl Default for SchemaLimits {
     fn default() -> Self {
         Self {
@@ -487,9 +502,46 @@ pub struct SchemaReport {
 }
 
 impl AttentionSchema {
+    /// # Errors
+    /// [`SchemaError::InvalidLimits`] for a zero window or a limit above its
+    /// `SchemaLimits::HARD_MAX_*` ceiling (`preference_ttl` is a count of records, bounded in
+    /// effect by `max_preferences`).
     pub fn new(limits: SchemaLimits) -> Result<Self, SchemaError> {
         if limits.window == 0 {
             return Err(SchemaError::InvalidLimits { field: "window" });
+        }
+        let too_large = [
+            (
+                "max_contexts",
+                limits.max_contexts,
+                SchemaLimits::HARD_MAX_CONTEXTS,
+            ),
+            (
+                "max_pods_per_context",
+                limits.max_pods_per_context,
+                SchemaLimits::HARD_MAX_PODS_PER_CONTEXT,
+            ),
+            ("window", limits.window, SchemaLimits::HARD_MAX_WINDOW),
+            (
+                "max_preferences",
+                limits.max_preferences,
+                SchemaLimits::HARD_MAX_PREFERENCES,
+            ),
+            (
+                "dedup_window",
+                limits.dedup_window,
+                SchemaLimits::HARD_MAX_DEDUP_WINDOW,
+            ),
+            (
+                "max_id_len",
+                limits.max_id_len,
+                SchemaLimits::HARD_MAX_ID_LEN,
+            ),
+        ]
+        .into_iter()
+        .find(|(_, value, max)| value > max);
+        if let Some((field, _, _)) = too_large {
+            return Err(SchemaError::InvalidLimits { field });
         }
         Ok(Self {
             limits,

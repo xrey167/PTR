@@ -60,6 +60,10 @@ pub const MAX_ENV_BYTES: usize = 256;
 pub const MAX_TIMEOUT: Duration = Duration::from_secs(60);
 /// Largest per-stream capture a configuration may ask for.
 pub const MAX_CAPTURE_BYTES: usize = 1 << 20;
+/// Largest accepted [`ProcessLimits::max_args`].
+pub const MAX_ARGS_LIMIT: usize = 1024;
+/// Largest accepted [`ProcessLimits::max_arg_bytes`] (1 MiB).
+pub const MAX_ARG_BYTES_LIMIT: usize = 1 << 20;
 /// How long to wait for a reader thread after the child is gone (a grandchild may hold the pipe).
 const DRAIN_GRACE: Duration = Duration::from_millis(500);
 /// Most live capture threads process-wide, including those left blocked on a pipe a grandchild
@@ -96,6 +100,10 @@ pub enum ProcessConfigError {
     CaptureTooLarge,
     ZeroArgs,
     ZeroArgBytes,
+    /// `max_args` is above [`MAX_ARGS_LIMIT`].
+    ArgsLimitTooLarge,
+    /// `max_arg_bytes` is above [`MAX_ARG_BYTES_LIMIT`].
+    ArgBytesLimitTooLarge,
     TooManyEnvVars,
     /// The name is empty, too long, or not `[A-Za-z_][A-Za-z0-9_]*`.
     InvalidEnvName(String),
@@ -177,6 +185,12 @@ impl ProcessConfig {
         }
         if limits.max_arg_bytes == 0 {
             return Err(ProcessConfigError::ZeroArgBytes);
+        }
+        if limits.max_args > MAX_ARGS_LIMIT {
+            return Err(ProcessConfigError::ArgsLimitTooLarge);
+        }
+        if limits.max_arg_bytes > MAX_ARG_BYTES_LIMIT {
+            return Err(ProcessConfigError::ArgBytesLimitTooLarge);
         }
         Ok(Self {
             allowed,
@@ -1003,6 +1017,19 @@ mod tests {
             with(|l| l.max_arg_bytes = 0),
             Err(ProcessConfigError::ZeroArgBytes)
         );
+        assert_eq!(
+            with(|l| l.max_args = usize::MAX),
+            Err(ProcessConfigError::ArgsLimitTooLarge)
+        );
+        assert_eq!(
+            with(|l| l.max_arg_bytes = usize::MAX),
+            Err(ProcessConfigError::ArgBytesLimitTooLarge)
+        );
+        assert!(with(|l| {
+            l.max_args = MAX_ARGS_LIMIT;
+            l.max_arg_bytes = MAX_ARG_BYTES_LIMIT;
+        })
+        .is_ok());
         let ok = ProcessConfig::new(abs, limits).unwrap();
         for secret in [
             "API_KEY",

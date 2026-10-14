@@ -18,6 +18,8 @@ pub const MAX_FIELD_BYTES: usize = 256;
 /// Hard ceiling on [`MemorySink`] capacity: a larger requested capacity (for example
 /// `usize::MAX`) is clamped to this, so the sink stays bounded.
 pub const MAX_MEMORY_SINK_RECORDS: usize = 65_536;
+/// Hard maximum of the byte bound of [`JsonLinesSink::open`] (1 GiB).
+pub const MAX_JSON_LINES_BYTES: u64 = 1 << 30;
 
 /// One routing decision as telemetry.
 #[derive(Clone, Debug, PartialEq)]
@@ -143,6 +145,8 @@ pub enum TelemetryError {
     Io {
         kind: ErrorKind,
     },
+    /// A byte bound above [`MAX_JSON_LINES_BYTES`].
+    LimitTooLarge,
     /// The sink can no longer be trusted: its lock was poisoned, or a failed write could not be
     /// rolled back and the file may end in a partial line. Later records are refused.
     Poisoned,
@@ -154,6 +158,7 @@ impl std::fmt::Display for TelemetryError {
             Self::FieldTooLong { field } => write!(f, "telemetry field {field} is too long"),
             Self::Full => write!(f, "telemetry sink is full"),
             Self::Io { kind } => write!(f, "telemetry io error: {kind}"),
+            Self::LimitTooLarge => write!(f, "telemetry byte bound is above its hard maximum"),
             Self::Poisoned => write!(f, "telemetry sink is poisoned"),
         }
     }
@@ -242,7 +247,13 @@ struct FileState {
 }
 
 impl JsonLinesSink {
+    /// # Errors
+    /// [`TelemetryError::LimitTooLarge`] when `max_bytes` exceeds [`MAX_JSON_LINES_BYTES`],
+    /// [`TelemetryError::Io`] when the file cannot be opened.
     pub fn open(path: &Path, max_bytes: u64) -> Result<Self, TelemetryError> {
+        if max_bytes > MAX_JSON_LINES_BYTES {
+            return Err(TelemetryError::LimitTooLarge);
+        }
         let file = OpenOptions::new()
             .create(true)
             .append(true)
