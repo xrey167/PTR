@@ -103,6 +103,9 @@ pub enum PolicyViolation {
     DropUnsupportedByBackend,
     /// A bound that must be positive was zero.
     ZeroBound,
+    /// The retention policy has no limit in any dimension, so acknowledged history would
+    /// grow without bound.
+    UnboundedRetention,
 }
 
 /// Which bound a [`BusError::Full`] refers to.
@@ -118,8 +121,13 @@ pub enum Limit {
 /// any limit is exceeded. Records some consumer has not acknowledged are not history: retention
 /// never removes an unacknowledged authoritative record.
 ///
-/// `None` leaves that dimension unlimited; the total is still bounded by the publish capacity
-/// plus the other limits. The default keeps no history (`max_records == Some(0)`).
+/// `None` leaves that dimension unlimited, but at least one dimension must be set: a policy with
+/// all three `None` ([`RetentionPolicy::is_unbounded`]) would never expire history, so
+/// [`FileEventLog::open`](crate::FileEventLog::open) and
+/// [`InMemoryBus::try_with_config`](crate::InMemoryBus::try_with_config) refuse it with
+/// [`PolicyViolation::UnboundedRetention`] and [`InMemoryBus::with_config`](crate::InMemoryBus::with_config)
+/// falls back to [`RetentionPolicy::acked_only`]. The default keeps no history
+/// (`max_records == Some(0)`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RetentionPolicy {
     pub max_records: Option<usize>,
@@ -129,6 +137,11 @@ pub struct RetentionPolicy {
 }
 
 impl RetentionPolicy {
+    /// True when no dimension is limited, so acknowledged history would never expire.
+    pub const fn is_unbounded(&self) -> bool {
+        self.max_records.is_none() && self.max_bytes.is_none() && self.max_age_ticks.is_none()
+    }
+
     /// Keep no acknowledged history.
     pub const fn acked_only() -> Self {
         Self {

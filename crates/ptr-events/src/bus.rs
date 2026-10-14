@@ -200,6 +200,9 @@ pub enum BusError {
         committed: Offset,
         end: Offset,
     },
+    /// A failed append could not be rolled back, so the on-disk tail is unknown. Every publish
+    /// fails with this until the log is reopened and recovered.
+    WriterPoisoned,
     /// An operating-system I/O failure.
     Io {
         operation: &'static str,
@@ -221,6 +224,7 @@ impl BusError {
             Self::ClockRegression { .. } => "PTR_BUS_CLOCK_REGRESSION",
             Self::Corrupt { .. } => "PTR_BUS_CORRUPT",
             Self::OffsetsAheadOfLog { .. } => "PTR_BUS_OFFSETS_AHEAD_OF_LOG",
+            Self::WriterPoisoned => "PTR_BUS_WRITER_POISONED",
             Self::Io { .. } => "PTR_BUS_IO",
         }
     }
@@ -288,6 +292,10 @@ impl fmt::Display for BusError {
                 formatter,
                 "consumer {consumer:?} committed {} but the log ends at {}",
                 committed.0, end.0
+            ),
+            Self::WriterPoisoned => write!(
+                formatter,
+                "a failed append could not be rolled back; reopen the log to recover"
             ),
             Self::Io { operation, kind } => write!(formatter, "{operation} failed: {kind}"),
         }
@@ -416,7 +424,14 @@ impl InMemoryBus {
     }
 
     /// Create an empty bus from a configuration. The record capacity is clamped to at least one.
+    ///
+    /// A [`RetentionPolicy`] with no limit in any dimension would keep acknowledged history
+    /// forever, so this infallible constructor replaces it with
+    /// [`RetentionPolicy::acked_only`]. Use [`InMemoryBus::try_with_config`] to have it refused.
     pub fn with_config(mut config: BusConfig) -> Self {
+        if config.retention.is_unbounded() {
+            config.retention = RetentionPolicy::acked_only();
+        }
         config.capacity_records = config.capacity_records.max(1);
         Self {
             config,
@@ -429,6 +444,20 @@ impl InMemoryBus {
             dropped: BTreeMap::new(),
             total_dropped: 0,
         }
+    }
+
+    /// Like [`InMemoryBus::with_config`], but refuses a configuration instead of adjusting it.
+    ///
+    /// # Errors
+    /// `InvalidPolicy` with [`PolicyViolation::UnboundedRetention`] if the retention policy
+    /// has no limit in any dimension.
+    pub fn try_with_config(config: BusConfig) -> Result<Self, BusError> {
+        if config.retention.is_unbounded() {
+            return Err(BusError::InvalidPolicy {
+                violation: PolicyViolation::UnboundedRetention,
+            });
+        }
+        Ok(Self::with_config(config))
     }
 
     /// Register a consumer starting after `from`. See [`EventConsumer::register`].
