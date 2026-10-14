@@ -80,6 +80,11 @@ impl FileLogConfig {
                 violation: PolicyViolation::ZeroBound,
             });
         }
+        if self.retention.is_unbounded() {
+            return Err(BusError::InvalidPolicy {
+                violation: PolicyViolation::UnboundedRetention,
+            });
+        }
         if self.policies.telemetry() == BackpressurePolicy::DropOldestTelemetry {
             return Err(BusError::InvalidPolicy {
                 violation: PolicyViolation::DropUnsupportedByBackend,
@@ -346,6 +351,14 @@ fn decode_offsets(bytes: &[u8]) -> Result<BTreeMap<String, Offset>, BusError> {
     Ok(out)
 }
 
+/// Test-only failure injection for the durability step of an append.
+#[cfg(test)]
+#[derive(Debug, Default)]
+struct Faults {
+    sync: bool,
+    truncate: bool,
+}
+
 /// The persistent log: one writer, durable consumer offsets, replay, rollover and retention.
 ///
 /// Authoritative records are never deleted while a registered consumer has not acknowledged
@@ -362,6 +375,10 @@ pub struct FileEventLog {
     committed: BTreeMap<String, Offset>,
     tick: u64,
     unsynced: u32,
+    /// Set when a failed append could not be rolled back; every publish then fails.
+    poisoned: bool,
+    #[cfg(test)]
+    faults: Faults,
     recovery: RecoveryReport,
 }
 
@@ -488,6 +505,9 @@ impl FileEventLog {
             committed,
             tick,
             unsynced: 0,
+            poisoned: false,
+            #[cfg(test)]
+            faults: Faults::default(),
             recovery,
         })
     }
@@ -670,29 +690,63 @@ impl FileEventLog {
         };
         if let Err(error) = file.write_all(frame) {
             // Do not leave a partial frame in front of the next append.
-            let _ = file.set_len(good_len);
-            self.active = None;
+            self.discard_tail(good_len);
             return Err(BusError::io("append record", &error));
         }
-        match self.config.fsync {
-            FsyncPolicy::Always => file
-                .sync_data()
-                .map_err(|e| BusError::io("sync record", &e))?,
-            FsyncPolicy::EveryRecords(every) => {
-                self.unsynced += 1;
-                if self.unsynced >= every.get() {
-                    file.sync_data()
-                        .map_err(|e| BusError::io("sync record", &e))?;
-                    self.unsynced = 0;
-                }
-            }
-            FsyncPolicy::Never => {}
+        if let Err(error) = self.sync_after_write() {
+            // The frame is complete on disk but the publish fails: take it back, otherwise a
+            // retry would append the same offset twice and a reopen would resurrect a record
+            // whose publish returned an error.
+            self.discard_tail(good_len);
+            return Err(BusError::io("sync record", &error));
         }
         if let Some(segment) = self.segments.last_mut() {
             segment.last = Some(offset);
             segment.bytes += frame.len() as u64;
             segment.newest_tick = self.tick;
         }
+        Ok(())
+    }
+
+    /// Cut the active segment back to `good_len` after a failed append. If the cut itself
+    /// fails the on-disk tail is unknown, so the writer is poisoned until the log is reopened
+    /// (recovery then decides what is on disk).
+    fn discard_tail(&mut self, good_len: u64) {
+        #[cfg(test)]
+        let forced_failure = self.faults.truncate;
+        #[cfg(not(test))]
+        let forced_failure = false;
+        let cut = match self.active.as_ref() {
+            Some(file) if !forced_failure => file.set_len(good_len).is_ok(),
+            _ => false,
+        };
+        if !cut {
+            self.poisoned = true;
+        }
+        self.active = None;
+    }
+
+    /// Apply the fsync policy to the frame just written.
+    fn sync_after_write(&mut self) -> std::io::Result<()> {
+        let due = match self.config.fsync {
+            FsyncPolicy::Always => true,
+            FsyncPolicy::EveryRecords(every) => {
+                self.unsynced += 1;
+                self.unsynced >= every.get()
+            }
+            FsyncPolicy::Never => false,
+        };
+        if !due {
+            return Ok(());
+        }
+        #[cfg(test)]
+        if self.faults.sync {
+            return Err(std::io::Error::other("injected sync failure"));
+        }
+        if let Some(file) = self.active.as_ref() {
+            file.sync_data()?;
+        }
+        self.unsynced = 0;
         Ok(())
     }
 
@@ -738,6 +792,9 @@ impl EventProducer for FileEventLog {
     /// dropped; `blocked_by` names the slowest consumer), or `Io`. A refused publish consumes
     /// no offset.
     fn publish(&mut self, record: NewRecord) -> Result<Offset, BusError> {
+        if self.poisoned {
+            return Err(BusError::WriterPoisoned);
+        }
         validate_new(&record, self.config.max_record_bytes)?;
         self.compact()?;
         let depth = usize::try_from(self.end_offset().0 - self.floor().0).unwrap_or(usize::MAX);
@@ -920,5 +977,92 @@ mod tests {
     #[test]
     fn name_length_is_checked_by_the_shared_validator() {
         assert!(check_len(Field::ConsumerName, MAX_FIELD_BYTES + 1, MAX_FIELD_BYTES).is_err());
+    }
+
+    fn unit_dir(label: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("ptr-events-unit-{label}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        dir
+    }
+
+    fn rec(key: &str) -> crate::bus::NewRecord {
+        crate::bus::NewRecord {
+            class: crate::bus::EventClass::Projection,
+            topic: "t".into(),
+            key: key.into(),
+            payload: key.as_bytes().to_vec(),
+        }
+    }
+
+    #[test]
+    fn a_failed_sync_rolls_the_frame_back_so_retry_and_reopen_stay_consistent() {
+        let dir = unit_dir("sync-fail");
+        let mut log = FileEventLog::open(&dir, FileLogConfig::new(8)).unwrap();
+        assert_eq!(log.publish(rec("a")).unwrap(), Offset(1));
+        let len_before = fs::metadata(&log.segments[0].path).unwrap().len();
+
+        log.faults.sync = true;
+        assert!(matches!(
+            log.publish(rec("b")),
+            Err(BusError::Io {
+                operation: "sync record",
+                ..
+            })
+        ));
+        assert_eq!(
+            fs::metadata(&log.segments[0].path).unwrap().len(),
+            len_before
+        );
+
+        log.faults.sync = false;
+        assert_eq!(log.publish(rec("b")).unwrap(), Offset(2));
+        drop(log);
+
+        let reopened = FileEventLog::open(&dir, FileLogConfig::new(8)).unwrap();
+        let keys: Vec<String> = reopened
+            .read_after(0, 10)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.key)
+            .collect();
+        assert_eq!(keys, ["a", "b"]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_failed_sync_that_cannot_be_rolled_back_poisons_the_writer_until_reopen() {
+        let dir = unit_dir("poison");
+        let mut log = FileEventLog::open(&dir, FileLogConfig::new(8)).unwrap();
+        log.publish(rec("a")).unwrap();
+        log.faults.sync = true;
+        log.faults.truncate = true;
+        assert!(log.publish(rec("b")).is_err());
+        log.faults.sync = false;
+        log.faults.truncate = false;
+        assert_eq!(log.publish(rec("c")), Err(BusError::WriterPoisoned));
+        assert_eq!(log.publish(rec("c")), Err(BusError::WriterPoisoned));
+        drop(log);
+        // Recovery decides what is on disk; the log is usable again.
+        let mut reopened = FileEventLog::open(&dir, FileLogConfig::new(8)).unwrap();
+        let next = reopened.publish(rec("c")).unwrap();
+        assert!(next.0 >= 2);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn config_refuses_unbounded_retention() {
+        let mut config = FileLogConfig::new(1);
+        config.retention = RetentionPolicy {
+            max_records: None,
+            max_bytes: None,
+            max_age_ticks: None,
+        };
+        assert_eq!(
+            config.validate(),
+            Err(BusError::InvalidPolicy {
+                violation: PolicyViolation::UnboundedRetention
+            })
+        );
     }
 }

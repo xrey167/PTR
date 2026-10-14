@@ -270,3 +270,33 @@ fn consumers_have_independent_offsets_and_ordering_is_preserved() {
     assert_eq!(bus.committed("b"), Ok(Offset(1)));
     assert_eq!(bus.blocked_by().unwrap().consumer, "b");
 }
+
+#[test]
+fn unbounded_retention_is_refused_or_clamped_and_never_grows_without_limit() {
+    let unbounded = RetentionPolicy {
+        max_records: None,
+        max_bytes: None,
+        max_age_ticks: None,
+    };
+    assert!(unbounded.is_unbounded());
+    assert!(!RetentionPolicy::acked_only().is_unbounded());
+    assert!(!RetentionPolicy::with_max_age_ticks(5).is_unbounded());
+
+    let mut config = BusConfig::new(2);
+    config.retention = unbounded;
+    assert_eq!(
+        InMemoryBus::try_with_config(config).err(),
+        Some(BusError::InvalidPolicy {
+            violation: PolicyViolation::UnboundedRetention
+        })
+    );
+
+    // The infallible constructor falls back to "keep no acknowledged history".
+    let mut bus = InMemoryBus::with_config(config);
+    bus.register("c", Offset(0)).unwrap();
+    for _ in 0..50 {
+        let offset = bus.publish(projection("k")).unwrap();
+        bus.commit("c", offset).unwrap();
+    }
+    assert_eq!(bus.retained(), 0);
+}
