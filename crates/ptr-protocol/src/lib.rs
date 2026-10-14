@@ -13,8 +13,15 @@ pub mod activation;
 pub mod control;
 pub mod debug_json;
 pub mod generated;
+mod handle;
 pub mod negotiation;
 pub mod session;
+
+pub use handle::{
+    content_digest, handle_digest, handle_payload, handle_signing_bytes, verify_content, Carrier,
+    CarrierLocator, CudaExport, HandleError, TensorHandle, MAX_HANDLE_BYTES, MAX_HANDLE_DIMS,
+    MAX_INLINE_BYTES, TENSOR_HANDLE_TYPE,
+};
 
 use ptr_types::{CapabilityId, Generation, Revision, Timestamp, TypeId};
 
