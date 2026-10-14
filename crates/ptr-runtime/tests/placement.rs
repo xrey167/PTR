@@ -1,7 +1,8 @@
 use ptr_runtime::{
     DeviceHealth, DeviceRecord, NodeHealth, NodeRecord, PlacementError, PodPlacementController,
+    ProjectPlacementRequest,
 };
-use ptr_types::{ArtifactId, DeviceId, Generation, NodeId, PodId, StateId, Timestamp};
+use ptr_types::{ArtifactId, DeviceId, Generation, NodeId, PodId, ProjectId, StateId, Timestamp};
 
 fn node() -> NodeRecord {
     NodeRecord {
@@ -556,5 +557,195 @@ fn revoked_placement_tombstones_are_bounded_and_drop_the_oldest() {
     assert_eq!(
         controller.issue_lease(StateId::from("s"), &PodId::from("pod-1029")),
         Err(PlacementError::UnhealthyNode(NodeId::from("node-a")))
+    );
+}
+
+fn assign_in(controller: &mut PodPlacementController, project: &str, pod: &str) -> u64 {
+    controller
+        .assign_in(ProjectPlacementRequest {
+            project: ProjectId::from(project),
+            pod_id: PodId::from(pod),
+            artifact_id: ArtifactId::from("artifact"),
+            generation: Generation(1),
+            node_id: NodeId::from("node-a"),
+            device_id: DeviceId::from("cuda:0"),
+            required_vram: 1,
+        })
+        .unwrap()
+        .epoch
+        .0
+}
+
+#[test]
+fn the_same_pod_placed_in_two_projects_is_two_independent_placements() {
+    let mut controller = PodPlacementController::default();
+    controller.register_node(node()).unwrap();
+    let (a, b) = (ProjectId::from("a"), ProjectId::from("b"));
+    let pod = PodId::from("stage");
+    let epoch_a = assign_in(&mut controller, "a", "stage");
+    // Placing the same PodId for project b does not replace or fence project a's placement.
+    let epoch_b = assign_in(&mut controller, "b", "stage");
+    assert_ne!(epoch_a, epoch_b);
+    assert_eq!(controller.placement_in(&a, &pod).unwrap().epoch.0, epoch_a);
+    assert_eq!(controller.placement_in(&b, &pod).unwrap().epoch.0, epoch_b);
+    // A project that never placed it, and the legacy namespace, see nothing.
+    assert_eq!(
+        controller.placement_in(&ProjectId::from("c"), &pod),
+        Err(PlacementError::NoPlacement)
+    );
+    assert_eq!(controller.placement(&pod), Err(PlacementError::NoPlacement));
+    // The legacy API places into a namespace of its own: no project can see it either.
+    controller
+        .assign(
+            pod.clone(),
+            ArtifactId::from("artifact"),
+            Generation(1),
+            NodeId::from("node-a"),
+            DeviceId::from("cuda:0"),
+            1,
+        )
+        .unwrap();
+    assert!(controller.placement(&pod).is_ok());
+    assert_eq!(controller.placement_in(&a, &pod).unwrap().epoch.0, epoch_a);
+    // Re-placing in project a moves only project a.
+    let moved_a = assign_in(&mut controller, "a", "stage");
+    assert_eq!(controller.placement_in(&a, &pod).unwrap().epoch.0, moved_a);
+    assert_eq!(controller.placement_in(&b, &pod).unwrap().epoch.0, epoch_b);
+}
+
+#[test]
+fn leases_and_freezes_are_scoped_to_their_project() {
+    let mut controller = PodPlacementController::default();
+    controller.register_node(node()).unwrap();
+    let (a, b) = (ProjectId::from("a"), ProjectId::from("b"));
+    let pod = PodId::from("stage");
+    assign_in(&mut controller, "a", "stage");
+    assign_in(&mut controller, "b", "stage");
+    let state = StateId::from("state");
+    let lease_a = controller.issue_lease_in(&a, state.clone(), &pod).unwrap();
+    let lease_b = controller.issue_lease_in(&b, state.clone(), &pod).unwrap();
+    assert_eq!(lease_a.project(), Some(&a));
+    assert_eq!(lease_b.project(), Some(&b));
+    // The same state id leased in two projects is two leases: neither overwrote the other.
+    controller.validate_lease(&lease_a).unwrap();
+    controller.validate_lease(&lease_b).unwrap();
+
+    // Revoking project a's lease leaves project b's untouched.
+    controller.revoke_lease_in(&a, &state).unwrap();
+    assert_eq!(
+        controller.validate_lease(&lease_a),
+        Err(PlacementError::StaleLease)
+    );
+    controller.validate_lease(&lease_b).unwrap();
+
+    // Re-placing in project a revokes project a's leases only.
+    let lease_a = controller.issue_lease_in(&a, state.clone(), &pod).unwrap();
+    assign_in(&mut controller, "a", "stage");
+    assert_eq!(
+        controller.validate_lease(&lease_a),
+        Err(PlacementError::StaleLease)
+    );
+    controller.validate_lease(&lease_b).unwrap();
+
+    // A freeze in project b does not freeze the same state in project a.
+    let lease_a = controller.issue_lease_in(&a, state.clone(), &pod).unwrap();
+    controller.freeze_state(&lease_b).unwrap();
+    assert_eq!(
+        controller.issue_lease_in(&b, state.clone(), &pod),
+        Err(PlacementError::StateFrozen)
+    );
+    controller.validate_lease(&lease_a).unwrap();
+    controller.unfreeze_state_in(&b, &state);
+    controller.issue_lease_in(&b, state, &pod).unwrap();
+}
+
+#[test]
+fn a_node_failure_fences_every_project_and_each_tombstone_names_its_own_project() {
+    let mut controller = PodPlacementController::default();
+    controller.register_node(node()).unwrap();
+    let (a, b, c) = (
+        ProjectId::from("a"),
+        ProjectId::from("b"),
+        ProjectId::from("c"),
+    );
+    let pod = PodId::from("stage");
+    assign_in(&mut controller, "a", "stage");
+    assign_in(&mut controller, "b", "stage");
+    // Project c placed nothing.
+    let lease_a = controller
+        .issue_lease_in(&a, StateId::from("s"), &pod)
+        .unwrap();
+    controller
+        .mark_node_failed(&NodeId::from("node-a"))
+        .unwrap();
+    // Nodes are host resources: the failure fences placements and leases of every project.
+    assert_eq!(
+        controller.validate_lease(&lease_a),
+        Err(PlacementError::StaleLease)
+    );
+    assert_eq!(
+        controller.placement_in(&a, &pod),
+        Err(PlacementError::NoPlacement)
+    );
+    assert_eq!(
+        controller.placement_in(&b, &pod),
+        Err(PlacementError::NoPlacement)
+    );
+    assert_eq!(controller.revoked_placements(), 2);
+    let named = Err(PlacementError::UnhealthyNode(NodeId::from("node-a")));
+    assert_eq!(
+        controller.issue_lease_in(&a, StateId::from("s"), &pod),
+        named
+    );
+    assert_eq!(
+        controller.issue_lease_in(&b, StateId::from("s"), &pod),
+        named
+    );
+    // Project c has no tombstone to borrow: it is told there was no placement.
+    assert_eq!(
+        controller.issue_lease_in(&c, StateId::from("s"), &pod),
+        Err(PlacementError::NoPlacement)
+    );
+}
+
+#[test]
+fn revoke_lease_for_uses_the_namespace_of_the_lease_it_is_given() {
+    let mut controller = PodPlacementController::default();
+    controller.register_node(node()).unwrap();
+    let project = ProjectId::from("a");
+    let pod = PodId::from("stage");
+    assign_in(&mut controller, "a", "stage");
+    controller
+        .assign(
+            pod.clone(),
+            ArtifactId::from("artifact"),
+            Generation(1),
+            NodeId::from("node-a"),
+            DeviceId::from("cuda:0"),
+            1,
+        )
+        .unwrap();
+    let state = StateId::from("state");
+    let project_lease = controller
+        .issue_lease_in(&project, state.clone(), &pod)
+        .unwrap();
+    let legacy_lease = controller.issue_lease(state.clone(), &pod).unwrap();
+
+    // Revoking the project lease by object leaves the legacy lease with the same id live.
+    controller.revoke_lease_for(&project_lease).unwrap();
+    assert_eq!(
+        controller.validate_lease(&project_lease),
+        Err(PlacementError::StaleLease)
+    );
+    controller.validate_lease(&legacy_lease).unwrap();
+    // And the reverse.
+    let project_lease = controller
+        .issue_lease_in(&project, state.clone(), &pod)
+        .unwrap();
+    controller.revoke_lease_for(&legacy_lease).unwrap();
+    controller.validate_lease(&project_lease).unwrap();
+    assert_eq!(
+        controller.validate_lease(&legacy_lease),
+        Err(PlacementError::StaleLease)
     );
 }

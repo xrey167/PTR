@@ -12,7 +12,7 @@
 //!    stage identity bound to that principal, the handle is addressed to this table's consumer
 //!    stage and to the operation of the call, the nonce was not used, the signed deadline is
 //!    not reached and not too far ahead, the table has room, and the chain and the placement
-//!    epoch are live now ([`revalidate_chain`]). The same checks as `ptr-podwire`'s chunk
+//!    epoch are live now ([`revalidate_chain_in`]). The same checks as `ptr-podwire`'s chunk
 //!    assembler, in the same order, with nothing table-wide read before the signature verifies.
 //!    The handle carries no input lineage (codec v1 has none); the lineage is derived from the
 //!    authority instead: [`OperationLiveness`] answers, for the signed operation, whether every
@@ -113,7 +113,7 @@ use ptr_protocol::{
 
 use ptr_types::{ProjectId, TypeId};
 
-use crate::split_stage::{revalidate_chain, ChainFault, StageLiveness};
+use crate::split_stage::{revalidate_chain_in, ChainFault, StageLiveness};
 
 /// Identifies a table, so a ticket of one table is no ticket of another.
 static NEXT_TABLE_ID: AtomicU64 = AtomicU64::new(1);
@@ -486,6 +486,12 @@ impl AdmittedHandle {
         &self.principal
     }
 
+    /// The authority-derived project the handle was admitted for; the placement epoch is
+    /// revalidated for it ([`revalidate_chain_in`]).
+    pub fn project(&self) -> &ProjectId {
+        &self.project
+    }
+
     pub fn handle_nonce(&self) -> u64 {
         self.handle.handle_nonce
     }
@@ -581,6 +587,12 @@ impl ConsumedHandle {
     pub fn principal(&self) -> &str {
         &self.principal
     }
+
+    /// The authority-derived project captured at admission: pass it to [`revalidate_chain_in`]
+    /// when the output is admitted.
+    pub fn project(&self) -> &ProjectId {
+        &self.project
+    }
 }
 
 /// Revalidate the operation of a consumed handle against the authority, for the runtime to call
@@ -598,7 +610,7 @@ impl ConsumedHandle {
 /// live, it is Exact, the handle's chain equals the expected chain and the payload type is
 /// accepted, and the project and both worker sessions captured at admission are still current. It
 /// does not check chain liveness or the placement epoch: the caller must also call
-/// [`revalidate_chain`] (with a [`StageLiveness`]) on the handle's chain and placement epoch, as a
+/// [`revalidate_chain_in`] (with a [`StageLiveness`]) on the handle's chain and placement epoch, as a
 /// separate call, when it admits the computed output (doc 42 rule 4).
 pub fn revalidate_operation(
     consumed: &ConsumedHandle,
@@ -811,6 +823,12 @@ impl HandleTable {
     /// ahead, the table has room (open handles table-wide and per producer, slots, and the
     /// claimed bytes plus `footprint_bytes`, which must be at least `byte_len`), and the chain
     /// and placement epoch are live now.
+    ///
+    /// The placement epoch is read for `request.project` through
+    /// [`StageLiveness::placement_epoch_in`]. This is a fail-closed hard cut, not an additive
+    /// change: a `StageLiveness` that only implements the legacy `placement_epoch`, or a stage
+    /// placed with the legacy `assign` instead of `assign_in`, refuses every handle
+    /// ([`ChainFault::StalePlacement`]). No caller outside tests uses handle admission yet.
     pub fn admit(
         &mut self,
         request: HandleAdmissionRequest<'_>,
@@ -915,8 +933,14 @@ impl HandleTable {
                 requested: footprint,
             });
         }
-        revalidate_chain(&handle.upstream_chain, handle.placement_epoch, request.live)
-            .map_err(HandleRejection::Chain)?;
+        // The placement is read for the project of the call, never by stage name alone.
+        revalidate_chain_in(
+            request.project,
+            &handle.upstream_chain,
+            handle.placement_epoch,
+            request.live,
+        )
+        .map_err(HandleRejection::Chain)?;
         let ticket = self.next_ticket;
         self.next_ticket += 1;
         self.open_total += 1;
@@ -986,7 +1010,8 @@ impl HandleTable {
         if slot.deadline_ms <= now_ms {
             return Err(HandleRejection::Expired);
         }
-        let still_live = revalidate_chain(
+        let still_live = revalidate_chain_in(
+            &admitted.project,
             &admitted.handle.upstream_chain,
             admitted.handle.placement_epoch,
             request.live,
@@ -1338,6 +1363,14 @@ mod tests {
 
         fn placement_epoch(&self, stage: &str) -> Option<u64> {
             self.placement.borrow().get(stage).copied()
+        }
+
+        /// The fake places stages for the test project only, so a project mix-up is refused.
+        fn placement_epoch_in(&self, project: &ProjectId, stage: &str) -> Option<u64> {
+            if *project != self::project() {
+                return None;
+            }
+            self.placement_epoch(stage)
         }
 
         fn fence_epoch(&self, _expert: &str) -> Option<u64> {

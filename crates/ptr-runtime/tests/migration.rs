@@ -3,11 +3,11 @@ use ptr_pods::{
 };
 use ptr_runtime::{
     DeviceHealth, DeviceRecord, KvMigrationController, MigrationError, MigrationState, NodeHealth,
-    NodeRecord, PodPlacementController,
+    NodeRecord, PodPlacementController, ProjectPlacementRequest,
 };
 use ptr_types::{
-    AdapterVersion, ArtifactId, DeviceId, Generation, ModelVersion, NodeId, PodId, StateId,
-    Timestamp,
+    AdapterVersion, ArtifactId, DeviceId, Generation, ModelVersion, NodeId, PodId, ProjectId,
+    StateId, Timestamp,
 };
 
 fn node(id: &str, device: &str) -> NodeRecord {
@@ -450,4 +450,246 @@ fn target(placement: &mut PodPlacementController) -> ptr_runtime::FencedStateLea
     placement
         .issue_lease(StateId::from("state"), &target.pod_id)
         .unwrap()
+}
+
+fn assign_in(
+    placement: &mut PodPlacementController,
+    project: &ProjectId,
+    pod: &str,
+    node: &str,
+    device: &str,
+) {
+    placement
+        .assign_in(ProjectPlacementRequest {
+            project: project.clone(),
+            pod_id: PodId::from(pod),
+            artifact_id: ArtifactId::from("artifact"),
+            generation: Generation(1),
+            node_id: NodeId::from(node),
+            device_id: DeviceId::from(device),
+            required_vram: 1,
+        })
+        .unwrap();
+}
+
+/// Two nodes; `pod` placed in `project` on node-a with a lease of `state`.
+fn project_fixture(project: &ProjectId) -> (PodPlacementController, ptr_runtime::FencedStateLease) {
+    let mut placement = PodPlacementController::default();
+    placement.register_node(node("node-a", "cuda:0")).unwrap();
+    placement.register_node(node("node-b", "cuda:1")).unwrap();
+    assign_in(&mut placement, project, "pod", "node-a", "cuda:0");
+    let source = placement
+        .issue_lease_in(project, StateId::from("state"), &PodId::from("pod"))
+        .unwrap();
+    (placement, source)
+}
+
+#[test]
+fn a_project_migration_lifts_its_own_freeze_on_abort() {
+    let project = ProjectId::from("a");
+    let (mut placement, source) = project_fixture(&project);
+    let mut migration = KvMigrationController::default();
+    let started = migration.begin(&mut placement, source).unwrap();
+    assert_eq!(
+        placement.issue_lease_in(&project, StateId::from("state"), &PodId::from("pod")),
+        Err(ptr_runtime::PlacementError::StateFrozen)
+    );
+    migration
+        .abort(&mut placement, started.migration_id)
+        .unwrap();
+    assert!(placement
+        .issue_lease_in(&project, StateId::from("state"), &PodId::from("pod"))
+        .is_ok());
+}
+
+#[test]
+fn a_project_migration_lifts_its_own_freeze_on_commit() {
+    let project = ProjectId::from("a");
+    let (mut placement, source) = project_fixture(&project);
+    let backend = InMemoryKvTensorBackend;
+    let mut cache = backend.allocate(schema("cuda:0"), 4).unwrap();
+    backend
+        .append(
+            &mut cache,
+            &[TensorRef {
+                layer: 0,
+                shape: vec![1, 2],
+                values: vec![1.0, 2.0],
+            }],
+            &[TensorRef {
+                layer: 0,
+                shape: vec![1, 2],
+                values: vec![3.0, 4.0],
+            }],
+        )
+        .unwrap();
+    let snapshot = backend.snapshot(&cache).unwrap();
+    // Issuing the project target lease below clears the project's own freeze on the state (the
+    // placement epoch differs), so a bystander is what shows which namespace `commit` unfreezes:
+    // a legacy freeze of the same state id, which only a legacy unfreeze would lift.
+    placement
+        .assign(
+            PodId::from("legacy-pod"),
+            ArtifactId::from("artifact"),
+            Generation(1),
+            NodeId::from("node-a"),
+            DeviceId::from("cuda:0"),
+            1,
+        )
+        .unwrap();
+    let legacy_source = placement
+        .issue_lease(StateId::from("state"), &PodId::from("legacy-pod"))
+        .unwrap();
+    KvMigrationController::default()
+        .begin(&mut placement, legacy_source)
+        .unwrap();
+    let mut migration = KvMigrationController::default();
+    let started = migration.begin(&mut placement, source).unwrap();
+    migration.snapshot(started.migration_id, &snapshot).unwrap();
+    // The target is another Pod on node-b.
+    assign_in(&mut placement, &project, "pod-b", "node-b", "cuda:1");
+    let target = placement
+        .issue_lease_in(&project, StateId::from("state"), &PodId::from("pod-b"))
+        .unwrap();
+    migration
+        .restore(
+            &mut placement,
+            started.migration_id,
+            &target,
+            &backend,
+            &snapshot,
+        )
+        .unwrap();
+    assert_eq!(
+        placement.issue_lease(StateId::from("state"), &PodId::from("legacy-pod")),
+        Err(ptr_runtime::PlacementError::StateFrozen)
+    );
+    migration
+        .commit(&mut placement, started.migration_id, &target)
+        .unwrap();
+    assert!(placement
+        .issue_lease_in(&project, StateId::from("state"), &PodId::from("pod"))
+        .is_ok());
+    // The project commit lifted the project's freeze only: the legacy freeze is still in force.
+    assert_eq!(
+        placement.issue_lease(StateId::from("state"), &PodId::from("legacy-pod")),
+        Err(ptr_runtime::PlacementError::StateFrozen)
+    );
+}
+
+#[test]
+fn a_legacy_target_lease_cannot_restore_or_commit_a_project_migration() {
+    let project = ProjectId::from("a");
+    let (mut placement, source) = project_fixture(&project);
+    let backend = InMemoryKvTensorBackend;
+    let mut cache = backend.allocate(schema("cuda:0"), 4).unwrap();
+    backend
+        .append(
+            &mut cache,
+            &[TensorRef {
+                layer: 0,
+                shape: vec![1, 2],
+                values: vec![1.0, 2.0],
+            }],
+            &[TensorRef {
+                layer: 0,
+                shape: vec![1, 2],
+                values: vec![3.0, 4.0],
+            }],
+        )
+        .unwrap();
+    let snapshot = backend.snapshot(&cache).unwrap();
+    let mut migration = KvMigrationController::default();
+    let started = migration.begin(&mut placement, source).unwrap();
+    migration.snapshot(started.migration_id, &snapshot).unwrap();
+    // A legacy-namespace lease of the same state and generation on the other node.
+    placement
+        .assign(
+            PodId::from("legacy-pod"),
+            ArtifactId::from("artifact"),
+            Generation(1),
+            NodeId::from("node-b"),
+            DeviceId::from("cuda:1"),
+            1,
+        )
+        .unwrap();
+    let legacy_target = placement
+        .issue_lease(StateId::from("state"), &PodId::from("legacy-pod"))
+        .unwrap();
+    let refused = Err(MigrationError::Placement(
+        ptr_runtime::PlacementError::StaleLease,
+    ));
+    assert_eq!(
+        migration
+            .restore(
+                &mut placement,
+                started.migration_id,
+                &legacy_target,
+                &backend,
+                &snapshot
+            )
+            .map(|_| ()),
+        refused
+    );
+    assert_eq!(
+        migration.commit(&mut placement, started.migration_id, &legacy_target),
+        Err(MigrationError::InvalidState(MigrationState::Snapshotted))
+    );
+    // The project's freeze is still in force.
+    assert_eq!(
+        placement.issue_lease_in(&project, StateId::from("state"), &PodId::from("pod")),
+        Err(ptr_runtime::PlacementError::StateFrozen)
+    );
+}
+
+#[test]
+fn a_project_migration_leaves_a_legacy_freeze_of_the_same_state_alone_and_the_reverse() {
+    let project = ProjectId::from("a");
+    let (mut placement, project_source) = project_fixture(&project);
+    // A legacy placement and lease of the same state id, frozen by a legacy migration.
+    placement
+        .assign(
+            PodId::from("legacy-pod"),
+            ArtifactId::from("artifact"),
+            Generation(1),
+            NodeId::from("node-b"),
+            DeviceId::from("cuda:1"),
+            1,
+        )
+        .unwrap();
+    let legacy_source = placement
+        .issue_lease(StateId::from("state"), &PodId::from("legacy-pod"))
+        .unwrap();
+    let mut legacy = KvMigrationController::default();
+    let legacy_started = legacy.begin(&mut placement, legacy_source).unwrap();
+    let mut scoped = KvMigrationController::default();
+    let project_started = scoped.begin(&mut placement, project_source).unwrap();
+
+    // Aborting the project migration leaves the legacy freeze in force.
+    scoped
+        .abort(&mut placement, project_started.migration_id)
+        .unwrap();
+    assert_eq!(
+        placement.issue_lease(StateId::from("state"), &PodId::from("legacy-pod")),
+        Err(ptr_runtime::PlacementError::StateFrozen)
+    );
+    assert!(placement
+        .issue_lease_in(&project, StateId::from("state"), &PodId::from("pod"))
+        .is_ok());
+
+    // And the reverse: freeze the project state again, abort the legacy migration.
+    let project_source = placement
+        .issue_lease_in(&project, StateId::from("state"), &PodId::from("pod"))
+        .unwrap();
+    scoped.begin(&mut placement, project_source).unwrap();
+    legacy
+        .abort(&mut placement, legacy_started.migration_id)
+        .unwrap();
+    assert_eq!(
+        placement.issue_lease_in(&project, StateId::from("state"), &PodId::from("pod")),
+        Err(ptr_runtime::PlacementError::StateFrozen)
+    );
+    assert!(placement
+        .issue_lease(StateId::from("state"), &PodId::from("legacy-pod"))
+        .is_ok());
 }
