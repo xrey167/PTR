@@ -92,6 +92,7 @@ fn a_refusal_is_counted_flushed_projected_and_replayed() {
         indexes[0].0,
         EgressRefusalReason::HostNotAllowed,
         2,
+        false,
         "host:0123456789abcdef:14:1883",
     );
     assert_eq!(
@@ -231,6 +232,7 @@ fn a_generic_commit_cannot_forge_a_refusal() {
         source: EgressRefusalSource::Pod(source()),
         target: "host:0123456789abcdef:1:1".into(),
         count: 1,
+        saturated: false,
         reason: EgressRefusalReason::HostNotAllowed,
     };
     assert!(matches!(

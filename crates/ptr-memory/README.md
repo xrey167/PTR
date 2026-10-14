@@ -10,10 +10,11 @@
 
 **Maturity:** `scaffold`  
 **Last reviewed:** 2026-10-13  
-**Code footprint:** 6 Rust source files · 1356 nonblank source lines · 2 integration-test files · 25 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 6 Rust source files · 1363 nonblank source lines · 2 integration-test files · 26 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
+- KnowledgeObject::digest and content_digest hash length-prefixed, count-prefixed fields and a fixed binary validity (presence byte and two u64), so no choice of strings in a retrieval key, relation or provenance note can make two different objects collide; digests differ from those of earlier builds (nothing committed pins them)
 - KnowledgeStore::register_object and admit_object refuse an object whose validity ends no later than it starts (KnowledgeStoreError::InvalidValidity)
 - compile_structured_at / compile_selected_at (and MemoryController::compile_at / compile_candidates_at) leave out objects whose validity does not hold at the instant the context is compiled for and count them in CompiledContext::omitted_expired; the old compile_structured / compile_selected are the documented audit path with no time rule
 - KnowledgeObject.validity (KnowledgeValidity) and is_valid_at; the content digest includes a bounded validity and is unchanged for an unbounded one
@@ -64,6 +65,7 @@
 
 ### Current automated checks
 
+- tests/retention.rs: text_that_looks_like_another_field_cannot_collide_with_it
 - tests/retention.rs: an object whose validity ends no later than it starts is refused at admission
 - tests/retention.rs: an expired object is left out of a context compiled for an instant (half-open bounds, dependents of an omitted object refused, audit path unchanged)
 - tests/retention.rs: an object's validity is half-open and enters the digest only when bounded

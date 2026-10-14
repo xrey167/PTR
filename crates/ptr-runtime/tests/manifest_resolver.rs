@@ -126,7 +126,12 @@ fn runtime_resolves_manifest_against_knowledge_and_artifact_catalog() {
     let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
 
     let validated = runtime
-        .admit_execution_manifest(candidate.clone(), &knowledge, &artifacts)
+        .admit_execution_manifest(
+            candidate.clone(),
+            &knowledge,
+            &artifacts,
+            ptr_types::Timestamp(0),
+        )
         .unwrap();
     assert_eq!(validated.manifest, candidate);
     assert_eq!(
@@ -136,7 +141,12 @@ fn runtime_resolves_manifest_against_knowledge_and_artifact_catalog() {
 
     // Re-admission is idempotent and cannot replace the admitted record.
     assert_eq!(
-        runtime.admit_execution_manifest(candidate.clone(), &knowledge, &artifacts),
+        runtime.admit_execution_manifest(
+            candidate.clone(),
+            &knowledge,
+            &artifacts,
+            ptr_types::Timestamp(0)
+        ),
         Ok(validated)
     );
 }
@@ -156,7 +166,12 @@ fn runtime_rejects_lineage_tampering_and_revocation() {
     let candidate = manifest(&object, &pod);
     let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
     runtime
-        .admit_execution_manifest(candidate.clone(), &knowledge, &artifacts)
+        .admit_execution_manifest(
+            candidate.clone(),
+            &knowledge,
+            &artifacts,
+            ptr_types::Timestamp(0),
+        )
         .unwrap();
     runtime
         .revoke_execution_manifest(candidate.manifest_digest)
@@ -176,7 +191,7 @@ fn runtime_error(
 ) -> Result<(), ptr_runtime::RuntimeManifestError> {
     let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
     runtime
-        .admit_execution_manifest(candidate, knowledge, artifacts)
+        .admit_execution_manifest(candidate, knowledge, artifacts, ptr_types::Timestamp(0))
         .map(|_| ())
 }
 
@@ -191,7 +206,7 @@ fn runtime_rejects_unknown_knowledge_generation() {
     candidate.manifest_digest = [1; 32];
     let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
     assert!(runtime
-        .admit_execution_manifest(candidate, &knowledge, &artifacts)
+        .admit_execution_manifest(candidate, &knowledge, &artifacts, ptr_types::Timestamp(0))
         .is_err());
 }
 
@@ -207,7 +222,7 @@ fn runtime_rejects_revoked_artifact_generation() {
     let candidate = manifest(&object, &pod);
     let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
     assert!(runtime
-        .admit_execution_manifest(candidate, &knowledge, &artifacts)
+        .admit_execution_manifest(candidate, &knowledge, &artifacts, ptr_types::Timestamp(0))
         .is_err());
 }
 
@@ -244,7 +259,7 @@ fn runtime_resolves_and_rejects_reader_artifact_lineage() {
     .unwrap();
     let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
     assert!(runtime
-        .admit_execution_manifest(valid, &knowledge, &artifacts)
+        .admit_execution_manifest(valid, &knowledge, &artifacts, ptr_types::Timestamp(0))
         .is_ok());
 
     let invalid_reader = ExecutionManifest::build(
@@ -272,7 +287,12 @@ fn runtime_resolves_and_rejects_reader_artifact_lineage() {
     )
     .unwrap();
     assert!(matches!(
-        runtime.admit_execution_manifest(invalid_reader, &knowledge, &artifacts),
+        runtime.admit_execution_manifest(
+            invalid_reader,
+            &knowledge,
+            &artifacts,
+            ptr_types::Timestamp(0)
+        ),
         Err(ptr_runtime::RuntimeManifestError::MissingReaderGeneration { .. })
     ));
 }
@@ -313,10 +333,20 @@ fn runtime_resolves_and_rejects_adapter_artifact_lineage() {
 
     let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
     assert!(runtime
-        .admit_execution_manifest(build("artifact-1"), &knowledge, &artifacts)
+        .admit_execution_manifest(
+            build("artifact-1"),
+            &knowledge,
+            &artifacts,
+            ptr_types::Timestamp(0)
+        )
         .is_ok());
     assert!(matches!(
-        runtime.admit_execution_manifest(build("adapter-not-admitted"), &knowledge, &artifacts),
+        runtime.admit_execution_manifest(
+            build("adapter-not-admitted"),
+            &knowledge,
+            &artifacts,
+            ptr_types::Timestamp(0)
+        ),
         Err(ptr_runtime::RuntimeManifestError::MissingAdapterGeneration { .. })
     ));
 }
@@ -341,6 +371,7 @@ fn strict_manifest_admission_binds_principal_policy_and_snapshot() {
             &knowledge,
             &artifacts,
             &authority,
+            ptr_types::Timestamp(0),
         )
         .is_ok());
 
@@ -355,6 +386,7 @@ fn strict_manifest_admission_binds_principal_policy_and_snapshot() {
             &knowledge,
             &artifacts,
             &bad_policy,
+            ptr_types::Timestamp(0),
         ),
         Err(ptr_runtime::RuntimeManifestError::PolicyRevisionMismatch { .. })
     ));
@@ -370,6 +402,7 @@ fn strict_manifest_admission_binds_principal_policy_and_snapshot() {
             &knowledge,
             &artifacts,
             &bad_snapshot,
+            ptr_types::Timestamp(0),
         ),
         Err(ptr_runtime::RuntimeManifestError::SnapshotDigestMismatch { .. })
     ));
@@ -392,7 +425,12 @@ fn manifest_admission_and_revocation_replay_from_durable_ledger() {
     {
         let mut runtime = PtrRuntime::open_durable(PtrConfig::default(), &path).unwrap();
         runtime
-            .admit_execution_manifest(candidate.clone(), &knowledge, &artifacts)
+            .admit_execution_manifest(
+                candidate.clone(),
+                &knowledge,
+                &artifacts,
+                ptr_types::Timestamp(0),
+            )
             .unwrap();
     }
     let mut reopened = PtrRuntime::open_durable(PtrConfig::default(), &path).unwrap();
@@ -423,4 +461,85 @@ fn manifest_admission_and_revocation_replay_from_durable_ledger() {
         .resolve_execution_manifest(&candidate.manifest_digest)
         .is_err());
     let _ = std::fs::remove_file(path);
+}
+
+fn bounded_knowledge(from: u64, until: u64) -> (KnowledgeStore, KnowledgeObject) {
+    let (_, mut object) = knowledge();
+    object.validity = ptr_types::KnowledgeValidity {
+        valid_from: Some(ptr_types::Timestamp(from)),
+        valid_until: Some(ptr_types::Timestamp(until)),
+    };
+    let mut store = KnowledgeStore::default();
+    store.register_object(object.clone()).unwrap();
+    (store, object)
+}
+
+#[test]
+fn an_expired_or_not_yet_valid_object_cannot_be_bound_into_a_manifest() {
+    let (knowledge, object) = bounded_knowledge(10, 20);
+    let pod = descriptor();
+    let mut artifacts = InMemoryArtifactCatalog::default();
+    artifacts.admit(pod.clone()).unwrap();
+    let candidate = manifest(&object, &pod);
+    for now in [9, 20, 21] {
+        let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+        let refused = runtime.admit_execution_manifest(
+            candidate.clone(),
+            &knowledge,
+            &artifacts,
+            ptr_types::Timestamp(now),
+        );
+        assert!(
+            matches!(
+                refused,
+                Err(ptr_runtime::RuntimeManifestError::ExpiredKnowledgeGeneration { .. })
+            ),
+            "now {now}: {refused:?}"
+        );
+        assert!(
+            runtime.committed_events().is_empty(),
+            "nothing is committed for a refused binding"
+        );
+    }
+    let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+    assert!(runtime
+        .admit_execution_manifest(candidate, &knowledge, &artifacts, ptr_types::Timestamp(10))
+        .is_ok());
+}
+
+#[test]
+fn a_manifest_admitted_while_its_object_held_is_not_resolved_after_the_object_ends() {
+    let (knowledge, object) = bounded_knowledge(10, 20);
+    let pod = descriptor();
+    let mut artifacts = InMemoryArtifactCatalog::default();
+    artifacts.admit(pod.clone()).unwrap();
+    let candidate = manifest(&object, &pod);
+    let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+    runtime
+        .admit_execution_manifest(
+            candidate.clone(),
+            &knowledge,
+            &artifacts,
+            ptr_types::Timestamp(19),
+        )
+        .unwrap();
+    let digest = candidate.manifest_digest;
+    assert!(runtime
+        .resolve_execution_manifest_at(&digest, &knowledge, ptr_types::Timestamp(19))
+        .is_ok());
+    let late = runtime.resolve_execution_manifest_at(&digest, &knowledge, ptr_types::Timestamp(20));
+    assert!(
+        matches!(
+            late,
+            Err(ptr_runtime::RuntimeManifestError::ExpiredKnowledgeGeneration { .. })
+        ),
+        "{late:?}"
+    );
+    // An object invalidated after admission is refused too.
+    let mut knowledge = knowledge;
+    knowledge.invalidate(object.id.clone()).unwrap();
+    assert!(matches!(
+        runtime.resolve_execution_manifest_at(&digest, &knowledge, ptr_types::Timestamp(19)),
+        Err(ptr_runtime::RuntimeManifestError::RevokedKnowledgeGeneration { .. })
+    ));
 }

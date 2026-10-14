@@ -10,10 +10,11 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-13  
-**Code footprint:** 9 Rust source files · 9293 nonblank source lines · 16 integration-test files · 201 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 9 Rust source files · 9348 nonblank source lines · 16 integration-test files · 202 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
+- LedgerEvent::EgressRefused carries saturated: a count of u32::MAX that stands for at least that many; the flag is one codec byte before the reason code and check_encodable refuses it with any other count
 - EgressRefused carries a count (at least one) and a bounded trace; reason code 5 TopicRequired
 - LedgerEvent::EgressRefused (tag 33): trace, source (EgressRefusalSource: a Pod revision, or Overflow with target * only; tag byte 0/1), redacted target (`*`, host:<16 hex>:<len>:<port> or topic:<16 hex>:<len>, nothing else) and a pinned reason code; the codec and check_encodable refuse every non-canonical form
 - encoded_event(event) is public: the canonical payload encoding of one event (the bytes a log record frames), so a reader that needs only a size or a digest of an event (the ptr-server vcw trace summary) takes it from the encoding instead of rendering the event
@@ -126,6 +127,7 @@
 
 ### Current automated checks
 
+- src/lib.rs: a_saturated_egress_count_round_trips_and_an_unknown_flag_is_refused
 - effect_record_tests: count zero and an over-long trace are refused
 - effect_record_tests: egress_refusal_round_trips_under_tag_33_and_the_codes_are_pinned and egress_refusal_refuses_every_non_canonical_form
 - the mesh tunnel event round-trips with tag 15 (effect_record_tests::mesh_tunnel_events_round_trip_with_a_stable_tag) and the protected-state reference round-trips with tag 14 without a payload marker in its bytes (semantic_origin_tests::protected_state_reference_round_trips_without_payload_or_key_material)

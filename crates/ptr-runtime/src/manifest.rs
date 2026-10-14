@@ -1,6 +1,8 @@
 use ptr_memory::{KnowledgeKey, KnowledgeLifecycle, KnowledgeStore};
 use ptr_pods::{ArtifactCatalog, ArtifactError, ExecutionManifest, LineageBinding};
-use ptr_types::{Digest, Generation, IdentityContext, KnowledgeObjectId, PrincipalId, Revision};
+use ptr_types::{
+    Digest, Generation, IdentityContext, KnowledgeObjectId, PrincipalId, Revision, Timestamp,
+};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -9,6 +11,33 @@ pub struct ValidatedExecutionManifest {
     pub knowledge: Vec<KnowledgeKey>,
     pub artifacts: Vec<LineageBinding>,
     pub runtime_revision: Revision,
+}
+
+impl ValidatedExecutionManifest {
+    /// Re-check, at `now`, that every bound knowledge object still exists, is not invalidated
+    /// and holds. Admission checked this once; an object can expire (or be invalidated) before
+    /// a manifest that binds it is relied on, so the point of reliance asks again.
+    pub fn ensure_knowledge_valid_at(
+        &self,
+        knowledge: &KnowledgeStore,
+        now: Timestamp,
+    ) -> Result<(), RuntimeManifestError> {
+        for key in &self.knowledge {
+            let Some(object) = knowledge.object_at(key) else {
+                return Err(RuntimeManifestError::MissingKnowledgeGeneration { key: key.clone() });
+            };
+            if object.lifecycle == KnowledgeLifecycle::Invalidated {
+                return Err(RuntimeManifestError::RevokedKnowledgeGeneration { key: key.clone() });
+            }
+            if !object.is_valid_at(now) {
+                return Err(RuntimeManifestError::ExpiredKnowledgeGeneration {
+                    key: key.clone(),
+                    now,
+                });
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -21,6 +50,12 @@ pub enum RuntimeManifestError {
     },
     RevokedKnowledgeGeneration {
         key: KnowledgeKey,
+    },
+    /// A bound object's validity does not hold at the instant the manifest is admitted or
+    /// resolved (half-open: it has not started, or it has ended).
+    ExpiredKnowledgeGeneration {
+        key: KnowledgeKey,
+        now: Timestamp,
     },
     UnknownKnowledgeSource {
         key: KnowledgeKey,
@@ -507,6 +542,7 @@ pub fn validate_and_build(
     knowledge: &KnowledgeStore,
     artifacts: &dyn ArtifactCatalog,
     runtime_revision: Revision,
+    now: Timestamp,
 ) -> Result<ValidatedExecutionManifest, RuntimeManifestError> {
     manifest
         .validate()
@@ -532,6 +568,9 @@ pub fn validate_and_build(
         };
         if object.lifecycle == KnowledgeLifecycle::Invalidated {
             return Err(RuntimeManifestError::RevokedKnowledgeGeneration { key });
+        }
+        if !object.is_valid_at(now) {
+            return Err(RuntimeManifestError::ExpiredKnowledgeGeneration { key, now });
         }
         if object
             .sources

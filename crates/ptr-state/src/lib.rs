@@ -367,6 +367,7 @@ pub fn projection_entries(committed: &CommittedEvent) -> Vec<(String, String)> {
             source,
             target,
             count,
+            saturated,
             reason,
             ..
         } => vec![(
@@ -374,7 +375,7 @@ pub fn projection_entries(committed: &CommittedEvent) -> Vec<(String, String)> {
                 EgressRefusalSource::Pod(source) => egress_refusal_key(&source.address),
                 EgressRefusalSource::Overflow => EGRESS_REFUSAL_OVERFLOW_KEY.to_owned(),
             },
-            egress_refusal_entry(index, *reason, *count, target),
+            egress_refusal_entry(index, *reason, *count, *saturated, target),
         )],
     }
 }
@@ -397,15 +398,19 @@ pub fn egress_refusal_key(address: &ptr_types::PodAddress) -> String {
     )
 }
 
-/// The value of an egress refusal key: `<commit index>:<reason name>:<count>:<target>`. The
-/// target is a redacted `host:` or `topic:` digest and may itself contain `:`, so it comes last.
+/// The value of an egress refusal key: `<commit index>:<reason name>:<count>:<target>`, the
+/// count followed by `+` when the runtime stopped counting at `u32::MAX` (at least that many).
+/// The target is a redacted `host:` or `topic:` digest and may itself contain `:`, so it comes
+/// last.
 pub fn egress_refusal_entry(
     index: u64,
     reason: ptr_types::EgressRefusalReason,
     count: u32,
+    saturated: bool,
     target: &str,
 ) -> String {
-    format!("{index}:{}:{count}:{target}", reason.name())
+    let more = if saturated { "+" } else { "" };
+    format!("{index}:{}:{count}{more}:{target}", reason.name())
 }
 
 /// The prefix of every approximate-KV taint key: `kv-taint:<kind>:<hex digest>`.

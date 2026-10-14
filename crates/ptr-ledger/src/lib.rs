@@ -353,6 +353,9 @@ pub enum LedgerEvent {
         /// How many refusals of this source, target and reason the record stands for: the
         /// runtime coalesces a window's identical refusals into one event. At least one.
         count: u32,
+        /// Whether the runtime had to stop counting: the true number of refusals is at least
+        /// `count`, which is then `u32::MAX`. Only ever set together with `u32::MAX`.
+        saturated: bool,
         reason: EgressRefusalReason,
     },
 }
@@ -1367,6 +1370,7 @@ fn encode_event(event: &LedgerEvent) -> Vec<u8> {
             source,
             target,
             count,
+            saturated,
             reason,
         } => {
             out.push(33);
@@ -1384,6 +1388,7 @@ fn encode_event(event: &LedgerEvent) -> Vec<u8> {
             }
             put_string(&mut out, target);
             put_u32(&mut out, *count);
+            out.push(u8::from(*saturated));
             out.push(reason.code());
         }
     }
@@ -1843,6 +1848,16 @@ fn decode_event(payload: &[u8]) -> io::Result<LedgerEvent> {
             };
             let target = cursor.string()?;
             let count = cursor.u32()?;
+            let saturated = match cursor.u8()? {
+                0 => false,
+                1 => true,
+                other => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("unknown egress refusal saturation flag {other}"),
+                    ))
+                }
+            };
             let reason_code = cursor.u8()?;
             let reason = EgressRefusalReason::from_code(reason_code).ok_or_else(|| {
                 io::Error::new(
@@ -1855,6 +1870,7 @@ fn decode_event(payload: &[u8]) -> io::Result<LedgerEvent> {
                 source,
                 target,
                 count,
+                saturated,
                 reason,
             };
             check_egress_refused(&event)?;
@@ -2037,6 +2053,7 @@ fn check_egress_refused(event: &LedgerEvent) -> Result<(), io::Error> {
         source,
         target,
         count,
+        saturated,
         ..
     } = event
     else {
@@ -2046,6 +2063,8 @@ fn check_egress_refused(event: &LedgerEvent) -> Result<(), io::Error> {
     if trace_id.0.is_empty()
         || trace_id.0.len() > MAX_EGRESS_TARGET_BYTES
         || *count == 0
+        // Saturation means "at least u32::MAX": nothing else is a saturated count.
+        || (*saturated && *count != u32::MAX)
         || !target_ok
         || match source {
             EgressRefusalSource::Pod(source) => source.validate().is_err(),
@@ -3276,6 +3295,7 @@ mod effect_record_tests {
             }),
             target: "host:0123456789abcdef:14:1883".into(),
             count: 3,
+            saturated: false,
             reason,
         }
     }
@@ -3300,6 +3320,11 @@ mod effect_record_tests {
             let encoded = encode_event(&event);
             assert_eq!(encoded[0], 33);
             assert_eq!(*encoded.last().unwrap(), code, "the reason code is last");
+            assert_eq!(
+                encoded[encoded.len() - 2],
+                0,
+                "the saturation flag precedes it"
+            );
             assert_eq!(decode_event(&encoded).unwrap(), event);
             for len in 0..encoded.len() {
                 assert!(decode_event(&encoded[..len]).is_err(), "prefix {len}");
@@ -3312,6 +3337,31 @@ mod effect_record_tests {
         let mut unknown = encode_event(&egress_refused_event(EgressRefusalReason::RateLimited));
         *unknown.last_mut().unwrap() = 7;
         assert!(decode_event(&unknown).is_err());
+    }
+
+    #[test]
+    fn a_saturated_egress_count_round_trips_and_an_unknown_flag_is_refused() {
+        let mut event = egress_refused_event(EgressRefusalReason::RateLimited);
+        if let LedgerEvent::EgressRefused {
+            count, saturated, ..
+        } = &mut event
+        {
+            *count = u32::MAX;
+            *saturated = true;
+        }
+        check_encodable(&event).unwrap();
+        let encoded = encode_event(&event);
+        assert_eq!(decode_event(&encoded).unwrap(), event);
+        let mut unknown = encoded.clone();
+        let flag_at = unknown.len() - 2;
+        assert_eq!(unknown[flag_at], 1);
+        unknown[flag_at] = 2;
+        assert!(decode_event(&unknown).is_err());
+        // The flag with any other count is not a canonical form, even if the bytes decode.
+        let mut small = encoded;
+        let count_at = small.len() - 2 - 4;
+        small[count_at..count_at + 4].copy_from_slice(&7u32.to_le_bytes());
+        assert!(decode_event(&small).is_err());
     }
 
     #[test]
@@ -3417,6 +3467,12 @@ mod effect_record_tests {
             with(&|e| {
                 if let LedgerEvent::EgressRefused { count, .. } = e {
                     *count = 0;
+                }
+            }),
+            // A saturated count is u32::MAX and nothing else.
+            with(&|e| {
+                if let LedgerEvent::EgressRefused { saturated, .. } = e {
+                    *saturated = true;
                 }
             }),
             with(&|e| {

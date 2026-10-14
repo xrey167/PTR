@@ -10,10 +10,11 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-13  
-**Code footprint:** 1 Rust source files · 1190 nonblank source lines · 3 integration-test files · 17 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 1 Rust source files · 1195 nonblank source lines · 3 integration-test files · 17 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
+- The egress refusal entry marks a saturated count with a trailing + (<index>:<reason>:<count>+:<target>)
 - Egress refusal projection value carries the count
 - Projection of LedgerEvent::EgressRefused: the latest refusal per Pod under egress-refused:<project>/<namespace>/<pod> (bounded by the number of Pods), the overflow source under the fixed key egress-refusal-overflow
 - ATTESTED_MARKER (semdb:attested) and MERGED_BRANCH_PREFIX (branch-merge:) name the materialized keys that record attributed semantic records and merged branches: every attributed semantic record projects the marker and every merge record its branch's key, and ptr-runtime refuses a compacted snapshot in the pre-attestation lifecycle layout (PTRLC001) that carries either
@@ -66,6 +67,7 @@
 
 ### Current automated checks
 
+- ptr-runtime/tests/egress_refusal.rs pins the projected entry
 - ptr-runtime/tests/egress_refusal.rs checks the projected entry
 - ptr-runtime/tests/egress_refusal.rs: the refusal appears in the projection and survives replay; a flood does not grow it
 - an attributed semantic record of each ingress and host kind projects the revision and the semdb:attested marker, never its payload

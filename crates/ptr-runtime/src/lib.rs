@@ -982,9 +982,10 @@ impl PtrRuntime {
         manifest: ptr_pods::ExecutionManifest,
         knowledge: &ptr_memory::KnowledgeStore,
         artifacts: &dyn ptr_pods::ArtifactCatalog,
+        now: Timestamp,
     ) -> Result<manifest::ValidatedExecutionManifest, manifest::RuntimeManifestError> {
         let validated =
-            manifest::validate_and_build(manifest, knowledge, artifacts, self.revision())?;
+            manifest::validate_and_build(manifest, knowledge, artifacts, self.revision(), now)?;
         let manifest_bytes = validated
             .manifest
             .encode_canonical()
@@ -1020,9 +1021,10 @@ impl PtrRuntime {
         knowledge: &ptr_memory::KnowledgeStore,
         artifacts: &dyn ptr_pods::ArtifactCatalog,
         authority: &A,
+        now: Timestamp,
     ) -> Result<manifest::ValidatedExecutionManifest, manifest::RuntimeManifestError> {
         let validated =
-            manifest::validate_and_build(manifest, knowledge, artifacts, self.revision())?;
+            manifest::validate_and_build(manifest, knowledge, artifacts, self.revision(), now)?;
         manifest::validate_authority(&validated.manifest, authority)?;
         let manifest_bytes = validated
             .manifest
@@ -1057,6 +1059,21 @@ impl PtrRuntime {
             .read()
             .expect("manifest registry lock poisoned")
             .resolve(digest)
+    }
+
+    /// Resolve an admitted manifest for use at `now`: the digest must be admitted and not
+    /// revoked, and every knowledge object it binds must still exist, not be invalidated and
+    /// hold at `now`. [`Self::resolve_execution_manifest`] is the lookup without that check,
+    /// for callers that only inspect the record.
+    pub fn resolve_execution_manifest_at(
+        &self,
+        digest: &ptr_types::Digest,
+        knowledge: &ptr_memory::KnowledgeStore,
+        now: Timestamp,
+    ) -> Result<manifest::ValidatedExecutionManifest, manifest::RuntimeManifestError> {
+        let resolved = self.resolve_execution_manifest(digest)?;
+        resolved.ensure_knowledge_valid_at(knowledge, now)?;
+        Ok(resolved)
     }
 
     pub fn execution_manifest_registry(&self) -> Arc<RwLock<ExecutionManifestRegistry>> {
@@ -1205,7 +1222,9 @@ impl PtrRuntime {
             .expect("manifest authority lock poisoned")
             .clone();
         authority.validate_protected_snapshot(manifest.snapshot_revision, live_digest)?;
-        self.admit_execution_manifest_with_authority(manifest, knowledge, artifacts, &authority)
+        self.admit_execution_manifest_with_authority(
+            manifest, knowledge, artifacts, &authority, now,
+        )
     }
 
     pub fn activate_policy_bundle(
@@ -2649,6 +2668,18 @@ impl PtrRuntime {
         }
         self.validate_lifecycle_event(&event)?;
         self.append_checked(event, None)
+    }
+
+    /// Append a runtime-written record that is not an effect settlement (the egress refusal
+    /// flush): unlike [`Self::commit_settlement`] it respects the execution fence, so an
+    /// unsettled effect or an uncertain last append holds it back, and it skips the admission
+    /// check of [`Self::commit`] because the runtime itself is the writer.
+    pub(crate) fn commit_gated(&mut self, event: LedgerEvent) -> Result<CommitIndex, RuntimeError> {
+        if self.execution.is_fenced() {
+            return Err(RuntimeError::ExecutionFenced);
+        }
+        self.validate_lifecycle_event(&event)?;
+        self.append_prepared(event, None)
     }
 
     fn append_prepared(

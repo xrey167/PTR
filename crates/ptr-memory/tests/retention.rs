@@ -9,7 +9,8 @@ use ptr_memory::{
 };
 use ptr_types::{
     AdapterVersion, EntityId, EventRole, EvidenceId, Generation, KnowledgeObjectId, ModelVersion,
-    NamespaceId, PolicyVersion, Probability, ProvenanceRef, RawEventId, SessionId, Timestamp,
+    NamespaceId, PolicyVersion, Probability, ProvenanceRef, RawEventId, RetrievalKey, SessionId,
+    Timestamp,
 };
 
 fn probability(value: f32) -> Probability {
@@ -668,8 +669,36 @@ fn an_objects_validity_is_half_open_and_part_of_its_digest_only_when_bounded() {
     assert_eq!(
         unchanged.content_digest(),
         unbounded.content_digest(),
-        "an unbounded validity leaves the digest of an older object untouched"
+        "the same validity gives the same digest"
     );
+}
+
+#[test]
+fn text_that_looks_like_another_field_cannot_collide_with_it() {
+    // A retrieval key holding a newline and a validity line must not hash like the same
+    // object with that validity: every field is length-prefixed, the validity is binary.
+    let mut forged = object("x", KnowledgeLifecycle::Hot, vec![]);
+    forged.retrieval_keys = vec![RetrievalKey::from("k\nvalidity=1:2")];
+    let mut honest = object("x", KnowledgeLifecycle::Hot, vec![]);
+    honest.retrieval_keys = vec![RetrievalKey::from("k")];
+    honest.validity = ptr_types::KnowledgeValidity {
+        valid_from: Some(Timestamp(1)),
+        valid_until: Some(Timestamp(2)),
+    };
+    assert_ne!(forged.content_digest(), honest.content_digest());
+    assert_ne!(forged.digest(), honest.digest());
+    // Moving a boundary between two list elements changes the digest too.
+    let mut split = object("x", KnowledgeLifecycle::Hot, vec![]);
+    split.retrieval_keys = vec![RetrievalKey::from("ab"), RetrievalKey::from("c")];
+    let mut joined = object("x", KnowledgeLifecycle::Hot, vec![]);
+    joined.retrieval_keys = vec![RetrievalKey::from("a"), RetrievalKey::from("bc")];
+    assert_ne!(split.content_digest(), joined.content_digest());
+    // An open start and a start at zero are different validities.
+    let mut open = object("x", KnowledgeLifecycle::Hot, vec![]);
+    open.validity.valid_until = Some(Timestamp(5));
+    let mut zero = open.clone();
+    zero.validity.valid_from = Some(Timestamp(0));
+    assert_ne!(open.content_digest(), zero.content_digest());
 }
 
 #[test]

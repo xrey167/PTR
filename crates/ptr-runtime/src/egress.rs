@@ -75,6 +75,36 @@ pub enum EgressRefusalOutcome {
 struct Counter {
     trace_id: TraceId,
     count: u32,
+    /// Counting stopped at `u32::MAX` because more refusals came in than a counter can hold
+    /// (only reachable while the ledger refuses appends, since a counter about to overflow
+    /// closes its window first). Travels to the event so the audit says "at least".
+    saturated: bool,
+}
+
+impl Counter {
+    fn new(trace_id: TraceId) -> Self {
+        Self {
+            trace_id,
+            count: 0,
+            saturated: false,
+        }
+    }
+
+    /// Add `count` refusals; going past `u32::MAX` pins the count there and says so.
+    fn merge(&mut self, count: u32, saturated: bool) {
+        match self.count.checked_add(count) {
+            Some(total) => self.count = total,
+            None => {
+                self.count = u32::MAX;
+                self.saturated = true;
+            }
+        }
+        self.saturated |= saturated;
+    }
+
+    fn would_overflow(&self, count: u32) -> bool {
+        self.count.checked_add(count).is_none()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -112,6 +142,7 @@ fn event_of(
             source,
             target: key.1.clone(),
             count: counter.count,
+            saturated: counter.saturated,
             reason: EgressRefusalReason::from_code(key.0)?,
         },
     ))
@@ -215,6 +246,7 @@ impl EgressRefusalWindows {
             source,
             target,
             count,
+            saturated,
             reason,
         } = event
         else {
@@ -231,11 +263,10 @@ impl EgressRefusalWindows {
             }
             EgressRefusalSource::Pod(_) | EgressRefusalSource::Overflow => {
                 self.overflow_window = window;
-                let counter = self
-                    .overflow
+                self.overflow
                     .entry(reason.code())
-                    .or_insert_with(|| Counter { trace_id, count: 0 });
-                counter.count = counter.count.saturating_add(count);
+                    .or_insert_with(|| Counter::new(trace_id))
+                    .merge(count, saturated);
                 return;
             }
         };
@@ -246,11 +277,10 @@ impl EgressRefusalWindows {
         // The same fold as `absorb`: a Pod never holds more than MAX_EGRESS_KEYS_PER_POD exact
         // targets, however many failed rollovers put counters back.
         let key = bounded_key(&pod.counters, reason.code(), &target);
-        let counter = pod
-            .counters
+        pod.counters
             .entry(key)
-            .or_insert_with(|| Counter { trace_id, count: 0 });
-        counter.count = counter.count.saturating_add(count);
+            .or_insert_with(|| Counter::new(trace_id))
+            .merge(count, saturated);
     }
 
     /// Count `count` refusals; return the events of whatever window this closed.
@@ -274,6 +304,17 @@ impl EgressRefusalWindows {
         {
             closed.extend(self.take_pod(source));
         }
+        // A counter that this refusal would push past u32::MAX closes its window first, so the
+        // events carry exact counts for as long as the ledger takes appends.
+        let would_overflow = self.pods.get(source).is_some_and(|pod| {
+            let key = bounded_key(&pod.counters, reason.code(), target);
+            pod.counters
+                .get(&key)
+                .is_some_and(|counter| counter.would_overflow(count))
+        });
+        if would_overflow {
+            closed.extend(self.take_pod(source));
+        }
         let pod = self
             .pods
             .entry(source.clone())
@@ -282,11 +323,10 @@ impl EgressRefusalWindows {
                 counters: BTreeMap::new(),
             });
         let key = bounded_key(&pod.counters, reason.code(), target);
-        let counter = pod.counters.entry(key).or_insert_with(|| Counter {
-            trace_id: trace_id.clone(),
-            count: 0,
-        });
-        counter.count = counter.count.saturating_add(count);
+        pod.counters
+            .entry(key)
+            .or_insert_with(|| Counter::new(trace_id.clone()))
+            .merge(count, false);
         closed
     }
 }
@@ -314,6 +354,7 @@ impl PtrRuntime {
             source: EgressRefusalSource::Pod(record.source.clone()),
             target: record.target.clone(),
             count: 1,
+            saturated: false,
             reason: record.reason,
         };
         // The same shape check the codec applies, run before anything is counted.
@@ -367,8 +408,10 @@ impl PtrRuntime {
         }
     }
 
-    /// Append events in order; on the first failure the events not appended are counted again
-    /// rather than lost.
+    /// Append events in order; on the first failure (the ledger refuses, or the runtime is
+    /// fenced) the events not appended are counted again rather than lost: they go back into
+    /// the bounded table, which is the pending list, and are committed by a later flush once the
+    /// fence is lifted. The append respects the execution fence, unlike a settlement.
     fn commit_egress_events(
         &mut self,
         events: Vec<Closed>,
@@ -376,7 +419,7 @@ impl PtrRuntime {
         let mut committed = Vec::with_capacity(events.len());
         let mut pending = events.into_iter();
         while let Some((window, event)) = pending.next() {
-            match self.commit_settlement(event.clone()) {
+            match self.commit_gated(event.clone()) {
                 Ok(index) => committed.push(index),
                 Err(error) => {
                     for (window, event) in std::iter::once((window, event)).chain(pending) {
@@ -509,6 +552,120 @@ mod tests {
             );
         }
         assert_eq!(total(&runtime.egress_refusals), rollovers as u64);
+    }
+
+    fn unsettled_effect() -> crate::execution::UnsettledEffect {
+        crate::execution::UnsettledEffect {
+            attempt: CommitIndex(1),
+            key: None,
+            target: "t".into(),
+            operation: "op".into(),
+            effect: ptr_types::Effect::External,
+            identity: crate::execution::ActionIdentity {
+                project: ProjectId::from("p"),
+                principal: "principal".into(),
+                revision: ptr_types::Revision(1),
+                generation: Generation(1),
+                action_digest: [0; 32],
+            },
+        }
+    }
+
+    fn egress_events(runtime: &PtrRuntime) -> Vec<LedgerEvent> {
+        runtime
+            .committed_events()
+            .iter()
+            .filter(|committed| matches!(committed.event, LedgerEvent::EgressRefused { .. }))
+            .map(|committed| committed.event.clone())
+            .collect()
+    }
+
+    #[test]
+    fn a_fenced_runtime_commits_no_refusal_and_loses_none_until_the_fence_is_lifted() {
+        let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+        for n in 0..3 {
+            runtime.record_egress_refusal(record(n, 1)).unwrap();
+        }
+        // An effect attempt awaits its settlement: the execution fence is up.
+        runtime.execution.record_attempt(unsettled_effect());
+        assert!(runtime.execution.is_fenced());
+        let refused = runtime.flush_egress_refusals();
+        assert!(
+            matches!(refused, Err(RuntimeError::ExecutionFenced)),
+            "{refused:?}"
+        );
+        assert!(egress_events(&runtime).is_empty(), "nothing is committed");
+        assert_eq!(total(&runtime.egress_refusals), 3, "and nothing is lost");
+        // A refusal recorded meanwhile is counted too.
+        let _ = runtime.record_egress_refusal(record(7, 2));
+        assert_eq!(total(&runtime.egress_refusals), 4);
+        // The fence is lifted by settling the attempt.
+        runtime
+            .execution
+            .settle(CommitIndex(1), crate::execution::Settlement::NotApplied);
+        assert!(!runtime.execution.is_fenced());
+        let committed = runtime.flush_egress_refusals().unwrap();
+        assert_eq!(committed.len(), 4);
+        assert_eq!(egress_events(&runtime).len(), 4);
+        assert_eq!(total(&runtime.egress_refusals), 0);
+    }
+
+    #[test]
+    fn a_counter_that_would_pass_u32_max_closes_its_window_or_says_it_saturated() {
+        // Ledger working: the counter closes its window early and the events stay exact.
+        let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+        runtime.record_egress_refusal(record(0, 1)).unwrap();
+        runtime
+            .egress_refusals
+            .pods
+            .get_mut(&pod(0))
+            .unwrap()
+            .counters
+            .values_mut()
+            .for_each(|counter| counter.count = u32::MAX - 1);
+        runtime.record_egress_refusal(record(0, 1)).unwrap();
+        let outcome = runtime.record_egress_refusal(record(0, 1)).unwrap();
+        assert!(matches!(outcome, EgressRefusalOutcome::Committed(ref i) if i.len() == 1));
+        let events = egress_events(&runtime);
+        assert!(matches!(
+            events.as_slice(),
+            [LedgerEvent::EgressRefused {
+                count: u32::MAX,
+                saturated: false,
+                ..
+            }]
+        ));
+        assert_eq!(total(&runtime.egress_refusals), 1);
+
+        // Ledger away: the merge saturates, and the event says so once the ledger is back.
+        let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+        runtime.record_egress_refusal(record(0, 1)).unwrap();
+        runtime
+            .egress_refusals
+            .pods
+            .get_mut(&pod(0))
+            .unwrap()
+            .counters
+            .values_mut()
+            .for_each(|counter| counter.count = u32::MAX - 1);
+        runtime.mark_commit_uncertain_for_test();
+        let _ = runtime.record_egress_refusal(record(0, 1));
+        let _ = runtime.record_egress_refusal(record(0, 1));
+        assert_eq!(total(&runtime.egress_refusals), u64::from(u32::MAX));
+        runtime.execution.complete_commit();
+        runtime.flush_egress_refusals().unwrap();
+        let events = egress_events(&runtime);
+        assert!(
+            matches!(
+                events.as_slice(),
+                [LedgerEvent::EgressRefused {
+                    count: u32::MAX,
+                    saturated: true,
+                    ..
+                }]
+            ),
+            "{events:?}"
+        );
     }
 
     #[test]
