@@ -6,7 +6,7 @@ PTR-Experimente mit Claude Code ein. Reihenfolge: Ubuntu installieren (Secure Bo
 MOK-Schlüssel beim Neustart bestätigen; mindestens 200 GB frei), Treiber
 `nvidia-driver-580-open` installieren und mit `nvidia-smi` prüfen, `git` und Repository klonen,
 `make desktop-setup`, danach `make gpu-doctor`, Hugging-Face-Login und OLMoE-Download (ca. 14
-GB, fester Revisions-Hash), dann `make smoke-gpu`, `make olmoe-sft-smoke` und zuletzt M011.
+GB, fester Revisions-Hash), dann `make smoke-gpu`, `make olmoe-sft-smoke` und zuletzt M011 (nur auf dem 3090-PC).
 Claude Code startet man im Repo-Verzeichnis; der Skill `experiment-run` führt Läufe im
 Hintergrund aus und überwacht sie. Die Smoke-Läufe sind **Pipeline-Belege, keine Evidenz**: ohne
 Falsifikationskriterien, Seeds und Baselines des jeweiligen Experiments wird kein
@@ -17,7 +17,9 @@ Target: a fresh Ubuntu 24.04 LTS desktop (native, not WSL2) with one NVIDIA RTX 
 claims a research result: the smoke runs are pipeline evidence only (see step 7).
 
 **The owner has two PCs with one card each: an RTX 3090 (`hardware/rtx3090.toml`) and an RTX
-4090 (`hardware/rtx4090.toml`).** Follow steps 1 to 9 on each PC with that PC's profile. The text
+4090 (`hardware/rtx4090.toml`).** Follow the setup and smoke steps (sections 1 to 6, 8 and 9, and items 1 and 2 of section 7) on
+each PC with that PC's profile. M011 (section 7, item 3) declares `hardware/rtx3090.toml`
+(`experiments/model/M011-routed-peft/experiment.toml`), so it runs **only on the 3090 PC**. The text
 below says 4090 where it was written for the reference card. The Makefile selects the config
 set with `GPU_PROFILE`, whose default is `rtx3090`: on the 3090 PC run the targets as written,
 and on the 4090 PC pass `GPU_PROFILE=rtx4090` to every GPU target (for example
@@ -157,7 +159,8 @@ first. Always `make gpu-doctor` before a run.
    (`stage-moe-olmoe-sft-smoke-rtx3090.toml` by default, without the suffix under
    `GPU_PROFILE=rtx4090`). Override either
    variable on the command line: `make smoke-gpu SMOKE_GPU_CONFIG=path.toml`.
-3. **M011**: experiment M011 is registered as *planned*. Its entrypoint is set only when
+3. **M011** (3090 PC only: its manifest declares `hardware/rtx3090.toml`, and `GPU_PROFILE`
+   cannot change that): experiment M011 is registered as *planned*. Its entrypoint is set only when
    its run is prepared, so do not look for a `make` target: ask Claude Code (step 8) to prepare
    the run per the experiment's manifest. Before it, `python3 scripts/run_experiment.py validate`
    and `python3 scripts/check_research_gates.py` must pass. Never edit a prepared experiment

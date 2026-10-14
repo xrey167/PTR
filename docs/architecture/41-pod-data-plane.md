@@ -146,8 +146,11 @@ Rules, each the same as the one already enforced for frames and KV pages, restat
    committed anchor. A handle that fails any check is refused; the memory is never mapped.
    This keeps `docs/POD_MASTER_PLAN.md` row H ("kein Raw Pointer nach außen") true for every
    carrier: the raw pointer exists only inside the admitted scope.
-2. **Single use with a deadline.** A handle is consumed once; the nonce is tombstoned like a
-   chunk id (`FrameAssembler`'s reservations and tombstones, `chunk.rs:301`). After the deadline
+2. **Single use with a deadline.** A handle is consumed once. Admission **atomically
+   reserves** `(principal, parent_operation_id, handle_nonce)` as an open slot before any
+   locator is released, so a second admission of the same nonce, concurrent or later, is
+   refused; consumption or abandonment turns the slot into a tombstone kept until the deadline
+   plus skew, like a chunk id (`FrameAssembler`'s reservations and tombstones, `chunk.rs:301`). After the deadline
    plus skew the handle can no longer be admitted or consumed, but the sender reclaims the
    buffer only once its teardown is verified as rule 3b requires (never on the deadline alone).
 3. **Ownership stays with the producer until teardown.** The producer keeps the buffer alive at
@@ -474,7 +477,15 @@ use the v1 frame's `placement_epoch` and, once implemented, the E008 fields (`in
 `mode`, `taint`). The data-plane contract of section 1 adds only that a `Remote` handle names the
 **complete frame**: its frame id, the whole-frame digest and the assembly metadata (chunk total,
 parent operation), while the per-chunk digests keep authenticating each envelope; a single chunk
-digest would identify one slice only. It is admitted by the same function as local handles. Cross-host **tier transfers** (a KV snapshot or an expert's weights moving from
+digest would identify one slice only. It is admitted by the same function as local handles.
+Producer and consumer of a `Remote` handle are governed by different `ptrd` authorities, so the
+operation record of section 1 must exist at the destination too: before releasing a `Remote`
+locator, the source authority installs the record at the destination authority through a
+bounded, authenticated **operation setup** over `ptr-cluster`, signed by the source authority,
+bound to the project, the destination placement and epoch and the consumer worker's session,
+and subject to the same size caps. The destination acknowledges only after checking the record
+against its own live state, and drops it on any fence of those bindings; a handle whose
+operation has no acknowledged record there is refused as an unknown operation. Cross-host **tier transfers** (a KV snapshot or an expert's weights moving from
 one host's RAM to another's) need their own grant. `TierTransferAuthorization`
 (`crates/ptr-runtime/src/tier.rs:390`) is only the tuple (generation, placement epoch, fencing
 token) that the in-process controller compares; it names no object, source, destination,
