@@ -10,9 +10,20 @@ use ptr_server::{KvBackend, ServerBackend, ServerState, VcwService, VcwServicePa
 use ptr_types::{CapabilityId, CapsuleId, Generation, PrincipalId, ProjectId};
 use std::sync::Arc;
 
+mod server_flags;
+
 #[tokio::main]
 async fn main() {
-    let cli = match CliOverrides::parse(std::env::args().skip(1)) {
+    // `--trace-file` & co. are split off first: the config parser rejects unknown flags.
+    let (server_flags, config_args) =
+        match server_flags::ServerFlags::split(std::env::args().skip(1)) {
+            Ok(value) => value,
+            Err(err) => {
+                eprintln!("{err}");
+                std::process::exit(2);
+            }
+        };
+    let cli = match CliOverrides::parse(config_args) {
         Ok(value) => value,
         Err(err) if err == "help requested" => {
             println!(
@@ -23,7 +34,13 @@ async fn main() {
                  output is deterministic byte text, not a language model) \
                  [--mailbox-capacity N] [--max-parallel-candidates N] \
                  [--require-current-revision true|false] \
-                 [--require-live-generation true|false]"
+                 [--require-live-generation true|false] \
+                 {} \
+                 (opt-in, default off: --trace-file appends one OTLP/JSON-shaped span line per \
+                 request to PATH, without request text, capped at --trace-max-bytes N bytes \
+                 (default 8 MiB, must be non-zero); --ingress-diagnostics adds an advisory \
+                 ingress_diagnostics field to responses)",
+                server_flags::USAGE
             );
             return;
         }
@@ -68,6 +85,10 @@ async fn main() {
         std::process::exit(2);
     }
 
+    let server_options = server_flags.into_options().unwrap_or_else(|err| {
+        eprintln!("refusing to start ptrd: {err}");
+        std::process::exit(2);
+    });
     let bind = config.server.bind.clone();
     let vcw_config = config.vcw.clone();
     let ledger_path = std::path::Path::new(&config.server.data_dir).join("ledger.log");
@@ -156,6 +177,11 @@ async fn main() {
     if vcw_config.enabled {
         state = install_vcw(state, &vcw_config, std::path::Path::new(&data_dir));
     }
+    // Opt-in tracing and ingress diagnostics; the default options change nothing.
+    state = state.with_options(server_options).unwrap_or_else(|err| {
+        eprintln!("refusing to start ptrd: invalid server option: {err}");
+        std::process::exit(2);
+    });
 
     // A daemon that cannot be stopped by a signal is refused, never started and then "stopped
     // cleanly" at once: a failed registration must not read as a stop request.
