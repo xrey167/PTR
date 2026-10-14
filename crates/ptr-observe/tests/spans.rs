@@ -109,6 +109,34 @@ fn bounds_are_counted_and_deterministic() {
 }
 
 #[test]
+fn oversized_request_id_is_truncated_like_strings() {
+    let limits = TracerLimits {
+        max_value_len: 16,
+        ..TracerLimits::default()
+    };
+    let (tracer, _) = tracer_with(limits);
+    let span = tracer.root_span("request").expect("open");
+    span.set_field("rid", ptr_types::RequestId("r".repeat(10_000)));
+    span.event(TraceEvent::request(
+        TraceLevel::Info,
+        "ev",
+        ptr_types::RequestId("q".repeat(10_000)),
+        ptr_types::Revision(1),
+    ));
+    span.finish();
+    let spans = tracer.finished();
+    assert_eq!(
+        spans[0].fields["rid"],
+        TraceValue::RequestId(ptr_types::RequestId("r".repeat(16)))
+    );
+    assert_eq!(
+        spans[0].events[0].event.fields["ptr.request_id"],
+        TraceValue::RequestId(ptr_types::RequestId("q".repeat(16)))
+    );
+    assert!(tracer.stats().truncated_values >= 2);
+}
+
+#[test]
 fn child_of_finished_parent_is_typed_error() {
     let (tracer, _) = tracer_with(TracerLimits::default());
     let root = tracer.root_span("r").expect("root");

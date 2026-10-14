@@ -193,7 +193,10 @@ fn retention_by_bytes() {
 #[test]
 fn retention_by_logical_age_uses_the_caller_clock() {
     let mut config = BusConfig::new(10);
-    config.retention = RetentionPolicy::with_max_age_ticks(5);
+    config.retention = RetentionPolicy {
+        max_records: Some(100),
+        ..RetentionPolicy::with_max_age_ticks(5)
+    };
     let mut bus = InMemoryBus::with_config(config);
     bus.register("c", Offset(0)).unwrap();
     bus.publish(projection("old")).unwrap();
@@ -280,7 +283,7 @@ fn unbounded_retention_is_refused_or_clamped_and_never_grows_without_limit() {
     };
     assert!(unbounded.is_unbounded());
     assert!(!RetentionPolicy::acked_only().is_unbounded());
-    assert!(!RetentionPolicy::with_max_age_ticks(5).is_unbounded());
+    assert!(RetentionPolicy::with_max_age_ticks(5).is_unbounded());
 
     let mut config = BusConfig::new(2);
     config.retention = unbounded;
@@ -292,6 +295,26 @@ fn unbounded_retention_is_refused_or_clamped_and_never_grows_without_limit() {
     );
 
     // The infallible constructor falls back to "keep no acknowledged history".
+    let mut bus = InMemoryBus::with_config(config);
+    bus.register("c", Offset(0)).unwrap();
+    for _ in 0..50 {
+        let offset = bus.publish(projection("k")).unwrap();
+        bus.commit("c", offset).unwrap();
+    }
+    assert_eq!(bus.retained(), 0);
+}
+
+#[test]
+fn age_only_retention_is_refused_and_never_grows_at_a_fixed_tick() {
+    let mut config = BusConfig::new(2);
+    config.retention = RetentionPolicy::with_max_age_ticks(5);
+    assert_eq!(
+        InMemoryBus::try_with_config(config).err(),
+        Some(BusError::InvalidPolicy {
+            violation: PolicyViolation::UnboundedRetention
+        })
+    );
+    // The infallible constructor falls back; the tick is never advanced.
     let mut bus = InMemoryBus::with_config(config);
     bus.register("c", Offset(0)).unwrap();
     for _ in 0..50 {

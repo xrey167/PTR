@@ -132,6 +132,8 @@ pub struct BoundedStream<S: StreamSource> {
     buffer: VecDeque<StreamItem>,
     /// Effective look-ahead bound: `buffer_capacity` clamped into `1..=MAX_STREAM_BUFFER`.
     buffer_limit: usize,
+    /// Effective token bound: `max_tokens` clamped into `1..=MAX_STREAM_TOKENS`.
+    token_limit: usize,
     source_done: bool,
     delivered: usize,
     ended: bool,
@@ -140,11 +142,13 @@ pub struct BoundedStream<S: StreamSource> {
 impl<S: StreamSource> BoundedStream<S> {
     pub fn new(source: S, options: StreamOptions) -> Self {
         let capacity = options.limits.buffer_capacity.clamp(1, MAX_STREAM_BUFFER);
+        let token_limit = options.limits.max_tokens.clamp(1, MAX_STREAM_TOKENS);
         Self {
             source,
             options,
             buffer: VecDeque::with_capacity(capacity),
             buffer_limit: capacity,
+            token_limit,
             source_done: false,
             delivered: 0,
             ended: false,
@@ -191,7 +195,7 @@ impl<S: StreamSource> BoundedStream<S> {
             });
         };
         if item.counts_toward_max() {
-            if self.delivered >= self.options.limits.max_tokens {
+            if self.delivered >= self.token_limit {
                 self.buffer.clear();
                 return Ok(StreamEvent::Done {
                     finish_reason: FinishReason::MaxTokens,
@@ -389,6 +393,55 @@ mod tests {
                 return Err(GenerationError::StreamClosed);
             }
             Ok(Some(StreamItem::Model(ModelEvent::Finished)))
+        }
+    }
+
+    /// Endless token source that fails after `stop_after` pulls (test-side stop).
+    struct EndlessTokens {
+        pulled: usize,
+        stop_after: usize,
+    }
+
+    impl StreamSource for EndlessTokens {
+        fn next_item(&mut self) -> Result<Option<StreamItem>, GenerationError> {
+            self.pulled += 1;
+            if self.pulled > self.stop_after {
+                return Err(GenerationError::StreamClosed);
+            }
+            Ok(Some(StreamItem::Token(TokenId(1))))
+        }
+    }
+
+    #[test]
+    fn oversized_public_max_tokens_is_clamped_by_new() {
+        for max_tokens in [usize::MAX, MAX_STREAM_TOKENS + 1] {
+            let options = StreamOptions {
+                limits: StreamLimits {
+                    max_tokens,
+                    buffer_capacity: 4,
+                },
+                ..StreamOptions::default()
+            };
+            let source = EndlessTokens {
+                pulled: 0,
+                stop_after: MAX_STREAM_TOKENS + 1000,
+            };
+            let mut stream = BoundedStream::new(source, options);
+            let mut delivered = 0usize;
+            let last = loop {
+                match stream.next_event() {
+                    StreamEvent::Token(_) => delivered += 1,
+                    other => break other,
+                }
+            };
+            assert_eq!(
+                last,
+                StreamEvent::Done {
+                    finish_reason: FinishReason::MaxTokens
+                },
+                "max_tokens {max_tokens}: ended after {delivered} tokens"
+            );
+            assert_eq!(delivered, MAX_STREAM_TOKENS);
         }
     }
 

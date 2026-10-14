@@ -629,3 +629,105 @@ fn failed_automatic_compaction_does_not_fail_a_committed_mutation() {
     let reopened = DurableMemoryStore::open(&file.0, options).unwrap();
     assert_eq!(reopened.len(), 3);
 }
+
+fn strict(limits: MemoryLimits) -> MemoryStoreOptions {
+    MemoryStoreOptions { limits, ..quiet() }
+}
+
+#[test]
+fn reopening_with_a_stricter_class_capacity_is_rejected_and_keeps_the_journal() {
+    let file = TempJournal::new("ms-strict-capacity");
+    let mut store = open(&file);
+    for id in ["a", "b"] {
+        store
+            .insert(new_record(
+                id,
+                MemoryClass::Semantic,
+                vec![observation("s", 1)],
+            ))
+            .unwrap();
+    }
+    drop(store);
+    let before = std::fs::read(&file.0).unwrap();
+    let limits = MemoryLimits {
+        max_records_per_class: 1,
+        ..MemoryLimits::default()
+    };
+    let error = DurableMemoryStore::open(&file.0, strict(limits))
+        .err()
+        .unwrap();
+    assert_eq!(
+        error,
+        MemoryStoreError::RecoveredCapacityExceeded {
+            class: "semantic",
+            count: 2,
+            limit: 1
+        }
+    );
+    assert_eq!(std::fs::read(&file.0).unwrap(), before);
+    assert_eq!(open(&file).len(), 2);
+}
+
+#[test]
+fn reopening_with_stricter_field_limits_is_rejected_per_violation() {
+    let file = TempJournal::new("ms-strict-fields");
+    let mut store = open(&file);
+    let mut record = new_record(
+        "rec-long-id",
+        MemoryClass::Episodic,
+        vec![observation("s1", 1), observation("s2", 1)],
+    );
+    record.body = "0123456789".to_string();
+    store.insert(record).unwrap();
+    store
+        .insert(derived_record(
+            "kid",
+            MemoryClass::Episodic,
+            &["rec-long-id"],
+        ))
+        .unwrap();
+    drop(store);
+    let cases = [
+        (
+            MemoryLimits {
+                max_id_bytes: 3,
+                ..MemoryLimits::default()
+            },
+            RecordViolation::IdTooLong,
+        ),
+        (
+            MemoryLimits {
+                max_body_bytes: 5,
+                ..MemoryLimits::default()
+            },
+            RecordViolation::BodyTooLarge,
+        ),
+        (
+            MemoryLimits {
+                max_supports: 1,
+                ..MemoryLimits::default()
+            },
+            RecordViolation::TooManySupports,
+        ),
+        (
+            MemoryLimits {
+                max_derived_from: 0,
+                ..MemoryLimits::default()
+            },
+            RecordViolation::TooManyDerivations,
+        ),
+    ];
+    for (limits, violation) in cases {
+        let error = DurableMemoryStore::open(&file.0, strict(limits))
+            .err()
+            .unwrap();
+        assert!(
+            matches!(
+                &error,
+                MemoryStoreError::RecoveredRecordInvalid { violation: v, .. } if *v == violation
+            ),
+            "{violation:?}: {error:?}"
+        );
+    }
+    assert_eq!(open(&file).len(), 2);
+}

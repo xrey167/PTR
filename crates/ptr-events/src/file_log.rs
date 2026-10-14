@@ -1051,6 +1051,18 @@ mod tests {
     }
 
     #[test]
+    fn config_refuses_age_only_retention() {
+        let mut config = FileLogConfig::new(1);
+        config.retention = RetentionPolicy::with_max_age_ticks(10);
+        assert_eq!(
+            config.validate(),
+            Err(BusError::InvalidPolicy {
+                violation: PolicyViolation::UnboundedRetention
+            })
+        );
+    }
+
+    #[test]
     fn config_refuses_unbounded_retention() {
         let mut config = FileLogConfig::new(1);
         config.retention = RetentionPolicy {

@@ -425,7 +425,7 @@ impl InMemoryBus {
 
     /// Create an empty bus from a configuration. The record capacity is clamped to at least one.
     ///
-    /// A [`RetentionPolicy`] with no limit in any dimension would keep acknowledged history
+    /// A [`RetentionPolicy`] with no record or byte limit (age alone does not count) would keep acknowledged history
     /// forever, so this infallible constructor replaces it with
     /// [`RetentionPolicy::acked_only`]. Use [`InMemoryBus::try_with_config`] to have it refused.
     pub fn with_config(mut config: BusConfig) -> Self {

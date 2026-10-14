@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use ptr_observe::{ManualClock, Tracer, TracerConfig};
+use ptr_observe::{ManualClock, Tracer, TracerConfig, STUCK_PATH_MAX_BYTES, STUCK_PATH_MAX_DEPTH};
 
 fn setup() -> (Tracer, Arc<ManualClock>) {
     let clock = Arc::new(ManualClock::new(1_000));
@@ -74,4 +74,40 @@ fn stuck_detection_uses_threshold_and_reports_path() {
     assert!(!stuck.iter().any(|s| s.context == fresh.context()));
     assert_eq!(tree.stuck(100).len(), 4);
     assert!(tree.stuck(1_000_000).is_empty());
+}
+
+#[test]
+fn stuck_paths_stay_bounded_for_deep_chains_at_default_limits() {
+    let (tracer, clock) = setup();
+    let limits = tracer.limits();
+    let name = "n".repeat(limits.max_value_len);
+    let mut guards: Vec<ptr_observe::SpanGuard> = Vec::new();
+    for depth in 0..limits.max_open_spans {
+        let guard = match guards.last() {
+            None => tracer.root_span(name.clone()),
+            Some(parent) => parent.child(name.clone()),
+        }
+        .unwrap_or_else(|e| panic!("depth {depth}: {e}"));
+        guards.push(guard);
+        clock.advance(1);
+    }
+    clock.advance(10);
+    let stuck = tracer.active_tree().stuck(0);
+    assert_eq!(stuck.len(), limits.max_open_spans);
+    let total: usize = stuck
+        .iter()
+        .map(|s| s.path.iter().map(String::len).sum::<usize>())
+        .sum();
+    assert!(
+        total <= limits.max_open_spans * (STUCK_PATH_MAX_BYTES + limits.max_value_len),
+        "stuck output is {total} bytes"
+    );
+    assert!(stuck.iter().all(|s| s.path.len() <= STUCK_PATH_MAX_DEPTH));
+    // The deepest span reports its own name last and is flagged as truncated.
+    let deepest = stuck.last().expect("deepest");
+    assert!(deepest.path_truncated);
+    assert_eq!(deepest.path.last(), Some(&name));
+    // A shallow span has its complete path and no flag.
+    assert!(!stuck[0].path_truncated);
+    assert_eq!(stuck[0].path.len(), 1);
 }

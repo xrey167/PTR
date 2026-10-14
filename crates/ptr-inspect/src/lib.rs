@@ -20,5 +20,7 @@ pub use redact::{
     redact_keys, redact_keys_containing, redact_sensitive, PreviewPolicy, Private, RawEvidence,
     Secret, DEFAULT_SENSITIVE_KEYS, MAX_EVIDENCE_PREVIEW_BYTES,
 };
-pub use render::{render_compact, render_json, render_tree, RenderOptions, JSON_MAX_DEPTH};
+pub use render::{
+    render_compact, render_json, render_tree, RenderOptions, JSON_MAX_DEPTH, MAX_INDENT,
+};
 pub use visit::{walk, Visitor, WalkError, WalkLimits, HARD_MAX_DEPTH};

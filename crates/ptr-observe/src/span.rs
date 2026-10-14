@@ -12,6 +12,8 @@ use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use ptr_types::RequestId;
+
 use crate::{Clock, TraceEvent, TraceValue};
 
 /// Observability trace identifier (distinct from `ptr_types::TraceId`).
@@ -223,7 +225,15 @@ fn bound_fields(
             TraceValue::String(text) => {
                 TraceValue::String(truncate(&text, limits.max_value_len, stats))
             }
-            other => other,
+            // A client may supply any string as a request id, so it is bounded like a string.
+            TraceValue::RequestId(id) => {
+                TraceValue::RequestId(RequestId(truncate(&id.0, limits.max_value_len, stats)))
+            }
+            value @ (TraceValue::U64(_)
+            | TraceValue::Bool(_)
+            | TraceValue::Revision(_)
+            | TraceValue::Generation(_)
+            | TraceValue::CommitIndex(_)) => value,
         };
         bounded.insert(key, value);
     }

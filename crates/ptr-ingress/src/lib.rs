@@ -31,8 +31,8 @@ pub use parse::{
 };
 pub use pipeline::{IngestHints, IngressConfig, IngressError, IngressPipeline, IngressRecord};
 pub use policy::{
-    cross_check, evaluate_policy, CrossCheckStatus, DisagreementReason, PolicyConfig, PolicyInput,
-    VerificationDecision, HIGH_RISK_EFFECT_LABELS,
+    cross_check, evaluate_policy, CrossCheckStatus, DisagreementReason, PolicyConfig,
+    PolicyConfigError, PolicyInput, PolicyThreshold, VerificationDecision, HIGH_RISK_EFFECT_LABELS,
 };
 pub use provenance::{OffsetMap, RawSpan};
 pub use sniff::{kind_for_extension, sniff, SniffReport, SNIFF_WINDOW};

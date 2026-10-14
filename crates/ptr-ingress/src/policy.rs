@@ -1,6 +1,8 @@
 //! Risk- and disagreement-driven verification policy: decides how much raw-versus-typed
 //! verification a classified input needs, and says why.
 
+use std::fmt;
+
 use crate::classify::{ClassifierOutput, LabelAxis, UNSPECIFIED_LABEL};
 use crate::model::{ArtifactKind, LabelScore};
 use crate::normalize::{NormalizeError, NormalizedText};
@@ -42,6 +44,91 @@ impl Default for PolicyConfig {
             risk_threshold: 0.2,
             divergence_threshold: 0.5,
             min_sniff_confidence: 0.6,
+        }
+    }
+}
+
+/// Which [`PolicyConfig`] threshold a [`PolicyConfigError`] refers to.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PolicyThreshold {
+    Risk,
+    Divergence,
+    MinSniffConfidence,
+}
+
+impl PolicyThreshold {
+    fn name(self) -> &'static str {
+        match self {
+            PolicyThreshold::Risk => "risk_threshold",
+            PolicyThreshold::Divergence => "divergence_threshold",
+            PolicyThreshold::MinSniffConfidence => "min_sniff_confidence",
+        }
+    }
+}
+
+/// Why a [`PolicyConfig`] is refused.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PolicyConfigError {
+    /// A threshold is NaN, infinite or outside `[0, 1]`.
+    OutOfRange {
+        threshold: PolicyThreshold,
+        value: f32,
+    },
+}
+
+impl fmt::Display for PolicyConfigError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PolicyConfigError::OutOfRange { threshold, value } => write!(
+                f,
+                "policy threshold {} must be finite and within [0, 1], got {value}",
+                threshold.name()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for PolicyConfigError {}
+
+fn unit_interval(threshold: PolicyThreshold, value: f32) -> Result<(), PolicyConfigError> {
+    if value.is_finite() && (0.0..=1.0).contains(&value) {
+        Ok(())
+    } else {
+        Err(PolicyConfigError::OutOfRange { threshold, value })
+    }
+}
+
+impl PolicyConfig {
+    /// Checks that every threshold is finite and within `[0, 1]`.
+    pub fn validate(&self) -> Result<(), PolicyConfigError> {
+        unit_interval(PolicyThreshold::Risk, self.risk_threshold)?;
+        unit_interval(PolicyThreshold::Divergence, self.divergence_threshold)?;
+        unit_interval(
+            PolicyThreshold::MinSniffConfidence,
+            self.min_sniff_confidence,
+        )
+    }
+
+    /// A copy in which every invalid threshold is replaced by the strictest valid value, so an
+    /// invalid configuration escalates more, never less: `0.0` for the risk and divergence
+    /// thresholds (any non-zero high-risk probability, any divergence flags) and `1.0` for the
+    /// minimum sniff confidence (everything short of full confidence is weakly supported).
+    pub(crate) fn fail_closed(&self) -> Self {
+        let keep = |threshold, value, strictest| {
+            if unit_interval(threshold, value).is_ok() {
+                value
+            } else {
+                strictest
+            }
+        };
+        Self {
+            risk_threshold: keep(PolicyThreshold::Risk, self.risk_threshold, 0.0),
+            divergence_threshold: keep(PolicyThreshold::Divergence, self.divergence_threshold, 0.0),
+            min_sniff_confidence: keep(
+                PolicyThreshold::MinSniffConfidence,
+                self.min_sniff_confidence,
+                1.0,
+            ),
         }
     }
 }
@@ -197,7 +284,11 @@ fn compare_axis(
 
 /// Evaluates the policy. Status is the most severe reason; without any reason it is `Agree`
 /// when a second classifier confirmed the first and `SampleVerified` otherwise.
+///
+/// Invalid thresholds (see [`PolicyConfig::validate`]) fail closed: they are replaced by the
+/// strictest valid value, so they can only escalate.
 pub fn evaluate_policy(config: &PolicyConfig, input: &PolicyInput<'_>) -> VerificationDecision {
+    let config = &config.fail_closed();
     let mut reasons = Vec::new();
     if !input.raw_present {
         reasons.push(DisagreementReason::NoRawEvidence);

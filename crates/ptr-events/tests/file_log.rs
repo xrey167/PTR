@@ -430,7 +430,10 @@ fn retention_by_logical_age_waits_for_the_caller_clock() {
     let dir = TempDir::new("ret-age");
     let mut cfg = config();
     cfg.segment_max_bytes = 100;
-    cfg.retention = RetentionPolicy::with_max_age_ticks(10);
+    cfg.retention = RetentionPolicy {
+        max_records: Some(1_000),
+        ..RetentionPolicy::with_max_age_ticks(10)
+    };
     let mut log = open(&dir, cfg);
     log.register("c", Offset(0)).unwrap();
     fill(&mut log, 12);

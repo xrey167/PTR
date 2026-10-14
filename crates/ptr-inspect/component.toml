@@ -14,7 +14,7 @@ implemented = [
   "Structural diff of two trees by struct field name, map key (label buckets with exact structural key comparison, so distinct keys sharing a truncated label stay distinct) and list index (index-wise, no LCS) reporting Added, Removed, Changed and TypeChanged; two redaction markers compare equal and a redacted-versus-plaintext mismatch is reported with both sides redacted",
   "Private<T> (redaction marker with type name and optional size class) and RawEvidence<T> (length and FNV-1a 64 fingerprint, truncated preview only under PreviewPolicy::Allow, capped at 256 bytes), both with non-leaking Debug",
   "Key-based redaction passes (redact_keys exact, redact_keys_containing and redact_sensitive by fragment, case-insensitive) over struct fields, enum fields and text-keyed map entries",
-  "Deterministic indented tree renderer, single-line renderer (width, depth and item limits) and a hand-written JSON renderer with control-character escaping and non-finite floats as strings",
+  "Deterministic indented tree renderer (indent clamped to MAX_INDENT = 32 with saturating padding arithmetic, so no RenderOptions value can trigger an oversized allocation), single-line renderer (width, depth and item limits) and a hand-written JSON renderer with control-character escaping and non-finite floats as strings",
 ]
 
 missing = [

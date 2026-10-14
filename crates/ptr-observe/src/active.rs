@@ -21,9 +21,19 @@ pub struct ActiveSpan {
 pub struct StuckSpan {
     pub context: SpanContext,
     pub age: u64,
-    /// Span names from the outermost open ancestor down to the stuck span.
+    /// Span names from the outermost reported ancestor down to the stuck span. Bounded by
+    /// [`STUCK_PATH_MAX_DEPTH`] entries and [`STUCK_PATH_MAX_BYTES`] bytes of ancestor names;
+    /// when ancestors were left out, the outermost ones are the ones omitted.
     pub path: Vec<String>,
+    /// `true` when `path` omits outer open ancestors because of the bounds above.
+    pub path_truncated: bool,
 }
+
+/// Maximum number of names (the stuck span included) reported in [`StuckSpan::path`].
+pub const STUCK_PATH_MAX_DEPTH: usize = 16;
+/// Maximum total bytes of ancestor names reported in [`StuckSpan::path`]; the stuck span's own
+/// name is always reported and does not count against it.
+pub const STUCK_PATH_MAX_BYTES: usize = 4096;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ActiveTree {
@@ -116,8 +126,17 @@ impl ActiveTree {
             .filter(|span| span.age >= threshold)
             .map(|span| {
                 let mut path = vec![span.name.clone()];
+                let mut ancestor_bytes = 0usize;
+                let mut path_truncated = false;
                 let mut cursor = span.parent;
                 while let Some(parent) = cursor.and_then(|id| self.find(id)) {
+                    if path.len() >= STUCK_PATH_MAX_DEPTH
+                        || ancestor_bytes.saturating_add(parent.name.len()) > STUCK_PATH_MAX_BYTES
+                    {
+                        path_truncated = true;
+                        break;
+                    }
+                    ancestor_bytes += parent.name.len();
                     path.push(parent.name.clone());
                     cursor = parent.parent;
                 }
@@ -126,6 +145,7 @@ impl ActiveTree {
                     context: span.context,
                     age: span.age,
                     path,
+                    path_truncated,
                 }
             })
             .collect()

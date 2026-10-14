@@ -146,6 +146,19 @@ pub enum MemoryStoreError {
         current: Revision,
         requested: Revision,
     },
+    /// A recovered record exceeds the limits the store is opened with (the journal was written
+    /// under more permissive limits). The journal is left untouched.
+    RecoveredRecordInvalid {
+        id: MemoryRecordId,
+        violation: RecordViolation,
+    },
+    /// The recovered state holds more records of a class than the configured capacity. The
+    /// journal is left untouched.
+    RecoveredCapacityExceeded {
+        class: MemoryClassName,
+        count: usize,
+        limit: usize,
+    },
 }
 
 impl From<JournalError> for MemoryStoreError {
@@ -208,6 +221,7 @@ impl DurableMemoryStore {
                 records.insert(record.id.clone(), record);
             }
         }
+        validate_recovered(&records, &options.limits)?;
         Ok(Self {
             records,
             horizon,
@@ -698,6 +712,47 @@ fn encode_delta(horizon: Revision, clock: u64, records: &[MemoryRecord]) -> Vec<
         write_record(&mut w, record);
     }
     w.finish()
+}
+
+/// Checks replayed state against the limits the store is being opened with, so a journal written
+/// under more permissive limits cannot expose a store over the configured bounds.
+fn validate_recovered(
+    records: &BTreeMap<MemoryRecordId, MemoryRecord>,
+    limits: &MemoryLimits,
+) -> Result<(), MemoryStoreError> {
+    let mut per_class: BTreeMap<&'static str, usize> = BTreeMap::new();
+    for record in records.values() {
+        let violation = if record.id.0.len() > limits.max_id_bytes {
+            Some(RecordViolation::IdTooLong)
+        } else if record.body.len() > limits.max_body_bytes {
+            Some(RecordViolation::BodyTooLarge)
+        } else if record.supports.len() > limits.max_supports {
+            Some(RecordViolation::TooManySupports)
+        } else if record.derived_from.len() > limits.max_derived_from {
+            Some(RecordViolation::TooManyDerivations)
+        } else {
+            None
+        };
+        if let Some(violation) = violation {
+            return Err(MemoryStoreError::RecoveredRecordInvalid {
+                id: record.id.clone(),
+                violation,
+            });
+        }
+        *per_class
+            .entry(crate::record::class_name(record.class))
+            .or_insert(0) += 1;
+    }
+    for (class, count) in per_class {
+        if count > limits.max_records_per_class {
+            return Err(MemoryStoreError::RecoveredCapacityExceeded {
+                class,
+                count,
+                limit: limits.max_records_per_class,
+            });
+        }
+    }
+    Ok(())
 }
 
 fn decode_delta(payload: &[u8]) -> Result<Delta, CodecError> {

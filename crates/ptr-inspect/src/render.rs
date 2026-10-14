@@ -5,10 +5,13 @@ use crate::node::{fingerprint_label, BytesPreview, InspectNode, RedactionHint};
 /// Nesting at which [`render_json`] stops and writes `{"truncated":true}`.
 pub const JSON_MAX_DEPTH: usize = 128;
 
+/// Largest per-level indentation honoured by [`render_tree`]; larger `indent` values are clamped.
+pub const MAX_INDENT: usize = 32;
+
 /// Bounds and layout for [`render_tree`] and [`render_compact`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RenderOptions {
-    /// Spaces per nesting level in the tree renderer.
+    /// Spaces per nesting level in the tree renderer, clamped to [`MAX_INDENT`].
     pub indent: usize,
     /// Longest text shown, in characters; longer text ends in an ellipsis.
     pub max_text_width: usize,
@@ -146,6 +149,11 @@ fn scalar_text(node: &InspectNode, options: &RenderOptions) -> Option<String> {
     })
 }
 
+/// Indentation for `level`; `indent` is clamped to [`MAX_INDENT`] and the product saturates.
+fn padding(options: &RenderOptions, level: usize) -> String {
+    " ".repeat(options.indent.min(MAX_INDENT).saturating_mul(level))
+}
+
 fn tree_node(
     lines: &mut Vec<String>,
     node: &InspectNode,
@@ -153,7 +161,7 @@ fn tree_node(
     level: usize,
     prefix: &str,
 ) {
-    let pad = " ".repeat(options.indent * level);
+    let pad = padding(options, level);
     if let Some(text) = scalar_text(node, options) {
         lines.push(format!("{pad}{prefix}{text}"));
         return;
@@ -173,7 +181,7 @@ fn tree_node(
     if child_count == 0 {
         return;
     }
-    let child_pad = " ".repeat(options.indent * (level + 1));
+    let child_pad = padding(options, level.saturating_add(1));
     if level >= options.max_depth {
         lines.push(format!("{child_pad}…"));
         return;
@@ -479,6 +487,24 @@ mod tests {
         };
         assert_eq!(render_compact(&many, &options), "[0,1,…3 more]");
         assert!(render_tree(&many, &options).ends_with("… 3 more"));
+    }
+
+    #[test]
+    fn huge_indent_is_clamped_instead_of_allocating() {
+        let nested = InspectNode::List(vec![InspectNode::List(vec![InspectNode::Int(1)])]);
+        for indent in [usize::MAX, usize::MAX / 2, 1 << 40] {
+            let options = RenderOptions {
+                indent,
+                ..RenderOptions::default()
+            };
+            let text = render_tree(&nested, &options);
+            assert!(
+                text.len() <= 3 * (2 * MAX_INDENT + 16),
+                "{} bytes",
+                text.len()
+            );
+            assert!(text.contains(&format!("\n{}[0] List(1)", " ".repeat(MAX_INDENT))));
+        }
     }
 
     #[test]

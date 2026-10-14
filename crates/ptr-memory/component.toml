@@ -31,6 +31,7 @@ implemented = [
   "SemanticObject (Goal, Constraint, KnownFact, Hypothesis, Unknown, Relation) with lossless conversion to and from the six String buckets of SemanticCapsule (relations use the text form `subject -[predicate]-> object`); the existing capsule types are unchanged and malformed relation strings are a typed error",
   "DurableKnowledgeStore journals KnowledgeObject.validity (presence byte and u64 per bound, after token_cost), so a bounded validity survives reopen and compaction (tests/durable_knowledge.rs bounded_validity_survives_reopen_and_compaction); journals written before this field are not readable, which affects no released data because the journal is new in this change",
   "Automatic compaction in DurableMemoryStore and DurableKnowledgeStore is best effort after the commit: when the journal rewrite fails the already durable mutation still returns success, the failure is exposed through compaction_failures() and last_compaction_error() (cleared by the next successful compaction), and compaction is retried on later commits",
+  "DurableMemoryStore::open revalidates the replayed records against the configured MemoryLimits (id, body, support and derivation bounds, per-class capacity) and rejects a journal written under more permissive limits with RecoveredRecordInvalid or RecoveredCapacityExceeded, leaving the journal file untouched",
   "Deterministic Markdown mirrors (render_memory_mirror, render_knowledge_mirror): sorted, stable output with escaped free text; sensitive record bodies are written as [REDACTED] and raw events appear only as size and SHA-256 digest",
 ]
 
@@ -80,5 +81,6 @@ checks = [
   "ptr-memory tests: contradiction_demotes_a_pinned_authoritative_record, promotion_respects_the_semantic_class_capacity, append_past_max_file_bytes_is_refused_and_the_file_stays_reopenable, rewrite_past_max_file_bytes_is_refused_and_keeps_the_old_journal, state_digest_distinguishes_tool_call_presence_and_field_boundaries, rejected_journal_write_leaves_no_observable_state_change",
   "ptr-memory tests/consolidation.rs: promotes_after_enough_independent_committed_sources, derived_or_search_only_support_is_rejected_invariant_5, verifier_contradiction_blocks_promotion_whatever_the_score_invariant_11, retention_forgets_stale_unpinned_episodes_and_demotes_contradicted_authority",
   "ptr-memory tests/semantic_mirror.rs: capsule_buckets_convert_to_typed_objects_and_back_exactly, memory_mirror_is_deterministic_sorted_and_independent_of_insert_order, sensitive_bodies_are_never_written_to_the_mirror",
+  "ptr-memory tests/memory_lifecycle.rs: reopening_with_a_stricter_class_capacity_is_rejected_and_keeps_the_journal, reopening_with_stricter_field_limits_is_rejected_per_violation",
   "workspace fmt/check/test/clippy",
 ]

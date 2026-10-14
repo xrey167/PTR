@@ -12,7 +12,9 @@ use crate::classify::{
 use crate::model::{ArtifactKind, RawInput, SemanticProposal};
 use crate::normalize::{normalize, NormalizeError, NormalizeOptions, NormalizedText, TextEncoding};
 use crate::parse::{parse, ParseOptions, ParsedDocument, Segment};
-use crate::policy::{evaluate_policy, PolicyConfig, PolicyInput, VerificationDecision};
+use crate::policy::{
+    evaluate_policy, PolicyConfig, PolicyConfigError, PolicyInput, VerificationDecision,
+};
 use crate::sniff::{kind_for_extension, sniff, SniffReport};
 
 /// Default input bound: 4 MiB.
@@ -141,12 +143,27 @@ fn issue(code: &str, message: String, hard: bool) -> SemanticIssue {
 
 impl IngressPipeline {
     /// A pipeline with the rule-based reference classifier and no second opinion.
-    pub fn new(config: IngressConfig) -> Self {
+    ///
+    /// Infallible and fail-closed: an invalid policy threshold (NaN, infinite or outside
+    /// `[0, 1]`) is replaced by the strictest valid value, see [`PolicyConfig::validate`]. Use
+    /// [`IngressPipeline::try_new`] to reject such a configuration instead.
+    pub fn new(mut config: IngressConfig) -> Self {
+        config.policy = config.policy.fail_closed();
         Self {
             config,
             primary: Box::new(RuleClassifier),
             secondary: None,
         }
+    }
+
+    /// Like [`IngressPipeline::new`], but refuses an invalid policy configuration.
+    pub fn try_new(config: IngressConfig) -> Result<Self, PolicyConfigError> {
+        config.policy.validate()?;
+        Ok(Self {
+            config,
+            primary: Box::new(RuleClassifier),
+            secondary: None,
+        })
     }
 
     pub fn with_primary(mut self, classifier: Box<dyn SemanticClassifier>) -> Self {

@@ -14,7 +14,7 @@ mod tracing_adapter;
 
 pub mod fields;
 
-pub use active::{ActiveSpan, ActiveTree, StuckSpan};
+pub use active::{ActiveSpan, ActiveTree, StuckSpan, STUCK_PATH_MAX_BYTES, STUCK_PATH_MAX_DEPTH};
 pub use clock::{Clock, ManualClock, MonotonicClock};
 pub use error::TraceError;
 pub use flow::FlowSignature;

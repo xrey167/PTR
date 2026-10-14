@@ -12,6 +12,7 @@ use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::record::{RecordError, TrajectoryRecord, MAX_LINE_BYTES};
@@ -32,6 +33,9 @@ pub enum LogError {
     Io(io::ErrorKind),
     /// The record could not be encoded.
     Record(RecordError),
+    /// A failed append could not be rolled back, so the file tail is unknown; the log refuses
+    /// appends until it is reopened (and the file inspected with [`read_log`]).
+    Poisoned,
     /// Strict reading met a bad line (1-based line number).
     Corrupt { line: usize, error: RecordError },
 }
@@ -42,6 +46,9 @@ impl fmt::Display for LogError {
             Self::InvalidConfig => f.write_str("invalid log configuration"),
             Self::InvalidPath => f.write_str("the log path has no file name"),
             Self::Io(kind) => write!(f, "log I/O failed: {kind}"),
+            Self::Poisoned => {
+                f.write_str("the log is poisoned by an append that could not be undone")
+            }
             Self::Record(error) => write!(f, "record error: {error}"),
             Self::Corrupt { line, error } => write!(f, "line {line} is corrupt: {error}"),
         }
@@ -100,6 +107,8 @@ pub struct ReadOutcome {
 pub struct TrajectoryLog {
     config: LogConfig,
     guard: Arc<Mutex<()>>,
+    /// Set (under `guard`) when a failed append could not be rolled back; shared by clones.
+    poisoned: Arc<AtomicBool>,
 }
 
 /// Path of the `n`-th rotated file of `base`: `base.n`.
@@ -122,6 +131,7 @@ impl TrajectoryLog {
         Ok(Self {
             config,
             guard: Arc::new(Mutex::new(())),
+            poisoned: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -133,7 +143,9 @@ impl TrajectoryLog {
     /// rotation and write run under the lock shared by clones of this log.
     ///
     /// # Errors
-    /// [`LogError::Record`] when the record does not encode, [`LogError::Io`] otherwise.
+    /// [`LogError::Record`] when the record does not encode, [`LogError::Io`] otherwise (the file is
+    /// then cut back to its length before the call), [`LogError::Poisoned`] after a failure that
+    /// could not be cut back.
     pub fn append(&self, record: &TrajectoryRecord) -> Result<AppendReport, LogError> {
         let mut line = record.encode().map_err(LogError::Record)?;
         line.push('\n');
@@ -141,6 +153,9 @@ impl TrajectoryLog {
             .guard
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.poisoned.load(Ordering::SeqCst) {
+            return Err(LogError::Poisoned);
+        }
         let path = &self.config.path;
         let size = match fs::metadata(path) {
             Ok(meta) => meta.len(),
@@ -153,6 +168,8 @@ impl TrajectoryLog {
         if rotated {
             self.rotate()?;
         }
+        // Length the file must return to if this record cannot be made durable.
+        let good_len = if rotated { 0 } else { size };
         let mut payload = Vec::with_capacity(line.len() + 1);
         if !rotated && size > 0 && !ends_with_newline(path)? {
             // A previous write was torn; start this record on its own line.
@@ -160,9 +177,20 @@ impl TrajectoryLog {
         }
         payload.extend_from_slice(line.as_bytes());
         let mut file = OpenOptions::new().create(true).append(true).open(path)?;
-        file.write_all(&payload)?;
-        file.flush()?;
-        file.sync_data()?;
+        let durable = file
+            .write_all(&payload)
+            .and_then(|()| file.flush())
+            .and_then(|()| sync_file(&file));
+        if let Err(error) = durable {
+            // The line may be complete on disk although the append reports failure: take it
+            // back, otherwise a retry would duplicate the trajectory and a reopen would resurrect
+            // a record whose append returned an error. If the cut itself fails the tail is
+            // unknown, so the log refuses appends until it is reopened.
+            if truncate_file(&file, good_len).is_err() {
+                self.poisoned.store(true, Ordering::SeqCst);
+            }
+            return Err(error.into());
+        }
         Ok(AppendReport {
             rotated,
             bytes: line.len(),
@@ -186,7 +214,7 @@ impl TrajectoryLog {
 
 #[cfg(test)]
 mod test_seam {
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
 
     type Hook = Box<dyn Fn()>;
 
@@ -198,6 +226,27 @@ mod test_seam {
         AFTER_SIZE_CHECK.with(|slot| *slot.borrow_mut() = Some(hook));
     }
 
+    thread_local! {
+        static FAIL_SYNC: Cell<bool> = const { Cell::new(false) };
+        static FAIL_TRUNCATE: Cell<bool> = const { Cell::new(false) };
+    }
+
+    pub(super) fn fail_sync(on: bool) {
+        FAIL_SYNC.with(|flag| flag.set(on));
+    }
+
+    pub(super) fn fail_truncate(on: bool) {
+        FAIL_TRUNCATE.with(|flag| flag.set(on));
+    }
+
+    pub(super) fn sync_fails() -> bool {
+        FAIL_SYNC.with(Cell::get)
+    }
+
+    pub(super) fn truncate_fails() -> bool {
+        FAIL_TRUNCATE.with(Cell::get)
+    }
+
     pub(super) fn after_size_check() {
         AFTER_SIZE_CHECK.with(|slot| {
             if let Some(hook) = slot.borrow().as_ref() {
@@ -205,6 +254,22 @@ mod test_seam {
             }
         });
     }
+}
+
+fn sync_file(file: &File) -> io::Result<()> {
+    #[cfg(test)]
+    if test_seam::sync_fails() {
+        return Err(io::Error::other("injected sync failure"));
+    }
+    file.sync_data()
+}
+
+fn truncate_file(file: &File, len: u64) -> io::Result<()> {
+    #[cfg(test)]
+    if test_seam::truncate_fails() {
+        return Err(io::Error::other("injected truncate failure"));
+    }
+    file.set_len(len)
 }
 
 fn remove_if_present(path: &Path) -> Result<(), LogError> {
@@ -419,6 +484,88 @@ mod tests {
         assert_eq!(ids(&rotated_path(base, 1)), ["r6", "r7"]);
         assert_eq!(ids(&rotated_path(base, 2)), ["r4", "r5"]);
         assert!(!rotated_path(base, 3).exists(), "beyond keep is dropped");
+    }
+
+    fn ids_of(path: &Path) -> Vec<String> {
+        read_log(path, ReadMode::Strict)
+            .unwrap()
+            .records
+            .into_iter()
+            .map(|r| r.run_id)
+            .collect()
+    }
+
+    #[test]
+    fn a_failed_sync_rolls_the_line_back_so_a_retry_does_not_duplicate_it() {
+        let dir = TempDir::new();
+        let log = TrajectoryLog::open(config(&dir, 1 << 20, 2)).unwrap();
+        log.append(&record("a")).unwrap();
+        let before = fs::read(&log.config().path).unwrap();
+
+        test_seam::fail_sync(true);
+        let failed = log.append(&record("b"));
+        test_seam::fail_sync(false);
+        assert!(matches!(failed, Err(LogError::Io(_))));
+        assert_eq!(
+            fs::read(&log.config().path).unwrap(),
+            before,
+            "tail cut back"
+        );
+
+        log.append(&record("b")).unwrap();
+        assert_eq!(ids_of(&log.config().path), ["a", "b"]);
+    }
+
+    #[test]
+    fn a_failed_sync_after_rotation_leaves_the_new_file_empty() {
+        let dir = TempDir::new();
+        let line_len = record("r0").encode().unwrap().len() as u64 + 1;
+        let log =
+            TrajectoryLog::open(config(&dir, MIN_ROTATION_BYTES.max(line_len + 1), 1)).unwrap();
+        let big = |id: &str| {
+            let mut r = record(id);
+            r.run_id = format!("{}{id}", "x".repeat(200));
+            r
+        };
+        log.append(&big("a")).unwrap();
+        test_seam::fail_sync(true);
+        let failed = log.append(&big("b"));
+        test_seam::fail_sync(false);
+        assert!(matches!(failed, Err(LogError::Io(_))));
+        let base = &log.config().path;
+        assert_eq!(fs::metadata(base).unwrap().len(), 0);
+        log.append(&big("b")).unwrap();
+        assert_eq!(ids_of(base), [format!("{}b", "x".repeat(200))]);
+        assert_eq!(
+            ids_of(&rotated_path(base, 1)),
+            [format!("{}a", "x".repeat(200))]
+        );
+    }
+
+    #[test]
+    fn a_failure_that_cannot_be_rolled_back_poisons_the_log_until_reopen() {
+        let dir = TempDir::new();
+        let log = TrajectoryLog::open(config(&dir, 1 << 20, 2)).unwrap();
+        let clone = log.clone();
+        log.append(&record("a")).unwrap();
+
+        test_seam::fail_sync(true);
+        test_seam::fail_truncate(true);
+        let failed = log.append(&record("b"));
+        test_seam::fail_sync(false);
+        test_seam::fail_truncate(false);
+        assert!(matches!(failed, Err(LogError::Io(_))));
+
+        assert_eq!(log.append(&record("c")), Err(LogError::Poisoned));
+        assert_eq!(clone.append(&record("c")), Err(LogError::Poisoned));
+        assert!(!LogError::Poisoned.to_string().is_empty());
+
+        // Reopening clears the poison; the file then holds what the failed append left.
+        let reopened = TrajectoryLog::open(log.config().clone()).unwrap();
+        reopened.append(&record("c")).unwrap();
+        let ids = ids_of(&reopened.config().path);
+        assert_eq!(ids.first().map(String::as_str), Some("a"));
+        assert_eq!(ids.last().map(String::as_str), Some("c"));
     }
 
     #[test]

@@ -103,8 +103,9 @@ pub enum PolicyViolation {
     DropUnsupportedByBackend,
     /// A bound that must be positive was zero.
     ZeroBound,
-    /// The retention policy has no limit in any dimension, so acknowledged history would
-    /// grow without bound.
+    /// The retention policy has no record or byte limit, so acknowledged history would grow
+    /// without bound (an age limit alone does not bound it: records published and acknowledged
+    /// at one logical tick never age).
     UnboundedRetention,
 }
 
@@ -121,8 +122,10 @@ pub enum Limit {
 /// any limit is exceeded. Records some consumer has not acknowledged are not history: retention
 /// never removes an unacknowledged authoritative record.
 ///
-/// `None` leaves that dimension unlimited, but at least one dimension must be set: a policy with
-/// all three `None` ([`RetentionPolicy::is_unbounded`]) would never expire history, so
+/// `None` leaves that dimension unlimited, but a record or byte limit must be set: age is measured
+/// in caller-supplied logical ticks, so an age-only policy (or one with all three `None`,
+/// [`RetentionPolicy::is_unbounded`]) would never expire history if the caller does not advance
+/// the tick, or publishes many records at one tick, so
 /// [`FileEventLog::open`](crate::FileEventLog::open) and
 /// [`InMemoryBus::try_with_config`](crate::InMemoryBus::try_with_config) refuse it with
 /// [`PolicyViolation::UnboundedRetention`] and [`InMemoryBus::with_config`](crate::InMemoryBus::with_config)
@@ -137,9 +140,11 @@ pub struct RetentionPolicy {
 }
 
 impl RetentionPolicy {
-    /// True when no dimension is limited, so acknowledged history would never expire.
+    /// True when neither a record nor a byte limit is set, so acknowledged history is not
+    /// bounded in storage. An age limit alone does not count: it depends on the caller advancing
+    /// the logical tick.
     pub const fn is_unbounded(&self) -> bool {
-        self.max_records.is_none() && self.max_bytes.is_none() && self.max_age_ticks.is_none()
+        self.max_records.is_none() && self.max_bytes.is_none()
     }
 
     /// Keep no acknowledged history.
@@ -167,6 +172,9 @@ impl RetentionPolicy {
         }
     }
 
+    /// Age-only retention. Alone it is **unbounded** ([`RetentionPolicy::is_unbounded`]) and is
+    /// refused by the fallible constructors; combine it with a record or byte limit by setting
+    /// `max_records` or `max_bytes` on the result.
     pub const fn with_max_age_ticks(max_age_ticks: u64) -> Self {
         Self {
             max_records: None,
