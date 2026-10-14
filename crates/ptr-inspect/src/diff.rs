@@ -1,8 +1,9 @@
 //! Structural difference between two inspection trees.
 //!
 //! Structs and enum variants are matched field by field by name, maps entry by entry by
-//! rendered key, and lists index by index: a list that grew reports `Added` for the new
-//! positions, one that shrank reports `Removed` (no LCS alignment, so an insertion near the
+//! key (rendered label, label collisions resolved by exact structural comparison), and lists
+//! index by index: a list that grew reports `Added` for the new positions, one that shrank
+//! reports `Removed` (no LCS alignment, so an insertion near the
 //! front reports every later position as `Changed`). Trees nested deeper than
 //! [`MAX_DIFF_DEPTH`] are compared as a whole and reported as one opaque change.
 
@@ -193,27 +194,84 @@ fn diff_map(
     depth: usize,
     changes: &mut Vec<Change>,
 ) {
-    let new_by_key: HashMap<String, &InspectNode> =
-        new_entries.iter().map(|(k, v)| (key_label(k), v)).collect();
-    let mut seen = std::collections::HashSet::new();
+    // `key_label` is bounded, so distinct keys can share a label. Bucket by label, then
+    // resolve collisions by exact structural comparison; each new entry is matched once.
+    let mut buckets: HashMap<String, Vec<usize>> = HashMap::new();
+    for (index, (key, _)) in new_entries.iter().enumerate() {
+        buckets.entry(key_label(key)).or_default().push(index);
+    }
+    let mut matched = vec![false; new_entries.len()];
     for (key, old_value) in old_entries {
         let label = key_label(key);
-        path.push(PathSegment::Key(label.clone()));
-        match new_by_key.get(&label) {
-            Some(new_value) => diff_at(old_value, new_value, path, depth + 1, changes),
+        let found = buckets.get(&label).and_then(|indexes| {
+            indexes
+                .iter()
+                .copied()
+                .find(|&i| !matched[i] && key_equal(key, &new_entries[i].0))
+        });
+        path.push(PathSegment::Key(label));
+        match found {
+            Some(i) => {
+                matched[i] = true;
+                diff_at(old_value, &new_entries[i].1, path, depth + 1, changes);
+            }
             None => push(changes, path, ChangeKind::Removed(old_value.clone())),
         }
         path.pop();
-        seen.insert(label);
     }
-    for (key, new_value) in new_entries {
-        let label = key_label(key);
-        if !seen.contains(&label) {
-            path.push(PathSegment::Key(label));
+    for (index, (key, new_value)) in new_entries.iter().enumerate() {
+        if !matched[index] {
+            path.push(PathSegment::Key(key_label(key)));
             push(changes, path, ChangeKind::Added(new_value.clone()));
             path.pop();
         }
     }
+}
+
+/// Exact structural equality of two map keys (NaN equals NaN, as in `scalar_equal`). Two
+/// redaction markers are equal, so redacted keys never reveal or compare hidden content.
+fn key_equal(a: &InspectNode, b: &InspectNode) -> bool {
+    match (a, b) {
+        (InspectNode::List(x), InspectNode::List(y)) => {
+            x.len() == y.len() && x.iter().zip(y).all(|(p, q)| key_equal(p, q))
+        }
+        (InspectNode::Map(x), InspectNode::Map(y)) => {
+            x.len() == y.len()
+                && x.iter()
+                    .zip(y)
+                    .all(|((k1, v1), (k2, v2))| key_equal(k1, k2) && key_equal(v1, v2))
+        }
+        (
+            InspectNode::Struct {
+                name: n1,
+                fields: f1,
+            },
+            InspectNode::Struct {
+                name: n2,
+                fields: f2,
+            },
+        ) => n1 == n2 && fields_equal(f1, f2),
+        (
+            InspectNode::Enum {
+                name: n1,
+                variant: v1,
+                fields: f1,
+            },
+            InspectNode::Enum {
+                name: n2,
+                variant: v2,
+                fields: f2,
+            },
+        ) => n1 == n2 && v1 == v2 && fields_equal(f1, f2),
+        _ => scalar_equal(a, b),
+    }
+}
+
+fn fields_equal(a: &[(String, InspectNode)], b: &[(String, InspectNode)]) -> bool {
+    a.len() == b.len()
+        && a.iter()
+            .zip(b)
+            .all(|((n1, v1), (n2, v2))| n1 == n2 && key_equal(v1, v2))
 }
 
 #[cfg(test)]
@@ -272,5 +330,42 @@ mod tests {
         let changes = diff(&a, &b);
         assert_eq!(changes.len(), 1);
         assert!(!format!("{changes:?}").contains("\"p\""));
+    }
+
+    #[test]
+    fn map_keys_sharing_a_truncated_label_are_distinct() {
+        let key = |tail: &str| InspectNode::text(format!("{}{tail}", "a".repeat(5000)));
+        assert_eq!(
+            crate::render::key_label(&key("X")),
+            crate::render::key_label(&key("Y"))
+        );
+        let old = InspectNode::Map(vec![
+            (key("X"), InspectNode::Int(1)),
+            (key("Y"), InspectNode::Int(2)),
+        ]);
+        let new = InspectNode::Map(vec![
+            (key("X"), InspectNode::Int(1)),
+            (key("Z"), InspectNode::Int(9)),
+        ]);
+        let changes = diff(&old, &new);
+        assert_eq!(changes.len(), 2, "{changes:?}");
+        assert!(matches!(
+            changes[0].kind,
+            ChangeKind::Removed(InspectNode::Int(2))
+        ));
+        assert!(matches!(
+            changes[1].kind,
+            ChangeKind::Added(InspectNode::Int(9))
+        ));
+        let changed = diff(
+            &old,
+            &InspectNode::Map(vec![
+                (key("Y"), InspectNode::Int(2)),
+                (key("X"), InspectNode::Int(5)),
+            ]),
+        );
+        assert_eq!(changed.len(), 1, "{changed:?}");
+        assert!(matches!(changed[0].kind, ChangeKind::Changed { .. }));
+        assert!(diff(&old, &old.clone()).is_empty());
     }
 }
