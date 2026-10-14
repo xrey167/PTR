@@ -89,8 +89,10 @@ class Partitions:
 
 
 def gsm8k_example(index: int, row: dict, split: str) -> Example:
-    """GSM8K has two source splits whose row indices both start at 0, so the id names the split:
-    `gsm8k:train:9` and `gsm8k:test:9` are different items."""
+    """`split` is the source split (`train` | `test`); GSM8K indexes each split from 0, so the
+    item id carries it (`gsm8k:train:9` and `gsm8k:test:9` are different items)."""
+    if split not in ("train", "test"):
+        raise ValueError(f"unknown GSM8K split {split!r}")
     return Example(
         corpus="gsm8k",
         domain="math",
@@ -219,7 +221,9 @@ def corpus_report(key: str, parts: Partitions) -> dict:
             "evaluation": selection_digest(parts.evaluation),
         },
         "validation_overlap_count": len(overlapping),
-        "training_outside_training_partition_count": 0,
+        # Measured by the training run (m011 counts every drawn example that is not in this
+        # corpus's training partition); None until a training has run.
+        "training_outside_training_partition_count": None,
     }
 
 
