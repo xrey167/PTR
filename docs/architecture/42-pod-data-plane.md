@@ -38,7 +38,10 @@ Read from the tree at the merge of #136, before any code was written for this pl
   (`crates/ptr-runtime/src/placement.rs:137-169`), and `RuntimeStageLiveness::placement_epoch`
   reads only that epoch (`crates/ptr-runtime/src/split_stage.rs:63-68`). Rule 4 of section 1
   would not hold for a device failure until placement bumps the epoch of every placement on a
-  device that disappeared or failed. That change comes first.
+  device that disappeared or failed. That change came first: since wave 1 a placement on a device
+  that vanished or failed, and every placement on a failed or replaced node, is revoked at that
+  event (`crates/ptr-runtime/src/placement.rs`, tests in `crates/ptr-runtime/tests/placement.rs`
+  and `tests/split_stage.rs`).
 - **`candle-cuda` cannot be built without `nvcc`** (`crates/ptr-pods/CANDLE_CUDA.md`, `ci.yml`
   comment on the feature). The CUDA carriers therefore depend on `cudarc` directly with dynamic
   loading, so that CI compiles them without a toolkit; their behaviour on a card is checked only on
@@ -88,8 +91,9 @@ TensorHandle {
   placement_epoch,                       // captured at production, revalidated at every use
   consumer,                              // the stage the handle is addressed to (audience)
   parent_operation_id,                   // the call this handle belongs to, checked against the consumer's call
-  deadline_ms,                           // bounded: at most now + lifetime + skew at admission
+  signed_absolute_deadline_ms,           // absolute; bounded: at most now + lifetime + skew at admission
   handle_nonce,                          // single use
+  signature,                             // Ed25519 over every field above, by the producer's registered key
 }
 ```
 

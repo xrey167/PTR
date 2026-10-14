@@ -4,6 +4,7 @@ pub mod directory;
 pub mod egress;
 pub mod execution;
 pub mod expert;
+mod handle_admission;
 pub mod identity;
 pub mod kv;
 mod kv_derivation;
@@ -37,6 +38,12 @@ pub mod vcw_host;
 
 pub use admission::{AdmissionError, AdmissionGrant, IdentityAdmissionController};
 pub use directory::{InMemoryPodDirectory, PodDirectory, PodHeadSource};
+pub use handle_admission::{
+    revalidate_operation, AdmittedHandle, ConsumeRequest, ConsumedHandle, HandleAdmissionRequest,
+    HandlePolicy, HandlePolicyViolation, HandleRejection, HandleSource, HandleTable,
+    OperationCheck, OperationFault, OperationLiveness, ReclaimNotice, ReclaimReason,
+    RegistrationRefused, Teardown, WorkerSession,
+};
 #[cfg(feature = "oidc-http")]
 pub use identity::ReqwestJwksRefresher;
 pub use identity::{

@@ -95,11 +95,23 @@ pub enum PlacementError {
     StateFrozen,
     NoPlacement,
     CounterExhausted,
+    /// A node record or heartbeat lists the same device twice; it is refused whole, because
+    /// two records of one device could report it healthy and failed at once.
+    DuplicateDevice(DeviceId),
 }
+
+/// The most revoked placements kept to name a failure in `issue_lease`. Past it the oldest
+/// (lowest epoch) is dropped, after which `issue_lease` for that Pod answers `NoPlacement`.
+const MAX_REVOKED_PLACEMENTS: usize = 1024;
 
 pub struct PodPlacementController {
     nodes: BTreeMap<NodeId, NodeRecord>,
     placements: BTreeMap<PodId, Placement>,
+    /// Placements revoked by a topology event, kept only so that `issue_lease` can still name
+    /// the node or device that failed. They are never served by `placement` and never revived.
+    /// At most one entry per pod and at most `MAX_REVOKED_PLACEMENTS` entries (the oldest is
+    /// dropped first); `assign` and the first `issue_lease` that finds the failure gone prune it.
+    revoked: BTreeMap<PodId, Placement>,
     leases: BTreeMap<StateId, FencedStateLease>,
     frozen: BTreeMap<StateId, PlacementEpoch>,
     epoch: PlacementEpoch,
@@ -111,6 +123,7 @@ impl Default for PodPlacementController {
         Self {
             nodes: BTreeMap::new(),
             placements: BTreeMap::new(),
+            revoked: BTreeMap::new(),
             leases: BTreeMap::new(),
             frozen: BTreeMap::new(),
             epoch: PlacementEpoch(0),
@@ -124,12 +137,23 @@ impl PodPlacementController {
         self.epoch
     }
 
+    /// Register a node, or replace the record of a node already registered.
+    ///
+    /// Registering a `NodeId` that is already known is a **replacement** (a new node process or
+    /// a new host under the same id), never a refresh: a refresh is a [`Self::heartbeat`]. The
+    /// record carries no incarnation, so the controller cannot tell that the replacement offers
+    /// the same devices with the same contents; every placement and every lease on that node is
+    /// revoked, and frames produced by the previous incarnation are refused by split-stage
+    /// admission (`placement` answers `NoPlacement`). Re-placement goes through `assign` under
+    /// a new epoch. The controller epoch moves once for the event.
     pub fn register_node(&mut self, node: NodeRecord) -> Result<(), PlacementError> {
+        ensure_unique_devices(&node.devices)?;
         let node_id = node.node_id.clone();
-        self.nodes.insert(node_id.clone(), node);
-        // Replacing a node record is a topology change: a lease on a device the
-        // new record no longer offers, or offers as failed, must not outlive it.
-        self.revoke_unavailable_leases(&node_id);
+        let replaced = self.nodes.insert(node_id.clone(), node).is_some();
+        if replaced {
+            self.revoke_placements_on_node(&node_id);
+            self.revoke_for_node(&node_id);
+        }
         self.bump_epoch()?;
         Ok(())
     }
@@ -140,6 +164,7 @@ impl PodPlacementController {
         timestamp: Timestamp,
         devices: Vec<DeviceRecord>,
     ) -> Result<(), PlacementError> {
+        ensure_unique_devices(&devices)?;
         let node = self
             .nodes
             .get_mut(node_id)
@@ -154,7 +179,19 @@ impl PodPlacementController {
         // that disappeared or failed are revoked here; a lease on a device that
         // is still usable is untouched, and no lease is ever brought back by a
         // heartbeat.
+        //
+        // A placement on a device that disappeared or reports `Failed` is revoked the
+        // same way: it is removed from `placements` and the controller epoch is bumped
+        // once for the event, so a frame produced under it is refused by split-stage
+        // admission (`placement` answers `NoPlacement`). A `Degraded` device keeps its
+        // placements, and a heartbeat that changes nothing keeps every placement and
+        // leaves the epoch alone. A later heartbeat never restores a placement;
+        // re-placement goes through `assign` under a new epoch.
+        let revoked = self.revoke_unavailable_placements(node_id);
         self.revoke_unavailable_leases(node_id);
+        if revoked {
+            self.bump_epoch()?;
+        }
         Ok(())
     }
 
@@ -164,6 +201,8 @@ impl PodPlacementController {
             .get_mut(node_id)
             .ok_or_else(|| PlacementError::UnknownNode(node_id.clone()))?;
         node.health = NodeHealth::Failed;
+        // Every placement on the node is revoked, then the epoch moves once.
+        self.revoke_unavailable_placements(node_id);
         self.revoke_for_node(node_id);
         self.bump_epoch()
     }
@@ -197,6 +236,8 @@ impl PodPlacementController {
         }
         self.bump_epoch()?;
         self.revoke_for_pod(&pod_id);
+        // Hygiene only (issue_lease reads `placements` first): keeps the tombstone bound tight.
+        self.revoked.remove(&pod_id);
         let placement = Placement {
             pod_id: pod_id.clone(),
             artifact_id,
@@ -220,9 +261,24 @@ impl PodPlacementController {
         state_id: StateId,
         pod_id: &PodId,
     ) -> Result<FencedStateLease, PlacementError> {
-        let placement = self.placement(pod_id)?.clone();
-        // The placement outlives a node failure or a device change, so the
-        // node and device it names are checked again before a lease is issued.
+        let Some(placement) = self.placements.get(pod_id).cloned() else {
+            // A revoked placement still names the failure that ended it; a revoked placement
+            // whose node and device are usable again is gone, not resurrected.
+            let Some(old) = self.revoked.get(pod_id) else {
+                return Err(PlacementError::NoPlacement);
+            };
+            return match self.ensure_usable(&old.node_id, &old.device_id) {
+                Err(error) => Err(error),
+                Ok(()) => {
+                    // The failure is gone: drop the tombstone so the map cleans itself and a
+                    // later failure of the same device is not blamed on this old placement.
+                    self.revoked.remove(pod_id);
+                    Err(PlacementError::NoPlacement)
+                }
+            };
+        };
+        // The node and device the placement names are checked again before a lease is
+        // issued.
         self.ensure_usable(&placement.node_id, &placement.device_id)?;
         if let Some(frozen_epoch) = self.frozen.get(&state_id).copied() {
             if frozen_epoch == placement.epoch {
@@ -318,8 +374,8 @@ impl PodPlacementController {
         Ok(())
     }
 
-    fn revoke_unavailable_leases(&mut self, node_id: &NodeId) {
-        let usable: Vec<DeviceId> = match self.nodes.get(node_id) {
+    fn usable_devices(&self, node_id: &NodeId) -> Vec<DeviceId> {
+        match self.nodes.get(node_id) {
             Some(node) if node.health != NodeHealth::Failed => node
                 .devices
                 .iter()
@@ -327,9 +383,69 @@ impl PodPlacementController {
                 .map(|device| device.device_id.clone())
                 .collect(),
             _ => Vec::new(),
-        };
+        }
+    }
+
+    fn revoke_unavailable_leases(&mut self, node_id: &NodeId) {
+        let usable = self.usable_devices(node_id);
         self.leases
             .retain(|_, lease| lease.node_id != *node_id || usable.contains(&lease.device_id));
+    }
+
+    /// Removes every placement on `node_id` whose device is no longer usable and reports
+    /// whether any was removed. The caller bumps the epoch once for the event.
+    fn revoke_unavailable_placements(&mut self, node_id: &NodeId) -> bool {
+        let usable = self.usable_devices(node_id);
+        let gone: Vec<PodId> = self
+            .placements
+            .iter()
+            .filter(|(_, p)| p.node_id == *node_id && !usable.contains(&p.device_id))
+            .map(|(pod_id, _)| pod_id.clone())
+            .collect();
+        for pod_id in &gone {
+            if let Some(placement) = self.placements.remove(pod_id) {
+                self.tombstone(placement);
+            }
+        }
+        !gone.is_empty()
+    }
+
+    /// Revoke every placement on `node_id`, usable device or not, keeping a tombstone each.
+    fn revoke_placements_on_node(&mut self, node_id: &NodeId) {
+        let gone: Vec<PodId> = self
+            .placements
+            .iter()
+            .filter(|(_, p)| p.node_id == *node_id)
+            .map(|(pod_id, _)| pod_id.clone())
+            .collect();
+        for pod_id in &gone {
+            if let Some(placement) = self.placements.remove(pod_id) {
+                self.tombstone(placement);
+            }
+        }
+    }
+
+    /// Keep a revoked placement to name its failure, dropping the oldest past the bound.
+    fn tombstone(&mut self, placement: Placement) {
+        self.revoked.insert(placement.pod_id.clone(), placement);
+        while self.revoked.len() > MAX_REVOKED_PLACEMENTS {
+            let oldest = self
+                .revoked
+                .iter()
+                .min_by_key(|(_, placement)| placement.epoch)
+                .map(|(pod_id, _)| pod_id.clone());
+            match oldest {
+                Some(pod_id) => {
+                    self.revoked.remove(&pod_id);
+                }
+                None => break,
+            }
+        }
+    }
+
+    /// The number of revoked placements kept to name a failure (bounded).
+    pub fn revoked_placements(&self) -> usize {
+        self.revoked.len()
     }
 
     fn revoke_for_pod(&mut self, pod_id: &PodId) {
@@ -339,4 +455,15 @@ impl PodPlacementController {
     fn revoke_for_node(&mut self, node_id: &NodeId) {
         self.leases.retain(|_, lease| lease.node_id != *node_id);
     }
+}
+
+/// Refuse a device list that names one device twice.
+fn ensure_unique_devices(devices: &[DeviceRecord]) -> Result<(), PlacementError> {
+    let mut seen = std::collections::BTreeSet::new();
+    for device in devices {
+        if !seen.insert(&device.device_id) {
+            return Err(PlacementError::DuplicateDevice(device.device_id.clone()));
+        }
+    }
+    Ok(())
 }
