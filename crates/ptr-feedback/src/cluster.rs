@@ -115,6 +115,9 @@ pub struct Fingerprint {
     digest: u64,
     shingles: Vec<u64>,
     signature: Vec<u64>,
+    /// The options that define the hash family: `(seed, shingle_size)`. The signature length is
+    /// `signature.len()`. Signatures are comparable slot by slot only within one family.
+    family: (u64, usize),
 }
 
 impl Fingerprint {
@@ -150,6 +153,7 @@ impl Fingerprint {
             digest,
             shingles,
             signature,
+            family: (options.seed, options.shingle_size),
         })
     }
 
@@ -186,9 +190,13 @@ impl Fingerprint {
     }
 
     /// MinHash estimate of the Jaccard index: the fraction of equal signature slots. `None`
-    /// when the signatures were built with different sizes.
+    /// when the signatures come from different families (different size, seed or shingle
+    /// size), because their slots are then different hash functions or shingle sets.
     pub fn estimated_jaccard(&self, other: &Self) -> Option<f64> {
-        if self.signature.len() != other.signature.len() || self.signature.is_empty() {
+        if self.family != other.family
+            || self.signature.len() != other.signature.len()
+            || self.signature.is_empty()
+        {
             return None;
         }
         let equal = self
@@ -486,6 +494,25 @@ mod tests {
         };
         let small = Fingerprint::of("x", &small_options).unwrap();
         assert_eq!(a.estimated_jaccard(&small), None);
+    }
+
+    #[test]
+    fn estimates_are_only_defined_within_one_minhash_family() {
+        let base = options(0.5);
+        let text = "alpha beta gamma delta epsilon zeta";
+        let a = Fingerprint::of(text, &base).unwrap();
+        let other_seed = ClusterOptions { seed: 7, ..base };
+        let other_shingle = ClusterOptions {
+            shingle_size: 2,
+            ..base
+        };
+        let same_family = Fingerprint::of(text, &base).unwrap();
+        assert_eq!(a.estimated_jaccard(&same_family), Some(1.0));
+        let seeded = Fingerprint::of(text, &other_seed).unwrap();
+        assert_eq!(a.signature.len(), seeded.signature.len());
+        assert_eq!(a.estimated_jaccard(&seeded), None);
+        let shingled = Fingerprint::of(text, &other_shingle).unwrap();
+        assert_eq!(a.estimated_jaccard(&shingled), None);
     }
 
     #[test]
