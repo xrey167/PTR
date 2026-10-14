@@ -185,7 +185,9 @@ fn snapshot_with(source: &Path, between: impl FnOnce()) -> Result<Snapshot, Stri
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos())
     ));
-    fs::create_dir(&target).map_err(|e| format!("cannot create snapshot directory: {e}"))?;
+    private_dir_builder()
+        .create(&target)
+        .map_err(|e| format!("cannot create snapshot directory: {e}"))?;
     let guard = Snapshot(target);
     for (name, path, counted) in files {
         copy_counted(&path, &guard.0.join(&name), counted)
@@ -200,7 +202,7 @@ fn snapshot_with(source: &Path, between: impl FnOnce()) -> Result<Snapshot, Stri
 fn copy_counted(from: &Path, to: &Path, counted: u64) -> Result<(), String> {
     let source = fs::File::open(from).map_err(|e| e.to_string())?;
     let mut bounded = source.take(counted.saturating_add(1));
-    let mut target = fs::File::create(to).map_err(|e| e.to_string())?;
+    let mut target = private_file_options().open(to).map_err(|e| e.to_string())?;
     let copied = io::copy(&mut bounded, &mut target).map_err(|e| e.to_string())?;
     if copied > counted {
         return Err(format!(
@@ -209,6 +211,33 @@ fn copy_counted(from: &Path, to: &Path, counted: u64) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+/// The snapshot holds full copies of a possibly protected log in the shared temp directory, so
+/// on Unix it is created owner-only (0700) regardless of the umask.
+fn private_dir_builder() -> fs::DirBuilder {
+    // Only the Unix branch below mutates the builder.
+    #[cfg_attr(not(unix), allow(unused_mut))]
+    let mut builder = fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder
+}
+
+/// Snapshot files are created fresh (never opened through an existing path) and, on Unix,
+/// owner-only (0600).
+fn private_file_options() -> fs::OpenOptions {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options
 }
 
 fn describe(error: &BusError) -> String {
@@ -306,6 +335,25 @@ mod tests {
         let message = result.err().expect("growth must be refused");
         assert!(message.contains("grew"), "{message}");
         assert_eq!(fs::read(&segment).expect("read"), b"0123456789grown");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_snapshot_directory_and_its_files_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("ptrctl-mode-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("dir");
+        fs::write(dir.join(OFFSETS_FILE), b"abc").expect("offsets");
+        fs::write(dir.join("segment-00000000000000000000.log"), b"payload").expect("segment");
+        let copy = snapshot(&dir).expect("snapshot");
+        let mode = |path: &Path| fs::metadata(path).expect("stat").permissions().mode() & 0o777;
+        assert_eq!(mode(&copy.0), 0o700, "snapshot directory");
+        for entry in fs::read_dir(&copy.0).expect("list") {
+            let path = entry.expect("entry").path();
+            assert_eq!(mode(&path), 0o600, "{}", path.display());
+        }
         let _ = fs::remove_dir_all(&dir);
     }
 

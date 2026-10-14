@@ -47,7 +47,9 @@ consumer's committed offset and lag, the slowest registered consumer, then one r
 `FileEventLog::open` creates the directory, deletes `offsets.bin.tmp` and truncates a torn tail,
 and has no read-only open. So the command works on a snapshot: it copies the `segment-*.log`
 files and `offsets.bin` (regular files only, at most 512 MiB) into a private temp directory,
-opens the copy and removes it afterwards. The source directory is never created, truncated or
+opens the copy and removes it afterwards. On Unix the temp directory is created 0700 and each
+copied file 0600 (fresh, never through an existing path), whatever the umask; on other
+platforms the temp directory's inherited permissions apply. The source directory is never created, truncated or
 rewritten. Each file is copied through a reader bounded to the size counted for the 512 MiB
 check; if a live writer grew a file in between, the command exits 1 ("grew beyond") instead of
 copying more. If the snapshot has a torn tail, the command exits 1 with a message instead of
