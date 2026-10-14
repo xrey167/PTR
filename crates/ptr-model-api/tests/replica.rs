@@ -331,18 +331,21 @@ fn a_placed_resume_without_failover_lands_on_the_replica_of_its_own_invocation_e
     assert_eq!(label(second.events), "b");
     // Three rounds in a row on each: every round returns the placement of the replica that
     // served it, so the affinity holds for the whole run.
-    let (mut on_a, mut on_b) = (first.placement, second.placement);
+    let (mut on_a, mut on_b) = (
+        first.placement.expect("waiting"),
+        second.placement.expect("waiting"),
+    );
     for _ in 0..3 {
         let a = strict
             .resume_placed(on_a, &resume_request("same-id"))
             .expect("served");
         assert_eq!(label(a.events), "a");
-        on_a = a.placement;
+        on_a = a.placement.expect("waiting");
         let b = strict
             .resume_placed(on_b, &resume_request("same-id"))
             .expect("served");
         assert_eq!(label(b.events), "b");
-        on_b = b.placement;
+        on_b = b.placement.expect("waiting");
     }
     assert_eq!(
         replicas[2].calls.load(Ordering::SeqCst),
@@ -389,21 +392,25 @@ fn placements_are_bound_to_their_invocation_router_request_and_context() {
     assert_eq!(label(second.events), "b");
     // Swapping the placements is refused: each belongs to the context of its own invocation.
     assert_eq!(
-        router.resume_placed(second.placement, &resume(1)).err(),
+        router
+            .resume_placed(second.placement.expect("waiting"), &resume(1))
+            .err(),
         Some(ModelError::scope_mismatch())
     );
     assert_eq!(
-        router.resume_placed(first.placement, &resume(2)).err(),
+        router
+            .resume_placed(first.placement.expect("waiting"), &resume(2))
+            .err(),
         Some(ModelError::scope_mismatch())
     );
     // A refused attempt spends the placement; fresh invocations route to their own replica.
     let first = router.infer_placed(&call(1)).expect("served");
     let second = router.infer_placed(&call(2)).expect("served");
     let on_first = router
-        .resume_placed(first.placement, &resume(1))
+        .resume_placed(first.placement.expect("waiting"), &resume(1))
         .expect("resumes");
     let on_second = router
-        .resume_placed(second.placement, &resume(2))
+        .resume_placed(second.placement.expect("waiting"), &resume(2))
         .expect("resumes");
     // The rotation gave the fresh pair c and a.
     assert_eq!(label(on_first.events), "c");
@@ -412,13 +419,18 @@ fn placements_are_bound_to_their_invocation_router_request_and_context() {
     let other = new_router();
     let foreign = other.infer_placed(&call(1)).expect("served");
     assert_eq!(
-        router.resume_placed(foreign.placement, &resume(1)).err(),
+        router
+            .resume_placed(foreign.placement.expect("waiting"), &resume(1))
+            .err(),
         Some(ModelError::scope_mismatch())
     );
     let own = router.infer_placed(&call(1)).expect("served");
     assert_eq!(
         router
-            .resume_placed(own.placement, &resume_request("another-id"))
+            .resume_placed(
+                own.placement.expect("waiting"),
+                &resume_request("another-id")
+            )
             .err(),
         Some(ModelError::scope_mismatch())
     );
@@ -459,4 +471,83 @@ fn open_placements_are_bounded_and_dropping_one_releases_it() {
     );
     drop(held);
     assert!(router.infer_placed(&request("after")).is_ok());
+}
+
+/// A replica whose runs and resumes always finish.
+struct Finishing;
+
+impl InferenceBackend for Finishing {
+    fn name(&self) -> &'static str {
+        "finishing"
+    }
+
+    fn infer(&self, _request: &ptr_model_api::ModelRequest) -> Result<Vec<ModelEvent>, ModelError> {
+        Ok(vec![ModelEvent::Finished])
+    }
+}
+
+impl ResumableInferenceBackend for Finishing {
+    fn resume(
+        &self,
+        _request: &ptr_model_api::ModelResumeRequest,
+    ) -> Result<Vec<ModelEvent>, ModelError> {
+        Ok(vec![ModelEvent::Finished])
+    }
+}
+
+#[test]
+fn a_finished_run_creates_no_placement_and_never_fills_the_table() {
+    let router = ReplicaRouter::new(
+        vec![Arc::new(Finishing) as Arc<dyn ResumableInferenceBackend>],
+        ReplicaPolicy {
+            max_failover: 0,
+            resume: ResumeFailover::Never,
+        },
+    )
+    .expect("router");
+    for n in 0..5000 {
+        let answer = router
+            .infer_placed(&request(&format!("r{n}")))
+            .expect("served");
+        assert!(answer.placement.is_none());
+    }
+    // A resume that finishes also leaves no placement behind. Open a placement with a replica
+    // that waits, resume it on one that finishes: not possible with one router, so the
+    // resume path is covered with a replica that waits first and finishes on resume.
+    struct WaitsThenFinishes;
+    impl InferenceBackend for WaitsThenFinishes {
+        fn name(&self) -> &'static str {
+            "waits-then-finishes"
+        }
+        fn infer(
+            &self,
+            _request: &ptr_model_api::ModelRequest,
+        ) -> Result<Vec<ModelEvent>, ModelError> {
+            Ok(vec![ModelEvent::Token("waiting".into())])
+        }
+    }
+    impl ResumableInferenceBackend for WaitsThenFinishes {
+        fn resume(
+            &self,
+            _request: &ptr_model_api::ModelResumeRequest,
+        ) -> Result<Vec<ModelEvent>, ModelError> {
+            Ok(vec![ModelEvent::Finished])
+        }
+    }
+    let router = ReplicaRouter::new(
+        vec![Arc::new(WaitsThenFinishes) as Arc<dyn ResumableInferenceBackend>],
+        ReplicaPolicy {
+            max_failover: 0,
+            resume: ResumeFailover::Never,
+        },
+    )
+    .expect("router");
+    for n in 0..5000 {
+        let id = format!("r{n}");
+        let placed = router.infer_placed(&request(&id)).expect("served");
+        let resumed = router
+            .resume_placed(placed.placement.expect("waiting"), &resume_request(&id))
+            .expect("resumes");
+        assert!(resumed.placement.is_none());
+    }
 }

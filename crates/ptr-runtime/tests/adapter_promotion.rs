@@ -601,3 +601,50 @@ fn the_promotion_history_is_bounded_per_adapter_and_the_current_generation_still
         .revoke_adapter(revoke("coder", 100))
         .expect("the current generation revokes");
 }
+
+#[test]
+fn revocation_tombstones_are_bounded_per_adapter_and_the_current_one_stays_refused() {
+    use ptr_runtime::adapter::MAX_GENERATIONS_PER_ADAPTER;
+    let mut runtime = runtime();
+    for generation in 1..=100 {
+        runtime
+            .promote_adapter(request("coder", generation, WEIGHTS))
+            .expect("promotes");
+        runtime
+            .revoke_adapter(revoke("coder", generation))
+            .expect("revokes");
+    }
+    let key = "ptr-adapter:alpha/coder";
+    let kept = |runtime: &PtrRuntime| {
+        runtime
+            .revoked_generations()
+            .filter(|(subject, _)| *subject == key)
+            .count()
+    };
+    assert_eq!(kept(&runtime), MAX_GENERATIONS_PER_ADAPTER);
+    // The revocation of the current generation is always kept and refused at every use; an
+    // older, compacted one is below the live generation and cannot serve either.
+    for generation in [100, 99, 1] {
+        assert!(
+            runtime
+                .check_adapter_use(&project("alpha"), "coder", Generation(generation))
+                .is_err(),
+            "generation {generation}"
+        );
+    }
+    assert_eq!(
+        runtime.generation_validity(key, Generation(100)),
+        Some(Validity::Revoked)
+    );
+    // Replay gives the same result.
+    let history = runtime.committed_events().to_vec();
+    let replayed = PtrRuntime::replay(PtrConfig::default(), &history).expect("replays");
+    assert_eq!(kept(&replayed), MAX_GENERATIONS_PER_ADAPTER);
+    assert_eq!(
+        replayed.generation_validity(key, Generation(100)),
+        Some(Validity::Revoked)
+    );
+    assert!(replayed
+        .check_adapter_use(&project("alpha"), "coder", Generation(100))
+        .is_err());
+}

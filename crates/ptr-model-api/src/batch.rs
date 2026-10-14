@@ -26,7 +26,7 @@
 //! uses [`BatchKey::unscoped`] and no deadline; the scoped path is
 //! [`AdaptiveBatcher::infer_with`].
 
-use crate::batch_queue::{BatchQueue, Dropped, Entry, QueueFull};
+use crate::batch_queue::{BatchQueue, Dropped, Entry, Now, QueueFull};
 use crate::{
     InferenceBackend, ModelError, ModelEvent, ModelObservation, ModelRequest, ModelResumeRequest,
     ResumableInferenceBackend,
@@ -221,25 +221,28 @@ type PrincipalKey = Option<String>;
 struct Continuations {
     entries: std::collections::HashMap<u128, OpenContinuation>,
     queues: std::collections::HashMap<PrincipalKey, std::collections::VecDeque<u128>>,
-    /// Slots promised to calls whose model is still running.
+    /// Slots promised to calls whose model is still running, in total and per principal.
     reserved: usize,
+    reserved_by: std::collections::HashMap<PrincipalKey, usize>,
 }
 
 /// A slot promised before the model runs. Released on drop unless committed, so an error, a
 /// cancellation, a finished run or an unwind gives it back and evicts nothing.
 struct Reservation<'a> {
     table: &'a Mutex<Continuations>,
+    principal: PrincipalKey,
     active: bool,
 }
 
 impl<'a> Reservation<'a> {
-    fn take(table: &'a Mutex<Continuations>, now: u64) -> Option<Self> {
+    fn take(table: &'a Mutex<Continuations>, principal: &PrincipalKey, now: u64) -> Option<Self> {
         let reserved = table
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .reserve(now);
-        reserved.then_some(Self {
+            .reserve(principal, now);
+        reserved.then(|| Self {
             table,
+            principal: principal.clone(),
             active: true,
         })
     }
@@ -260,7 +263,7 @@ impl Drop for Reservation<'_> {
             self.table
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
-                .unreserve();
+                .unreserve(&self.principal);
         }
     }
 }
@@ -301,7 +304,16 @@ impl Continuations {
     /// be promised the last slot. When the table is full, expired and cancelled entries are
     /// swept first. Nothing of anyone is evicted here (the principal's quota is applied only at
     /// commit, once a continuation is really needed).
-    fn reserve(&mut self, now: u64) -> bool {
+    ///
+    /// The reservation is charged to the opening principal: its in-flight reservations may not
+    /// exceed its own quota ([`MAX_CONTINUATIONS_PER_PRINCIPAL`]), so one principal's slow calls
+    /// cannot take the global capacity from the others. The request is refused, nothing is
+    /// evicted.
+    fn reserve(&mut self, principal: &PrincipalKey, now: u64) -> bool {
+        if self.reserved_by.get(principal).copied().unwrap_or(0) >= MAX_CONTINUATIONS_PER_PRINCIPAL
+        {
+            return false;
+        }
         if self.entries.len() + self.reserved >= MAX_OPEN_CONTINUATIONS {
             self.sweep(now);
         }
@@ -309,19 +321,26 @@ impl Continuations {
             return false;
         }
         self.reserved += 1;
+        *self.reserved_by.entry(principal.clone()).or_insert(0) += 1;
         true
     }
 
-    fn unreserve(&mut self) {
+    fn unreserve(&mut self, principal: &PrincipalKey) {
         self.reserved = self.reserved.saturating_sub(1);
+        if let Some(count) = self.reserved_by.get_mut(principal) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                self.reserved_by.remove(principal);
+            }
+        }
     }
 
     /// Turn a reservation into the entry `id`. At the principal's quota its own oldest entry
     /// (not one a resume is running on) is evicted to make way; false (nothing stored, the
     /// reservation released) when every one of its entries is running.
     fn commit(&mut self, id: u128, continuation: OpenContinuation) -> bool {
-        self.unreserve();
         let principal = continuation.key.principal.clone();
+        self.unreserve(&principal);
         let held = self.queues.get(&principal).map_or(0, |queue| queue.len());
         if held >= MAX_CONTINUATIONS_PER_PRINCIPAL {
             let oldest = self.queues.get(&principal).and_then(|queue| {
@@ -575,6 +594,8 @@ struct Shared<B> {
     table: Arc<Mutex<Continuations>>,
     wake: Condvar,
     counters: Counters,
+    /// Where the monotonic reading used for queue age starts.
+    started: std::time::Instant,
     /// Two independently keyed hashers (the standard library seeds each from the operating
     /// system) and a counter: a continuation id is unique by the counter and unguessable by the
     /// keys.
@@ -586,6 +607,15 @@ struct Shared<B> {
 }
 
 impl<B> Shared<B> {
+    /// Both readings the queue needs: the batcher clock for deadlines and a monotonic one for
+    /// queue age.
+    fn now(&self) -> Now {
+        Now {
+            wall: self.clock.now().0,
+            mono: u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX),
+        }
+    }
+
     fn table(&self) -> MutexGuard<'_, Continuations> {
         self.table.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -659,6 +689,7 @@ impl<B: BatchInferenceBackend + 'static> AdaptiveBatcher<B> {
                 closed: false,
             }),
             table: Arc::new(Mutex::new(Continuations::default())),
+            started: std::time::Instant::now(),
             wake: Condvar::new(),
             counters: Counters::default(),
             token_keys: (
@@ -719,7 +750,7 @@ impl<B: BatchInferenceBackend + 'static> AdaptiveBatcher<B> {
         // The reservation is released unless it is committed below, so an error, a cancellation
         // or a finished run evicts nothing.
         let now = self.shared.clock.now().0;
-        let Some(reservation) = Reservation::take(&self.shared.table, now) else {
+        let Some(reservation) = Reservation::take(&self.shared.table, &key.principal, now) else {
             bump(&self.shared.counters.overloaded, 1);
             return Err(ModelError::overloaded());
         };
@@ -793,10 +824,16 @@ impl<B: BatchInferenceBackend + 'static> AdaptiveBatcher<B> {
                 request: request.clone(),
                 reply,
             };
-            match state
-                .queue
-                .push(admission.key, deadline, admission.cancel, job, now)
-            {
+            match state.queue.push(
+                admission.key,
+                deadline,
+                admission.cancel,
+                job,
+                Now {
+                    wall: now,
+                    ..self.shared.now()
+                },
+            ) {
                 Ok(()) => bump(&counters.accepted, 1),
                 Err(QueueFull) => {
                     bump(&counters.overloaded, 1);
@@ -915,9 +952,13 @@ impl<B: BatchInferenceBackend + 'static> AdaptiveBatcher<B> {
             bump(&self.shared.counters.revoked, 1);
             return Err(ModelError::revoked());
         }
-        // The gate may have taken a while: look again.
+        // The gate may have taken a while: look again, at the deadline, the cancel flag and at
+        // whether the batcher was closed meanwhile.
         if let Some(error) = self.resume_expired(deadline, cancel) {
             return Err(error);
+        }
+        if self.shared.lock().closed {
+            return Err(ModelError::closed());
         }
         // The same containment as a batch: a backend that panics fails this call only. The call
         // is counted as dispatched immediately before the backend sees it.
@@ -1027,18 +1068,17 @@ fn run_worker<B: BatchInferenceBackend + 'static>(shared: &Shared<B>) {
                     }
                     return;
                 }
-                let now = shared.clock.now().0;
-                let ready = state.queue.take_ready(now);
+                let ready = state.queue.take_ready(shared.now());
                 if ready.batch.is_some() || !ready.dropped.is_empty() {
                     break ready;
                 }
-                state = match ready.wake_at {
+                state = match ready.wake_after {
                     None => shared
                         .wake
                         .wait(state)
                         .unwrap_or_else(PoisonError::into_inner),
-                    Some(at) => {
-                        let pause = Duration::from_millis(at.saturating_sub(now).max(1));
+                    Some(after) => {
+                        let pause = Duration::from_millis(after.max(1));
                         shared
                             .wake
                             .wait_timeout(state, pause)

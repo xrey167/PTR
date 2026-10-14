@@ -1422,3 +1422,142 @@ fn a_resume_is_counted_as_dispatched_before_the_backend_sees_it() {
     assert_eq!(after.dispatched, before.dispatched + 1);
     assert_eq!(after.backend_errors, before.backend_errors + 1);
 }
+
+#[test]
+fn one_principals_slow_calls_cannot_take_the_capacity_of_another() {
+    use ptr_model_api::MAX_CONTINUATIONS_PER_PRINCIPAL;
+    let backend = Gated::new();
+    let batcher = AdaptiveBatcher::with_parts(
+        Arc::clone(&backend),
+        policy(1, 0, 600),
+        Arc::new(SystemClock),
+        Some(Arc::new(OpenGate) as Arc<dyn BatchGate>),
+    )
+    .expect("built");
+    std::thread::scope(|scope| {
+        let batcher = &batcher;
+        // 256 of X's calls are in flight: one inside the model, the rest queued behind it.
+        let mut in_flight = Vec::new();
+        for n in 0..MAX_CONTINUATIONS_PER_PRINCIPAL {
+            in_flight.push(scope.spawn(move || {
+                batcher.infer_scoped(
+                    &text_request(&format!("x-{n}"), "slow"),
+                    admission_under(&principal_scope("x")),
+                )
+            }));
+        }
+        assert!(eventually(PATIENT, || backend
+            .entered
+            .load(Ordering::SeqCst)));
+        assert!(eventually(PATIENT, || batcher.queued()
+            == MAX_CONTINUATIONS_PER_PRINCIPAL - 1));
+        // X is at its in-flight quota: one more is refused, before the model.
+        assert_eq!(
+            batcher
+                .infer_scoped(
+                    &text_request("x-extra", "x-extra"),
+                    admission_under(&principal_scope("x"))
+                )
+                .err(),
+            Some(ModelError::overloaded())
+        );
+        // Y is not blocked: its call is admitted (and served once the latch opens).
+        let y = scope.spawn(move || {
+            batcher.infer_scoped(
+                &text_request("y", "slow"),
+                admission_under(&principal_scope("y")),
+            )
+        });
+        assert!(eventually(PATIENT, || batcher.queued()
+            == MAX_CONTINUATIONS_PER_PRINCIPAL));
+        backend.latch.open();
+        assert!(y.join().expect("thread").is_ok());
+        for call in in_flight {
+            assert!(call.join().expect("thread").is_ok());
+        }
+    });
+}
+
+/// A gate that blocks the resume it is asked about until the test lets it go.
+struct BlockingGate {
+    armed: AtomicBool,
+    entered: AtomicBool,
+    latch: Latch,
+}
+
+impl BatchGate for BlockingGate {
+    fn admits(&self, _key: &BatchKey) -> bool {
+        if self.armed.load(Ordering::SeqCst) {
+            self.entered.store(true, Ordering::SeqCst);
+            self.latch.wait();
+        }
+        true
+    }
+}
+
+#[test]
+fn a_batcher_closed_while_the_gate_decides_never_reaches_the_backend() {
+    let backend = Arc::new(ContextRecorder::default());
+    let clock = Arc::new(WorkerKillingClock {
+        armed: AtomicBool::new(false),
+    });
+    let gate = Arc::new(BlockingGate {
+        armed: AtomicBool::new(false),
+        entered: AtomicBool::new(false),
+        latch: Latch::default(),
+    });
+    let batcher = recorder_batcher(
+        &backend,
+        Arc::clone(&clock) as Arc<dyn BatchClock>,
+        Some(Arc::clone(&gate) as Arc<dyn BatchGate>),
+    );
+    let key = key("coder");
+    let continuation = open(&batcher, "r", &key);
+    gate.armed.store(true, Ordering::SeqCst);
+    std::thread::scope(|scope| {
+        let batcher = &batcher;
+        let key = &key;
+        let resuming = scope.spawn(move || {
+            batcher
+                .resume_continuation(continuation, key, observation(1, b"x"))
+                .err()
+        });
+        assert!(eventually(PATIENT, || gate.entered.load(Ordering::SeqCst)));
+        // The worker dies while the gate is still deciding: the batcher closes.
+        clock.armed.store(true, Ordering::SeqCst);
+        assert_eq!(batcher.infer(&request("dies")), Err(ModelError::closed()));
+        gate.latch.open();
+        assert_eq!(resuming.join().expect("thread"), Some(ModelError::closed()));
+    });
+    assert!(backend.resumed.lock().unwrap().is_empty());
+}
+
+/// A wall clock the test can step; the worker's own monotonic reading is unaffected.
+#[test]
+fn a_wall_clock_that_steps_back_does_not_stretch_max_wait() {
+    let clock = Arc::new(SetClock(std::sync::atomic::AtomicU64::new(
+        1_000_000_000_000,
+    )));
+    let batcher = AdaptiveBatcher::with_parts(
+        Arc::new(Waiting),
+        policy(8, 100, 4),
+        Arc::clone(&clock) as Arc<dyn BatchClock>,
+        Some(Arc::new(OpenGate) as Arc<dyn BatchGate>),
+    )
+    .expect("built");
+    let started = std::time::Instant::now();
+    std::thread::scope(|scope| {
+        let batcher = &batcher;
+        // One request waits for company for max_wait (100 ms) in a partial batch.
+        let call = scope.spawn(move || batcher.infer(&request("lonely")));
+        assert!(eventually(PATIENT, || batcher.queued() == 1));
+        // The wall clock steps back by almost a day while it waits.
+        clock.0.store(1_000, Ordering::SeqCst);
+        assert!(call.join().expect("thread").is_ok());
+    });
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "max_wait was stretched to {:?}",
+        started.elapsed()
+    );
+}

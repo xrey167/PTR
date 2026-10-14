@@ -589,3 +589,27 @@ fn the_budget_is_set_once_and_neither_a_looser_nor_a_tighter_one_replaces_it() {
         Ok(())
     );
 }
+
+#[test]
+fn a_project_the_ledger_cannot_record_is_refused_before_anything_changes() {
+    let (mut runtime, _clock) = runtime(5, 10);
+    let too_long = "x".repeat(257);
+    for bad in ["", " ", "a b", "a/b", "tab\there", too_long.as_str()] {
+        assert_eq!(
+            runtime.begin_improvement_cycle(begin(bad)),
+            Err(RuntimeError::Adapter(AdapterError::InvalidProject)),
+            "{bad:?}"
+        );
+    }
+    // Nothing was counted or tracked: the budget is intact and a valid project is admitted.
+    let alpha = ProjectId::from("alpha");
+    assert_eq!(runtime.improvement_cycles_used(&alpha, 10), 0);
+    for bad in ["", "a/b"] {
+        assert_eq!(
+            runtime.improvement_cycles_used(&ProjectId::from(bad), 10),
+            0
+        );
+    }
+    assert!(runtime.begin_improvement_cycle(begin("alpha")).is_ok());
+    assert_eq!(runtime.improvement_cycles_used(&alpha, 10), 1);
+}

@@ -58,9 +58,28 @@ pub(crate) struct QueueFull;
 pub(crate) struct Ready<J> {
     pub(crate) dropped: Vec<(Dropped, Entry<J>)>,
     pub(crate) batch: Option<Vec<Entry<J>>>,
-    /// When the queue should be looked at again if nothing arrives sooner; `None` when it is
-    /// empty.
-    pub(crate) wake_at: Option<u64>,
+    /// In how many milliseconds the queue should be looked at again if nothing arrives sooner;
+    /// `None` when it is empty.
+    pub(crate) wake_after: Option<u64>,
+}
+
+/// The two readings the queue is given. `wall` is the batcher clock (Unix milliseconds for
+/// the system clock): absolute deadlines are compared with it. `mono` is a monotonic reading:
+/// queue age (`max_wait`) is measured on it, so a wall clock that steps cannot stretch or
+/// shrink a wait. A virtual clock gives both the same value.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Now {
+    pub(crate) wall: u64,
+    pub(crate) mono: u64,
+}
+
+impl From<u64> for Now {
+    fn from(time: u64) -> Self {
+        Self {
+            wall: time,
+            mono: time,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -90,8 +109,9 @@ impl<J> BatchQueue<J> {
         deadline: Option<u64>,
         cancel: Option<CancelFlag>,
         payload: J,
-        now: u64,
+        now: impl Into<Now>,
     ) -> Result<(), QueueFull> {
+        let now = now.into();
         if self.entries.len() >= self.policy.queue_capacity {
             return Err(QueueFull);
         }
@@ -100,7 +120,9 @@ impl<J> BatchQueue<J> {
         self.entries.push_back(Entry {
             seq,
             key,
-            arrived: now,
+            // Queue age is measured on the monotonic reading: a wall clock that steps cannot
+            // stretch or shrink max_wait.
+            arrived: now.mono,
             deadline,
             cancel,
             payload,
@@ -114,13 +136,14 @@ impl<J> BatchQueue<J> {
     }
 
     /// Drop what must not reach the model, then take the batch that is ready at `now`, if any.
-    pub(crate) fn take_ready(&mut self, now: u64) -> Ready<J> {
+    pub(crate) fn take_ready(&mut self, now: impl Into<Now>) -> Ready<J> {
+        let now = now.into();
         let mut dropped = Vec::new();
         let mut kept = VecDeque::with_capacity(self.entries.len());
         for entry in self.entries.drain(..) {
             if entry.cancel.as_ref().is_some_and(CancelFlag::is_cancelled) {
                 dropped.push((Dropped::Cancelled, entry));
-            } else if entry.deadline.is_some_and(|deadline| deadline <= now) {
+            } else if entry.deadline.is_some_and(|deadline| deadline <= now.wall) {
                 dropped.push((Dropped::DeadlinePassed, entry));
             } else {
                 kept.push_back(entry);
@@ -130,6 +153,9 @@ impl<J> BatchQueue<J> {
 
         // One pass over the queue builds a group per distinct key, in order of each key's oldest
         // request; the cost is linear in the queue however many distinct keys it holds.
+        // Per group: the requests and the milliseconds until it is due. Waiting is judged on the
+        // monotonic reading, deadlines on the wall one; each side is turned into a distance
+        // from now, so the two never meet as absolute times.
         let mut groups: Vec<(&BatchKey, usize, u64)> = Vec::new();
         let mut index_of: HashMap<&BatchKey, usize> = HashMap::new();
         for entry in &self.entries {
@@ -139,24 +165,29 @@ impl<J> BatchQueue<J> {
             });
             let group = &mut groups[index];
             group.1 += 1;
-            group.2 = group
-                .2
-                .min(entry.arrived.saturating_add(self.policy.max_wait_millis));
+            group.2 = group.2.min(
+                entry
+                    .arrived
+                    .saturating_add(self.policy.max_wait_millis)
+                    .saturating_sub(now.mono),
+            );
             if let Some(deadline) = entry.deadline {
-                group.2 = group
-                    .2
-                    .min(deadline.saturating_sub(self.policy.deadline_margin_millis));
+                group.2 = group.2.min(
+                    deadline
+                        .saturating_sub(self.policy.deadline_margin_millis)
+                        .saturating_sub(now.wall),
+                );
             }
         }
         let mut chosen: Option<BatchKey> = None;
-        let mut wake_at: Option<u64> = None;
-        for (key, count, dispatch_at) in groups {
-            if count >= self.policy.max_batch || dispatch_at <= now {
+        let mut wake_after: Option<u64> = None;
+        for (key, count, due_in) in groups {
+            if count >= self.policy.max_batch || due_in == 0 {
                 // Groups are visited oldest first, so the first ready one is the one to serve.
                 chosen = Some(key.clone());
                 break;
             }
-            wake_at = Some(wake_at.map_or(dispatch_at, |at| at.min(dispatch_at)));
+            wake_after = Some(wake_after.map_or(due_in, |at| at.min(due_in)));
         }
 
         let batch = chosen.map(|key| {
@@ -173,24 +204,24 @@ impl<J> BatchQueue<J> {
             batch
         });
         // After a dispatch the remainder is looked at again straight away.
-        let wake_at = if batch.is_some() && !self.entries.is_empty() {
-            Some(now)
+        let wake_after = if batch.is_some() && !self.entries.is_empty() {
+            Some(0)
         } else {
-            wake_at
+            wake_after
         };
         // A deadline inside the queue is itself a time to look again, so it is dropped on time.
-        let wake_at = self
-            .entries
-            .iter()
-            .filter_map(|entry| entry.deadline)
-            .fold(wake_at, |at, deadline| {
-                Some(at.map_or(deadline, |at| at.min(deadline)))
-            });
+        let wake_after = self.entries.iter().filter_map(|entry| entry.deadline).fold(
+            wake_after,
+            |at, deadline| {
+                let in_ms = deadline.saturating_sub(now.wall);
+                Some(at.map_or(in_ms, |at| at.min(in_ms)))
+            },
+        );
         debug_assert!(self.entries.iter().all(|entry| entry.seq < self.next_seq));
         Ready {
             dropped,
             batch,
-            wake_at,
+            wake_after,
         }
     }
 }
@@ -257,7 +288,7 @@ mod tests {
         queue.push(key("a"), None, None, 1u32, 0).unwrap();
         let early = queue.take_ready(3);
         assert!(early.batch.is_none());
-        assert_eq!(early.wake_at, Some(10));
+        assert_eq!(early.wake_after, Some(7));
         queue.push(key("a"), None, None, 2, 4).unwrap();
         let full = queue.take_ready(4);
         assert_eq!(ids(&full.batch.expect("full batch")), vec![1, 2]);
@@ -340,7 +371,7 @@ mod tests {
         }
         let ready = queue.take_ready(0);
         assert_eq!(ids(&ready.batch.expect("batch")), vec![0, 1]);
-        assert_eq!(ready.wake_at, Some(0));
+        assert_eq!(ready.wake_after, Some(0));
         assert_eq!(queue.len(), 3);
     }
 }

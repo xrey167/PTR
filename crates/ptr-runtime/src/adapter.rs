@@ -118,6 +118,9 @@ pub enum AdapterError {
         expected: [u8; 32],
         actual: [u8; 32],
     },
+    /// The project name is not one the ledger can record (empty, whitespace, a control
+    /// character or `/`, or more than 256 bytes).
+    InvalidProject,
     /// The proposal was evaluated for another project than the one the promotion names.
     ProjectMismatch { expected: String, actual: String },
     /// The runtime already tracks [`MAX_TRACKED_CYCLE_PROJECTS`] projects.
@@ -548,6 +551,18 @@ impl PtrRuntime {
             project,
             policy_digest,
         } = request;
+        // The project must be one the ledger would record (the encoder's own rule), checked
+        // before anything is counted: a name that cannot be recorded would otherwise admit a
+        // cycle that can never be recorded.
+        let encodable = LedgerEvent::ImprovementCycleRecorded {
+            project: project.clone(),
+            day: 0,
+            outcome: ImprovementCycleOutcome::Completed,
+            policy_digest: [1; 32],
+        };
+        if ptr_ledger::check_encodable(&encodable).is_err() {
+            return Err(AdapterError::InvalidProject.into());
+        }
         let (Some(budget), Some(clock)) = (self.adapters.budget, self.adapters.clock.clone())
         else {
             return Err(AdapterError::NoImprovementBudget.into());
@@ -809,8 +824,22 @@ impl PtrRuntime {
                 generation,
                 ..
             } => {
-                self.revoked_generations
-                    .insert((adapter_key(project, adapter), *generation));
+                let key = adapter_key(project, adapter);
+                self.revoked_generations.insert((key.clone(), *generation));
+                // Tombstones are kept per adapter like the promotion history: the highest
+                // MAX_GENERATIONS_PER_ADAPTER stay (the current generation's revocation is
+                // always the highest), older ones are compacted. A compacted generation is
+                // below the live one, so it reads as superseded and cannot serve.
+                let kept: Vec<Generation> = self
+                    .revoked_generations
+                    .range((key.clone(), Generation(0))..=(key.clone(), Generation(u64::MAX)))
+                    .map(|(_, kept)| *kept)
+                    .collect();
+                if kept.len() > MAX_GENERATIONS_PER_ADAPTER {
+                    for old in &kept[..kept.len() - MAX_GENERATIONS_PER_ADAPTER] {
+                        self.revoked_generations.remove(&(key.clone(), *old));
+                    }
+                }
             }
             LedgerEvent::ImprovementCycleRecorded { project, day, .. } => {
                 let high_water = self

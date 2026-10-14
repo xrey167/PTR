@@ -96,7 +96,9 @@ impl fmt::Debug for Placement {
 #[derive(Debug)]
 pub struct PlacedAnswer {
     pub events: Vec<ModelEvent>,
-    pub placement: Placement,
+    /// The placement to resume on; none when the run ended with [`ModelEvent::Finished`]
+    /// (nothing is left to resume, so no slot is taken).
+    pub placement: Option<Placement>,
 }
 
 /// SHA-256 of the rendering of a semantic context: what binds a placement to its context.
@@ -362,6 +364,12 @@ impl ReplicaRouter {
         let mut table = self.table();
         table.reserved = table.reserved.saturating_sub(1);
         let (events, replica) = routed?;
+        if matches!(events.last(), Some(ModelEvent::Finished)) {
+            return Ok(PlacedAnswer {
+                events,
+                placement: None,
+            });
+        }
         let token = self.issue_token();
         table.entries.insert(
             token,
@@ -375,7 +383,7 @@ impl ReplicaRouter {
         drop(table);
         Ok(PlacedAnswer {
             events,
-            placement: self.placement(token),
+            placement: Some(self.placement(token)),
         })
     }
 
@@ -423,6 +431,13 @@ impl ReplicaRouter {
             return Err(ModelError::scope_mismatch());
         };
         let (events, served) = routed?;
+        // A run that finished has nothing left to resume: the entry goes and no placement is made.
+        if matches!(events.last(), Some(ModelEvent::Finished)) {
+            return Ok(PlacedAnswer {
+                events,
+                placement: None,
+            });
+        }
         // The same slot, under a fresh token, on the replica that served this round.
         let token = self.issue_token();
         entry.replica = served;
@@ -431,7 +446,7 @@ impl ReplicaRouter {
         drop(table);
         Ok(PlacedAnswer {
             events,
-            placement: self.placement(token),
+            placement: Some(self.placement(token)),
         })
     }
 }
