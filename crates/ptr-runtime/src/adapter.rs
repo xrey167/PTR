@@ -14,7 +14,7 @@
 //!   evaluated under.
 //!
 //! The serving state is a projection of the committed events: the live generation and the
-//! revocation tombstones of the key `adapter:<project>/<adapter>` in the runtime's lifecycle
+//! revocation tombstones of the key `ptr-adapter:<project>/<adapter>` in the runtime's lifecycle
 //! maps, plus the binding (base, weights digest, report digest) of the promoted generation.
 //! Keys are scoped by project, so one project's adapter name never reads another's. A use is
 //! checked against the tombstones every time ([`PtrRuntime::check_adapter_use`]), not only when
@@ -46,7 +46,8 @@ use std::fmt;
 /// The most `(project, adapter)` bindings the runtime keeps.
 pub const MAX_PROMOTED_ADAPTERS: usize = 4096;
 
-/// The most projects whose improvement-cycle day is tracked.
+/// The most projects whose improvement-cycle day is tracked, and the most (project, day) pairs
+/// with an admitted cycle that is not recorded yet.
 pub const MAX_TRACKED_CYCLE_PROJECTS: usize = 1024;
 
 /// Why an adapter or improvement-cycle request was refused. The digests are the expected and
@@ -230,7 +231,7 @@ impl AdapterProjection {
 /// The lifecycle key of an adapter: the project is part of it, and the ledger refuses a `/` in
 /// either name, so two pairs never share a key.
 pub(crate) fn adapter_key(project: &ProjectId, adapter: &str) -> String {
-    format!("adapter:{}/{}", project.0, adapter)
+    format!("ptr-adapter:{}/{}", project.0, adapter)
 }
 
 impl PtrRuntime {
@@ -423,11 +424,17 @@ impl PtrRuntime {
         self.adapters
             .open_cycles
             .retain(|(open_project, open_day), _| open_project != &project.0 || *open_day >= day);
-        let open = self
-            .adapters
-            .open_cycles
-            .entry((project.0.clone(), day))
-            .or_insert(0);
+        // The open table is bounded like the recorded one, and before it grows.
+        let open_key = (project.0.clone(), day);
+        if !self.adapters.open_cycles.contains_key(&open_key)
+            && self.adapters.open_cycles.len() >= MAX_TRACKED_CYCLE_PROJECTS
+        {
+            return Err(AdapterError::TooManyCycleProjects {
+                limit: MAX_TRACKED_CYCLE_PROJECTS,
+            }
+            .into());
+        }
+        let open = self.adapters.open_cycles.entry(open_key).or_insert(0);
         *open = open.saturating_add(1);
         Ok(ImprovementCycleTicket {
             project,

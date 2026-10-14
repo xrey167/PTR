@@ -62,7 +62,7 @@
 - ExpertFenceCommitted maps to no lifecycle change, topic expert.fence_committed, subject project:<project> and the entry the shared ptr-state projection yields (expert:<project>/<pod> = <generation>:fenced|serving|frozen:<epoch>); the projection still holds no expert catalog
 - KvTaintCommitted maps to no lifecycle change, topic kv.taint_committed, subject kv-taint:<kind>:<hex> of its first subject and the kv-taint entries of the shared ptr-state projection; there is no taint table
 - InputInvalidated (ledger tag 30, R011 WP3) has the topic expert.input_invalidated and the subject expert-input:<identity>; a Revoked kind is a lifecycle Tombstone for (input, generation), like a Revoked record, and a Superseded kind changes no lifecycle row (the supersession floor and the fenced experts are the runtime's dependency index, which this projection does not hold); the payload entries are exactly ptr-state's projection of the event
-- Lifecycle mapping of the adapter events: AdapterPromoted is SetLive and AdapterRevoked a Tombstone of adapter:<project>/<adapter> (the key the runtime uses), ImprovementCycleRecorded changes nothing; topics adapter.promoted, adapter.revoked and improvement.cycle_recorded, subjects adapter:<project>/<adapter> and improvement:<project>
+- Lifecycle mapping of the adapter events: AdapterPromoted is SetLive and AdapterRevoked a Tombstone of ptr-adapter:<project>/<adapter> (the key the runtime uses), ImprovementCycleRecorded changes nothing; topics adapter.promoted, adapter.revoked and improvement.cycle_recorded, subjects adapter:<project>/<adapter> and improvement:<project>
 
 ### Missing for the target architecture
 

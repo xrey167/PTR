@@ -28,7 +28,7 @@ flowchart LR
     W[weights bytes] --> R
     S[frozen split manifest] --> R
     R -->|recompute SHA-256, compare, check split lock| L[(AdapterPromoted, tag 39)]
-    L --> V[serving state: lifecycle key adapter:project/adapter]
+    L --> V[serving state: lifecycle key ptr-adapter:project/adapter]
     X[revoke_adapter] --> RV[(AdapterRevoked, tag 40)] --> V
     V --> U[check_adapter_use at every use]
 ```
@@ -37,10 +37,10 @@ flowchart LR
 `AdapterRevoked { project, adapter, generation, reason }` (tag 40). The codec holds both to one canonical form:
 names of 1 to 256 bytes without control characters, whitespace or `/`, a non-zero generation, no all-zero digest, a
 reason of at most 512 bytes. The same check runs in the decoder and in `check_encodable`. The public
-`PtrRuntime::commit` refuses both, and a capsule named `adapter:...` is refused, so only `promote_adapter` and
+`PtrRuntime::commit` refuses both, and a capsule named `ptr-adapter:...` is refused, so only `promote_adapter` and
 `revoke_adapter` write them.
 
-**Keys are project-scoped.** The lifecycle key is `adapter:<project>/<adapter>`. Because the ledger refuses a `/` in
+**Keys are project-scoped.** The lifecycle key is `ptr-adapter:<project>/<adapter>`. Because the ledger refuses a `/` in
 either name, two pairs never share a key. One project's adapter of the same name is neither served nor revoked by
 another's events.
 

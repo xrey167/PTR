@@ -126,7 +126,7 @@ pub fn lifecycle_change(committed: &CommittedEvent) -> LifecycleChange {
             generation,
             ..
         } => LifecycleChange::SetLive {
-            target: format!("adapter:{project}/{adapter}"),
+            target: format!("ptr-adapter:{project}/{adapter}"),
             generation: *generation,
             project: None,
         },
@@ -136,7 +136,7 @@ pub fn lifecycle_change(committed: &CommittedEvent) -> LifecycleChange {
             generation,
             ..
         } => LifecycleChange::Tombstone {
-            subject: format!("adapter:{project}/{adapter}"),
+            subject: format!("ptr-adapter:{project}/{adapter}"),
             generation: *generation,
         },
     }

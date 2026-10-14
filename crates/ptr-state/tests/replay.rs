@@ -302,9 +302,12 @@ fn adapter_events_project_scoped_rows_and_cycles_project_none() {
     assert_eq!(
         promoted,
         vec![
-            ("adapter:alpha/coder:generation".to_owned(), "2".to_owned()),
             (
-                "adapter:alpha/coder:artifact_sha256".to_owned(),
+                "ptr-adapter:alpha/coder:generation".to_owned(),
+                "2".to_owned()
+            ),
+            (
+                "ptr-adapter:alpha/coder:artifact_sha256".to_owned(),
                 "ab".repeat(32)
             ),
         ]
@@ -317,7 +320,7 @@ fn adapter_events_project_scoped_rows_and_cycles_project_none() {
     }));
     assert_eq!(
         revoked,
-        vec![("revoked:adapter:alpha/coder".to_owned(), "2".to_owned())]
+        vec![("revoked:ptr-adapter:alpha/coder".to_owned(), "2".to_owned())]
     );
     assert!(
         projection_entries(&committed(LedgerEvent::ImprovementCycleRecorded {

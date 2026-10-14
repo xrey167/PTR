@@ -264,7 +264,7 @@ fn the_public_commit_refuses_adapter_events_and_capsules_cannot_take_the_namespa
     assert!(matches!(
         runtime.commit(LedgerEvent::CapsuleCommitted {
             project: project("alpha"),
-            capsule: CapsuleId::from("adapter:alpha/coder"),
+            capsule: CapsuleId::from("ptr-adapter:alpha/coder"),
             generation: Generation(9),
         }),
         Err(RuntimeError::ReservedTargetNamespace { .. })

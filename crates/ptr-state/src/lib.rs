@@ -387,11 +387,11 @@ pub fn projection_entries(committed: &CommittedEvent) -> Vec<(String, String)> {
             ..
         } => vec![
             (
-                format!("adapter:{project}/{adapter}:generation"),
+                format!("ptr-adapter:{project}/{adapter}:generation"),
                 generation.0.to_string(),
             ),
             (
-                format!("adapter:{project}/{adapter}:artifact_sha256"),
+                format!("ptr-adapter:{project}/{adapter}:artifact_sha256"),
                 hex_digest(artifact_sha256),
             ),
         ],
@@ -401,7 +401,7 @@ pub fn projection_entries(committed: &CommittedEvent) -> Vec<(String, String)> {
             generation,
             ..
         } => vec![(
-            format!("revoked:adapter:{project}/{adapter}"),
+            format!("revoked:ptr-adapter:{project}/{adapter}"),
             generation.0.to_string(),
         )],
         // The cycle count is derived from the ledger by the runtime; the projection keeps no

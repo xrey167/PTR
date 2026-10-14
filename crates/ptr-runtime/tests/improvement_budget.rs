@@ -191,3 +191,40 @@ fn a_malformed_abort_reason_is_refused_and_leaves_the_cycle_counted() {
         Err(exhausted(10, 1, 1))
     );
 }
+
+#[test]
+fn the_tracked_projects_are_bounded_for_admitted_and_for_recorded_cycles() {
+    use ptr_runtime::adapter::MAX_TRACKED_CYCLE_PROJECTS;
+    let too_many = RuntimeError::Adapter(AdapterError::TooManyCycleProjects {
+        limit: MAX_TRACKED_CYCLE_PROJECTS,
+    });
+
+    // Admitted and never recorded: the open table stops at the bound.
+    let mut open = runtime(1);
+    let mut held = Vec::new();
+    for n in 0..MAX_TRACKED_CYCLE_PROJECTS {
+        held.push(
+            open.begin_improvement_cycle(begin(&format!("p{n}"), 1))
+                .expect("within the bound"),
+        );
+    }
+    assert_eq!(
+        open.begin_improvement_cycle(begin("one-more", 1)),
+        Err(too_many.clone())
+    );
+
+    // Recorded: the table of latest days stops at the bound too.
+    let mut recorded = runtime(1);
+    for n in 0..MAX_TRACKED_CYCLE_PROJECTS {
+        let ticket = recorded
+            .begin_improvement_cycle(begin(&format!("p{n}"), 1))
+            .expect("within the bound");
+        recorded
+            .record_improvement_cycle(ticket, ImprovementCycleOutcome::Completed)
+            .expect("records");
+    }
+    assert_eq!(
+        recorded.begin_improvement_cycle(begin("one-more", 1)),
+        Err(too_many)
+    );
+}

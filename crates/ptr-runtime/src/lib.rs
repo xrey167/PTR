@@ -2751,7 +2751,7 @@ impl PtrRuntime {
                 // capsule IDs from impersonating the two reserved namespaces.
                 if target.starts_with("constraint:")
                     || target.starts_with("procedure:")
-                    || target.starts_with("adapter:")
+                    || target.starts_with("ptr-adapter:")
                 {
                     return Err(RuntimeError::ReservedTargetNamespace { target });
                 }
