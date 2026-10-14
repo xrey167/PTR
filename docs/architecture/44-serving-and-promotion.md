@@ -57,6 +57,12 @@ it, and says so; the check is the runtime's. The split lock is checked the same 
 them itself and compares with the report's `eval_manifest_digest` (`SplitLockMismatch`, `EmptySplitManifest`); a digest
 computed by the caller is not accepted.
 
+**The gate is pinned.** A report vouches only as far as the gate that produced it is the gate the runtime trusts. The host
+pins the digest of one forgetting-gate configuration (`PtrRuntime::pin_promotion_gate`, runtime configuration and not
+committed history); `promote_adapter` compares `gate_config_digest` of the report with it and refuses with
+`NoPinnedPromotionGate` when nothing is pinned and `GateConfigurationMismatch` for another configuration, before
+anything is committed.
+
 **Serving state is derived.** Promotion sets the live generation of the key and the binding (base, weights digest,
 report digest); revocation adds a tombstone. A generation must advance, and a revoked generation is never promoted
 again. `serving_adapter` and `check_adapter_use` read the lifecycle on every call, so a revocation, a supersession or
@@ -123,6 +129,8 @@ and charged to neither. `backtest(pool, error_bound=...)` holds each generation 
   in-sample fit is arithmetic;
 - `pipeline_ran` (the backtest completed) and `predictive` (at least `min_within_bound` generations predicted out of sample, and at least `min_within_fraction` of the predictable ones, each with every
   family within the bound) are separate claims;
+- the categorical encoding of a fold is rebuilt from the generations that fold keeps: a category seen only in the held-out generation never
+  takes a position in the training levels (the held-out generation's edges are skipped as before);
 - a string decision is one categorical decision (its level is the position of the value in order of first appearance;
   the first value is level 0 if the decision is in the pool's first generation, so an alternating history anchors its
   intercept, otherwise 0 means not set and values start at 1), so `mode` off to on is one decision moving by one level; more than two values are
@@ -154,9 +162,10 @@ simulator training happens in PTR until `predictive` has been true on a real gen
 - **Generation at use (invariant 3).** A `BatchGate` is asked about the key of every batch immediately before the model
   runs; a revoked generation is refused at that use (`ModelError::revoked()`), not only when it was queued. A key that
   names an adapter is refused when the batcher was built without a gate (there is no admit-all default). A resume
-  is bound to the scope of the answer it continues: `infer_scoped` returns the answer with a `ResumeBinding` (request id and
-  `BatchKey`, no public constructor) and `resume_with(request, binding, key)` refuses a key or request that differs
-  from the bound one (`ModelErrorKind::ScopeMismatch`) before anything runs, then asks the gate about the bound key, so an
+  is bound to the scope of the answer it continues: `infer_scoped` returns the answer with a `ResumeBinding` (request id,
+  `BatchKey` and answer digest, no public constructor) and `resume_with(request, answer, binding, key)` refuses a key, a request or an answer that differs
+  from the bound one (`ModelErrorKind::ScopeMismatch`; the binding carries a SHA-256 of the answer's events, so the
+  binding of another call under the same request id and a different scope does not continue it) before anything runs, then asks the gate about the bound key, so an
   observation made under a revoked generation is refused whatever key the caller holds for a live generation or another
   project. The batcher keeps no request-id-to-scope table, because an id is not a credential and a bounded table can be
   filled, evicted or overwritten. The unscoped

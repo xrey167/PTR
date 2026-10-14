@@ -816,6 +816,9 @@ pub struct PtrRuntime {
     egress_refusals: egress::EgressRefusalWindows,
     /// Promoted adapters and improvement-cycle counts, projected from committed events.
     adapters: adapter::AdapterProjection,
+    /// The digest of the one forgetting-gate configuration whose reports a promotion accepts,
+    /// pinned by the host. Runtime configuration, not committed history: none by default.
+    pinned_promotion_gate: Option<[u8; 32]>,
     hypotheses: BTreeMap<String, PodHypothesis>,
     tier_journal: TierJournalProjection,
     experts: expert::ExpertRegistryProjection,
@@ -912,6 +915,7 @@ impl PtrRuntime {
             revoked_sessions: BTreeSet::new(),
             egress_refusals: egress::EgressRefusalWindows::default(),
             adapters: adapter::AdapterProjection::new(),
+            pinned_promotion_gate: None,
             hypotheses: BTreeMap::new(),
             tier_journal: TierJournalProjection::default(),
             experts: expert::ExpertRegistryProjection::default(),

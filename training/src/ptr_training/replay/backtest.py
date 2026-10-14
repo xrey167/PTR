@@ -253,9 +253,32 @@ class ReplaySimulator:
         if not self.generations:
             raise HistoryError("nothing left in the pool after exclusion")
         self.families = pool.families()
+        self._encode()
         self.responses, self.ambiguous = self._fit()
         self.limits = self._limits()
         self.baseline = self._baseline()
+
+    def _encode(self) -> None:
+        """Encode the decisions of this fold from the generations it keeps and nothing else.
+
+        The pool's own encoding saw every generation, the held-out one included: a category that
+        appears only there would take a position in the training levels, and the order of
+        first appearance could shift every later category. Here the categories, which
+        decisions are zero-based (present in the first kept generation) and every kept
+        generation's levels are rebuilt in order from the kept generations alone. The held-out
+        generation's edges are still skipped when the transitions are read.
+        """
+        self._categories: dict[str, list[str]] = {}
+        self._zero_based: set[str] = set()
+        self._levels: dict[str, dict[str, float]] = {}
+        for index, generation in enumerate(self.generations):
+            if index == 0:
+                self._zero_based = {
+                    n for n, v in generation.decisions.items() if isinstance(v, str)
+                }
+            self._levels[generation.name] = levels_of(
+                generation.decisions, self._categories, self._zero_based, register=True
+            )
 
     def _fit(self) -> tuple[dict[str, dict[str, float]], list[dict[str, Any]]]:
         slopes: dict[str, dict[str, list[float]]] = {}
@@ -269,17 +292,16 @@ class ReplaySimulator:
         for prev, curr in zip(everything, everything[1:]):
             if self.exclude in (prev.name, curr.name):
                 continue
-            names = set(prev.levels) | set(curr.levels)
-            moved = sorted(
-                n for n in names if curr.levels.get(n, 0.0) != prev.levels.get(n, 0.0)
-            )
+            before, after = self._levels[prev.name], self._levels[curr.name]
+            names = set(before) | set(after)
+            moved = sorted(n for n in names if after.get(n, 0.0) != before.get(n, 0.0))
             if not moved:
                 continue
             if len(moved) > 1:
                 ambiguous.append({"from": prev.name, "to": curr.name, "decisions": moved})
                 continue
             decision = moved[0]
-            step = curr.levels.get(decision, 0.0) - prev.levels.get(decision, 0.0)
+            step = after.get(decision, 0.0) - before.get(decision, 0.0)
             if not math.isfinite(step) or step == 0.0:
                 self.nonfinite.add(decision)
                 continue
@@ -306,11 +328,11 @@ class ReplaySimulator:
         # only later still has 0 inside its observed range.
         names: set[str] = set()
         for generation in self.generations:
-            names |= set(generation.levels)
+            names |= set(self._levels[generation.name])
         limits: dict[str, tuple[float, float]] = {}
         for generation in self.generations:
             for name in names:
-                level = generation.levels.get(name, 0.0)
+                level = self._levels[generation.name].get(name, 0.0)
                 low, high = limits.get(name, (level, level))
                 limits[name] = (min(low, level), max(high, level))
         return limits
@@ -318,12 +340,12 @@ class ReplaySimulator:
     def _baseline(self) -> dict[str, float] | None:
         """The intercept is the generation that took every decision at level zero, if any."""
         for generation in self.generations:
-            if all(level == 0.0 for level in generation.levels.values()):
+            if all(level == 0.0 for level in self._levels[generation.name].values()):
                 return {f: generation.outcome[f].rate for f in self.families}
         return None
 
     def simulate(self, decisions: Mapping[str, Level]) -> dict[str, Prediction]:
-        levels = levels_of(decisions, self.pool.categories(), self.pool.zero_based())
+        levels = levels_of(decisions, dict(self._categories), self._zero_based)
         unknown = tuple(
             sorted(n for n, level in levels.items() if level != 0.0 and n not in self.responses)
         )
@@ -352,7 +374,7 @@ class ReplaySimulator:
     def extrapolation(self, decisions: Mapping[str, Level]) -> list[dict[str, Any]]:
         """Levels asked for that the history never showed."""
         beyond = []
-        for name, level in levels_of(decisions, self.pool.categories(), self.pool.zero_based()).items():
+        for name, level in levels_of(decisions, dict(self._categories), self._zero_based).items():
             low, high = self.limits.get(name, (0.0, 0.0))
             if level < low or level > high:
                 beyond.append({"decision": name, "level": level, "observed": [low, high]})

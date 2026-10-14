@@ -365,3 +365,24 @@ class ImmutableHistoryTests(unittest.TestCase):
         decisions["y"] = 3
         self.assertEqual(pool.fingerprint(), before)
         self.assertEqual(dict(pool.generations[0].decisions), {"x": 1})
+
+
+class FoldEncodingTests(unittest.TestCase):
+    def test_a_category_seen_only_in_the_held_out_generation_does_not_reach_the_training_encoding(self):
+        pool = HistoryPool()
+        # "mode" is categorical; "beta" appears only in g1, the generation held out below, and
+        # sits between "alpha" (g0) and "gamma" (g2) in the pool's own order of appearance.
+        for order, (mode, rate) in enumerate([("alpha", 200), ("beta", 300), ("gamma", 400)]):
+            pool.add_generation(
+                f"g{order}", order=order, decisions={"mode": mode}, outcome=outcome(rate)
+            )
+        self.assertEqual(pool.categories()["mode"], ["alpha", "beta", "gamma"])
+        fold = ReplaySimulator(pool, exclude="g1")
+        # The fold knows alpha and gamma only; gamma is level 1, not the pool's level 2.
+        self.assertEqual(fold._categories["mode"], ["alpha", "gamma"])
+        self.assertNotIn("beta", fold._categories["mode"])
+        self.assertEqual(fold._levels["g2"]["mode"], 1.0)
+        # The held-out value is unseen in the fold: it falls outside the observed range.
+        self.assertNotEqual(fold.extrapolation({"mode": "beta"}), [])
+        # The fold with nothing excluded still sees all three.
+        self.assertEqual(ReplaySimulator(pool)._categories["mode"], ["alpha", "beta", "gamma"])

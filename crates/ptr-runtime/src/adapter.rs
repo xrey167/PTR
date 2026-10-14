@@ -98,6 +98,14 @@ pub enum AdapterError {
     ClockRegressed { high_water_day: u64, today: u64 },
     /// The runtime's cycle clock cannot say what day it is, or none was configured.
     ClockUnavailable,
+    /// No gate configuration is pinned in this runtime
+    /// ([`PtrRuntime::pin_promotion_gate`]), so no report can be vouched for.
+    NoPinnedPromotionGate,
+    /// The gate report was produced under a configuration other than the pinned one.
+    GateConfigurationMismatch {
+        expected: [u8; 32],
+        actual: [u8; 32],
+    },
     /// The proposal was evaluated for another project than the one the promotion names.
     ProjectMismatch { expected: String, actual: String },
     /// The runtime already tracks [`MAX_TRACKED_CYCLE_PROJECTS`] projects.
@@ -294,11 +302,21 @@ pub(crate) fn adapter_key(project: &ProjectId, adapter: &str) -> String {
 }
 
 impl PtrRuntime {
+    /// Pin the one forgetting-gate configuration (`ForgettingGate::config_digest`) whose
+    /// reports [`PtrRuntime::promote_adapter`] accepts. It is host configuration and not
+    /// committed history; pinning again replaces it. Until it is pinned every promotion is
+    /// refused with [`AdapterError::NoPinnedPromotionGate`].
+    pub fn pin_promotion_gate(&mut self, config_digest: [u8; 32]) {
+        self.pinned_promotion_gate = Some(config_digest);
+    }
+
     /// Commit the promotion of an adapter generation.
     ///
     /// # Errors
     /// [`AdapterError::GateNotPassed`] for a report that did not pass or holds a missing
-    /// baseline, [`AdapterError::EmptyArtifact`], [`AdapterError::ArtifactDigestMismatch`] when
+    /// baseline, [`AdapterError::NoPinnedPromotionGate`] and
+    /// [`AdapterError::GateConfigurationMismatch`] for a report produced under a gate
+    /// configuration other than the pinned one, [`AdapterError::EmptyArtifact`], [`AdapterError::ArtifactDigestMismatch`] when
     /// the weights do not hash to the digest the gate was bound to,
     /// [`AdapterError::SplitLockMismatch`], [`RuntimeError::InvalidLifecycleTransition`] for a
     /// generation that does not advance the adapter or one that is revoked,
@@ -331,6 +349,18 @@ impl PtrRuntime {
                 .any(|violation| matches!(violation, GateViolation::MissingBaseline))
         {
             return Err(AdapterError::GateNotPassed.into());
+        }
+        // The report vouches only as far as the gate that produced it is the gate this runtime
+        // trusts: its configuration must be the pinned one. Nothing pinned refuses everything.
+        let Some(pinned) = self.pinned_promotion_gate else {
+            return Err(AdapterError::NoPinnedPromotionGate.into());
+        };
+        if report.gate_config_digest() != pinned {
+            return Err(AdapterError::GateConfigurationMismatch {
+                expected: pinned,
+                actual: report.gate_config_digest(),
+            }
+            .into());
         }
         if artifact.is_empty() {
             return Err(AdapterError::EmptyArtifact.into());

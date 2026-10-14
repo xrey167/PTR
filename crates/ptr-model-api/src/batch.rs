@@ -134,14 +134,32 @@ impl std::error::Error for BatchError {}
 
 /// The scope an answer was produced under, handed back with it by
 /// [`AdaptiveBatcher::infer_scoped`] and presented again to
-/// [`AdaptiveBatcher::resume_with`]. It is the continuation's own scope: the key and the request
-/// it belongs to. It has no public constructor, so a scope can only come from an answer the
-/// batcher produced; a caller holding the key of a live generation cannot make an observation
-/// that came from a revoked one pass as its own.
+/// [`AdaptiveBatcher::resume_with`]. It is the continuation's own scope: the key, the request
+/// and a digest of the answer it belongs to. It has no public constructor, so a scope can only
+/// come from an answer the batcher produced; a caller holding the key of a live generation
+/// cannot make an observation that continues a revoked generation's answer pass as its own,
+/// and the binding of one call does not continue the answer of another call under the same
+/// request id.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ResumeBinding {
     request_id: RequestId,
     key: BatchKey,
+    answer_digest: [u8; 32],
+}
+
+/// SHA-256 over the rendering of the events, each framed by its length. Two answers with
+/// identical events have identical digests: they are the same answer.
+fn answer_digest(events: &[ModelEvent]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(b"ptr-batch-answer-v1");
+    hasher.update((events.len() as u64).to_le_bytes());
+    for event in events {
+        let rendered = format!("{event:?}");
+        hasher.update((rendered.len() as u64).to_le_bytes());
+        hasher.update(rendered.as_bytes());
+    }
+    hasher.finalize().into()
 }
 
 impl ResumeBinding {
@@ -404,10 +422,7 @@ impl<B: BatchInferenceBackend + 'static> AdaptiveBatcher<B> {
         request: &ModelRequest,
         admission: BatchAdmission,
     ) -> Result<ScopedAnswer, ModelError> {
-        let binding = ResumeBinding {
-            request_id: request.request_id.clone(),
-            key: admission.key.clone(),
-        };
+        let bound_key = admission.key.clone();
         let counters = &self.shared.counters;
         if admission.key.adapter.is_some() && self.shared.gate.is_none() {
             bump(&counters.revoked, 1);
@@ -452,13 +467,22 @@ impl<B: BatchInferenceBackend + 'static> AdaptiveBatcher<B> {
         let events = answer_rx
             .recv()
             .unwrap_or_else(|_| Err(ModelError::closed()))?;
+        let binding = ResumeBinding {
+            request_id: request.request_id.clone(),
+            key: bound_key,
+            answer_digest: answer_digest(&events),
+        };
         Ok(ScopedAnswer { events, binding })
     }
 
-    /// Resume the continuation of an answer. The scope is the continuation's own: `binding`
-    /// is what [`AdaptiveBatcher::infer_scoped`] returned with it, and `key` is the scope the
-    /// caller now claims. A `key` that differs from the bound one, or a `binding` of another
-    /// request, is [`ModelError::scope_mismatch`] and nothing runs. Otherwise the gate is asked
+    /// Resume the continuation of an answer. The scope is the continuation's own: `answer` is
+    /// the events the observation continues, `binding` is what
+    /// [`AdaptiveBatcher::infer_scoped`] returned with them, and `key` is the scope the
+    /// caller now claims. A `key` that differs from the bound one, a `binding` of another
+    /// request, or an `answer` other than the one the binding was issued for (another call
+    /// under the same request id and a different scope) is [`ModelError::scope_mismatch`] and
+    /// nothing runs. Two calls whose answers are identical are the same answer, and either
+    /// binding continues it. Otherwise the gate is asked
     /// about the bound key, so an observation produced under a revoked generation is refused
     /// whatever key the caller holds for a live one.
     ///
@@ -468,13 +492,17 @@ impl<B: BatchInferenceBackend + 'static> AdaptiveBatcher<B> {
     pub fn resume_with(
         &self,
         request: &ModelResumeRequest,
+        answer: &[ModelEvent],
         binding: &ResumeBinding,
         key: &BatchKey,
     ) -> Result<Vec<ModelEvent>, ModelError>
     where
         B: ResumableInferenceBackend,
     {
-        if binding.request_id != request.request_id || &binding.key != key {
+        if binding.request_id != request.request_id
+            || &binding.key != key
+            || binding.answer_digest != answer_digest(answer)
+        {
             return Err(ModelError::scope_mismatch());
         }
         if !gate_admits(&self.shared, &binding.key) {
@@ -557,8 +585,9 @@ impl<B: BatchInferenceBackend + ResumableInferenceBackend + 'static> ResumableIn
         let binding = ResumeBinding {
             request_id: request.request_id.clone(),
             key: BatchKey::unscoped(),
+            answer_digest: answer_digest(&[]),
         };
-        self.resume_with(request, &binding, &BatchKey::unscoped())
+        self.resume_with(request, &[], &binding, &BatchKey::unscoped())
     }
 }
 

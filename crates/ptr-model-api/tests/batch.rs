@@ -5,7 +5,7 @@ mod common;
 use common::{eventually, request, Latch, RecordingBackend};
 use ptr_model_api::{
     AdaptiveBatcher, BatchAdmission, BatchClock, BatchError, BatchGate, BatchKey, BatchPolicy,
-    CancelFlag, InferenceBackend, ModelError, ModelEvent, ResumeBinding, SystemClock,
+    CancelFlag, InferenceBackend, ModelError, ModelEvent, ScopedAnswer, SystemClock,
 };
 use ptr_types::{Generation, Timestamp};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -576,7 +576,7 @@ fn bind<B: ptr_model_api::BatchInferenceBackend + 'static>(
     batcher: &AdaptiveBatcher<B>,
     id: &str,
     key: &BatchKey,
-) -> ResumeBinding {
+) -> ScopedAnswer {
     batcher
         .infer_scoped(
             &request(id),
@@ -587,7 +587,6 @@ fn bind<B: ptr_model_api::BatchInferenceBackend + 'static>(
             },
         )
         .expect("served")
-        .binding
 }
 
 fn scope(project: &str, generation: u64) -> BatchKey {
@@ -617,29 +616,31 @@ fn a_continuation_is_bound_to_the_scope_it_was_produced_under() {
     let binding = bind(&batcher, "r", &gen2);
     let resume = common::resume_request("r");
     // Valid: the right key, the generation live.
-    assert!(batcher.resume_with(&resume, &binding, &gen2).is_ok());
+    assert!(batcher
+        .resume_with(&resume, &binding.events, &binding.binding, &gen2)
+        .is_ok());
     // Generation 2 is revoked; generation 3 lives.
     gate.0.lock().unwrap().push(2);
     // The caller holds a key for the live generation 3 and presents the generation 2
     // observation under it: a scope mismatch, nothing runs, the gate is not consulted.
     assert_eq!(
-        batcher.resume_with(&resume, &binding, &gen3),
+        batcher.resume_with(&resume, &binding.events, &binding.binding, &gen3),
         Err(ModelError::scope_mismatch())
     );
     // Another project's key does not fit either.
     assert_eq!(
-        batcher.resume_with(&resume, &binding, &scope("q", 2)),
+        batcher.resume_with(&resume, &binding.events, &binding.binding, &scope("q", 2)),
         Err(ModelError::scope_mismatch())
     );
     // The right key for the revoked generation reaches the gate with the bound key: revoked.
     assert_eq!(
-        batcher.resume_with(&resume, &binding, &gen2),
+        batcher.resume_with(&resume, &binding.events, &binding.binding, &gen2),
         Err(ModelError::revoked())
     );
     // A binding of another request does not carry over.
     let other = bind(&batcher, "other", &gen3);
     assert_eq!(
-        batcher.resume_with(&resume, &other, &gen3),
+        batcher.resume_with(&resume, &other.events, &other.binding, &gen3),
         Err(ModelError::scope_mismatch())
     );
 }
@@ -651,11 +652,21 @@ fn a_resume_is_stopped_by_a_closed_gate() {
     let scoped = key("coder");
     let binding = bind(&batcher, "r", &scoped);
     assert!(batcher
-        .resume_with(&common::resume_request("r"), &binding, &scoped)
+        .resume_with(
+            &common::resume_request("r"),
+            &binding.events,
+            &binding.binding,
+            &scoped
+        )
         .is_ok());
     gate.0.store(false, Ordering::SeqCst);
     assert_eq!(
-        batcher.resume_with(&common::resume_request("r"), &binding, &scoped),
+        batcher.resume_with(
+            &common::resume_request("r"),
+            &binding.events,
+            &binding.binding,
+            &scoped
+        ),
         Err(ModelError::revoked())
     );
 }
@@ -681,15 +692,27 @@ fn reusing_or_evicting_request_ids_cannot_redirect_a_resume_to_another_scope() {
     gate.revoked.store(true, Ordering::SeqCst);
     let resume = common::resume_request("shared-id");
     assert_eq!(
-        batcher.resume_with(&resume, &doomed_binding, &doomed),
+        batcher.resume_with(
+            &resume,
+            &doomed_binding.events,
+            &doomed_binding.binding,
+            &doomed
+        ),
         Err(ModelError::revoked())
     );
     // The live key cannot be used to carry the doomed observation.
     assert_eq!(
-        batcher.resume_with(&resume, &doomed_binding, &live),
+        batcher.resume_with(
+            &resume,
+            &doomed_binding.events,
+            &doomed_binding.binding,
+            &live
+        ),
         Err(ModelError::scope_mismatch())
     );
-    assert!(batcher.resume_with(&resume, &live_binding, &live).is_ok());
+    assert!(batcher
+        .resume_with(&resume, &live_binding.events, &live_binding.binding, &live)
+        .is_ok());
 }
 
 #[test]
@@ -705,7 +728,8 @@ fn a_backend_panic_in_resume_fails_that_call_and_the_batcher_keeps_serving() {
     assert_eq!(
         batcher.resume_with(
             &common::resume_request("r"),
-            &binding,
+            &binding.events,
+            &binding.binding,
             &BatchKey::unscoped()
         ),
         Err(ModelError::backend_failure())
@@ -741,11 +765,58 @@ fn a_gate_that_panics_refuses_the_batch_and_the_resume_and_the_worker_keeps_serv
     assert_eq!(batcher.stats().dispatched, 1);
     assert_eq!(batcher.stats().revoked, 3);
     assert_eq!(
-        batcher.resume_with(&common::resume_request("r"), &binding, &key("coder")),
+        batcher.resume_with(
+            &common::resume_request("r"),
+            &binding.events,
+            &binding.binding,
+            &key("coder")
+        ),
         Err(ModelError::revoked())
     );
     gate.0.store(false, Ordering::SeqCst);
     assert!(batcher.infer(&request("after")).is_ok());
+}
+
+#[test]
+fn the_binding_of_one_call_does_not_continue_the_answer_of_another_under_the_same_request_id() {
+    let gate = Arc::new(RevokedGenerations(std::sync::Mutex::new(Vec::new())));
+    let batcher = echo_batcher(Arc::clone(&gate) as Arc<dyn BatchGate>);
+    let a = scope("p", 2);
+    let b = scope("p", 3);
+    // One request id, two scopes, two different answers (the echo backend answers its text).
+    let answer = |text: &str, key: &BatchKey| {
+        batcher
+            .infer_scoped(
+                &ptr_model_api::ModelRequest {
+                    raw_text: text.into(),
+                    ..request("same-id")
+                },
+                BatchAdmission {
+                    key: key.clone(),
+                    deadline: None,
+                    cancel: None,
+                },
+            )
+            .expect("served")
+    };
+    let under_a = answer("observed under generation 2", &a);
+    let under_b = answer("observed under generation 3", &b);
+    gate.0.lock().unwrap().push(2);
+    let resume = common::resume_request("same-id");
+    // B's binding (and B's live key) cannot carry A's answer on: the digest differs.
+    assert_eq!(
+        batcher.resume_with(&resume, &under_a.events, &under_b.binding, &b),
+        Err(ModelError::scope_mismatch())
+    );
+    // A's own binding with A's answer reaches the gate, which has revoked generation 2.
+    assert_eq!(
+        batcher.resume_with(&resume, &under_a.events, &under_a.binding, &a),
+        Err(ModelError::revoked())
+    );
+    // B's binding with B's answer, and its key, goes through.
+    assert!(batcher
+        .resume_with(&resume, &under_b.events, &under_b.binding, &b)
+        .is_ok());
 }
 
 /// A clock that panics on the batcher's worker thread once armed.

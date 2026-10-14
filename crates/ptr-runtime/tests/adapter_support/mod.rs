@@ -37,7 +37,8 @@ pub fn record(id: &str, weights: &[u8]) -> AdapterRecord {
     }
 }
 
-fn gate() -> ForgettingGate {
+/// The gate configuration the tests pin in their runtimes.
+pub fn gate() -> ForgettingGate {
     ForgettingGate {
         max_average_forgetting: 0.1,
         max_task_forgetting: 0.2,
@@ -55,8 +56,24 @@ pub fn proposal_with_baseline(
     proposal_for("alpha", id, weights, serving)
 }
 
-/// A proposal evaluated for `project`.
+/// The digest of [`gate`], what a runtime pins with `pin_promotion_gate`.
+pub fn gate_digest() -> [u8; 32] {
+    gate().config_digest().expect("a valid gate")
+}
+
+/// A proposal evaluated for `project` under the pinned gate configuration.
 pub fn proposal_for(
+    project: &str,
+    id: &str,
+    weights: &[u8],
+    serving: Option<f64>,
+) -> Result<PromotionProposal, ptr_lineage::LineageError> {
+    proposal_under(&gate(), project, id, weights, serving)
+}
+
+/// A proposal evaluated for `project` under `gate`, whatever configuration that is.
+pub fn proposal_under(
+    gate: &ForgettingGate,
     project: &str,
     id: &str,
     weights: &[u8],
@@ -70,7 +87,7 @@ pub fn proposal_for(
         base_digest(),
         SplitLock::of_manifest(SPLITS).sha256(),
     );
-    let report = gate()
+    let report = gate
         .evaluate_promotion(
             &AdapterId::from(id),
             &matrix,

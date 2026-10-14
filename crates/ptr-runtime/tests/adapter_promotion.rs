@@ -3,7 +3,8 @@
 mod adapter_support;
 
 use adapter_support::{
-    base_digest, digest, proposal, proposal_for, proposal_with_baseline, record, SPLITS, WEIGHTS,
+    base_digest, digest, gate, gate_digest, proposal, proposal_for, proposal_under,
+    proposal_with_baseline, record, SPLITS, WEIGHTS,
 };
 use ptr_config::PtrConfig;
 use ptr_ledger::LedgerEvent;
@@ -39,7 +40,9 @@ fn revoke(name: &str, generation: u64) -> RevokeAdapter {
 }
 
 fn runtime() -> PtrRuntime {
-    PtrRuntime::new(PtrConfig::default()).expect("runtime")
+    let mut runtime = PtrRuntime::new(PtrConfig::default()).expect("runtime");
+    runtime.pin_promotion_gate(gate_digest());
+    runtime
 }
 
 #[test]
@@ -369,6 +372,7 @@ fn a_ledger_that_already_holds_a_capsule_in_the_adapter_namespace_still_replays(
         },
     }];
     let mut runtime = PtrRuntime::replay(PtrConfig::default(), &history).expect("replays");
+    runtime.pin_promotion_gate(gate_digest());
     assert_eq!(
         runtime.live_generation("ptr-adapter:alpha/coder"),
         Some(Generation(1))
@@ -414,4 +418,49 @@ fn a_missing_split_manifest_is_refused_and_a_digest_cannot_stand_in_for_it() {
         ))
     ));
     assert!(runtime.committed_events().is_empty());
+}
+
+#[test]
+fn only_a_report_from_the_pinned_gate_configuration_promotes_and_nothing_else_commits() {
+    // Nothing pinned: every promotion is refused.
+    let mut unpinned = PtrRuntime::new(PtrConfig::default()).expect("runtime");
+    assert_eq!(
+        unpinned.promote_adapter(request("coder", 1, WEIGHTS)),
+        Err(RuntimeError::Adapter(AdapterError::NoPinnedPromotionGate))
+    );
+
+    let mut runtime = runtime();
+    let before = runtime.committed_events().len();
+    // A report from a laxer gate than the pinned one, otherwise perfectly valid.
+    let lax = ForgettingGate {
+        max_average_forgetting: 0.9,
+        ..gate()
+    };
+    let foreign = PromoteAdapter {
+        project: project("alpha"),
+        proposal: proposal_under(&lax, "alpha", "coder", WEIGHTS, Some(0.7)).expect("proposal"),
+        frozen_split_manifest: SPLITS,
+        generation: Generation(1),
+        artifact: WEIGHTS,
+    };
+    assert_eq!(
+        runtime.promote_adapter(foreign),
+        Err(RuntimeError::Adapter(
+            AdapterError::GateConfigurationMismatch {
+                expected: gate_digest(),
+                actual: lax.config_digest().expect("valid"),
+            }
+        ))
+    );
+    assert_eq!(
+        runtime.committed_events().len(),
+        before,
+        "nothing committed"
+    );
+    assert_eq!(runtime.serving_adapter(&project("alpha"), "coder"), None);
+
+    // The pinned configuration goes through.
+    runtime
+        .promote_adapter(request("coder", 1, WEIGHTS))
+        .expect("the pinned gate's report promotes");
 }
