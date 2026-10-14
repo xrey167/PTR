@@ -130,7 +130,11 @@ records are bounded in number and in size: a global and per-principal cap on the
 records, and per record a cap on the count of each input category (semantic, memory, derived,
 Raw ancestors, chain elements, payload types), a cap on the size of each identity, and a cap on
 the record's total encoded bytes, plus a global cap on the bytes of all live records; any of
-these exceeded gives a typed saturation refusal when the operation is started, and retention until the operation's last possible handle deadline plus skew,
+these exceeded gives a typed saturation refusal when the operation is started. Each record also
+carries an **absolute operation deadline** that the authority mints when the operation starts
+(bounded by a configured maximum operation lifetime); a handle whose deadline lies beyond it is
+refused, handle issuance closes when the operation completes, is cancelled or reaches that
+deadline, and the record is retained until the operation deadline plus skew,
 after which the record is removed deterministically (so a live handle never meets a missing
 record, and abandoned calls cannot accumulate).
 Codec v1 handles are **Exact only**, as `admit_frame` refuses any non-Exact upstream today
@@ -222,7 +226,9 @@ Rules, each the same as the one already enforced for frames and KV pages, restat
    bytes can call `cuIpcOpenMemHandle` itself, and no admission check can stop that call. The
    legacy form is therefore **disabled for untrusted workers**: a Pod worker receives only VMM
    exports, and only while the confinement of rule 3b is active. The legacy form is kept only
-   between trusted processes of the same authority (the supervisor and its guardian). Where VMM
+   between trusted processes whose exporter and importer share one failure lifecycle (one
+   process, or processes that are killed together); the supervisor and its guardian can fail
+   independently, so the guardian path uses VMM only. Where VMM
    is unavailable, a worker's GPU tensors go by `PinnedHost` or `Bytes`. Every CUDA export is minted by the supervisor as an **export record** that names the export,
    the producer session, the one consumer session and the operation it is for, and the
    supervisor delivers the handle bytes or the VMM descriptor to that consumer itself. Admission
@@ -288,6 +294,10 @@ Rules, each the same as the one already enforced for frames and KV pages, restat
    drained as above. A consumer whose exports from that producer are all released is left
    running. E009 has a multi-consumer arm for this: one producer, several consumers each below
    its cap, the producer quota full, and the recovery must release it without exceeding any cap.
+   Above the per-handle, per-producer, per-consumer and per-pair caps, the supervisor charges
+   every allocated footprint atomically against a **host-wide cap** per memory kind (host RAM,
+   and VRAM per device); a handle that would exceed it is refused with a typed saturation error,
+   so any number of individually conforming pools cannot together exhaust the host.
    Every quota and pool has a fixed cap, so a consumer that withholds, falsifies or delegates
    acknowledgements or descriptors can at most exhaust its own quota and force its own recycle
    (and that of the producers it shares exports with), never grow memory beyond it.
@@ -338,6 +348,9 @@ Rules, each the same as the one already enforced for frames and KV pages, restat
    revalidates the operation (inputs, chain, placement) when it admits the **computed output**,
    as split-stage revalidates before releasing an output today; an output derived from an input
    revoked mid-computation is refused there, or the operation is cancelled on the invalidation.
+   For an operation whose inputs live at another authority (a `Remote` handle, S5), that
+   output-time revalidation is the same source revalidation request as at admission and
+   consumption, so an output computed from an input revoked at the source is never released.
 5. **The carrier is chosen by placement, never by the caller.** The runtime knows both
    placements and picks the nearest carrier both ends support (section 2). A request cannot
    name a carrier, as it cannot name an endpoint ([34](34-address-authority.md)).

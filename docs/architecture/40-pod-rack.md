@@ -141,7 +141,10 @@ reads only `Placement.epoch`, refuses a frame of any surviving member at once; a
 the leases alone would not reach activation frames. In the same step every member's state and
 KV leases are removed and its open uses cancelled, because `validate_lease` consults the lease
 table and not the placements; a lease of a surviving member therefore cannot outlive the tray
-either. A tray is never partially fenced. Replacement is `assign_tray` under a new epoch; every in-flight activation
+either. A tray is never partially fenced. Replacement is `assign_tray` under a new epoch, and
+the per-Pod `PodPlacementController::assign` **refuses a tray member** with a typed error (it
+would revoke and re-create only that one Pod), so every existing caller that places a single Pod
+cannot leave a tray partially placed; every in-flight activation
 frame, KV lease and state lease of the old epoch is refused at its next admission, which the
 existing `placement_epoch` revalidation in `split_stage`, `kv` and `tensor_kv` already does
 per Pod. That revalidation covers the **upstream** side only (`AdmittedFrame::revalidate` checks
