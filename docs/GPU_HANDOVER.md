@@ -554,7 +554,7 @@ E002 and R003 are not unblocked. Nothing here can start before that decision (OD
 Not in the plan: M006 (needs a trained diffusion-style model, no GPU profile named) and R002
 (needs a trained tool-calling model; `benchmarks/ood-pods` holds no data).
 
-## 5. Hardware profile question (RESOLVED: two RTX 3090, keep `rtx3090.toml`): M010 to M015 name the RTX 3090, the original text assumed a 4090
+## 5. Hardware profile question (RESOLVED: keep `rtx3090.toml` and run on the 3090 PC): M010 to M015 name the RTX 3090, the original text assumed a 4090
 
 > **Inventory update (owner, 2026-10-13, later than the note below).** The owner has two PCs with
 > one card each: an RTX 3090 (`hardware/rtx3090.toml`) and an RTX 4090 (`hardware/rtx4090.toml`).
