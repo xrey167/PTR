@@ -1,3 +1,4 @@
+pub mod adapter;
 pub mod admission;
 pub mod compacted;
 pub mod directory;
@@ -442,6 +443,7 @@ pub enum RuntimeError {
     Compacted(compacted::CompactedError),
     Neural(neural::NeuralError),
     Expert(expert::ExpertAdmissionError),
+    Adapter(adapter::AdapterError),
     Semantic(SemanticError),
     InvalidConfig(String),
     Ledger(String),
@@ -755,6 +757,8 @@ pub struct PtrRuntime {
     policy_authority_ready: bool,
     revoked_sessions: BTreeSet<ptr_types::SessionId>,
     egress_refusals: egress::EgressRefusalWindows,
+    /// Promoted adapters and improvement-cycle counts, projected from committed events.
+    adapters: adapter::AdapterProjection,
     hypotheses: BTreeMap<String, PodHypothesis>,
     tier_journal: TierJournalProjection,
     experts: expert::ExpertRegistryProjection,
@@ -850,6 +854,7 @@ impl PtrRuntime {
             policy_authority_ready: false,
             revoked_sessions: BTreeSet::new(),
             egress_refusals: egress::EgressRefusalWindows::default(),
+            adapters: adapter::AdapterProjection::default(),
             hypotheses: BTreeMap::new(),
             tier_journal: TierJournalProjection::default(),
             experts: expert::ExpertRegistryProjection::default(),
@@ -2744,7 +2749,10 @@ impl PtrRuntime {
                 let target = capsule.to_string();
                 // Until target keys are a cross-component tagged union, prevent
                 // capsule IDs from impersonating the two reserved namespaces.
-                if target.starts_with("constraint:") || target.starts_with("procedure:") {
+                if target.starts_with("constraint:")
+                    || target.starts_with("procedure:")
+                    || target.starts_with("adapter:")
+                {
                     return Err(RuntimeError::ReservedTargetNamespace { target });
                 }
                 if let Some(current) = self.capsule_projects.get(&target) {
@@ -3128,6 +3136,12 @@ impl PtrRuntime {
             // A refusal confers nothing and loads nothing; its shape is the codec's to hold.
             LedgerEvent::EgressRefused { .. } => ptr_ledger::check_encodable(event)
                 .map_err(|error| RuntimeError::Ledger(error.to_string())),
+            // Replay repeats the generation rules against the lifecycle as of this point; the
+            // weights digest cannot be recomputed without the weights, so replay holds the
+            // record to its shape and to the generation order (see the `adapter` module).
+            LedgerEvent::AdapterPromoted { .. }
+            | LedgerEvent::AdapterRevoked { .. }
+            | LedgerEvent::ImprovementCycleRecorded { .. } => self.validate_adapter_event(event),
         }
     }
 
@@ -3414,6 +3428,11 @@ impl PtrRuntime {
                     })?;
             }
             LedgerEvent::ProtectedStateCommitted { .. } => {}
+            LedgerEvent::AdapterPromoted { .. }
+            | LedgerEvent::AdapterRevoked { .. }
+            | LedgerEvent::ImprovementCycleRecorded { .. } => {
+                self.apply_adapter_event(&committed.event);
+            }
         }
 
         self.state.apply(committed);
@@ -3481,6 +3500,9 @@ fn validate_new_record(event: &LedgerEvent) -> Result<(), RuntimeError> {
             | LedgerEvent::ExpertAuthorityChanged { .. }
             | LedgerEvent::KvTaintCommitted { .. }
             | LedgerEvent::EgressRefused { .. }
+            | LedgerEvent::AdapterPromoted { .. }
+            | LedgerEvent::AdapterRevoked { .. }
+            | LedgerEvent::ImprovementCycleRecorded { .. }
     ) {
         return Err(RuntimeError::StructuralRecordOutsideAdmissionPath);
     }

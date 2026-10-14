@@ -5,9 +5,11 @@
 //! [`Population::best_verified`] selects only through it.
 
 mod candidate;
+mod cycle;
 mod repair;
 
 pub use candidate::{Candidate, Critique, Population};
+pub use cycle::{BudgetExhausted, CycleOutcomeKind, CycleRecord, ImprovementCycleBudget};
 pub use repair::{
     Decision, ExhaustionReason, Generator, Origin, Outcome, RepairBudget, RepairError, RepairLoop,
     RepairPolicy, RepairRun, Repairer, RewriteReason, Step, Trajectory, Usage,

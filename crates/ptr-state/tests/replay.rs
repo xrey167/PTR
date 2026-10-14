@@ -281,3 +281,51 @@ fn branch_merge_keys_are_length_delimited() {
         .collect();
     assert_eq!(merged, ["branch-merge:2:b1", "branch-merge:3:b1:"]);
 }
+
+#[test]
+fn adapter_events_project_scoped_rows_and_cycles_project_none() {
+    use ptr_ledger::ImprovementCycleOutcome;
+    use ptr_types::ProjectId;
+
+    let committed = |event| CommittedEvent {
+        index: CommitIndex(1),
+        event,
+    };
+    let promoted = projection_entries(&committed(LedgerEvent::AdapterPromoted {
+        project: ProjectId::from("alpha"),
+        adapter: "coder".into(),
+        generation: Generation(2),
+        base: [1; 32],
+        artifact_sha256: [0xab; 32],
+        gate_report_digest: [3; 32],
+    }));
+    assert_eq!(
+        promoted,
+        vec![
+            ("adapter:alpha/coder:generation".to_owned(), "2".to_owned()),
+            (
+                "adapter:alpha/coder:artifact_sha256".to_owned(),
+                "ab".repeat(32)
+            ),
+        ]
+    );
+    let revoked = projection_entries(&committed(LedgerEvent::AdapterRevoked {
+        project: ProjectId::from("alpha"),
+        adapter: "coder".into(),
+        generation: Generation(2),
+        reason: "input revoked".into(),
+    }));
+    assert_eq!(
+        revoked,
+        vec![("revoked:adapter:alpha/coder".to_owned(), "2".to_owned())]
+    );
+    assert!(
+        projection_entries(&committed(LedgerEvent::ImprovementCycleRecorded {
+            project: ProjectId::from("alpha"),
+            day: 1,
+            outcome: ImprovementCycleOutcome::Completed,
+            policy_digest: [4; 32],
+        }))
+        .is_empty()
+    );
+}

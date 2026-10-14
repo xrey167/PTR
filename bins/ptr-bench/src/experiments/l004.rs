@@ -1103,6 +1103,9 @@ fn expected_topic(event: &LedgerEvent) -> &'static str {
         LedgerEvent::InputInvalidated { .. } => "expert.input_invalidated",
         LedgerEvent::ExpertAuthorityChanged { .. } => "expert.authority_changed",
         LedgerEvent::EgressRefused { .. } => "egress.refused",
+        LedgerEvent::AdapterPromoted { .. } => "adapter.promoted",
+        LedgerEvent::AdapterRevoked { .. } => "adapter.revoked",
+        LedgerEvent::ImprovementCycleRecorded { .. } => "improvement.cycle_recorded",
     }
 }
 
@@ -1203,6 +1206,15 @@ fn expected_subject(record: &CommittedEvent) -> String {
             source: ptr_ledger::EgressRefusalSource::Overflow,
             ..
         } => "egress-overflow".to_owned(),
+        LedgerEvent::AdapterPromoted {
+            project, adapter, ..
+        }
+        | LedgerEvent::AdapterRevoked {
+            project, adapter, ..
+        } => format!("adapter:{project}/{adapter}"),
+        LedgerEvent::ImprovementCycleRecorded { project, .. } => {
+            format!("improvement:{project}")
+        }
     }
 }
 

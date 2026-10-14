@@ -117,7 +117,28 @@ pub fn lifecycle_change(committed: &CommittedEvent) -> LifecycleChange {
         // The projection holds no taint table; taint records stay in the ledger.
         | LedgerEvent::KvTaintCommitted { .. }
         // A refusal changes no lifecycle row; the projection keeps the latest per Pod.
-        | LedgerEvent::EgressRefused { .. } => LifecycleChange::None,
+        | LedgerEvent::EgressRefused { .. }
+        // The cycle count is derived from the ledger, not kept as a row.
+        | LedgerEvent::ImprovementCycleRecorded { .. } => LifecycleChange::None,
+        LedgerEvent::AdapterPromoted {
+            project,
+            adapter,
+            generation,
+            ..
+        } => LifecycleChange::SetLive {
+            target: format!("adapter:{project}/{adapter}"),
+            generation: *generation,
+            project: None,
+        },
+        LedgerEvent::AdapterRevoked {
+            project,
+            adapter,
+            generation,
+            ..
+        } => LifecycleChange::Tombstone {
+            subject: format!("adapter:{project}/{adapter}"),
+            generation: *generation,
+        },
     }
 }
 
@@ -156,6 +177,9 @@ pub fn event_topic(event: &LedgerEvent) -> &'static str {
         LedgerEvent::InputInvalidated { .. } => "expert.input_invalidated",
         LedgerEvent::ExpertAuthorityChanged { .. } => "expert.authority_changed",
         LedgerEvent::EgressRefused { .. } => "egress.refused",
+        LedgerEvent::AdapterPromoted { .. } => "adapter.promoted",
+        LedgerEvent::AdapterRevoked { .. } => "adapter.revoked",
+        LedgerEvent::ImprovementCycleRecorded { .. } => "improvement.cycle_recorded",
     }
 }
 
@@ -254,6 +278,15 @@ pub fn event_subject(committed: &CommittedEvent) -> String {
             source: ptr_ledger::EgressRefusalSource::Overflow,
             ..
         } => "egress-overflow".to_owned(),
+        LedgerEvent::AdapterPromoted {
+            project, adapter, ..
+        }
+        | LedgerEvent::AdapterRevoked {
+            project, adapter, ..
+        } => format!("adapter:{project}/{adapter}"),
+        LedgerEvent::ImprovementCycleRecorded { project, .. } => {
+            format!("improvement:{project}")
+        }
     }
 }
 

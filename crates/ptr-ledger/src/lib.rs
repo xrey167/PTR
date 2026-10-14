@@ -358,6 +358,62 @@ pub enum LedgerEvent {
         saturated: bool,
         reason: EgressRefusalReason,
     },
+    /// An adapter checkpoint was promoted to serve (tag 39). The record binds the adapter's
+    /// name in `project` and the new `generation` to the digest of the base model it modifies
+    /// (`base`), the SHA-256 of its weights (`artifact_sha256`) and the digest of the bound
+    /// gate report that admitted it (`gate_report_digest`). The runtime's promotion path
+    /// recomputes `artifact_sha256` from the weights and derives the other digests from the
+    /// decoded proposal before it appends; replay trusts none of them more than the record.
+    ///
+    /// This crate checks only the shape: bounded names without control characters, whitespace
+    /// or `/`, a non-zero generation and no all-zero digest. The public `commit` of the runtime
+    /// refuses the record; only `promote_adapter` writes it.
+    AdapterPromoted {
+        project: ProjectId,
+        adapter: String,
+        generation: Generation,
+        base: [u8; 32],
+        artifact_sha256: [u8; 32],
+        gate_report_digest: [u8; 32],
+    },
+    /// A promoted adapter generation was revoked (tag 40). The tombstone is permanent: that
+    /// generation of that adapter cannot serve again whatever cache, restart or replay does
+    /// (Invariant 3). `reason` is a non-empty bounded description without control characters.
+    /// Written only by the runtime's `revoke_adapter` path.
+    AdapterRevoked {
+        project: ProjectId,
+        adapter: String,
+        generation: Generation,
+        reason: String,
+    },
+    /// One self-improvement cycle ended (tag 41). Every cycle that started is recorded, a
+    /// completed one and an aborted one alike, because both consumed the budget the cycles of
+    /// one `day` (days since the Unix epoch, from the runtime clock) are counted against. The
+    /// `policy_digest` pins the improvement policy the cycle ran under. Written only by the
+    /// runtime's `record_improvement_cycle` path.
+    ImprovementCycleRecorded {
+        project: ProjectId,
+        day: u64,
+        outcome: ImprovementCycleOutcome,
+        policy_digest: [u8; 32],
+    },
+}
+
+/// The longest adapter name or project an adapter event names, in bytes.
+pub const MAX_ADAPTER_NAME_BYTES: usize = 256;
+
+/// The longest revocation or abort reason an adapter or cycle event carries, in bytes.
+pub const MAX_ADAPTER_REASON_BYTES: usize = 512;
+
+/// How an [`LedgerEvent::ImprovementCycleRecorded`] cycle ended. Codec byte: Completed 0,
+/// Aborted 1 (followed by the reason).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ImprovementCycleOutcome {
+    Completed,
+    /// The cycle was stopped before it finished; it still used a unit of the budget.
+    Aborted {
+        reason: String,
+    },
 }
 
 /// Who an [`LedgerEvent::EgressRefused`] counts refusals for. The overflow is a variant of its
@@ -1391,6 +1447,52 @@ fn encode_event(event: &LedgerEvent) -> Vec<u8> {
             out.push(u8::from(*saturated));
             out.push(reason.code());
         }
+        LedgerEvent::AdapterPromoted {
+            project,
+            adapter,
+            generation,
+            base,
+            artifact_sha256,
+            gate_report_digest,
+        } => {
+            out.push(39);
+            put_string(&mut out, &project.0);
+            put_string(&mut out, adapter);
+            put_u64(&mut out, generation.0);
+            out.extend_from_slice(base);
+            out.extend_from_slice(artifact_sha256);
+            out.extend_from_slice(gate_report_digest);
+        }
+        LedgerEvent::AdapterRevoked {
+            project,
+            adapter,
+            generation,
+            reason,
+        } => {
+            out.push(40);
+            put_string(&mut out, &project.0);
+            put_string(&mut out, adapter);
+            put_u64(&mut out, generation.0);
+            put_string(&mut out, reason);
+        }
+        LedgerEvent::ImprovementCycleRecorded {
+            project,
+            day,
+            outcome,
+            policy_digest,
+        } => {
+            out.push(41);
+            put_string(&mut out, &project.0);
+            put_u64(&mut out, *day);
+            match outcome {
+                ImprovementCycleOutcome::Completed => out.push(0),
+                ImprovementCycleOutcome::Aborted { reason } => {
+                    out.push(1);
+                    put_string(&mut out, reason);
+                }
+            }
+            out.extend_from_slice(policy_digest);
+        }
     }
     out
 }
@@ -1876,6 +1978,63 @@ fn decode_event(payload: &[u8]) -> io::Result<LedgerEvent> {
             check_egress_refused(&event)?;
             event
         }
+        39 => {
+            let project = ProjectId(cursor.string()?);
+            let adapter = cursor.string()?;
+            let generation = Generation(cursor.u64()?);
+            let base = cursor.digest()?;
+            let artifact_sha256 = cursor.digest()?;
+            let gate_report_digest = cursor.digest()?;
+            let event = LedgerEvent::AdapterPromoted {
+                project,
+                adapter,
+                generation,
+                base,
+                artifact_sha256,
+                gate_report_digest,
+            };
+            check_adapter_promoted(&event)?;
+            event
+        }
+        40 => {
+            let project = ProjectId(cursor.string()?);
+            let adapter = cursor.string()?;
+            let generation = Generation(cursor.u64()?);
+            let reason = cursor.string()?;
+            let event = LedgerEvent::AdapterRevoked {
+                project,
+                adapter,
+                generation,
+                reason,
+            };
+            check_adapter_revoked(&event)?;
+            event
+        }
+        41 => {
+            let project = ProjectId(cursor.string()?);
+            let day = cursor.u64()?;
+            let outcome = match cursor.u8()? {
+                0 => ImprovementCycleOutcome::Completed,
+                1 => ImprovementCycleOutcome::Aborted {
+                    reason: cursor.string()?,
+                },
+                other => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("unknown improvement cycle outcome tag {other}"),
+                    ))
+                }
+            };
+            let policy_digest = cursor.digest()?;
+            let event = LedgerEvent::ImprovementCycleRecorded {
+                project,
+                day,
+                outcome,
+                policy_digest,
+            };
+            check_improvement_cycle(&event)?;
+            event
+        }
         other => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -2006,6 +2165,9 @@ pub(crate) fn check_origin_bounds(event: &LedgerEvent) -> Result<(), io::Error> 
         LedgerEvent::InputInvalidated { .. } => check_input_invalidated(event)?,
         LedgerEvent::ExpertAuthorityChanged { .. } => check_expert_authority_changed(event)?,
         LedgerEvent::EgressRefused { .. } => check_egress_refused(event)?,
+        LedgerEvent::AdapterPromoted { .. } => check_adapter_promoted(event)?,
+        LedgerEvent::AdapterRevoked { .. } => check_adapter_revoked(event)?,
+        LedgerEvent::ImprovementCycleRecorded { .. } => check_improvement_cycle(event)?,
         LedgerEvent::MeshTunnelLifecycle(MeshTunnelLifecycleEvent {
             endpoint: Some(endpoint),
             ..
@@ -2075,6 +2237,98 @@ fn check_egress_refused(event: &LedgerEvent) -> Result<(), io::Error> {
         }
     {
         return Err(integrity::invalid("PTR_LEDGER_EGRESS_REFUSED"));
+    }
+    Ok(())
+}
+
+/// A name an adapter event carries: 1 to `max` bytes without control characters, whitespace or
+/// the `/` that separates project from adapter in the runtime's lifecycle key, so two distinct
+/// (project, adapter) pairs can never share one key.
+fn adapter_name_ok(name: &str, max: usize) -> bool {
+    !name.is_empty()
+        && name.len() <= max
+        && !name
+            .chars()
+            .any(|c| c.is_control() || c.is_whitespace() || c == '/')
+}
+
+/// A free-text reason: 1 to [`MAX_ADAPTER_REASON_BYTES`] bytes without control characters.
+fn adapter_reason_ok(reason: &str) -> bool {
+    !reason.is_empty()
+        && reason.len() <= MAX_ADAPTER_REASON_BYTES
+        && !reason.chars().any(char::is_control)
+}
+
+/// An adapter promotion names a bounded project and adapter, a non-zero generation and three
+/// digests none of which is all zero. The decoder and the append paths both call this.
+fn check_adapter_promoted(event: &LedgerEvent) -> Result<(), io::Error> {
+    let LedgerEvent::AdapterPromoted {
+        project,
+        adapter,
+        generation,
+        base,
+        artifact_sha256,
+        gate_report_digest,
+    } = event
+    else {
+        return Ok(());
+    };
+    const ZERO: [u8; 32] = [0; 32];
+    if !adapter_name_ok(&project.0, MAX_ADAPTER_NAME_BYTES)
+        || !adapter_name_ok(adapter, MAX_ADAPTER_NAME_BYTES)
+        || generation.0 == 0
+        || *base == ZERO
+        || *artifact_sha256 == ZERO
+        || *gate_report_digest == ZERO
+    {
+        return Err(integrity::invalid("PTR_LEDGER_ADAPTER_PROMOTED"));
+    }
+    Ok(())
+}
+
+/// An adapter revocation names a bounded project and adapter, a non-zero generation and a
+/// bounded reason. The decoder and the append paths both call this.
+fn check_adapter_revoked(event: &LedgerEvent) -> Result<(), io::Error> {
+    let LedgerEvent::AdapterRevoked {
+        project,
+        adapter,
+        generation,
+        reason,
+    } = event
+    else {
+        return Ok(());
+    };
+    if !adapter_name_ok(&project.0, MAX_ADAPTER_NAME_BYTES)
+        || !adapter_name_ok(adapter, MAX_ADAPTER_NAME_BYTES)
+        || generation.0 == 0
+        || !adapter_reason_ok(reason)
+    {
+        return Err(integrity::invalid("PTR_LEDGER_ADAPTER_REVOKED"));
+    }
+    Ok(())
+}
+
+/// A cycle record names a bounded project, no all-zero policy digest and, for an aborted
+/// cycle, a bounded reason. The decoder and the append paths both call this.
+fn check_improvement_cycle(event: &LedgerEvent) -> Result<(), io::Error> {
+    let LedgerEvent::ImprovementCycleRecorded {
+        project,
+        outcome,
+        policy_digest,
+        ..
+    } = event
+    else {
+        return Ok(());
+    };
+    let outcome_ok = match outcome {
+        ImprovementCycleOutcome::Completed => true,
+        ImprovementCycleOutcome::Aborted { reason } => adapter_reason_ok(reason),
+    };
+    if !adapter_name_ok(&project.0, MAX_ADAPTER_NAME_BYTES)
+        || !outcome_ok
+        || *policy_digest == [0; 32]
+    {
+        return Err(integrity::invalid("PTR_LEDGER_IMPROVEMENT_CYCLE"));
     }
     Ok(())
 }
@@ -4981,5 +5235,129 @@ mod semantic_origin_tests {
         let encoded = encoded_event(&event);
         assert_eq!(encoded, encode_event(&event));
         assert_eq!(decode_event(&encoded).unwrap(), event);
+    }
+}
+
+#[cfg(test)]
+mod adapter_event_tests {
+    use super::*;
+
+    fn promoted() -> LedgerEvent {
+        LedgerEvent::AdapterPromoted {
+            project: ProjectId("proj".into()),
+            adapter: "coder-v2".into(),
+            generation: Generation(2),
+            base: [1; 32],
+            artifact_sha256: [2; 32],
+            gate_report_digest: [3; 32],
+        }
+    }
+
+    fn revoked() -> LedgerEvent {
+        LedgerEvent::AdapterRevoked {
+            project: ProjectId("proj".into()),
+            adapter: "coder-v2".into(),
+            generation: Generation(2),
+            reason: "training input revoked".into(),
+        }
+    }
+
+    fn cycle(outcome: ImprovementCycleOutcome) -> LedgerEvent {
+        LedgerEvent::ImprovementCycleRecorded {
+            project: ProjectId("proj".into()),
+            day: 20_000,
+            outcome,
+            policy_digest: [4; 32],
+        }
+    }
+
+    fn all_events() -> Vec<LedgerEvent> {
+        vec![
+            promoted(),
+            revoked(),
+            cycle(ImprovementCycleOutcome::Completed),
+            cycle(ImprovementCycleOutcome::Aborted {
+                reason: "budget guard".into(),
+            }),
+        ]
+    }
+
+    #[test]
+    fn adapter_events_round_trip_with_their_pinned_tags() {
+        let tags = [39u8, 40, 41, 41];
+        for (event, tag) in all_events().into_iter().zip(tags) {
+            let encoded = encode_event(&event);
+            assert_eq!(encoded[0], tag);
+            assert_eq!(decode_event(&encoded).expect("decodes"), event);
+            check_encodable(&event).expect("encodable");
+            for len in 0..encoded.len() {
+                assert!(decode_event(&encoded[..len]).is_err(), "prefix {len}");
+            }
+            let mut padded = encoded.clone();
+            padded.push(0);
+            assert!(decode_event(&padded).is_err(), "trailing byte");
+        }
+    }
+
+    #[test]
+    fn a_malformed_adapter_event_is_refused_by_the_encoder_check_and_the_decoder() {
+        let mut bad = Vec::new();
+        for field in 0..8 {
+            let mut event = promoted();
+            if let LedgerEvent::AdapterPromoted {
+                project,
+                adapter,
+                generation,
+                base,
+                artifact_sha256,
+                gate_report_digest,
+            } = &mut event
+            {
+                match field {
+                    0 => adapter.clear(),
+                    1 => *adapter = "a/b".into(),
+                    2 => *adapter = "a b".into(),
+                    3 => *adapter = "x".repeat(MAX_ADAPTER_NAME_BYTES + 1),
+                    4 => *generation = Generation(0),
+                    5 => *base = [0; 32],
+                    6 => *artifact_sha256 = [0; 32],
+                    _ => {
+                        *gate_report_digest = [0; 32];
+                        project.0.clear();
+                    }
+                }
+            }
+            bad.push(event);
+        }
+        for reason in ["", "line\nbreak", &"r".repeat(MAX_ADAPTER_REASON_BYTES + 1)] {
+            bad.push(LedgerEvent::AdapterRevoked {
+                project: ProjectId("proj".into()),
+                adapter: "a".into(),
+                generation: Generation(1),
+                reason: reason.to_owned(),
+            });
+            bad.push(cycle(ImprovementCycleOutcome::Aborted {
+                reason: reason.to_owned(),
+            }));
+        }
+        bad.push(LedgerEvent::ImprovementCycleRecorded {
+            project: ProjectId("proj".into()),
+            day: 1,
+            outcome: ImprovementCycleOutcome::Completed,
+            policy_digest: [0; 32],
+        });
+        for event in bad {
+            assert!(check_encodable(&event).is_err(), "{event:?}");
+            assert!(decode_event(&encode_event(&event)).is_err(), "{event:?}");
+        }
+    }
+
+    #[test]
+    fn an_unknown_cycle_outcome_tag_is_refused() {
+        let mut encoded = encode_event(&cycle(ImprovementCycleOutcome::Completed));
+        // tag, project (u32 length + 4 bytes), day (8 bytes), then the outcome byte.
+        let outcome_at = 1 + 4 + 4 + 8;
+        encoded[outcome_at] = 2;
+        assert!(decode_event(&encoded).is_err());
     }
 }

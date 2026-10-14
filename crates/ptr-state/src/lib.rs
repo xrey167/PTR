@@ -377,6 +377,36 @@ pub fn projection_entries(committed: &CommittedEvent) -> Vec<(String, String)> {
             },
             egress_refusal_entry(index, *reason, *count, *saturated, target),
         )],
+        // The promoted generation and the digest of its weights, per project and adapter; the
+        // serving decision itself is the runtime's, from the same committed events.
+        LedgerEvent::AdapterPromoted {
+            project,
+            adapter,
+            generation,
+            artifact_sha256,
+            ..
+        } => vec![
+            (
+                format!("adapter:{project}/{adapter}:generation"),
+                generation.0.to_string(),
+            ),
+            (
+                format!("adapter:{project}/{adapter}:artifact_sha256"),
+                hex_digest(artifact_sha256),
+            ),
+        ],
+        LedgerEvent::AdapterRevoked {
+            project,
+            adapter,
+            generation,
+            ..
+        } => vec![(
+            format!("revoked:adapter:{project}/{adapter}"),
+            generation.0.to_string(),
+        )],
+        // The cycle count is derived from the ledger by the runtime; the projection keeps no
+        // row per cycle, which would grow without bound.
+        LedgerEvent::ImprovementCycleRecorded { .. } => Vec::new(),
     }
 }
 
