@@ -11,7 +11,7 @@ use ptr_runtime::{
     AdmittedHandle, ChainFault, ConsumeRequest, ConsumedHandle, DeviceHealth, DeviceRecord,
     HandleAdmissionRequest, HandlePolicy, HandleRejection, HandleSource, HandleTable, NodeHealth,
     NodeRecord, OperationCheck, OperationFault, OperationLiveness, PodPlacementController,
-    PtrRuntime, ReclaimReason, RuntimeStageLiveness, Teardown, WorkerSession,
+    PtrRuntime, ReclaimReason, RegistrationRefused, RuntimeStageLiveness, Teardown, WorkerSession,
 };
 use ptr_types::{
     ArtifactId, CapsuleId, DeviceId, Generation, NodeId, PodId, ProjectId, Timestamp, TypeId,
@@ -249,12 +249,14 @@ fn policy() -> HandlePolicy {
 
 fn table() -> HandleTable {
     let mut table = HandleTable::new(policy(), CONSUMER).expect("a valid policy");
-    let released = table.register_producer(
-        PRINCIPAL,
-        signer().verifying_key(),
-        "stage",
-        PRODUCER_SESSION,
-    );
+    let released = table
+        .register_producer(
+            PRINCIPAL,
+            signer().verifying_key(),
+            "stage",
+            PRODUCER_SESSION,
+        )
+        .expect("registered");
     assert!(released.is_empty());
     table
 }
@@ -325,6 +327,7 @@ fn admit(
         consumer_session: CONSUMER_SESSION,
         operations: &AllLive,
         handle: HandleSource::Encoded(&encoded),
+        footprint_bytes: handle.byte_len,
         live: &live(world),
     })
 }
@@ -354,8 +357,8 @@ fn an_admitted_shared_handle_is_consumed_once_and_released_only_after_teardown()
 
     let consumed = consume(&mut table, &world, 20, admitted).expect("consumed");
     assert_eq!(consumed.locator(), &sent.locator);
-    // `HostShm` is shared: `Consumed` frees nothing (doc 42 rule 3b).
-    assert!(consumed.reclaim().is_none());
+    // `HostShm` is shared: finishing the use frees nothing (doc 42 rule 3b).
+    assert_eq!(table.finish(consumed), Ok(None));
     assert_eq!(table.open_handles(), 0);
     assert_eq!(table.inflight_bytes(PRINCIPAL), Some(8));
     // Neither does the deadline plus the skew.
@@ -469,7 +472,20 @@ fn registering_the_producer_under_another_key_abandons_its_open_handles() {
     let mut table = table();
     let open = admit(&mut table, &world, 10, &handle(&world, 1, 500)).expect("admitted");
     let replacement = SigningKey::from_bytes(&[0xD4; 32]).verifying_key();
-    let released = table.register_producer(PRINCIPAL, replacement, "stage", PRODUCER_SESSION);
+    // A new key under the old session is refused: a respawn always draws a new session.
+    assert_eq!(
+        table.register_producer(PRINCIPAL, replacement, "stage", PRODUCER_SESSION),
+        Err(RegistrationRefused::SessionNotRenewed)
+    );
+    assert_eq!(table.open_handles(), 1);
+    let released = table
+        .register_producer(
+            PRINCIPAL,
+            replacement,
+            "stage",
+            WorkerSession(PRODUCER_SESSION.0 + 1),
+        )
+        .expect("registered");
     assert_eq!(released.len(), 1);
     assert_eq!(released[0].reason, ReclaimReason::ProducerReplaced);
     assert_eq!(table.open_handles(), 0);
@@ -496,9 +512,10 @@ fn the_table_refuses_what_it_has_no_room_for_and_frees_room_on_expiry() {
         admit(&mut table, &world, 10, &handle(&world, 4, 500)).unwrap_err(),
         HandleRejection::TooManyOpenHandles { limit: 3 }
     );
-    // Consuming one frees an open slot; the table is bounded, not stuck.
+    // Consuming and finishing one frees an open slot; the table is bounded, not stuck.
     let first = held.remove(0);
-    let _ = consume(&mut table, &world, 20, first).expect("consumed");
+    let first = consume(&mut table, &world, 20, first).expect("consumed");
+    assert!(table.finish(first).expect("this table").is_some());
     assert!(admit(&mut table, &world, 20, &handle(&world, 4, 500)).is_ok());
     // After the deadline plus the skew, expiry reports the open ones and empties the table.
     let notices = table.expire(600);
@@ -508,7 +525,7 @@ fn the_table_refuses_what_it_has_no_room_for_and_frees_room_on_expiry() {
 }
 
 #[test]
-fn the_byte_budget_saturates_and_is_released_by_consume_abandon_and_expiry() {
+fn the_byte_budget_saturates_and_is_released_by_finish_abandon_and_expiry() {
     let world = world();
     // Each handle is 8 bytes and the budget 24; raise the open bounds so bytes are what refuses.
     let mut table = HandleTable::new(
@@ -521,12 +538,14 @@ fn the_byte_budget_saturates_and_is_released_by_consume_abandon_and_expiry() {
         CONSUMER,
     )
     .expect("policy");
-    let _ = table.register_producer(
-        PRINCIPAL,
-        signer().verifying_key(),
-        "stage",
-        PRODUCER_SESSION,
-    );
+    let _ = table
+        .register_producer(
+            PRINCIPAL,
+            signer().verifying_key(),
+            "stage",
+            PRODUCER_SESSION,
+        )
+        .expect("registered");
     let a = admit(&mut table, &world, 10, &handle(&world, 1, 500)).expect("budget");
     let b = admit(&mut table, &world, 10, &handle(&world, 2, 500)).expect("budget");
     let _c = admit(&mut table, &world, 10, &handle(&world, 3, 500)).expect("budget");
@@ -539,7 +558,10 @@ fn the_byte_budget_saturates_and_is_released_by_consume_abandon_and_expiry() {
             requested: 8
         }
     );
-    let _ = consume(&mut table, &world, 20, a).expect("consumed");
+    // Consume releases nothing while the buffer is in use; finish does.
+    let a = consume(&mut table, &world, 20, a).expect("consumed");
+    assert_eq!(table.inflight_bytes(PRINCIPAL), Some(24));
+    assert!(table.finish(a).expect("this table").is_some());
     assert_eq!(table.inflight_bytes(PRINCIPAL), Some(16));
     // Abandon releases nothing: the claim is held until the reclaim notice at expiry.
     table.abandon(b).expect("abandoned");
@@ -590,6 +612,7 @@ fn the_same_handle_under_another_operation_is_refused_and_leaves_no_state() {
         consumer_session: CONSUMER_SESSION,
         operations: &AllLive,
         handle: HandleSource::Encoded(&encoded),
+        footprint_bytes: sent.byte_len,
         live: &live(&world),
     });
     assert_eq!(
@@ -610,12 +633,14 @@ fn the_same_handle_under_another_operation_is_refused_and_leaves_no_state() {
 fn a_handle_addressed_to_another_stage_is_refused() {
     let world = world();
     let mut table = HandleTable::new(policy(), "someone-else").expect("policy");
-    let _ = table.register_producer(
-        PRINCIPAL,
-        signer().verifying_key(),
-        "stage",
-        PRODUCER_SESSION,
-    );
+    let _ = table
+        .register_producer(
+            PRINCIPAL,
+            signer().verifying_key(),
+            "stage",
+            PRODUCER_SESSION,
+        )
+        .expect("registered");
     assert_eq!(
         admit(&mut table, &world, 10, &handle(&world, 1, 500)).unwrap_err(),
         HandleRejection::WrongConsumer {
@@ -658,6 +683,7 @@ fn an_operation_whose_input_is_revoked_after_admission_never_releases_the_locato
             consumer_session: CONSUMER_SESSION,
             operations: &operations,
             handle: HandleSource::Encoded(&encoded),
+            footprint_bytes: sent.byte_len,
             live: &live(&world),
         })
         .expect("admitted");
@@ -695,6 +721,7 @@ fn an_unknown_operation_is_refused_at_admission_with_no_state_recorded() {
         consumer_session: CONSUMER_SESSION,
         operations: &Operations::default(),
         handle: HandleSource::Encoded(&encoded),
+        footprint_bytes: sent.byte_len,
         live: &live(&world),
     });
     assert_eq!(
@@ -749,6 +776,7 @@ fn a_different_chain_or_payload_type_under_a_known_operation_is_refused_and_reco
             consumer_session: CONSUMER_SESSION,
             operations: &operations,
             handle: HandleSource::Encoded(&encoded),
+            footprint_bytes: sent.byte_len,
             live: &live(&world),
         });
         assert_eq!(result.unwrap_err(), HandleRejection::Operation(fault));
@@ -781,6 +809,7 @@ fn an_approximate_operation_is_refused_at_admission_with_no_state_and_at_consume
             consumer_session: CONSUMER_SESSION,
             operations,
             handle: HandleSource::Encoded(&encoded),
+            footprint_bytes: sent.byte_len,
             live: &live(&world),
         })
     };
@@ -833,6 +862,7 @@ fn admit_with(
         consumer_session,
         operations,
         handle: HandleSource::Encoded(&encoded),
+        footprint_bytes: sent.byte_len,
         live: &live(world),
     })
 }
@@ -926,12 +956,14 @@ fn a_producer_registered_under_a_new_session_abandons_its_handles_and_the_old_se
     )
     .expect("admitted");
     // The same key and stage under a new session is a respawned producer.
-    let released = table.register_producer(
-        PRINCIPAL,
-        signer().verifying_key(),
-        "stage",
-        WorkerSession(23),
-    );
+    let released = table
+        .register_producer(
+            PRINCIPAL,
+            signer().verifying_key(),
+            "stage",
+            WorkerSession(23),
+        )
+        .expect("registered");
     assert_eq!(released.len(), 1);
     assert_eq!(released[0].reason, ReclaimReason::ProducerReplaced);
     assert_eq!(released[0].handle_nonce, 1);
@@ -948,6 +980,7 @@ fn a_producer_registered_under_a_new_session_abandons_its_handles_and_the_old_se
             "stage",
             WorkerSession(23)
         )
+        .expect("registered")
         .is_empty());
     // The authority still records the old producer session, so a new handle is refused ...
     assert_eq!(
@@ -1002,13 +1035,16 @@ fn the_matching_project_and_sessions_are_admitted_and_consumed() {
             operations: &operations,
         })
         .expect("consumed");
-    assert_eq!(
-        consumed.reclaim().map(|notice| notice.reason),
-        Some(ReclaimReason::Consumed)
-    );
+    // The output is admitted first, then the use is finished and the buffer released.
     assert_eq!(
         ptr_runtime::revalidate_operation(&consumed, &operations, 30),
         Ok(())
+    );
+    assert_eq!(
+        table
+            .finish(consumed)
+            .map(|notice| notice.map(|notice| notice.reason)),
+        Ok(Some(ReclaimReason::Consumed))
     );
 }
 

@@ -502,3 +502,59 @@ fn a_tombstone_is_dropped_once_the_failure_is_gone() {
         Err(PlacementError::NoPlacement)
     );
 }
+
+#[test]
+fn a_node_record_or_heartbeat_naming_a_device_twice_is_refused_whole() {
+    let mut controller = PodPlacementController::default();
+    let mut twice = node();
+    twice.devices.push(device(DeviceHealth::Failed));
+    assert_eq!(
+        controller.register_node(twice),
+        Err(PlacementError::DuplicateDevice(DeviceId::from("cuda:0")))
+    );
+    placed(&mut controller);
+    let before = controller.epoch();
+    // A failed and a healthy record of one device cannot leave its placement standing.
+    assert_eq!(
+        controller.heartbeat(
+            &NodeId::from("node-a"),
+            Timestamp(2),
+            vec![device(DeviceHealth::Failed), device(DeviceHealth::Healthy)],
+        ),
+        Err(PlacementError::DuplicateDevice(DeviceId::from("cuda:0")))
+    );
+    // Nothing was recorded: the old record stands and the epoch did not move.
+    assert!(controller.placement(&PodId::from("pod")).is_ok());
+    assert_eq!(controller.epoch(), before);
+}
+
+#[test]
+fn revoked_placement_tombstones_are_bounded_and_drop_the_oldest() {
+    let mut controller = PodPlacementController::default();
+    controller.register_node(node()).unwrap();
+    for index in 0..1_030 {
+        controller
+            .assign(
+                PodId::from(format!("pod-{index}").as_str()),
+                ArtifactId::from("artifact"),
+                Generation(1),
+                NodeId::from("node-a"),
+                DeviceId::from("cuda:0"),
+                1,
+            )
+            .unwrap();
+    }
+    controller
+        .mark_node_failed(&NodeId::from("node-a"))
+        .unwrap();
+    assert_eq!(controller.revoked_placements(), 1_024);
+    // The oldest placements were dropped; the newest still name the failed node.
+    assert_eq!(
+        controller.issue_lease(StateId::from("s"), &PodId::from("pod-0")),
+        Err(PlacementError::NoPlacement)
+    );
+    assert_eq!(
+        controller.issue_lease(StateId::from("s"), &PodId::from("pod-1029")),
+        Err(PlacementError::UnhealthyNode(NodeId::from("node-a")))
+    );
+}

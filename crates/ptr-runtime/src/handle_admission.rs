@@ -47,9 +47,10 @@
 //!    [`ReclaimNotice`], when the producer may reclaim it, and its bytes stay charged to the
 //!    producer's in-flight budget until then. **The producer reclaims on the notice, not
 //!    earlier.** For a carrier that is not shared with another process (`InProcess`, `Bytes`,
-//!    `NvmeFile`, `Remote`) the notice comes on consumption (it travels in the
-//!    [`ConsumedHandle`], and the driver holds it back until the consumer is done), on producer
-//!    replacement or removal, or from [`HandleTable::expire`] after the deadline plus the skew.
+//!    `NvmeFile`, `Remote`) the notice comes from [`HandleTable::finish`] once the consumer is
+//!    done with the [`ConsumedHandle`] (`consume` itself releases nothing), on producer
+//!    replacement or removal, or from [`HandleTable::expire`] after the deadline plus the skew
+//!    (a consumed handle that was dropped unfinished included).
 //!    A **shared** carrier (`HostShm`, `CudaIpc`, `DevicePeer`, `PinnedHost`) is released only
 //!    by [`HandleTable::release_after_teardown`], which the supervisor calls after it has
 //!    reaped both worker domains and drained their control sockets: `Consumed` is a message
@@ -63,7 +64,7 @@
 //!    signing: ownership of the contents passes to the consumer until `Consumed` or reclaim.
 //! 6. **Retention through the skew window**: the consumer must stop at the signed deadline
 //!    ([`HandleTable::admit`] and [`HandleTable::consume`] refuse `now_ms >= deadline`), but
-//!    the producer may reclaim a non-shared buffer only after `Consumed` or once the deadline
+//!    the producer may reclaim a non-shared buffer only after `finish` or once the deadline
 //!    **plus** [`HandlePolicy::max_clock_skew_ms`] has passed, never at the bare deadline: its
 //!    clock and the consumer's may differ by the skew, and a consumer still inside its deadline
 //!    must not see memory reused. [`HandleTable::expire`] returns a [`ReclaimNotice`] only from
@@ -211,6 +212,8 @@ pub enum OperationFault {
     ProducerSessionMismatch { operation: u64 },
     /// The handle's signed deadline lies beyond the operation's absolute deadline.
     DeadlineBeyondOperation { operation: u64 },
+    /// The stage accepting the handle is not the destination stage the operation recorded.
+    ConsumerStageMismatch { operation: u64 },
 }
 
 /// What admission and use ask the authority about one handle.
@@ -224,6 +227,11 @@ pub struct OperationCheck<'a> {
     pub payload_type: &'a TypeId,
     /// The project of the consumer's call, derived by the authority, never read from the handle.
     pub project: &'a ProjectId,
+    /// The consumer stage of the table accepting the handle (the deployment's stage identity,
+    /// equal to the handle's `consumer` once admission checked it). One worker session may serve
+    /// several stages, so the session alone does not prove the destination: the authority
+    /// compares this with the destination stage of its record (`ConsumerStageMismatch`).
+    pub consumer_stage: &'a str,
     /// The session of the consumer worker that serves the consumer stage, from the consumer's
     /// call context, never from the handle.
     pub consumer_session: WorkerSession,
@@ -242,14 +250,15 @@ pub struct OperationCheck<'a> {
 /// id (both drawn by the supervisor at every spawn of that worker), and holds the generations of
 /// every input the operation read (semantic, memory and derived state), the ordered Raw ancestry it
 /// read (`(Raw, content_digest)` pairs, since Raw segments carry no generation), the destination
-/// placement (the consumer stage's placement and epoch when the operation started), the model-side
+/// stage and placement (the consumer stage, its placement and epoch when the operation started), the model-side
 /// chain it expects (stage, base model, adapters and experts with identity, generation, digest and
 /// fence epoch) and the payload types it accepts. Every lookup is keyed by the project: an
 /// operation of another project is refused with `WrongProject`, never answered with a detail.
 ///
 /// It answers `Ok` only if the operation is known, belongs to the project of the call, every input
 /// is still live at the current committed anchor and every Raw ancestor is still present with its
-/// digest (otherwise `InputNotLive`), the consumer still holds the recorded destination placement
+/// digest (otherwise `InputNotLive`), the accepting stage is the recorded destination stage
+/// (`ConsumerStageMismatch`), the consumer still holds the recorded destination placement
 /// and is served by the recorded consumer session (`ConsumerSessionMismatch`; re-placing a consumer
 /// or respawning its worker cancels its operations, which are then unknown), the producer still
 /// runs under the recorded producer session (`ProducerSessionMismatch`), the handle's chain equals
@@ -271,6 +280,16 @@ pub struct OperationCheck<'a> {
 /// every fault as a refusal and must not branch on precedence.
 pub trait OperationLiveness {
     fn operation_admits(&self, check: OperationCheck<'_>) -> Result<(), OperationFault>;
+}
+
+/// Why a producer registration was refused. Nothing is changed by a refused registration.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RegistrationRefused {
+    /// The key or the stage identity changed under the same [`WorkerSession`]. A respawned
+    /// producer always runs under a new session (the supervisor draws one at every spawn), and
+    /// handles already consumed are fenced only through the session the authority checks, so a
+    /// new identity under the old session is refused.
+    SessionNotRenewed,
 }
 
 /// Why a handle was refused, or why an admitted handle could not be used.
@@ -304,6 +323,8 @@ pub enum HandleRejection {
     TooManyOpenForPrincipal { limit: usize },
     /// The producer's table holds its maximum of open handles and tombstones.
     TombstoneTableFull { limit: usize },
+    /// The footprint the caller charges is smaller than the tensor it holds.
+    FootprintBelowLength { footprint: u64, byte_len: u64 },
     /// Admitting the handle would put more than the budget of bytes in flight for the producer.
     InflightBytesExceeded {
         limit: u64,
@@ -341,7 +362,7 @@ pub enum ReclaimReason {
     Expired,
     /// The handle was abandoned and its deadline plus the skew passed.
     Abandoned,
-    /// The producer was registered again under another key or stage identity.
+    /// The producer was registered again under another session (a respawn).
     ProducerReplaced,
     /// The producer was removed with [`HandleTable::unregister_producer`].
     ProducerRemoved,
@@ -359,7 +380,10 @@ pub struct ReclaimNotice {
     pub handle_digest: [u8; 32],
     pub carrier: Carrier,
     pub locator: CarrierLocator,
+    /// The tensor's length.
     pub byte_len: u64,
+    /// The allocated footprint that was charged to the budget and is released with this notice.
+    pub charged_bytes: u64,
     pub reason: ReclaimReason,
 }
 
@@ -399,6 +423,14 @@ pub struct HandleAdmissionRequest<'a> {
     /// The session of the consumer worker serving the consumer stage, supplied by the consumer's
     /// call context, never by the handle.
     pub consumer_session: WorkerSession,
+    /// The **allocated footprint** of the buffer behind the handle, charged to the budget instead
+    /// of the logical `byte_len` (doc 42 rule 3b): the VMM size rounded to the allocation
+    /// granularity, a legacy CUDA allocation rounded to 2 MiB, a `memfd` rounded to whole pages,
+    /// padding included, so many small handles cannot hold more memory than the cap. It comes
+    /// from the supervisor's export record for the handle, never from the handle. A value below
+    /// `byte_len` is refused (`FootprintBelowLength`); for a carrier without an allocation of its
+    /// own (`Bytes`, `InProcess` under moved ownership) the caller passes `byte_len`.
+    pub footprint_bytes: u64,
 }
 
 /// One admitted handle presented for use.
@@ -497,16 +529,18 @@ impl AdmittedHandle {
 
 /// A handle revalidated at use: the consumer may now reach the tensor through its locator.
 ///
-/// For a carrier that is not shared it carries the [`ReclaimNotice`] that lets the producer
-/// reclaim the buffer. The driver must hold the notice back until the consumer is done with the
-/// buffer and only then deliver it to the producer (doc 42 rule 3): the producer reclaims on the
-/// notice, not earlier. A shared carrier carries none: `Consumed` frees nothing there, and the
-/// bytes stay charged until [`HandleTable::release_after_teardown`] (doc 42 rule 3b).
-#[must_use = "dropping the handle loses the reclaim notice the producer is waiting for"]
+/// Its bytes stay charged to the producer's budget while it is in use. When the consumer is done
+/// (after [`revalidate_operation`] admitted the output), the driver hands it to
+/// [`HandleTable::finish`]: for a carrier that is not shared that returns the [`ReclaimNotice`]
+/// that lets the producer reclaim the buffer and releases the bytes then, not earlier (doc 42
+/// rule 3). A shared carrier stays charged until [`HandleTable::release_after_teardown`] (doc
+/// 42 rule 3b). A handle that is dropped instead keeps its bytes until [`HandleTable::expire`]
+/// reports it at the deadline plus the skew.
+#[must_use = "finish the handle, or its bytes stay charged until the deadline plus the skew"]
 #[derive(Eq, PartialEq)]
 pub struct ConsumedHandle {
+    table: u64,
     handle: TensorHandle,
-    reclaim: Option<ReclaimNotice>,
     principal: String,
     /// Captured at admission; `revalidate_operation` hands them to the authority again.
     project: ProjectId,
@@ -542,11 +576,8 @@ impl ConsumedHandle {
         verify_content(&self.handle, bytes).map_err(HandleRejection::Content)
     }
 
-    /// What the producer may reclaim once the consumer is done, for a carrier that is not
-    /// shared. `None` for a shared carrier: its bytes are released only by
-    /// [`HandleTable::release_after_teardown`].
-    pub fn reclaim(&self) -> Option<&ReclaimNotice> {
-        self.reclaim.as_ref()
+    pub fn principal(&self) -> &str {
+        &self.principal
     }
 }
 
@@ -582,6 +613,7 @@ pub fn revalidate_operation(
             upstream_chain: &handle.upstream_chain,
             payload_type: &handle.payload_type,
             project: &consumed.project,
+            consumer_stage: &handle.consumer,
             consumer_session: consumed.consumer_session,
             producer_session: consumed.producer_session,
             signed_absolute_deadline_ms: handle.signed_absolute_deadline_ms,
@@ -601,6 +633,8 @@ struct Claim {
     carrier: Carrier,
     locator: CarrierLocator,
     byte_len: u64,
+    /// The allocated footprint charged to the budget (at least `byte_len`).
+    charged_bytes: u64,
 }
 
 struct Slot {
@@ -667,8 +701,8 @@ impl HandleTable {
         self.open_total
     }
 
-    /// The bytes `principal` still has claimed: the sum of `byte_len` over its slots whose
-    /// buffer has not been reported to the producer yet.
+    /// The bytes `principal` still has claimed: the sum of the charged footprints over its slots
+    /// whose buffer has not been reported to the producer yet.
     pub fn inflight_bytes(&self, principal: &str) -> Option<u64> {
         self.producers.get(principal).map(claimed_bytes)
     }
@@ -694,7 +728,11 @@ impl HandleTable {
     /// admitted handles keep it and the authority compares it with its record on every use.
     ///
     /// Registering the same key, stage identity and session again (a reconnect) changes nothing.
-    /// Registering another key, stage identity or session (a respawned producer) abandons the
+    /// Registering another key or stage identity under the **same** session is refused with
+    /// [`RegistrationRefused::SessionNotRenewed`] and changes nothing: an already consumed
+    /// handle captured that session, and only a new session fences it at
+    /// [`revalidate_operation`]. Registering under another session (a respawned producer,
+    /// whatever its key and stage) abandons the
     /// principal's open handles: they can no longer be consumed, their nonces stay tombstoned
     /// until their deadline plus the skew, and the buffers they claimed on a carrier that is not
     /// shared are returned once, with [`ReclaimReason::ProducerReplaced`], which frees their
@@ -707,7 +745,7 @@ impl HandleTable {
         key: VerifyingKey,
         stage_identity: &str,
         session: WorkerSession,
-    ) -> Vec<ReclaimNotice> {
+    ) -> Result<Vec<ReclaimNotice>, RegistrationRefused> {
         let Some(producer) = self.producers.get_mut(principal) else {
             self.producers.insert(
                 principal.to_owned(),
@@ -719,21 +757,22 @@ impl HandleTable {
                     slots: BTreeMap::new(),
                 },
             );
-            return Vec::new();
+            return Ok(Vec::new());
         };
-        let changed = producer.key != key
-            || producer.stage_identity != stage_identity
-            || producer.session != session;
+        let identity_changed = producer.key != key || producer.stage_identity != stage_identity;
+        if identity_changed && producer.session == session {
+            return Err(RegistrationRefused::SessionNotRenewed);
+        }
         producer.active = true;
-        if !changed {
-            return Vec::new();
+        if !identity_changed && producer.session == session {
+            return Ok(Vec::new());
         }
         producer.key = key;
         producer.stage_identity = stage_identity.to_owned();
         producer.session = session;
         let (released, closed) = abandon_open(producer, principal, ReclaimReason::ProducerReplaced);
         self.open_total = self.open_total.saturating_sub(closed);
-        released
+        Ok(released)
     }
 
     /// Remove a producer: it can no longer present handles, its open handles are abandoned and
@@ -761,8 +800,9 @@ impl HandleTable {
     /// input is live, it is Exact, the handle's chain equals the expected chain and the payload
     /// type is accepted; see [`OperationFault`]), the nonce is neither tombstoned nor open, the
     /// deadline is not reached (`deadline <= now` is expired), its deadline is not too far
-    /// ahead, the table has room (open handles table-wide and per producer, slots, claimed
-    /// bytes), and the chain and placement epoch are live now.
+    /// ahead, the table has room (open handles table-wide and per producer, slots, and the
+    /// claimed bytes plus `footprint_bytes`, which must be at least `byte_len`), and the chain
+    /// and placement epoch are live now.
     pub fn admit(
         &mut self,
         request: HandleAdmissionRequest<'_>,
@@ -813,6 +853,7 @@ impl HandleTable {
                 upstream_chain: &handle.upstream_chain,
                 payload_type: &handle.payload_type,
                 project: request.project,
+                consumer_stage: &self.consumer,
                 consumer_session: request.consumer_session,
                 producer_session: producer.session,
                 signed_absolute_deadline_ms: handle.signed_absolute_deadline_ms,
@@ -851,12 +892,19 @@ impl HandleTable {
                 limit: policy.max_tombstones_per_principal,
             });
         }
+        let footprint = request.footprint_bytes;
+        if footprint < handle.byte_len {
+            return Err(HandleRejection::FootprintBelowLength {
+                footprint,
+                byte_len: handle.byte_len,
+            });
+        }
         let in_flight = claimed_bytes(producer);
-        if in_flight.saturating_add(handle.byte_len) > policy.max_inflight_bytes_per_principal {
+        if in_flight.saturating_add(footprint) > policy.max_inflight_bytes_per_principal {
             return Err(HandleRejection::InflightBytesExceeded {
                 limit: policy.max_inflight_bytes_per_principal,
                 in_flight,
-                requested: handle.byte_len,
+                requested: footprint,
             });
         }
         revalidate_chain(&handle.upstream_chain, handle.placement_epoch, request.live)
@@ -874,6 +922,7 @@ impl HandleTable {
                     carrier: handle.carrier,
                     locator: reclaim_locator(&handle.locator),
                     byte_len: handle.byte_len,
+                    charged_bytes: footprint,
                 }),
                 producer_session: producer.session,
                 consumer_session: request.consumer_session,
@@ -943,6 +992,8 @@ impl HandleTable {
                     upstream_chain: &admitted.handle.upstream_chain,
                     payload_type: &admitted.handle.payload_type,
                     project: &admitted.project,
+                    // Equal to this table's consumer: admission checked it.
+                    consumer_stage: &admitted.handle.consumer,
                     consumer_session: admitted.consumer_session,
                     producer_session: admitted.producer_session,
                     signed_absolute_deadline_ms: admitted.handle.signed_absolute_deadline_ms,
@@ -954,32 +1005,59 @@ impl HandleTable {
             self.open_total = self.open_total.saturating_sub(1);
             return Err(rejection);
         }
+        // The claim stays: the consumer is using the buffer now. It is released by `finish`
+        // (not shared), by `release_after_teardown` (shared) or by `expire`.
         slot.state = SlotState::Consumed;
-        // A shared carrier keeps its claim: `Consumed` comes from the consumer worker, which
-        // may keep its mapping, so the bytes stay charged until verified teardown (rule 3b).
-        let reclaim = if is_shared(admitted.handle.carrier) {
-            None
-        } else {
-            slot.claim = None;
-            Some(ReclaimNotice {
-                principal: admitted.principal.clone(),
-                handle_nonce: admitted.handle.handle_nonce,
-                handle_digest: slot.digest,
-                carrier: admitted.handle.carrier,
-                locator: reclaim_locator(&admitted.handle.locator),
-                byte_len: admitted.handle.byte_len,
-                reason: ReclaimReason::Consumed,
-            })
-        };
         self.open_total = self.open_total.saturating_sub(1);
         Ok(ConsumedHandle {
+            table: self.id,
             handle: admitted.handle,
-            reclaim,
             principal: admitted.principal,
             project: admitted.project,
             consumer_session: admitted.consumer_session,
             producer_session: admitted.producer_session,
         })
+    }
+
+    /// The consumer is done with a consumed handle: its output was admitted (see
+    /// [`revalidate_operation`]) or given up. For a carrier that is not shared the claim is
+    /// released now and the notice returned, once, with [`ReclaimReason::Consumed`]; the driver
+    /// delivers it to the producer. A shared carrier returns `None` and stays charged until
+    /// [`Self::release_after_teardown`] (doc 42 rule 3b): `Consumed` comes from a worker that
+    /// may keep its mapping. `None` also when [`Self::expire`] reported the handle already. A
+    /// handle of another table is refused as [`HandleRejection::UnknownTicket`].
+    pub fn finish(
+        &mut self,
+        consumed: ConsumedHandle,
+    ) -> Result<Option<ReclaimNotice>, HandleRejection> {
+        if consumed.table != self.id {
+            return Err(HandleRejection::UnknownTicket);
+        }
+        let nonce = consumed.handle.handle_nonce;
+        let Some(slot) = self
+            .producers
+            .get_mut(&consumed.principal)
+            .and_then(|producer| producer.slots.get_mut(&nonce))
+        else {
+            return Ok(None);
+        };
+        if slot.state != SlotState::Consumed
+            || slot
+                .claim
+                .as_ref()
+                .is_none_or(|claim| is_shared(claim.carrier))
+        {
+            return Ok(None);
+        }
+        Ok(slot.claim.take().map(|claim| {
+            notice(
+                &consumed.principal,
+                nonce,
+                slot.digest,
+                claim,
+                ReclaimReason::Consumed,
+            )
+        }))
     }
 
     /// The consumer gives an admitted handle up unused. The nonce is tombstoned; the claim and
@@ -1144,13 +1222,13 @@ fn open_of(producer: &Producer) -> usize {
         .count()
 }
 
-/// The bytes of the producer's claims that have not been reported to it yet.
+/// The charged footprints of the producer's claims that have not been reported to it yet.
 fn claimed_bytes(producer: &Producer) -> u64 {
     producer
         .slots
         .values()
         .filter_map(|slot| slot.claim.as_ref())
-        .fold(0u64, |sum, claim| sum.saturating_add(claim.byte_len))
+        .fold(0u64, |sum, claim| sum.saturating_add(claim.charged_bytes))
 }
 
 /// Retention ends, and a buffer is reclaimable, at the deadline plus the skew.
@@ -1185,6 +1263,7 @@ fn notice(
         carrier: claim.carrier,
         locator: claim.locator,
         byte_len: claim.byte_len,
+        charged_bytes: claim.charged_bytes,
         reason,
     }
 }
@@ -1281,6 +1360,8 @@ mod tests {
         bound: RefCell<BTreeMap<u64, (ProjectId, WorkerSession, WorkerSession)>>,
         /// The last check the authority was asked, for what the table passes on.
         last: RefCell<Option<(ProjectId, WorkerSession, WorkerSession)>>,
+        /// The destination stage each operation recorded.
+        destination: RefCell<BTreeMap<u64, String>>,
     }
 
     impl OperationLiveness for Operations {
@@ -1298,6 +1379,11 @@ mod tests {
             if let Some((project, consumer, producer)) = self.bound.borrow().get(&operation) {
                 if project != check.project {
                     return Err(OperationFault::WrongProject { operation });
+                }
+                if let Some(stage) = self.destination.borrow().get(&operation) {
+                    if stage != check.consumer_stage {
+                        return Err(OperationFault::ConsumerStageMismatch { operation });
+                    }
                 }
                 if *consumer != check.consumer_session {
                     return Err(OperationFault::ConsumerSessionMismatch { operation });
@@ -1338,6 +1424,9 @@ mod tests {
             self.bound
                 .borrow_mut()
                 .insert(operation, (project(), CONSUMER_SESSION, PRODUCER_SESSION));
+            self.destination
+                .borrow_mut()
+                .insert(operation, CONSUMER.to_owned());
             self.inputs
                 .borrow_mut()
                 .insert(operation, inputs.iter().map(|i| (*i).to_owned()).collect());
@@ -1365,12 +1454,14 @@ mod tests {
 
     fn table() -> HandleTable {
         let mut table = HandleTable::new(policy(), CONSUMER).expect("a valid policy");
-        let replaced = table.register_producer(
-            PRINCIPAL,
-            signer().verifying_key(),
-            "stage",
-            PRODUCER_SESSION,
-        );
+        let replaced = table
+            .register_producer(
+                PRINCIPAL,
+                signer().verifying_key(),
+                "stage",
+                PRODUCER_SESSION,
+            )
+            .expect("registered");
         assert!(replaced.is_empty());
         table
     }
@@ -1453,6 +1544,7 @@ mod tests {
             consumer_session: CONSUMER_SESSION,
             operations: &AllLive,
             handle: HandleSource::Decoded(handle),
+            footprint_bytes: handle.byte_len,
             live,
         })
     }
@@ -1537,6 +1629,7 @@ mod tests {
                 consumer_session: CONSUMER_SESSION,
                 operations: &AllLive,
                 handle: HandleSource::Encoded(&bytes),
+                footprint_bytes: 16,
                 live: &live,
             })
             .expect("encoded handle admitted");
@@ -1557,6 +1650,7 @@ mod tests {
             consumer_session: CONSUMER_SESSION,
             operations: &AllLive,
             handle: HandleSource::Encoded(&[0xFF; 3]),
+            footprint_bytes: 16,
             live: &live,
         });
         assert_eq!(result.unwrap_err(), HandleRejection::UnknownPrincipal);
@@ -1574,6 +1668,7 @@ mod tests {
             consumer_session: CONSUMER_SESSION,
             operations: &AllLive,
             handle: HandleSource::Encoded(&[1, 2, 3, 4, 5, 6, 7, 8]),
+            footprint_bytes: 16,
             live: &live,
         });
         assert_eq!(
@@ -1739,15 +1834,18 @@ mod tests {
             CONSUMER,
         )
         .expect("policy");
-        let _ = table.register_producer(
-            PRINCIPAL,
-            signer().verifying_key(),
-            "stage",
-            PRODUCER_SESSION,
-        );
+        let _ = table
+            .register_producer(
+                PRINCIPAL,
+                signer().verifying_key(),
+                "stage",
+                PRODUCER_SESSION,
+            )
+            .expect("registered");
         for nonce in 1..=3 {
             let admitted = admit(&mut table, &live, 10, &signed(nonce, 500)).expect("room");
-            let _ = consume(&mut table, &live, 11, admitted).expect("consumed");
+            let consumed = consume(&mut table, &live, 11, admitted).expect("consumed");
+            assert!(table.finish(consumed).expect("this table").is_some());
         }
         assert_eq!(table.open_handles(), 0);
         assert_eq!(
@@ -1817,9 +1915,13 @@ mod tests {
         let consumed = consume(&mut table, &live, 20, admitted).expect("consumed");
         assert_eq!(consumed.locator(), &handle.locator);
         assert_eq!(consumed.handle(), &handle);
-        let notice = consumed
-            .reclaim()
-            .expect("a non-shared carrier is released at consume");
+        // `consume` releases nothing: the bytes stay charged while the consumer uses them.
+        assert_eq!(table.inflight_bytes(PRINCIPAL), Some(16));
+        let notice = table
+            .finish(consumed)
+            .expect("a ticket of this table")
+            .expect("a non-shared carrier is released at finish");
+        assert_eq!(table.inflight_bytes(PRINCIPAL), Some(0));
         assert_eq!(notice.reason, ReclaimReason::Consumed);
         assert_eq!(notice.handle_nonce, 7);
         assert_eq!(notice.byte_len, 16);
@@ -1878,7 +1980,8 @@ mod tests {
         let mut table = table();
         let kept = admit(&mut table, &live, 10, &signed(1, 500)).expect("admitted");
         let used = admit(&mut table, &live, 10, &signed(2, 500)).expect("admitted");
-        let _ = consume(&mut table, &live, 11, used).expect("consumed");
+        let used = consume(&mut table, &live, 11, used).expect("consumed");
+        assert!(table.finish(used).expect("this table").is_some());
 
         // The same key and stage again (a reconnect) changes nothing.
         assert!(table
@@ -1888,11 +1991,31 @@ mod tests {
                 "stage",
                 PRODUCER_SESSION
             )
+            .expect("registered")
             .is_empty());
         assert_eq!(table.open_handles(), 1);
 
         let other = SigningKey::from_bytes(&[0xB2; 32]).verifying_key();
-        let notices = table.register_producer(PRINCIPAL, other, "stage", PRODUCER_SESSION);
+        // Another key or stage under the same session is refused and changes nothing.
+        assert_eq!(
+            table.register_producer(PRINCIPAL, other, "stage", PRODUCER_SESSION),
+            Err(RegistrationRefused::SessionNotRenewed)
+        );
+        assert_eq!(
+            table.register_producer(
+                PRINCIPAL,
+                signer().verifying_key(),
+                "other-stage",
+                PRODUCER_SESSION
+            ),
+            Err(RegistrationRefused::SessionNotRenewed)
+        );
+        assert_eq!(table.open_handles(), 1);
+        // A respawned producer comes with a new session.
+        let respawned = WorkerSession(PRODUCER_SESSION.0 + 1);
+        let notices = table
+            .register_producer(PRINCIPAL, other, "stage", respawned)
+            .expect("registered");
         assert_eq!(notices.len(), 1);
         assert_eq!(notices[0].handle_nonce, 1);
         assert_eq!(notices[0].reason, ReclaimReason::ProducerReplaced);
@@ -1908,12 +2031,14 @@ mod tests {
         );
         // Under the original key again, the used nonce is still a replay and the abandoned
         // one is still abandoned: the tombstones outlive the key change.
-        let _ = table.register_producer(
-            PRINCIPAL,
-            signer().verifying_key(),
-            "stage",
-            PRODUCER_SESSION,
-        );
+        let _ = table
+            .register_producer(
+                PRINCIPAL,
+                signer().verifying_key(),
+                "stage",
+                WorkerSession(PRODUCER_SESSION.0 + 2),
+            )
+            .expect("registered");
         assert_eq!(
             admit(&mut table, &live, 21, &signed(2, 500)).unwrap_err(),
             HandleRejection::Replayed
@@ -1937,12 +2062,14 @@ mod tests {
             CONSUMER,
         )
         .expect("policy");
-        let _ = table.register_producer(
-            PRINCIPAL,
-            signer().verifying_key(),
-            "stage",
-            PRODUCER_SESSION,
-        );
+        let _ = table
+            .register_producer(
+                PRINCIPAL,
+                signer().verifying_key(),
+                "stage",
+                PRODUCER_SESSION,
+            )
+            .expect("registered");
         table
     }
 
@@ -1964,9 +2091,12 @@ mod tests {
                 requested: 16
             }
         );
-        // Consume emits its notice and releases 16 bytes; abandon releases nothing.
+        // Consume releases nothing while the bytes are in use; finish emits the notice and
+        // releases 16 bytes; abandon releases nothing.
         let first = held.remove(0);
-        let _ = consume(&mut table, &live, 20, first).expect("consumed");
+        let first = consume(&mut table, &live, 20, first).expect("consumed");
+        assert_eq!(table.inflight_bytes(PRINCIPAL), Some(64));
+        assert!(table.finish(first).expect("this table").is_some());
         assert_eq!(table.inflight_bytes(PRINCIPAL), Some(48));
         let second = held.remove(0);
         table.abandon(second).expect("abandoned");
@@ -2108,6 +2238,7 @@ mod tests {
             consumer_session: CONSUMER_SESSION,
             operations: &AllLive,
             handle: HandleSource::Decoded(&handle),
+            footprint_bytes: handle.byte_len,
             live: &live,
         });
         assert_eq!(
@@ -2135,19 +2266,23 @@ mod tests {
             CONSUMER,
         )
         .expect("policy");
-        let _ = table.register_producer(
-            PRINCIPAL,
-            signer().verifying_key(),
-            "stage",
-            PRODUCER_SESSION,
-        );
+        let _ = table
+            .register_producer(
+                PRINCIPAL,
+                signer().verifying_key(),
+                "stage",
+                PRODUCER_SESSION,
+            )
+            .expect("registered");
         let neighbour = SigningKey::from_bytes(&[0xE5; 32]);
-        let _ = table.register_producer(
-            "neighbour",
-            neighbour.verifying_key(),
-            "stage",
-            PRODUCER_SESSION,
-        );
+        let _ = table
+            .register_producer(
+                "neighbour",
+                neighbour.verifying_key(),
+                "stage",
+                PRODUCER_SESSION,
+            )
+            .expect("registered");
         admit(&mut table, &live, 10, &signed(1, 500)).expect("first");
         admit(&mut table, &live, 10, &signed(2, 500)).expect("second");
         assert_eq!(
@@ -2165,6 +2300,7 @@ mod tests {
             consumer_session: CONSUMER_SESSION,
             operations: &AllLive,
             handle: HandleSource::Decoded(&theirs),
+            footprint_bytes: theirs.byte_len,
             live: &live,
         });
         assert!(result.is_ok());
@@ -2177,7 +2313,8 @@ mod tests {
         let mut table = table();
         let kept = admit(&mut table, &live, 10, &signed(1, 500)).expect("admitted");
         let used = admit(&mut table, &live, 10, &signed(2, 500)).expect("admitted");
-        let _ = consume(&mut table, &live, 11, used).expect("consumed");
+        let used = consume(&mut table, &live, 11, used).expect("consumed");
+        assert!(table.finish(used).expect("this table").is_some());
         let notices = table.unregister_producer(PRINCIPAL);
         assert_eq!(notices.len(), 1);
         assert_eq!(notices[0].handle_nonce, 1);
@@ -2193,12 +2330,14 @@ mod tests {
         );
         assert!(table.unregister_producer("nobody").is_empty());
         // The tombstones outlive the removal: registered again, a used nonce is a replay.
-        let _ = table.register_producer(
-            PRINCIPAL,
-            signer().verifying_key(),
-            "stage",
-            PRODUCER_SESSION,
-        );
+        let _ = table
+            .register_producer(
+                PRINCIPAL,
+                signer().verifying_key(),
+                "stage",
+                PRODUCER_SESSION,
+            )
+            .expect("registered");
         assert_eq!(
             admit(&mut table, &live, 13, &signed(2, 500)).unwrap_err(),
             HandleRejection::Replayed
@@ -2223,6 +2362,7 @@ mod tests {
             consumer_session: CONSUMER_SESSION,
             operations,
             handle: HandleSource::Decoded(handle),
+            footprint_bytes: handle.byte_len,
             live,
         })
     }
@@ -2550,7 +2690,8 @@ mod tests {
         let live = live();
         let mut table = table();
         let ok = admit(&mut table, &live, 10, &signed(1, 500)).expect("admitted");
-        assert!(consume(&mut table, &live, 499, ok).is_ok());
+        let ok = consume(&mut table, &live, 499, ok).expect("inside the deadline");
+        assert!(table.finish(ok).expect("this table").is_some());
         let late = admit(&mut table, &live, 10, &signed(2, 500)).expect("admitted");
         assert_eq!(
             consume(&mut table, &live, 500, late).unwrap_err(),
@@ -2590,7 +2731,11 @@ mod tests {
         let consumed = consume(&mut table, &live, 20, admitted).expect("consumed");
         assert_eq!(consumed.locator(), &handle.locator);
         assert_eq!(
-            consumed.reclaim().expect("bytes are not shared").locator,
+            table
+                .finish(consumed)
+                .expect("a ticket of this table")
+                .expect("bytes are not shared")
+                .locator,
             CarrierLocator::Bytes { inline: vec![] }
         );
     }
@@ -2610,6 +2755,7 @@ mod tests {
                 consumer_session: CONSUMER_SESSION,
                 operations: &operations,
                 handle: HandleSource::Decoded(&signed(1, 500)),
+                footprint_bytes: 16,
                 live: &live,
             })
             .expect("admitted");
@@ -2647,7 +2793,7 @@ mod tests {
         let admitted = admit(&mut table, &live, 10, &shared(1, 500)).expect("admitted");
         let consumed = consume(&mut table, &live, 20, admitted).expect("consumed");
         // `Consumed` comes from the consumer worker: it frees nothing for a shared carrier.
-        assert!(consumed.reclaim().is_none());
+        assert_eq!(table.finish(consumed), Ok(None));
         assert_eq!(table.inflight_bytes(PRINCIPAL), Some(16));
         // Neither does the deadline plus the skew: the slot and its bytes stay.
         assert!(table.expire(600).is_empty());
@@ -2673,7 +2819,7 @@ mod tests {
         for nonce in 1..=4 {
             let admitted = admit(&mut table, &live, 10, &shared(nonce, 500)).expect("admitted");
             let consumed = consume(&mut table, &live, 11, admitted).expect("consumed");
-            assert!(consumed.reclaim().is_none());
+            assert_eq!(table.finish(consumed), Ok(None));
         }
         assert_eq!(
             admit(&mut table, &live, 12, &shared(5, 500)).unwrap_err(),
@@ -2725,12 +2871,14 @@ mod tests {
         let mut table = table();
         let _open = admit(&mut table, &live, 10, &shared(1, 500)).expect("admitted");
         let _plain = admit(&mut table, &live, 10, &signed(2, 500)).expect("admitted");
-        let released = table.register_producer(
-            PRINCIPAL,
-            signer().verifying_key(),
-            "stage",
-            WorkerSession(PRODUCER_SESSION.0 + 1),
-        );
+        let released = table
+            .register_producer(
+                PRINCIPAL,
+                signer().verifying_key(),
+                "stage",
+                WorkerSession(PRODUCER_SESSION.0 + 1),
+            )
+            .expect("registered");
         // Only the non-shared claim is returned; both handles are closed.
         assert_eq!(released.len(), 1);
         assert_eq!(released[0].handle_nonce, 2);
@@ -2781,6 +2929,7 @@ mod tests {
         let respawned = WorkerSession(PRODUCER_SESSION.0 + 1);
         assert!(table
             .register_producer(PRINCIPAL, signer().verifying_key(), "stage", respawned)
+            .expect("registered")
             .is_empty());
         let _new = admit(&mut table, &live, 12, &shared(2, 500)).expect("admitted");
         let notices = table.release_after_teardown(torn_down());
@@ -2830,5 +2979,120 @@ mod tests {
         assert_eq!(table.release_after_teardown(torn_down()).len(), 1);
         assert!(table.expire(600).is_empty());
         assert_eq!(table.slots_held(PRINCIPAL), None);
+    }
+
+    #[test]
+    fn a_handle_accepted_by_another_stage_than_the_recorded_destination_is_refused() {
+        // One worker session may serve two stages: the session alone does not prove the
+        // destination, so the authority compares the accepting stage with its record.
+        let live = live();
+        let mut table = table();
+        let operations = Operations::default();
+        operations.know(OP, &["semdb/a"], standard_chain(), &[PAYLOAD]);
+        operations
+            .destination
+            .borrow_mut()
+            .insert(OP, "another-stage".to_owned());
+        assert_eq!(
+            admit_under(&mut table, &live, &operations, &signed(1, 500)).unwrap_err(),
+            HandleRejection::Operation(OperationFault::ConsumerStageMismatch { operation: OP })
+        );
+        assert_eq!(table.slots_held(PRINCIPAL), Some(0));
+        operations
+            .destination
+            .borrow_mut()
+            .insert(OP, CONSUMER.to_owned());
+        assert!(admit_under(&mut table, &live, &operations, &signed(1, 500)).is_ok());
+    }
+
+    fn admit_with_footprint(
+        table: &mut HandleTable,
+        live: &Live,
+        handle: &TensorHandle,
+        footprint_bytes: u64,
+    ) -> Result<AdmittedHandle, HandleRejection> {
+        table.admit(HandleAdmissionRequest {
+            now_ms: 10,
+            principal: PRINCIPAL,
+            expected_operation: OP,
+            project: &project(),
+            consumer_session: CONSUMER_SESSION,
+            operations: &AllLive,
+            handle: HandleSource::Decoded(handle),
+            live,
+            footprint_bytes,
+        })
+    }
+
+    #[test]
+    fn the_budget_is_charged_with_the_allocated_footprint_not_the_tensor_length() {
+        let live = live();
+        let mut table = table();
+        // A 16-byte tensor in a 32-byte allocation (rounding and padding) is charged 32.
+        let admitted = admit_with_footprint(&mut table, &live, &signed(1, 500), 32).expect("ok");
+        assert_eq!(table.inflight_bytes(PRINCIPAL), Some(32));
+        assert_eq!(
+            admit_with_footprint(&mut table, &live, &signed(2, 500), 40).unwrap_err(),
+            HandleRejection::InflightBytesExceeded {
+                limit: 64,
+                in_flight: 32,
+                requested: 40
+            }
+        );
+        let consumed = consume(&mut table, &live, 20, admitted).expect("consumed");
+        let notice = table
+            .finish(consumed)
+            .expect("this table")
+            .expect("not shared");
+        assert_eq!(notice.byte_len, 16);
+        assert_eq!(notice.charged_bytes, 32);
+        assert_eq!(table.inflight_bytes(PRINCIPAL), Some(0));
+    }
+
+    #[test]
+    fn a_footprint_below_the_tensor_length_is_refused_and_records_nothing() {
+        let live = live();
+        let mut table = table();
+        assert_eq!(
+            admit_with_footprint(&mut table, &live, &signed(1, 500), 15).unwrap_err(),
+            HandleRejection::FootprintBelowLength {
+                footprint: 15,
+                byte_len: 16
+            }
+        );
+        assert_eq!(table.slots_held(PRINCIPAL), Some(0));
+        assert_eq!(table.inflight_bytes(PRINCIPAL), Some(0));
+    }
+
+    #[test]
+    fn a_consumed_handle_dropped_unfinished_stays_charged_until_deadline_plus_skew() {
+        let live = live();
+        let mut table = table();
+        let admitted = admit(&mut table, &live, 10, &signed(1, 500)).expect("admitted");
+        drop(consume(&mut table, &live, 20, admitted).expect("consumed"));
+        assert_eq!(table.inflight_bytes(PRINCIPAL), Some(16));
+        assert!(table.expire(599).is_empty());
+        let notices = table.expire(600);
+        assert_eq!(notices.len(), 1);
+        assert_eq!(notices[0].reason, ReclaimReason::Consumed);
+        assert_eq!(table.inflight_bytes(PRINCIPAL), Some(0));
+    }
+
+    #[test]
+    fn finish_reports_once_and_refuses_a_handle_of_another_table() {
+        let live = live();
+        let mut other = table();
+        let mut table = table();
+        let admitted = admit(&mut table, &live, 10, &signed(1, 500)).expect("admitted");
+        let consumed = consume(&mut table, &live, 20, admitted).expect("consumed");
+        assert_eq!(other.finish(consumed), Err(HandleRejection::UnknownTicket));
+        let admitted = admit(&mut table, &live, 10, &signed(2, 500)).expect("admitted");
+        let consumed = consume(&mut table, &live, 20, admitted).expect("consumed");
+        assert!(table.finish(consumed).expect("this table").is_some());
+        // Only the handle the other table refused is still charged here; expiry reports it,
+        // and the finished one is not reported again.
+        let notices = table.expire(600);
+        assert_eq!(notices.len(), 1);
+        assert_eq!(notices[0].handle_nonce, 1);
     }
 }

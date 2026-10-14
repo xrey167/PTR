@@ -95,15 +95,22 @@ pub enum PlacementError {
     StateFrozen,
     NoPlacement,
     CounterExhausted,
+    /// A node record or heartbeat lists the same device twice; it is refused whole, because
+    /// two records of one device could report it healthy and failed at once.
+    DuplicateDevice(DeviceId),
 }
+
+/// The most revoked placements kept to name a failure in `issue_lease`. Past it the oldest
+/// (lowest epoch) is dropped, after which `issue_lease` for that Pod answers `NoPlacement`.
+const MAX_REVOKED_PLACEMENTS: usize = 1024;
 
 pub struct PodPlacementController {
     nodes: BTreeMap<NodeId, NodeRecord>,
     placements: BTreeMap<PodId, Placement>,
     /// Placements revoked by a topology event, kept only so that `issue_lease` can still name
     /// the node or device that failed. They are never served by `placement` and never revived.
-    /// At most one entry per pod, so the map is bounded by the same count as `placements`;
-    /// `assign` and the first `issue_lease` that finds the failure gone prune it.
+    /// At most one entry per pod and at most `MAX_REVOKED_PLACEMENTS` entries (the oldest is
+    /// dropped first); `assign` and the first `issue_lease` that finds the failure gone prune it.
     revoked: BTreeMap<PodId, Placement>,
     leases: BTreeMap<StateId, FencedStateLease>,
     frozen: BTreeMap<StateId, PlacementEpoch>,
@@ -140,6 +147,7 @@ impl PodPlacementController {
     /// admission (`placement` answers `NoPlacement`). Re-placement goes through `assign` under
     /// a new epoch. The controller epoch moves once for the event.
     pub fn register_node(&mut self, node: NodeRecord) -> Result<(), PlacementError> {
+        ensure_unique_devices(&node.devices)?;
         let node_id = node.node_id.clone();
         let replaced = self.nodes.insert(node_id.clone(), node).is_some();
         if replaced {
@@ -156,6 +164,7 @@ impl PodPlacementController {
         timestamp: Timestamp,
         devices: Vec<DeviceRecord>,
     ) -> Result<(), PlacementError> {
+        ensure_unique_devices(&devices)?;
         let node = self
             .nodes
             .get_mut(node_id)
@@ -395,7 +404,7 @@ impl PodPlacementController {
             .collect();
         for pod_id in &gone {
             if let Some(placement) = self.placements.remove(pod_id) {
-                self.revoked.insert(pod_id.clone(), placement);
+                self.tombstone(placement);
             }
         }
         !gone.is_empty()
@@ -411,9 +420,32 @@ impl PodPlacementController {
             .collect();
         for pod_id in &gone {
             if let Some(placement) = self.placements.remove(pod_id) {
-                self.revoked.insert(pod_id.clone(), placement);
+                self.tombstone(placement);
             }
         }
+    }
+
+    /// Keep a revoked placement to name its failure, dropping the oldest past the bound.
+    fn tombstone(&mut self, placement: Placement) {
+        self.revoked.insert(placement.pod_id.clone(), placement);
+        while self.revoked.len() > MAX_REVOKED_PLACEMENTS {
+            let oldest = self
+                .revoked
+                .iter()
+                .min_by_key(|(_, placement)| placement.epoch)
+                .map(|(pod_id, _)| pod_id.clone());
+            match oldest {
+                Some(pod_id) => {
+                    self.revoked.remove(&pod_id);
+                }
+                None => break,
+            }
+        }
+    }
+
+    /// The number of revoked placements kept to name a failure (bounded).
+    pub fn revoked_placements(&self) -> usize {
+        self.revoked.len()
     }
 
     fn revoke_for_pod(&mut self, pod_id: &PodId) {
@@ -423,4 +455,15 @@ impl PodPlacementController {
     fn revoke_for_node(&mut self, node_id: &NodeId) {
         self.leases.retain(|_, lease| lease.node_id != *node_id);
     }
+}
+
+/// Refuse a device list that names one device twice.
+fn ensure_unique_devices(devices: &[DeviceRecord]) -> Result<(), PlacementError> {
+    let mut seen = std::collections::BTreeSet::new();
+    for device in devices {
+        if !seen.insert(&device.device_id) {
+            return Err(PlacementError::DuplicateDevice(device.device_id.clone()));
+        }
+    }
+    Ok(())
 }
