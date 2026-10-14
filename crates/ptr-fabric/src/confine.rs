@@ -427,6 +427,7 @@ fn probe_net_namespace() -> Availability {
 
 /// The directory of this process's own cgroup-v2 group, where a supervisor creates the child
 /// group of a worker. `None` when there is no `cgroup2` mount or no unified group.
+#[cfg(feature = "worker-supervisor")]
 pub(crate) fn own_cgroup_directory() -> Option<PathBuf> {
     let mountinfo = fs::read_to_string("/proc/self/mountinfo").ok()?;
     let (root, mount_point) = cgroup2_mount(&mountinfo)?;
