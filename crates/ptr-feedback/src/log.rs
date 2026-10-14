@@ -274,6 +274,7 @@ mod test_seam {
     thread_local! {
         static FAIL_SYNC: Cell<bool> = const { Cell::new(false) };
         static FAIL_TRUNCATE: Cell<bool> = const { Cell::new(false) };
+        static FAIL_ROLLBACK_SYNC: Cell<bool> = const { Cell::new(false) };
         static FAIL_RENAME: Cell<Option<(usize, bool)>> = const { Cell::new(None) };
         static RENAME_COUNT: Cell<usize> = const { Cell::new(0) };
     }
@@ -302,6 +303,14 @@ mod test_seam {
 
     pub(super) fn fail_truncate(on: bool) {
         FAIL_TRUNCATE.with(|flag| flag.set(on));
+    }
+
+    pub(super) fn fail_rollback_sync(on: bool) {
+        FAIL_ROLLBACK_SYNC.with(|flag| flag.set(on));
+    }
+
+    pub(super) fn rollback_sync_fails() -> bool {
+        FAIL_ROLLBACK_SYNC.with(Cell::get)
     }
 
     pub(super) fn sync_fails() -> bool {
@@ -337,7 +346,14 @@ fn truncate_path(path: &Path, len: u64) -> io::Result<()> {
     if test_seam::truncate_fails() {
         return Err(io::Error::other("injected truncate failure"));
     }
-    OpenOptions::new().write(true).open(path)?.set_len(len)
+    let file = OpenOptions::new().write(true).open(path)?;
+    file.set_len(len)?;
+    // Without this a crash could restore the line the failed append already reported as lost.
+    #[cfg(test)]
+    if test_seam::rollback_sync_fails() {
+        return Err(io::Error::other("injected rollback sync failure"));
+    }
+    file.sync_data()
 }
 
 fn rename_file(from: &Path, to: &Path) -> io::Result<()> {
@@ -724,6 +740,21 @@ mod tests {
         let ids = ids_of(&reopened.config().path);
         assert_eq!(ids.first().map(String::as_str), Some("a"));
         assert_eq!(ids.last().map(String::as_str), Some("c"));
+    }
+
+    #[test]
+    fn a_rollback_whose_sync_fails_poisons_the_log() {
+        let dir = TempDir::new();
+        let log = TrajectoryLog::open(config(&dir, 1 << 20, 2)).unwrap();
+        log.append(&record("a")).unwrap();
+
+        test_seam::fail_sync(true);
+        test_seam::fail_rollback_sync(true);
+        let failed = log.append(&record("b"));
+        test_seam::fail_sync(false);
+        test_seam::fail_rollback_sync(false);
+        assert!(matches!(failed, Err(LogError::Io(_))));
+        assert_eq!(log.append(&record("c")), Err(LogError::Poisoned));
     }
 
     #[test]
