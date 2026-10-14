@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-14  
-**Code footprint:** 11 Rust source files · 4404 nonblank source lines · 7 integration-test files · 91 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 11 Rust source files · 4587 nonblank source lines · 7 integration-test files · 94 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -25,6 +25,8 @@
 - Model-backed adaptors (prompted module): a std-only TextModel trait, PromptedGenerator and PromptedRepairer implementing Generator and Repairer with bounded prompt templates built from the critique issues and bounded model output, and a deterministic ScriptedTextModel; a repair loop run driven by the adaptors and a scripted model is tested. No trained or real model is included or claimed
 - Repair budget cap (RepairBudget::validate): the steps a run retains are at most min(max_verifier_calls, 1 + max_rounds) and that may not exceed MAX_STEPS (256), the bound a TrajectoryRecord accepts, otherwise RepairError::BudgetTooLarge { max_steps }; so an always-failing verifier with a huge public budget can no longer grow the trajectory without bound and every accepted budget yields a run that converts to a record
 - TrajectoryLog::append rolls back a line whose write, flush or sync failed: under the lock shared by clones it cuts the file back to its length before the call (or to empty after a rotation), so a retry does not duplicate the trajectory and a reopen does not resurrect it; if the cut itself fails the log (all clones) returns LogError::Poisoned until it is reopened; the failure paths are exercised through a cfg(test) fault seam, not a real disk fault
+- TrajectoryLog rotation is failure-atomic: the oldest generation is staged (base.rotating) instead of deleted, each shift moves into a just-vacated slot, a failing rename undoes the completed moves and restores the staged file (so a retry loses no retained generation), a failed undo poisons the log, and the staged file is deleted only after every move succeeded; the append rollback cuts the file through a fresh write handle because an append-only handle cannot set_len on Windows (not run on Windows here); injected rename failures at every step are tested for keep 1 to 3
+- Tournament::select rejects more than MAX_TOURNAMENT_WINNERS (4096) requested winners with SelectionError::TooManyWinners before allocating (winners are drawn with replacement, so the input size does not bound them)
 
 ### Missing for the target architecture
 

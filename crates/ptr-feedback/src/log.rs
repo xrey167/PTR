@@ -3,8 +3,11 @@
 //! Each [`TrajectoryLog::append`] writes one complete line. When the next line would push a
 //! non-empty file past `max_bytes`, the files are rotated first (`log` becomes `log.1`, `log.1`
 //! becomes `log.2`, up to `keep` files; the oldest is dropped). Every step of the rotation is a
-//! rename, so a reader never sees a half-moved file; a crash between renames can leave a gap in
-//! the numbering but never a truncated or merged record. A line torn by a crash is detected by
+//! rename, so a reader never sees a half-moved file. The oldest file is first staged
+//! (`log.rotating`) rather than deleted, and a rename that fails is undone in reverse, so a failed
+//! rotation leaves the files it found (an undo that fails too poisons the log). A crash, as opposed
+//! to a failed rename, between renames can still leave a gap in the numbering or a stale
+//! `log.rotating`, but never a truncated or merged record. A line torn by a crash is detected by
 //! the reader and, in [`ReadMode::SkipCorrupt`], skipped.
 
 use std::error::Error;
