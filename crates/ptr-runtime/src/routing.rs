@@ -6,12 +6,13 @@
 //! decision replays from key, nonce and request; Invariant 13: the key never leaves the router).
 
 use crate::neural::NeuralStateCache;
+use crate::reflex::PodRequest;
 use crate::{PtrRuntime, RuntimeError};
 use ptr_events::RuntimeEvent;
-use ptr_pods::{DynPod, PodRegistry};
+use ptr_pods::DynPod;
 use ptr_router::{
-    CheckedRouter, EncodedWith, EncoderRef, PodRouter, RouteError, RouteFeatures, RouteRequest,
-    RoutedChoice, RoutedError, Router,
+    CheckedRouter, EncodedWith, EncoderRef, MissReason, PodRouter, RouteError, RouteFeatures,
+    RouteRequest, RoutedChoice, RoutedError, Router,
 };
 use ptr_types::{CapabilityId, Digest, ProjectId, RequestId, TypeId};
 use sha2::{Digest as _, Sha256};
@@ -247,23 +248,73 @@ pub(crate) enum PodSelection<'a> {
     Sampled(&'a dyn PodSampler),
 }
 
+/// A selection that produced no pod, with the error the request fails with when nothing covers it
+/// and, when the primary path simply missed, the miss.
+pub(crate) struct Unselected {
+    pub(crate) error: RuntimeError,
+    /// `None` for a failure of the router that no fallback may paper over.
+    pub(crate) miss: Option<MissReason>,
+}
+
+impl Unselected {
+    fn route(error: &RouteError, reason: &'static str) -> Self {
+        Self {
+            error: RuntimeError::RouteFailed { reason },
+            miss: MissReason::from_route_error(error),
+        }
+    }
+}
+
 impl PtrRuntime {
     /// Selects the Pod for one Pod request. A Pod in another project is unavailable in exactly
     /// the same words as one that does not exist, and a routing failure names no Pod.
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn select_pod(
         &mut self,
         selection: &PodSelection<'_>,
-        pods: &PodRegistry,
+        pods: &ptr_pods::PodRegistry,
         project: &ProjectId,
         request_id: &RequestId,
         capability: &CapabilityId,
         input_type: &TypeId,
         payload: &[u8],
     ) -> Result<Arc<dyn DynPod>, RuntimeError> {
-        let unavailable = || RuntimeError::PodUnavailable {
-            capability: capability.to_string(),
-            input_type: input_type.to_string(),
+        self.classify_pod_selection(
+            selection,
+            &PodRequest {
+                pods,
+                project,
+                request_id,
+                capability,
+                input_type,
+                payload,
+            },
+        )
+        .map_err(|unselected| unselected.error)
+    }
+
+    /// [`PtrRuntime::select_pod`] that also says whether a failure is a miss of the primary path
+    /// (no candidate, an abstention, no representation) the fallback may cover.
+    pub(crate) fn classify_pod_selection(
+        &mut self,
+        selection: &PodSelection<'_>,
+        request: &PodRequest<'_>,
+    ) -> Result<Arc<dyn DynPod>, Unselected> {
+        let PodRequest {
+            pods,
+            project,
+            request_id,
+            capability,
+            input_type,
+            payload,
+        } = *request;
+        let unavailable = || Unselected {
+            error: RuntimeError::PodUnavailable {
+                capability: capability.to_string(),
+                input_type: input_type.to_string(),
+            },
+            miss: Some(MissReason::NoCandidate),
         };
         match selection {
             PodSelection::Plain => PodRouter
@@ -282,10 +333,8 @@ impl PtrRuntime {
                             payload,
                         },
                     )
-                    .map_err(|error| RuntimeError::RouteFailed {
-                        reason: route_error_reason(&error),
-                    })?;
-                let request = RouteRequest {
+                    .map_err(|error| Unselected::route(&error, route_error_reason(&error)))?;
+                let route_request = RouteRequest {
                     registry: pods,
                     project,
                     capability,
@@ -297,9 +346,9 @@ impl PtrRuntime {
                     features: &features,
                 };
                 let choice = sampler
-                    .route(&request)
-                    .map_err(|error| RuntimeError::RouteFailed {
-                        reason: route_failure_reason(&error),
+                    .route(&route_request)
+                    .map_err(|error| {
+                        Unselected::route(error.error(), route_failure_reason(&error))
                     })?
                     .ok_or_else(unavailable)?;
                 let pod = pods
