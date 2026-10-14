@@ -136,7 +136,9 @@ impl PolicyConfig {
 #[derive(Clone, Debug, PartialEq)]
 pub enum DisagreementReason {
     NoRawEvidence,
-    /// A non-text artifact: sniffed, but there is no typed interpretation to cross-check.
+    /// Part or all of the artifact has no typed interpretation to cross-check: a non-text
+    /// artifact, or text whose segmentation hit the segment cap so later segments were never
+    /// classified.
     UnclassifiedArtifact,
     NormalizationRejected(NormalizeError),
     LossyDecoding,
@@ -326,7 +328,12 @@ pub fn evaluate_policy(config: &PolicyConfig, input: &PolicyInput<'_>) -> Verifi
             ParseIssue::JsonTooDeep { limit } => {
                 reasons.push(DisagreementReason::JsonTooDeep { limit: *limit });
             }
-            ParseIssue::UnclosedCodeFence { .. } | ParseIssue::SegmentLimitReached { .. } => {}
+            // Classification only saw the retained prefix, so the rest of the artifact is
+            // unclassified and a risky term past the cap would go unnoticed.
+            ParseIssue::SegmentLimitReached { .. } => {
+                reasons.push(DisagreementReason::UnclassifiedArtifact);
+            }
+            ParseIssue::UnclosedCodeFence { .. } => {}
         }
     }
     match input.primary {
@@ -444,6 +451,26 @@ mod tests {
                 secondary: second,
             },
         )
+    }
+
+    #[test]
+    fn truncated_segmentation_never_stays_sample_verified() {
+        let mut text = "# heading\n".repeat(4096);
+        text.push_str("# delete everything\n");
+        let d = decide(&text, None, None);
+        assert!(
+            d.reasons
+                .iter()
+                .any(|r| matches!(r, DisagreementReason::UnclassifiedArtifact)),
+            "{:?}",
+            d.reasons
+        );
+        assert_ne!(d.status, CrossCheckStatus::SampleVerified);
+        assert_ne!(d.status, CrossCheckStatus::Agree);
+        let second = output(&[("question", 1.0)], &[("read-only", 1.0)]);
+        let with_second = decide(&text, None, Some(&second));
+        assert_ne!(with_second.status, CrossCheckStatus::Agree);
+        assert_ne!(with_second.status, CrossCheckStatus::SampleVerified);
     }
 
     #[test]

@@ -153,7 +153,7 @@ struct Assembled {
 
 /// Normalizes `raw` according to `options`. Empty input and a BOM alone give empty text.
 pub fn normalize(raw: &[u8], options: &NormalizeOptions) -> Result<NormalizedText, NormalizeError> {
-    let (mut encoding, mut bom_len) = match (detect_bom(raw), options.forced_encoding) {
+    let (mut encoding, bom_len) = match (detect_bom(raw), options.forced_encoding) {
         (Some(found), None) => found,
         (Some((enc, len)), Some(forced)) if enc == forced => (enc, len),
         (_, forced) => (forced.unwrap_or(TextEncoding::Utf8), 0),
@@ -167,10 +167,10 @@ pub fn normalize(raw: &[u8], options: &NormalizeOptions) -> Result<NormalizedTex
                     return Err(NormalizeError::InvalidUtf8 { raw_offset });
                 }
                 InvalidUtf8Policy::FallbackWindows1252 => {
+                    // The BOM is a marker, not text: keep consuming it and decode the body only.
                     encoding = TextEncoding::Windows1252;
-                    bom_len = 0;
                     lossy = true;
-                    decode_windows_1252(raw, 0)
+                    decode_windows_1252(raw.get(bom_len..).unwrap_or(&[]), bom_len)
                 }
             },
         },
@@ -411,6 +411,21 @@ mod tests {
             })
         );
         assert!(!n.is_lossy());
+    }
+
+    #[test]
+    fn utf8_bom_survives_the_windows_1252_fallback() {
+        let raw = b"\xEF\xBB\xBFab\xFFcd";
+        let n = norm(raw);
+        assert_eq!(n.text(), "ab\u{FF}cd");
+        assert_eq!((n.bom_len(), n.encoding()), (3, TextEncoding::Windows1252));
+        assert!(n.is_lossy());
+        let span = n.raw_span(0..2).expect("span");
+        assert_eq!((span.byte_start, span.byte_end), (3, 5));
+        assert_eq!(span.slice(raw), Some(&b"ab"[..]));
+        let ff = n.raw_span(2..4).expect("span of U+00FF");
+        assert_eq!((ff.byte_start, ff.byte_end), (5, 6));
+        assert!(n.span_round_trips(raw, span, "ab"));
     }
 
     #[test]
