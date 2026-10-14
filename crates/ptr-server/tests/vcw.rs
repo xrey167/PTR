@@ -133,8 +133,9 @@ async fn an_arithmetic_answer_that_is_wrong_is_repaired_admitted_and_committed()
         .iter()
         .map(|a| a["pod"].as_str().unwrap())
         .collect();
-    // The repair replaced the proposal, so only the repairer's output is in the answer.
-    assert_eq!(authors, ["vcw-value-repair"]);
+    // The repair is a confined edit of the proposal: the proposer's output is still in the
+    // answer, so both are its authors, the repairer last (issue #141).
+    assert_eq!(authors, ["vcw-proposer", "vcw-value-repair"]);
     let digest = body["trace_digest"].as_str().unwrap().to_owned();
     assert_eq!(digest.len(), 64);
 
@@ -199,7 +200,8 @@ async fn a_json_schema_violation_is_repaired_by_the_schema_role() {
     assert_eq!(body["outcome"], "verified");
     let answer: Value = serde_json::from_str(body["answer"].as_str().unwrap()).unwrap();
     assert_eq!(answer, json!({"name": "Ada", "age": 36}));
-    assert_eq!(body["authors"][0]["pod"], "vcw-schema-repair");
+    assert_eq!(body["authors"][0]["pod"], "vcw-proposer");
+    assert_eq!(body["authors"][1]["pod"], "vcw-schema-repair");
     let calls = state.vcw_service().unwrap().expert_calls();
     assert_eq!(calls[1].code.as_deref(), Some("json.required"));
 }
@@ -224,7 +226,8 @@ async fn a_failing_code_test_is_repaired_and_a_hang_goes_to_the_resource_role() 
         let (status, body) = post(&app, &task).await;
         assert_eq!(status, StatusCode::OK, "{defect}: {body}");
         assert_eq!(body["answer"], SQUARE, "{defect}");
-        assert_eq!(body["authors"][0]["pod"], role, "{defect}");
+        assert_eq!(body["authors"][0]["pod"], "vcw-proposer", "{defect}");
+        assert_eq!(body["authors"][1]["pod"], role, "{defect}");
     }
 }
 
@@ -329,7 +332,8 @@ async fn a_contradicted_fact_is_repaired_against_the_committed_state() {
     let (status, body) = post(&app, &fact_task("fact-1")).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["answer_type"], "vcw.answer.fact_claims");
-    assert_eq!(body["authors"][0]["pod"], "vcw-fact-repair");
+    assert_eq!(body["authors"][0]["pod"], "vcw-proposer");
+    assert_eq!(body["authors"][1]["pod"], "vcw-fact-repair");
     let claims: Value = serde_json::from_str(body["answer"].as_str().unwrap()).unwrap();
     assert_eq!(claims[0]["value"], "france");
     let handle = state.runtime_handle();

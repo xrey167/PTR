@@ -1806,15 +1806,14 @@ fn the_trace_and_the_answer_name_the_pods_whose_edits_are_in_the_candidate() {
         &mut stub,
     );
     let answer = verified(&run);
+    let gen = PodRef::new(pod("gen"), Generation(1));
     let fix_a = PodRef::new(pod("fix_a"), Generation(1));
     assert!(stub.log.contains(&"repair:fix_b:b".to_owned()));
-    assert_eq!(answer.authors(), std::slice::from_ref(&fix_a));
+    // The proposer's draft is still in the repaired payload: it stays an author (issue #141).
+    assert_eq!(answer.authors(), &[gen.clone(), fix_a.clone()]);
     assert_eq!(answer.author(), &fix_a);
-    assert_eq!(
-        run.trace.steps()[0].authors,
-        vec![PodRef::new(pod("gen"), Generation(1))]
-    );
-    assert_eq!(run.trace.steps()[1].authors, vec![fix_a]);
+    assert_eq!(run.trace.steps()[0].authors, vec![gen.clone()]);
+    assert_eq!(run.trace.steps()[1].authors, vec![gen, fix_a]);
     // The routing records still show both routed Pods.
     assert_eq!(run.trace.steps()[1].routes.len(), 2);
 }
@@ -1886,8 +1885,9 @@ fn an_earlier_repairer_revoked_before_acceptance_blocks_acceptance_and_is_not_cr
         &mut stub,
     );
     let step1 = &run.trace.steps()[1];
-    // Both repairers' edits are in the payload and the payload passed; fix_a is gone.
-    assert_eq!(step1.authors.len(), 2);
+    // The proposer's draft and both repairers' edits are in the payload and the payload
+    // passed; fix_a is gone.
+    assert_eq!(step1.authors.len(), 3);
     assert!(matches!(
         step1.candidate.as_ref().unwrap().class,
         ClassSummary::Accept
@@ -1901,6 +1901,42 @@ fn an_earlier_repairer_revoked_before_acceptance_blocks_acceptance_and_is_not_cr
     let stats = window.codes[&code("a")].pods[&pod("fix_a")];
     assert_eq!(stats.routed, 1);
     assert_eq!(stats.cleared, 0);
+}
+
+/// Issue #141: a repaired candidate still carries its proposer's draft, so a proposer revoked
+/// between rounds blocks acceptance even though every repairer of the last round is live.
+#[test]
+fn a_proposer_revoked_between_rounds_blocks_acceptance_of_the_repaired_candidate() {
+    let mut vcw = plain(two_defect_roster());
+    let view = LiveView::with(&["gen", "fix_a", "fix_b"]);
+    let verifier = DocVerifier::new();
+    let mut stub = two_defect_stub();
+    {
+        let view = view.clone();
+        stub.on_repair = Some(Box::new(move |_| {
+            // The proposer is revoked after its draft was judged, while the repairers work on it.
+            view.0.borrow_mut().remove(&pod("gen"));
+        }));
+    }
+    let run = run_doc(
+        &mut vcw,
+        &request("proposer-revoked", 4, 4, VerificationLevel::SampleVerified),
+        &view,
+        &verifier,
+        &mut stub,
+    );
+    let step1 = &run.trace.steps()[1];
+    assert!(step1
+        .authors
+        .contains(&PodRef::new(pod("gen"), Generation(1))));
+    assert!(matches!(
+        step1.candidate.as_ref().unwrap().class,
+        ClassSummary::Accept
+    ));
+    assert_eq!(step1.decision, StepDecision::AuthorNoLongerEligible);
+    // The only proposer is gone: nothing carrying its draft is returned.
+    assert!(!is_verified(&run), "{:?}", run.outcome);
+    assert_eq!(vcw.counters().author_no_longer_eligible, 1);
 }
 
 /// Total (routed, cleared) credit of `pod` for `code` over all closed windows.
@@ -2806,6 +2842,78 @@ mod bridge {
             PodOutputAdmission::ObservationCandidate { .. }
         ));
         assert!(rt.committed_events().len() > events);
+    }
+
+    /// Proposes a failing draft that `fix` repairs into the accepted observation.
+    struct DraftThenFix;
+
+    impl RolePods<TypedPayload> for DraftThenFix {
+        fn propose(&mut self, _: ProposeCall<'_>) -> Option<TypedPayload> {
+            Some(TypedPayload {
+                type_id: TypeId::from("text"),
+                bytes: b"draft".to_vec(),
+            })
+        }
+
+        fn repair(&mut self, call: RepairCall<'_, TypedPayload>) -> Option<TypedPayload> {
+            (call.pod.pod.0 == "fix").then(|| TypedPayload {
+                type_id: TypeId::from("text"),
+                bytes: b"observation".to_vec(),
+            })
+        }
+    }
+
+    /// Issue #141: the proposer of a repaired answer is revoked after the run. The repairer is
+    /// live and named in the admission request, but the proposer's output is in the payload,
+    /// so the bridge refuses it and nothing is committed.
+    #[test]
+    fn a_proposer_revoked_after_a_repaired_run_is_refused_at_the_bridge() {
+        let (mut rt, mut pods) = fixture();
+        make_live(&mut rt, &ProjectId::from("project"), "fix", 1);
+        pods.register_new(stub_pod_in("project", "fix")).unwrap();
+        let mut vcw = plain(roster(&["pod"], &[("fix", &["bad"])]));
+        let req = VcwRequest {
+            request_id: RequestId::from("request"),
+            project: ProjectId::from("project"),
+            request_digest: digest_of("request"),
+            required: VerificationLevel::SampleVerified,
+            budget: RequestBudget::new(3, 3).unwrap(),
+        };
+        let run = vcw
+            .run(
+                &req,
+                &eligibility(&["pod", "fix"]),
+                &Observation,
+                &mut DraftThenFix,
+            )
+            .unwrap();
+        let held = match run.outcome {
+            VcwOutcome::Verified(answer) => answer,
+            other => panic!("expected Verified, got {other:?}"),
+        };
+        assert_eq!(held.author().pod, pod("fix"));
+        rt.commit(LedgerEvent::Revoked {
+            subject: "pod".to_owned(),
+            generation: Generation(1),
+        })
+        .unwrap();
+        let events = rt.committed_events().len();
+        let result = admit_verified_answer(
+            &mut rt,
+            &pods,
+            &[(pod("pod"), Generation(1)), (pod("fix"), Generation(1))],
+            held,
+            admission_request(b"observation", "fix", "request"),
+            &Observation,
+        );
+        assert!(
+            matches!(
+                &result,
+                Err(VcwAdmitError::AuthorNoLongerEligible { pod: p, .. }) if p == &pod("pod")
+            ),
+            "{result:?}"
+        );
+        assert_eq!(rt.committed_events().len(), events);
     }
 
     #[test]

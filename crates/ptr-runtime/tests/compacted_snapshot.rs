@@ -836,3 +836,110 @@ fn a_scope_left_open_above_the_floor_needs_recovery_after_a_restore_as_after_a_r
     assert!(restored.scopes().recovery_required(&id));
     assert!(restored.scopes().ensure_available(&id).is_err());
 }
+
+/// Issue #141: the scopes created below the floor travel with the snapshot (execution section
+/// PTREX003). Before, a restored runtime forgot them: an unreleased one was never recovered and
+/// a retained record about one was refused as an unknown scope.
+#[test]
+fn a_scope_created_below_the_floor_keeps_its_recovery_obligation_after_a_restore() {
+    use ptr_runtime::{ExecutionScope, ScopeState};
+    use ptr_types::{ProjectId, ScopeId, ScopeLeaseBinding, SessionId, Timestamp};
+
+    let scope = |id: &str, parent: Option<&str>| ExecutionScope {
+        id: ScopeId::from(id),
+        parent: parent.map(ScopeId::from),
+        session: SessionId::from("session"),
+        project: ProjectId::from("project"),
+        created_at: Timestamp(1),
+        deadline: Some(Timestamp(99)),
+        state: ScopeState::Created,
+        cancellation_requested: false,
+    };
+    let lease = ScopeLeaseBinding::default;
+    let (open, child, done) = (
+        ScopeId::from("open"),
+        ScopeId::from("child"),
+        ScopeId::from("done"),
+    );
+    let mut runtime = fixture();
+    runtime.create_scope(scope("open", None), lease()).unwrap();
+    runtime
+        .create_scope(scope("child", Some("open")), lease())
+        .unwrap();
+    runtime.create_scope(scope("done", None), lease()).unwrap();
+    for next in [ScopeState::Cancelled, ScopeState::Released] {
+        runtime
+            .transition_scope(&done, next, lease(), None)
+            .unwrap();
+    }
+    let snapshot = runtime.export_compacted_snapshot().unwrap();
+    let floor = runtime.committed_events().len();
+    let section = 80 + {
+        let bytes = snapshot.bytes();
+        let semantic = u64::from_le_bytes(bytes[56..64].try_into().unwrap()) as usize;
+        let lifecycle = u64::from_le_bytes(bytes[64..72].try_into().unwrap()) as usize;
+        semantic + lifecycle
+    };
+    assert_eq!(&snapshot.bytes()[section..section + 8], b"PTREX003");
+
+    // Above the floor: the open scope moves on, a scope under the child is created.
+    runtime
+        .transition_scope(&open, ScopeState::Admitted, lease(), None)
+        .unwrap();
+    runtime
+        .create_scope(scope("grandchild", Some("child")), lease())
+        .unwrap();
+    let above_floor: Vec<CommittedEvent> = runtime.committed_events()[floor..].to_vec();
+
+    let replayed = PtrRuntime::replay(PtrConfig::default(), runtime.committed_events()).unwrap();
+    let restored = PtrRuntime::restore_compacted(
+        PtrConfig::default(),
+        snapshot.bytes(),
+        snapshot.anchor(),
+        &above_floor,
+    )
+    .unwrap();
+    for id in [&open, &child, &done, &ScopeId::from("grandchild")] {
+        assert_eq!(
+            restored.scopes().get(id).unwrap(),
+            replayed.scopes().get(id).unwrap(),
+            "{id}"
+        );
+        assert_eq!(
+            restored.scopes().lease(id).unwrap(),
+            replayed.scopes().lease(id).unwrap(),
+            "{id}"
+        );
+    }
+    assert_eq!(
+        restored.scopes().recoverable_scopes(),
+        replayed.scopes().recoverable_scopes()
+    );
+    assert!(restored.scopes().recovery_required(&open));
+    assert!(restored.scopes().recovery_required(&child));
+    assert!(!restored.scopes().recovery_required(&done));
+
+    // Restoring at the floor alone keeps the obligation too, and a scope id used below the
+    // floor cannot be created again, as in a replay.
+    let mut at_floor = PtrRuntime::restore_compacted(
+        PtrConfig::default(),
+        snapshot.bytes(),
+        snapshot.anchor(),
+        &[],
+    )
+    .unwrap();
+    assert!(at_floor.scopes().recovery_required(&open));
+    assert!(at_floor.create_scope(scope("done", None), lease()).is_err());
+}
+
+/// A snapshot without any scope keeps the earlier execution layout byte for byte.
+#[test]
+fn a_snapshot_without_scopes_keeps_the_earlier_execution_layout() {
+    let runtime = fixture();
+    let snapshot = runtime.export_compacted_snapshot().unwrap();
+    let bytes = snapshot.bytes();
+    let semantic = u64::from_le_bytes(bytes[56..64].try_into().unwrap()) as usize;
+    let lifecycle = u64::from_le_bytes(bytes[64..72].try_into().unwrap()) as usize;
+    let section = 80 + semantic + lifecycle;
+    assert_eq!(&bytes[section..section + 8], b"PTREX002");
+}

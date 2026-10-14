@@ -359,10 +359,17 @@ impl VcwPayload for Served {
         ptr_types::TypeId::from(self.task.kind.answer_type())
     }
 
+    /// v2 (issue #141): a domain tag, then the answer type and the rendered text, each
+    /// length-prefixed, instead of a join with a 0 byte.
     fn payload_digest(&self) -> Digest {
-        let mut bytes = self.task.kind.answer_type().as_bytes().to_vec();
-        bytes.push(0);
-        bytes.extend_from_slice(self.render().as_bytes());
+        let mut bytes = b"ptr.bench.f007.served.v2".to_vec();
+        for field in [
+            self.task.kind.answer_type().as_bytes(),
+            self.render().as_bytes(),
+        ] {
+            bytes.extend_from_slice(&(field.len() as u64).to_le_bytes());
+            bytes.extend_from_slice(field);
+        }
         sha256(&bytes)
     }
 

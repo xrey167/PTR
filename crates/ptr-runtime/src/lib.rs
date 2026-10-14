@@ -2982,7 +2982,11 @@ impl PtrRuntime {
                     revision: *revision,
                     verified: false,
                 };
-                if output.digest() != *output_digest {
+                // Admission records the version-2 digest. A record committed before version 2
+                // (issue #141) carries the version-1 digest, which replay still accepts: the
+                // two versions are domain-separated, so a stored digest equals at most one.
+                if output.digest() != *output_digest && output.legacy_v1_digest() != *output_digest
+                {
                     return Err(RuntimeError::PodOutputAdmission(
                         "hypothesis output digest mismatch".into(),
                     ));

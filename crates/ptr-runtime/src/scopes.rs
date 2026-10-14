@@ -92,6 +92,9 @@ pub trait ScopeCleanupCoordinator {
     fn close_session(&mut self, scope: &ExecutionScope) -> Result<(), CleanupError>;
 }
 
+/// The scopes a compacted snapshot carries, by id, each with its lease binding.
+pub(crate) type CompactedScopes = BTreeMap<ScopeId, (ExecutionScope, ScopeLeaseBinding)>;
+
 #[derive(Default)]
 pub struct ScopeRegistry {
     scopes: BTreeMap<ScopeId, ExecutionScope>,
@@ -374,6 +377,81 @@ impl ScopeRegistry {
         }
         self.mark_recovery_required();
         Ok(())
+    }
+
+    /// Every scope the committed history holds, released ones included, with its lease binding,
+    /// in id order; and the revision of the last applied scope record. This is what a compacted
+    /// snapshot carries across its floor (issue #141): without it a restored runtime forgets
+    /// the scopes created below the floor, and with them their recovery obligations.
+    pub(crate) fn compacted_parts(&self) -> (CompactedScopes, Option<ptr_types::Revision>) {
+        let scopes = self
+            .scopes
+            .iter()
+            .map(|(id, scope)| {
+                let lease = self.leases.get(id).cloned().unwrap_or_default();
+                (id.clone(), (scope.clone(), lease))
+            })
+            .collect();
+        (scopes, self.last_revision)
+    }
+
+    /// Rebuild a registry from [`Self::compacted_parts`]. Checks what is derivable and refuses
+    /// the rest with [`ScopeError::InvalidCommittedEvent`]: every key is its scope's id, every
+    /// lease has a valid shape, every parent is present, distinct, in the same session and
+    /// project and reached without a cycle, a scope's cancellation flag agrees with its state
+    /// (set for a cancelled, timed-out or revoked scope, clear for a created, admitted, started,
+    /// completed or failed one; either for a released one), and a revision is present exactly
+    /// when a scope is. Every unreleased scope is marked recovery-required, as after a replay.
+    pub(crate) fn from_compacted_parts(
+        scopes: CompactedScopes,
+        last_revision: Option<ptr_types::Revision>,
+    ) -> Result<Self, ScopeError> {
+        let invalid = || ScopeError::InvalidCommittedEvent;
+        if scopes.is_empty() != last_revision.is_none() {
+            return Err(invalid());
+        }
+        for (id, (scope, lease)) in &scopes {
+            if &scope.id != id {
+                return Err(invalid());
+            }
+            Self::validate_lease_shape(lease)?;
+            let flagged = match scope.state {
+                ScopeState::Cancelled | ScopeState::TimedOut | ScopeState::Revoked => Some(true),
+                ScopeState::Released => None,
+                ScopeState::Created
+                | ScopeState::Admitted
+                | ScopeState::Started
+                | ScopeState::Completed
+                | ScopeState::Failed => Some(false),
+            };
+            if flagged.is_some_and(|expected| expected != scope.cancellation_requested) {
+                return Err(invalid());
+            }
+            // Walk to the root: every ancestor exists, matches, and the walk ends.
+            let mut child = scope;
+            let mut steps = 0usize;
+            while let Some(parent_id) = &child.parent {
+                let (parent, _) = scopes.get(parent_id).ok_or_else(invalid)?;
+                if parent.session != child.session || parent.project != child.project {
+                    return Err(ScopeError::ParentScopeMismatch);
+                }
+                steps += 1;
+                if parent_id == id || steps > scopes.len() {
+                    return Err(invalid());
+                }
+                child = parent;
+            }
+        }
+        let mut registry = Self {
+            last_revision,
+            ..Self::default()
+        };
+        for (id, (scope, lease)) in scopes {
+            registry.leases.insert(id.clone(), lease);
+            registry.scopes.insert(id, scope);
+        }
+        registry.mark_recovery_required();
+        Ok(registry)
     }
 
     pub fn transition(&mut self, id: &ScopeId, next: ScopeState) -> Result<(), ScopeError> {

@@ -788,7 +788,7 @@ fn finish<S: AdmissibleScorer>(
 ) -> Result<(), InstallFailure> {
     match specialist {
         Some(specialist) => {
-            install(pods, specialist)
+            install(pods, proposal.op().kind(), specialist)
                 .map_err(|error| InstallFailure::Retry(format!("install: {error}")))?;
             if !vcw.is_outstanding(proposal) {
                 return if vcw.repairers().contains_key(&specialist.pod) {
@@ -815,17 +815,23 @@ fn finish<S: AdmissibleScorer>(
     }
 }
 
-/// Register the specialist's Pod; a reactivated expert takes over its own id. A Pod already
-/// registered with this very manifest is left alone (a retry).
+/// Register the specialist's Pod. A Pod already registered with this very manifest is left
+/// alone (a retry). Only a reactivation takes over an existing entry, its own id
+/// ([`PodRegistry::replace_if_current`]); a Birth, Merge or Split result is a fresh id and goes
+/// through [`PodRegistry::register_new`], which refuses an id that is already registered
+/// (issue #141: replacing it would swap a live Pod without a lifecycle transition).
 fn install(
     pods: &mut PodRegistry,
+    kind: OpKind,
     specialist: &TrainedSpecialist,
 ) -> Result<(), PodRegistrationError> {
     let pod = specialist.executable();
     match pods.get(&specialist.manifest.project, &specialist.pod) {
         Some(existing) if existing.manifest().digest() == specialist.manifest.digest() => Ok(()),
-        Some(existing) => pods.replace_if_current(&existing, pod).map(|_| ()),
-        None => pods.register_new(pod),
+        Some(existing) if kind == OpKind::Reactivate => {
+            pods.replace_if_current(&existing, pod).map(|_| ())
+        }
+        Some(_) | None => pods.register_new(pod),
     }
 }
 

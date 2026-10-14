@@ -673,3 +673,43 @@ fn a_foreign_hypothesis_record_is_not_the_admissions_follow_up() {
             if recorded == &branch_id
     )));
 }
+
+/// Issue #141: admission records the version-2 output digest; a record committed before
+/// version 2 carries the version-1 digest and still replays; any other digest is refused.
+#[test]
+fn a_hypothesis_record_replays_under_the_current_or_the_legacy_output_digest_only() {
+    let mut first = runtime_with_scope();
+    first
+        .admit_pod_output(request(PodOutputKind::Hypothesis), &Pass)
+        .unwrap();
+    let recorded = first
+        .committed_events()
+        .iter()
+        .find_map(|committed| match &committed.event {
+            event @ ptr_ledger::LedgerEvent::PodHypothesisCommitted { .. } => Some(event.clone()),
+            _ => None,
+        })
+        .unwrap();
+    let output = request(PodOutputKind::Hypothesis).output;
+    let ptr_ledger::LedgerEvent::PodHypothesisCommitted { output_digest, .. } = &recorded else {
+        unreachable!();
+    };
+    assert_eq!(*output_digest, output.digest());
+    assert_ne!(*output_digest, output.legacy_v1_digest());
+
+    let with_digest = |digest: ptr_types::Digest| {
+        let mut event = recorded.clone();
+        let ptr_ledger::LedgerEvent::PodHypothesisCommitted { output_digest, .. } = &mut event
+        else {
+            unreachable!();
+        };
+        *output_digest = digest;
+        event
+    };
+    let mut legacy = runtime_with_only_the_admission_record(&first);
+    legacy
+        .commit(with_digest(output.legacy_v1_digest()))
+        .unwrap();
+    let mut forged = runtime_with_only_the_admission_record(&first);
+    assert!(forged.commit(with_digest([7; 32])).is_err());
+}

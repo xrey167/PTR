@@ -74,17 +74,29 @@ impl DefectDoc {
     }
 }
 
+const DEFECT_DOC_DIGEST_DOMAIN: &[u8] = b"ptr.runtime.vcw.sim.defect_doc.v2";
+
+/// One field of a digest: its length as `u64` little-endian, then its bytes.
+fn put_field(hasher: &mut Sha256, bytes: &[u8]) {
+    hasher.update((bytes.len() as u64).to_le_bytes());
+    hasher.update(bytes);
+}
+
 impl VcwPayload for DefectDoc {
     fn payload_type(&self) -> TypeId {
         TypeId::from(Self::TYPE_ID)
     }
 
+    /// v2 (issue #141): a domain tag, the task and every defect length-prefixed, and the defect
+    /// count. v1 joined them with a 0 byte, so a task holding a 0 byte aliased a task with one
+    /// more defect.
     fn payload_digest(&self) -> Digest {
         let mut hasher = Sha256::new();
-        hasher.update(self.task.as_bytes());
+        hasher.update(DEFECT_DOC_DIGEST_DOMAIN);
+        put_field(&mut hasher, self.task.as_bytes());
+        hasher.update((self.defects.len() as u64).to_le_bytes());
         for defect in &self.defects {
-            hasher.update([0]);
-            hasher.update(defect.as_bytes());
+            put_field(&mut hasher, defect.as_bytes());
         }
         hasher.finalize().into()
     }
@@ -635,6 +647,18 @@ impl DynPod for SimulatedPod {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Issue #141: v1 joined the task and the defects with a 0 byte, so a task ending in
+    /// `\0x` read the same as the task with the defect `x`.
+    #[test]
+    fn a_zero_byte_in_the_task_does_not_alias_a_defect() {
+        let embedded = DefectDoc::clean("t\0x");
+        let defect = DefectDoc::clean("t").with_defect("x");
+        assert_ne!(embedded.payload_digest(), defect.payload_digest());
+        let two = DefectDoc::clean("t").with_defect("x\0y");
+        let split = DefectDoc::clean("t").with_defect("x").with_defect("y");
+        assert_ne!(two.payload_digest(), split.payload_digest());
+    }
 
     #[test]
     fn rates_outside_zero_one_are_refused() {

@@ -23,6 +23,7 @@ use super::expert::{
     ExpertAuthorityStanding, ExpertDependencyIndex, ExpertEntry, ExpertInputSet,
     ExpertRegistryProjection, FenceStanding,
 };
+use super::scopes::{CompactedScopes, ExecutionScope, ScopeRegistry, ScopeState};
 use super::{PtrRuntime, RuntimeError, RuntimeLedger};
 use ptr_config::PtrConfig;
 use ptr_ledger::integrity::{self, LogAnchor};
@@ -35,7 +36,10 @@ use ptr_pods::{
 };
 use ptr_semdb::{SemanticDelta, SemanticHost};
 use ptr_state::MaterializedState;
-use ptr_types::{CommitIndex, Effect, Generation, ProjectId, Revision};
+use ptr_types::{
+    CommitIndex, Effect, Generation, PodId, ProjectId, Revision, ScopeId, ScopeLeaseBinding,
+    SessionId, StateId, Timestamp,
+};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// PTRCS009 is written only when an evidence authority has a standing, that is, a committed
@@ -163,6 +167,22 @@ const PRE_ATTESTATION_MAGIC: &[u8; 8] = b"PTRCS003";
 /// action nor named by its attempt, and a section in that layout is refused by
 /// version.
 const EXECUTION_MAGIC: &[u8; 8] = b"PTREX002";
+/// PTREX003 is PTREX002 followed by the scope block ([`SCOPE_BLOCK_MAGIC`], issue #141): every
+/// scope of the committed history, released ones included, with its parent, session, project,
+/// creation time, deadline, state, cancellation flag and lease binding, and the revision of the
+/// last scope record. It is written only when the history holds a scope; a snapshot without one
+/// is written as PTREX002, byte for byte as before. A build from before this layout stops at
+/// this magic (by version) exactly when it would otherwise restore a runtime that forgot the
+/// scopes created below the floor, and with them the recovery of every one left unreleased.
+///
+/// A PTREX002 section is read with no scope: its writer never carried them, so a snapshot
+/// written before this layout restores as it did (the scopes below its floor are not known).
+/// Restore checks what is derivable ([`ScopeRegistry::from_compacted_parts`](crate::scopes)),
+/// that the last scope revision is not above the snapshot's revision, and marks every
+/// unreleased scope recovery-required, as a replay does.
+const EXECUTION_SCOPE_MAGIC: &[u8; 8] = b"PTREX003";
+/// Opens the scope block at the end of a PTREX003 section.
+const SCOPE_BLOCK_MAGIC: &[u8; 8] = b"PTRSC001";
 /// PTRLC003, the lifecycle section of a PTRCS005 snapshot.
 const LIFECYCLE_MAGIC: &[u8; 8] = b"PTRLC003";
 /// The lifecycle section of a PTRCS003 snapshot, read only inside one.
@@ -1461,6 +1481,163 @@ fn check_ascending(previous: &mut Option<String>, key: &str) -> Result<(), Runti
 struct ExecutionObligations {
     unsettled: BTreeMap<CommitIndex, UnsettledEffect>,
     settled: BTreeMap<String, SettledOutcome>,
+    /// The scope registry's committed state (PTREX003); empty in a PTREX002 section.
+    scopes: CompactedScopes,
+    /// The revision of the last applied scope record; present exactly when `scopes` is not
+    /// empty.
+    scope_revision: Option<Revision>,
+}
+
+fn scope_state_tag(state: ScopeState) -> u64 {
+    match state {
+        ScopeState::Created => 0,
+        ScopeState::Admitted => 1,
+        ScopeState::Started => 2,
+        ScopeState::Completed => 3,
+        ScopeState::Failed => 4,
+        ScopeState::Cancelled => 5,
+        ScopeState::TimedOut => 6,
+        ScopeState::Revoked => 7,
+        ScopeState::Released => 8,
+    }
+}
+
+fn scope_state_from_tag(tag: u64) -> Result<ScopeState, RuntimeError> {
+    Ok(match tag {
+        0 => ScopeState::Created,
+        1 => ScopeState::Admitted,
+        2 => ScopeState::Started,
+        3 => ScopeState::Completed,
+        4 => ScopeState::Failed,
+        5 => ScopeState::Cancelled,
+        6 => ScopeState::TimedOut,
+        7 => ScopeState::Revoked,
+        8 => ScopeState::Released,
+        _ => return Err(invalid(CompactedError::UnknownTag)),
+    })
+}
+
+/// An optional value as a one-number presence flag (0 or 1) and the value.
+fn put_optional<T>(
+    out: &mut Writer,
+    value: Option<T>,
+    put: impl FnOnce(&mut Writer, T) -> Result<(), RuntimeError>,
+) -> Result<(), RuntimeError> {
+    match value {
+        Some(value) => {
+            out.number(1)?;
+            put(out, value)
+        }
+        None => out.number(0),
+    }
+}
+
+fn take_optional<T>(
+    reader: &mut Reader<'_>,
+    take: impl FnOnce(&mut Reader<'_>) -> Result<T, RuntimeError>,
+) -> Result<Option<T>, RuntimeError> {
+    match reader.number()? {
+        0 => Ok(None),
+        1 => take(reader).map(Some),
+        _ => Err(invalid(CompactedError::NoncanonicalSection)),
+    }
+}
+
+/// Write the scope block: the scopes in ascending id order, then the last scope revision.
+fn encode_scope_block(
+    out: &mut Writer,
+    scopes: &CompactedScopes,
+    revision: Option<Revision>,
+) -> Result<(), RuntimeError> {
+    out.raw(SCOPE_BLOCK_MAGIC)?;
+    out.count(scopes.len())?;
+    for (id, (scope, lease)) in scopes {
+        out.field(&id.0)?;
+        put_optional(out, scope.parent.as_ref(), |out, parent| {
+            out.field(&parent.0)
+        })?;
+        out.field(&scope.session.0)?;
+        out.field(&scope.project.0)?;
+        out.number(scope.created_at.0)?;
+        put_optional(out, scope.deadline, |out, deadline| out.number(deadline.0))?;
+        out.number(scope_state_tag(scope.state))?;
+        out.number(u64::from(scope.cancellation_requested))?;
+        put_optional(out, lease.state_id.as_ref(), |out, v| out.field(&v.0))?;
+        put_optional(out, lease.pod_id.as_ref(), |out, v| out.field(&v.0))?;
+        put_optional(out, lease.placement_epoch, Writer::number)?;
+        put_optional(out, lease.fencing_token, |out, v| out.raw(&v.to_le_bytes()))?;
+        put_optional(out, lease.generation, |out, v| out.number(v.0))?;
+        put_optional(out, lease.resource_lease_id.as_ref(), |out, v| out.field(v))?;
+    }
+    put_optional(out, revision, |out, v| out.number(v.0))
+}
+
+/// Read the scope block. Ids are strictly ascending and the block holds at least one scope (the
+/// writer emits it only then); the registry checks the rest when it is rebuilt.
+fn decode_scope_block(
+    reader: &mut Reader<'_>,
+) -> Result<(CompactedScopes, Option<Revision>), RuntimeError> {
+    if reader.take(8)? != SCOPE_BLOCK_MAGIC {
+        return Err(invalid(CompactedError::UnsupportedVersion));
+    }
+    let mut scopes = CompactedScopes::new();
+    let mut previous: Option<String> = None;
+    let count = reader.count()?;
+    if count == 0 {
+        return Err(invalid(CompactedError::NoncanonicalSection));
+    }
+    for _ in 0..count {
+        let id = reader.field()?;
+        if previous.as_ref().is_some_and(|last| &id <= last) {
+            return Err(invalid(CompactedError::NoncanonicalSection));
+        }
+        previous = Some(id.clone());
+        let parent = take_optional(reader, |r| r.field().map(ScopeId))?;
+        let session = SessionId(reader.field()?);
+        let project = ProjectId(reader.field()?);
+        let created_at = Timestamp(reader.number()?);
+        let deadline = take_optional(reader, |r| r.number().map(Timestamp))?;
+        let state = scope_state_from_tag(reader.number()?)?;
+        let cancellation_requested = match reader.number()? {
+            0 => false,
+            1 => true,
+            _ => return Err(invalid(CompactedError::NoncanonicalSection)),
+        };
+        let lease = ScopeLeaseBinding {
+            state_id: take_optional(reader, |r| r.field().map(StateId))?,
+            pod_id: take_optional(reader, |r| r.field().map(PodId))?,
+            placement_epoch: take_optional(reader, |r| r.number())?,
+            fencing_token: take_optional(reader, |r| {
+                Ok(u128::from_le_bytes(
+                    r.take(16)?.try_into().expect("fixed token"),
+                ))
+            })?,
+            generation: take_optional(reader, |r| r.number().map(Generation))?,
+            resource_lease_id: take_optional(reader, |r| r.field())?,
+        };
+        let scope_id = ScopeId(id);
+        scopes.insert(
+            scope_id.clone(),
+            (
+                ExecutionScope {
+                    id: scope_id,
+                    parent,
+                    session,
+                    project,
+                    created_at,
+                    deadline,
+                    state,
+                    cancellation_requested,
+                },
+                lease,
+            ),
+        );
+    }
+    let revision = take_optional(reader, |r| r.number().map(Revision))?;
+    if revision.is_none() {
+        return Err(invalid(CompactedError::NoncanonicalSection));
+    }
+    Ok((scopes, revision))
 }
 
 /// Effect tags, matching the ledger's own numbering so the two cannot drift
@@ -1491,7 +1668,12 @@ impl ExecutionObligations {
     /// Encode both maps in deterministic key order, unsettled attempts first.
     fn encode(&self) -> Result<Vec<u8>, RuntimeError> {
         let mut out = Writer(Vec::new());
-        out.raw(EXECUTION_MAGIC)?;
+        let has_scope_block = !self.scopes.is_empty();
+        out.raw(if has_scope_block {
+            EXECUTION_SCOPE_MAGIC
+        } else {
+            EXECUTION_MAGIC
+        })?;
         out.count(self.unsettled.len())?;
         for (attempt, effect) in &self.unsettled {
             out.number(attempt.0)?;
@@ -1535,6 +1717,9 @@ impl ExecutionObligations {
                 SettledOutcome::NotApplied => out.number(2)?,
             }
         }
+        if has_scope_block {
+            encode_scope_block(&mut out, &self.scopes, self.scope_revision)?;
+        }
         Ok(out.0)
     }
 
@@ -1545,9 +1730,11 @@ impl ExecutionObligations {
             return Err(invalid(CompactedError::SizeLimit));
         }
         let mut reader = Reader { bytes, offset: 0 };
-        if reader.take(8)? != EXECUTION_MAGIC {
-            return Err(invalid(CompactedError::UnsupportedVersion));
-        }
+        let has_scope_block = match reader.take(8)? {
+            magic if magic == EXECUTION_SCOPE_MAGIC => true,
+            magic if magic == EXECUTION_MAGIC => false,
+            _ => return Err(invalid(CompactedError::UnsupportedVersion)),
+        };
         let mut state = Self::default();
 
         let mut previous: Option<u64> = None;
@@ -1606,6 +1793,9 @@ impl ExecutionObligations {
             state.settled.insert(key, outcome);
         }
 
+        if has_scope_block {
+            (state.scopes, state.scope_revision) = decode_scope_block(&mut reader)?;
+        }
         if !reader.finished() {
             return Err(invalid(CompactedError::LengthMismatch));
         }
@@ -1646,9 +1836,12 @@ impl PtrRuntime {
         // Compaction is what removes the records these are derived from, so they
         // travel with the snapshot or they are lost.
         let (unsettled, settled) = self.execution.retained_obligations();
+        let (scopes, scope_revision) = self.scopes.compacted_parts();
         let execution = ExecutionObligations {
             unsettled: unsettled.clone(),
             settled: settled.clone(),
+            scopes,
+            scope_revision,
         }
         .encode()?;
         if semantic.len() > MAX_SECTION_BYTES
@@ -1739,6 +1932,15 @@ impl PtrRuntime {
             SemanticHost::restore(trusted.revision, semantic).map_err(RuntimeError::Semantic)?;
 
         let execution = ExecutionObligations::decode(execution)?;
+        if execution
+            .scope_revision
+            .is_some_and(|revision| revision > trusted.revision)
+        {
+            return Err(invalid(CompactedError::StateMismatch));
+        }
+        let scopes =
+            ScopeRegistry::from_compacted_parts(execution.scopes, execution.scope_revision)
+                .map_err(|_| invalid(CompactedError::StateMismatch))?;
 
         let mut runtime = Self::new_with_attestors(config, attestors)?;
         runtime.semdb = semdb;
@@ -1747,6 +1949,9 @@ impl PtrRuntime {
         runtime
             .execution
             .restore_obligations(execution.unsettled, execution.settled);
+        // The scopes created below the floor, so the records above it and the recovery of every
+        // unreleased one find them (marked recovery-required again after the replay below).
+        runtime.scopes = scopes;
         // The taint registry is a projection of the `kv-taint:` entries; a malformed one fails
         // closed rather than restoring a registry that forgets a taint.
         runtime.taint = super::kv_taint::TaintRegistry::from_materialized(&lifecycle.materialized)?;
