@@ -93,6 +93,18 @@ fn shape_ok(head: &Linear, features: &[f32], target: usize) -> Result<(), CoreEr
     Ok(())
 }
 
+/// `logsumexp(z) - z[target]` evaluated in `f64` with max-subtraction, so the loss stays exact
+/// when the target probability underflows in `f32`.
+fn stable_cross_entropy(logits: &[f32], target: usize) -> f32 {
+    let max = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    if !max.is_finite() {
+        return f32::NAN;
+    }
+    let max = f64::from(max);
+    let sum: f64 = logits.iter().map(|z| (f64::from(*z) - max).exp()).sum();
+    (max + sum.ln() - f64::from(logits[target])) as f32
+}
+
 /// Exact analytic gradient of softmax cross-entropy for a linear head.
 pub fn router_gradient(
     head: &Linear,
@@ -102,7 +114,7 @@ pub fn router_gradient(
     shape_ok(head, features, target)?;
     let logits = head.forward_vec(features)?;
     let p = softmax(&logits);
-    let loss = -(p[target].max(f32::MIN_POSITIVE)).ln();
+    let loss = stable_cross_entropy(&logits, target);
     let mut dz = p;
     dz[target] -= 1.0;
     let classes = dz.len();
@@ -288,6 +300,24 @@ mod tests {
             ..CoreConfig::default()
         })
         .unwrap()
+    }
+
+    #[test]
+    fn loss_stays_exact_when_target_probability_underflows() {
+        // Target logit trails the max by 200: f32 softmax gives p[target] == 0.
+        let head = Linear {
+            w: Matrix::new(1, 2, vec![0.0, 1.0]).unwrap(),
+            b: Matrix::new(1, 2, vec![0.0, 0.0]).unwrap(),
+        };
+        let features = [200.0_f32];
+        let g = router_gradient(&head, &features, 0).unwrap();
+        let exact = router_loss_f64(&head, &features, 0).unwrap();
+        assert!(
+            (f64::from(g.loss) - exact).abs() < 1e-3,
+            "{} vs {exact}",
+            g.loss
+        );
+        assert!(g.loss > 199.0);
     }
 
     #[test]

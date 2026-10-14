@@ -196,6 +196,8 @@ impl Matrix {
             });
         }
         let (k, n) = (self.cols, rhs.cols);
+        // Bound the product shape before allocating it (Invariant 8).
+        Self::check_dims(self.rows, n)?;
         let mut out = vec![0.0_f32; self.rows * n];
         for (a_row, out_row) in self.data.chunks_exact(k).zip(out.chunks_exact_mut(n)) {
             for (&a, b_row) in a_row.iter().zip(rhs.data.chunks_exact(n)) {
@@ -476,6 +478,20 @@ mod tests {
 
     fn m(rows: usize, cols: usize, d: &[f32]) -> Matrix {
         Matrix::new(rows, cols, d.to_vec()).unwrap()
+    }
+
+    #[test]
+    fn matmul_rejects_oversized_product_before_allocating() {
+        // Both operands are individually valid; the product would be MAX_ELEMENTS^2 elements.
+        let col = Matrix::zeros(MAX_ELEMENTS, 1).unwrap();
+        let row = Matrix::zeros(1, MAX_ELEMENTS).unwrap();
+        assert_eq!(
+            col.matmul(&row),
+            Err(ShapeError::TooLarge {
+                rows: MAX_ELEMENTS,
+                cols: MAX_ELEMENTS
+            })
+        );
     }
 
     #[test]
