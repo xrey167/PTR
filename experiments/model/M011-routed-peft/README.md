@@ -14,3 +14,10 @@ The run is invalid (vacuous) and counts as falsified if any coverage prerequisit
 
 ## Rule
 Record matched baselines, hardware, seeds and negative results. Do not change success criteria after observing results.
+
+## Implementation facts (not part of the hypothesis or the criteria)
+- Entrypoint module: `training/src/ptr_training/moe/m011.py` (the manifest's `entrypoint` is still empty). Its pins are compared with this `config.toml` and `experiment.toml` by `training/tests/test_m011_*`, including every arm's `target_tensors` against the instantiated arm.
+- `run.json` records the git commit and dirty flag, package versions, device and GPU facts, the HumanEval sandbox mode, the seeds, the corpus selection and validation digests, the measured `training_outside_training_partition_count` and the observed model topology; `metrics.json` records `task_accuracy_per_domain`, `latency_per_token` (definition chosen in code, not pinned here) and `training_flops`. `expert_specialisation_index` is not computed: this experiment pins no definition for it.
+- `--tune` refuses a confirmatory seed or a seed below the pilot seed 1001.
+- Memory, estimated by `python -m ptr_training.moe.memory --m011-arm <arm>` (not measured): about 17.7 GiB allocated at peak for the PERFT-R arms, 17.3 GiB for plain LoRA and 20.8 GiB for MixLoRA (its evaluation generation, about 1.2 GiB below the budget) at the entrypoint defaults (bf16, micro-batch 4 x 1024 tokens, gradient checkpointing, evaluation batch 16 with prompts assumed up to 1024 tokens), within one 24 GiB RTX 3090.
+- Nothing has run on the real model, the real corpora or a GPU.

@@ -4,11 +4,13 @@ version = 1
 # SFT only: OLMoE-1B-7B-0125 in bf16 with LoRA, gradient checkpointing, batch 2 x 4 gradient
 # accumulation steps (effective batch 8), max_length 256, 50 optimizer steps; RL is skipped
 # (`[moe.rl] algorithms = []`). Expected to fit in 24 GB, but that is an estimate, not a
-# measurement: about 12.9 GB of bf16 weights (6.9B parameters x 2 bytes), plus a few tens of MB
-# of LoRA weights and AdamW state (rank 16 over attention and the fused expert tensors), plus
-# activations under checkpointing (a layer's inputs for 2 x 256 tokens are small; one layer's
-# recompute, the 50304-wide logits and the router/expert intermediates dominate and should stay
-# in the low single-digit GB). This leaves several GB of headroom. If it does run out of memory,
+# measurement (`python -m ptr_training.moe.memory --config <this file>`): 12.89 GiB of bf16
+# weights (6,919,161,856 parameters), 1.81 GiB of fp32 LoRA weight, gradient and AdamW state
+# (rank 16 on q/k/v/o and the fused expert tensors is 121,634,816 trainable parameters; an
+# earlier comment here said "a few tens of MB", which was wrong), about 1.5 GiB for the merged
+# expert tensor PEFT builds for the layer being recomputed (and its gradient), 0.34 GiB of
+# logits and 0.1 GiB of checkpointed activations: about 16.6 GiB allocated at peak, 5.4 GiB
+# below a 95% budget of a 24 GiB card after 0.75 GiB of CUDA context. If it does run out of memory,
 # lower batch (and raise gradient_accumulation_steps) before anything else. The measured peak
 # is recorded in metrics.json under hardware.peak_cuda_memory_allocated_bytes.
 # Training data is synthetic verifiable tasks (see stage-moe-olmoe.toml); this is a pipeline
