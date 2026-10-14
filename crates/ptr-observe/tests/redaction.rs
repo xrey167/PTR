@@ -171,3 +171,46 @@ fn ordinary_request_id_is_preserved_as_typed_value() {
     );
     assert_eq!(sink.redacted_values(), 0);
 }
+
+#[test]
+fn tracer_truncation_cannot_hide_secret_keys_or_values_from_export() {
+    use ptr_observe::{
+        ManualClock, OtlpFileConfig, OtlpJsonFileExporter, Tracer, TracerConfig, TracerLimits,
+    };
+
+    let tracer = Tracer::new(
+        TracerConfig {
+            id_seed: 1,
+            limits: TracerLimits {
+                max_value_len: 4,
+                ..TracerLimits::default()
+            },
+        },
+        Arc::new(ManualClock::new(0)),
+    );
+    let long_secret = "q8Zr3xK9LmP2vB7nT5yW1cD6hJ4sA0eFgUiOpXzRtYu";
+    let guard = tracer.root_span("root").expect("open");
+    guard.set_field("password", "1234");
+    guard.set_field("note", long_secret);
+    guard.event(
+        TraceEvent::new(TraceLevel::Info, "evt")
+            .with_field("api_key", "9876")
+            .with_field("token", "5555"),
+    );
+    guard.event(TraceEvent::new(TraceLevel::Info, long_secret));
+    guard.finish();
+    let spans = tracer.drain_finished();
+
+    let exporter = OtlpJsonFileExporter::new("unused.jsonl", OtlpFileConfig::default());
+    let rendered = exporter.render(&spans);
+    for plaintext in ["1234", "9876", "5555", "q8Zr", long_secret] {
+        assert!(
+            !rendered.contains(plaintext),
+            "leaked {plaintext}: {rendered}"
+        );
+    }
+    let debug = format!("{spans:?}");
+    for plaintext in ["1234", "9876", "5555", "q8Zr"] {
+        assert!(!debug.contains(plaintext), "tracer retained {plaintext}");
+    }
+}

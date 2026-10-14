@@ -10,11 +10,11 @@
 
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use ptr_types::RequestId;
 
-use crate::{Clock, TraceEvent, TraceValue};
+use crate::{Clock, Redactor, TraceEvent, TraceValue, REDACTED};
 
 /// Observability trace identifier (distinct from `ptr_types::TraceId`).
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -237,6 +237,23 @@ fn truncate(text: &str, max: usize, stats: &mut TracerStats) -> String {
     text[..end].to_owned()
 }
 
+/// Default-policy redactor used only to classify text that is about to lose bytes to
+/// truncation: once the tail is cut, a later redactor can no longer see the signal.
+fn classifier() -> &'static Redactor {
+    static CLASSIFIER: OnceLock<Redactor> = OnceLock::new();
+    CLASSIFIER.get_or_init(Redactor::default)
+}
+
+/// Truncates free text, but replaces it with [`REDACTED`] when it is over the limit and the
+/// full text looks like a secret (the shortened prefix might no longer match any heuristic).
+fn truncate_text(text: &str, max: usize, stats: &mut TracerStats) -> String {
+    if text.len() > max && classifier().looks_like_secret(text) {
+        stats.truncated_values += 1;
+        return REDACTED.to_owned();
+    }
+    truncate(text, max, stats)
+}
+
 fn bound_fields(
     fields: BTreeMap<String, TraceValue>,
     limits: &TracerLimits,
@@ -248,14 +265,18 @@ fn bound_fields(
             stats.dropped_fields += 1;
             continue;
         }
+        // Classify the FULL key before truncation: `password` cut to `pass` would otherwise
+        // stop matching the key deny-list and a short low-entropy value would be exported.
+        let secret_key = key.len() > limits.max_value_len && classifier().is_secret_key(&key);
         let key = truncate(&key, limits.max_value_len, stats);
         let value = match value {
+            _ if secret_key => TraceValue::String(REDACTED.to_owned()),
             TraceValue::String(text) => {
-                TraceValue::String(truncate(&text, limits.max_value_len, stats))
+                TraceValue::String(truncate_text(&text, limits.max_value_len, stats))
             }
             // A client may supply any string as a request id, so it is bounded like a string.
             TraceValue::RequestId(id) => {
-                TraceValue::RequestId(RequestId(truncate(&id.0, limits.max_value_len, stats)))
+                TraceValue::RequestId(RequestId(truncate_text(&id.0, limits.max_value_len, stats)))
             }
             value @ (TraceValue::U64(_)
             | TraceValue::Bool(_)
@@ -345,7 +366,7 @@ impl Tracer {
         };
         let span_id = SpanId(state.next_u64());
         let mut stats = state.stats;
-        let name = truncate(&name, self.inner.limits.max_value_len, &mut stats);
+        let name = truncate_text(&name, self.inner.limits.max_value_len, &mut stats);
         state.stats = stats;
         state.open.insert(
             span_id,
@@ -459,7 +480,9 @@ impl SpanGuard {
         let mut state = self.inner.lock();
         let mut stats = state.stats;
         let status = match status {
-            SpanStatus::Error(message) => SpanStatus::Error(truncate(&message, max, &mut stats)),
+            SpanStatus::Error(message) => {
+                SpanStatus::Error(truncate_text(&message, max, &mut stats))
+            }
             other => other,
         };
         state.stats = stats;
@@ -474,7 +497,7 @@ impl SpanGuard {
         let tick = self.inner.clock.now_tick();
         let mut state = self.inner.lock();
         let mut stats = state.stats;
-        let name = truncate(&event.name, limits.max_value_len, &mut stats);
+        let name = truncate_text(&event.name, limits.max_value_len, &mut stats);
         let fields = bound_fields(event.fields, &limits, &mut stats);
         state.stats = stats;
         let Some(open) = state.open.get_mut(&self.context.span_id) else {
@@ -520,7 +543,7 @@ impl SpanGuard {
         let status = match open.status {
             SpanStatus::Unset => match default_status {
                 SpanStatus::Error(message) => {
-                    SpanStatus::Error(truncate(&message, max, &mut stats))
+                    SpanStatus::Error(truncate_text(&message, max, &mut stats))
                 }
                 other => other,
             },
