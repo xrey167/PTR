@@ -104,6 +104,9 @@ pub enum AdapterError {
         adapter: String,
         generation: Generation,
     },
+    /// A different improvement budget is already set; a budget is set once and never loosened or
+    /// tightened afterwards.
+    BudgetPinConflict { set: u32, requested: u32 },
     /// A different gate configuration is already pinned; a pin is never replaced.
     GatePinConflict { pinned: [u8; 32] },
     /// No gate configuration is pinned in this runtime
@@ -493,14 +496,29 @@ impl PtrRuntime {
 
     /// Set the number of improvement cycles admitted per day and the clock that says what day it
     /// is. Host configuration, not history: a runtime rebuilt from its log has neither, and
-    /// without them no cycle is admitted.
+    /// without them no cycle is admitted. It is set once: the same budget again changes nothing
+    /// (the clock stays the first one too), and any other, tighter or looser, is
+    /// [`AdapterError::BudgetPinConflict`] and leaves budget and clock as they were.
+    ///
+    /// # Errors
+    /// [`AdapterError::BudgetPinConflict`].
     pub fn set_improvement_budget(
         &mut self,
         budget: ImprovementCycleBudget,
         clock: Arc<dyn CycleClock>,
-    ) {
-        self.adapters.budget = Some(budget);
-        self.adapters.clock = Some(clock);
+    ) -> Result<(), AdapterError> {
+        match self.adapters.budget {
+            Some(set) if set != budget => Err(AdapterError::BudgetPinConflict {
+                set: set.per_day(),
+                requested: budget.per_day(),
+            }),
+            Some(_) => Ok(()),
+            None => {
+                self.adapters.budget = Some(budget);
+                self.adapters.clock = Some(clock);
+                Ok(())
+            }
+        }
     }
 
     /// Cycles counted against `day` of `project`: committed ones plus admitted ones not yet

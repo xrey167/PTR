@@ -114,3 +114,32 @@ fn a_superseded_adapter_generation_is_refused_and_the_new_one_serves() {
         )
         .is_ok());
 }
+
+#[test]
+fn only_the_exact_promoted_generation_is_live_not_every_generation_above_it() {
+    let backend = backend();
+    let req = request(&backend);
+    backend.apply_committed_event(&promoted(2)).unwrap();
+    for generation in [3, 999] {
+        assert!(
+            matches!(
+                backend.infer_scoped_bound(
+                    &scope(),
+                    &req,
+                    None,
+                    &StackBinding::with_adapter(adapter(&backend, generation))
+                ),
+                Err(ReferenceKvError::Binding(BindingError::NotLive { .. }))
+            ),
+            "generation {generation} was never promoted"
+        );
+    }
+    assert!(backend
+        .infer_scoped_bound(
+            &scope(),
+            &req,
+            None,
+            &StackBinding::with_adapter(adapter(&backend, 2))
+        )
+        .is_ok());
+}

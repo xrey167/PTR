@@ -553,6 +553,9 @@ pub(crate) enum CacheUse {
 pub(crate) struct RevokedInputs {
     revoked: BTreeSet<(String, Generation)>,
     floors: BTreeMap<String, Generation>,
+    /// The one generation each promoted adapter key serves: an adapter dependency is live only
+    /// at exactly this generation, not at any generation above the floor.
+    adapter_current: BTreeMap<String, Generation>,
     /// Expert identities with a committed fence epoch: an expert dependency recorded below it
     /// (or with none) is not live.
     fences: BTreeMap<String, u64>,
@@ -632,7 +635,12 @@ impl RevokedInputs {
                 adapter,
                 generation,
                 ..
-            } => self.raise_floor(crate::adapter::adapter_key(project, adapter), *generation),
+            } => {
+                let key = crate::adapter::adapter_key(project, adapter);
+                self.raise_floor(key.clone(), *generation);
+                let current = self.adapter_current.entry(key).or_insert(*generation);
+                *current = (*current).max(*generation);
+            }
             // Every other kind leaves no input dead. Listed, not wildcarded, so a new event
             // kind cannot be ignored here without someone deciding it.
             LedgerEvent::SemanticDeltaCommitted { .. }
@@ -691,6 +699,10 @@ impl RevokedInputs {
                 .floors
                 .get(&dependency.identity)
                 .is_none_or(|floor| dependency.generation >= *floor)
+            && self
+                .adapter_current
+                .get(&dependency.identity)
+                .is_none_or(|current| dependency.generation == *current)
     }
 }
 

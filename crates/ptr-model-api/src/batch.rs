@@ -179,6 +179,10 @@ struct OpenContinuation {
     key: BatchKey,
     semantic_context: SemanticContext,
     round: u32,
+    /// The admission's deadline and cancel flag: a resume is a model call too, so it is refused
+    /// once either has run out.
+    deadline: Option<u64>,
+    cancel: Option<CancelFlag>,
 }
 
 /// The most continuations one principal may hold open at once. At the quota a principal's
@@ -521,6 +525,8 @@ impl<B: BatchInferenceBackend + 'static> AdaptiveBatcher<B> {
         admission: BatchAdmission,
     ) -> Result<ScopedAnswer, ModelError> {
         let key = admission.key.clone();
+        let deadline = admission.deadline.map(|deadline| deadline.0);
+        let cancel = admission.cancel.clone();
         let events = self.run_inferred(request, admission)?;
         let id = self.shared.issue_token();
         self.shared.lock().continuations.open(
@@ -530,6 +536,8 @@ impl<B: BatchInferenceBackend + 'static> AdaptiveBatcher<B> {
                 key,
                 semantic_context: request.semantic_context.clone(),
                 round: 1,
+                deadline,
+                cancel,
             },
         );
         Ok(ScopedAnswer {
@@ -624,7 +632,8 @@ impl<B: BatchInferenceBackend + 'static> AdaptiveBatcher<B> {
             round: entry.round,
             observation,
         };
-        let events = self.run_resume(&request, &entry.key)?;
+        let events =
+            self.run_resume(&request, &entry.key, entry.deadline, entry.cancel.as_ref())?;
         let next = entry.round.checked_add(1).map(|round| {
             let id = self.shared.issue_token();
             self.shared
@@ -636,17 +645,49 @@ impl<B: BatchInferenceBackend + 'static> AdaptiveBatcher<B> {
         Ok(ResumedAnswer { events, next })
     }
 
+    /// Why a resume with this deadline and cancel flag may no longer run, if it may not.
+    fn resume_expired(
+        &self,
+        deadline: Option<u64>,
+        cancel: Option<&CancelFlag>,
+    ) -> Option<ModelError> {
+        if cancel.is_some_and(CancelFlag::is_cancelled) {
+            bump(&self.shared.counters.cancelled, 1);
+            return Some(ModelError::cancelled());
+        }
+        if deadline.is_some_and(|deadline| deadline <= self.shared.clock.now().0) {
+            bump(&self.shared.counters.deadline_drops, 1);
+            return Some(ModelError::deadline_exceeded());
+        }
+        None
+    }
+
+    /// The one place a resume reaches the backend, for every resume path: refused when the
+    /// batcher is closed, past its deadline or cancelled (before and after the gate has had
+    /// its say), and when the gate does not admit the key.
     fn run_resume(
         &self,
         request: &ModelResumeRequest,
         key: &BatchKey,
+        deadline: Option<u64>,
+        cancel: Option<&CancelFlag>,
     ) -> Result<Vec<ModelEvent>, ModelError>
     where
         B: ResumableInferenceBackend,
     {
+        if self.shared.lock().closed {
+            return Err(ModelError::closed());
+        }
+        if let Some(error) = self.resume_expired(deadline, cancel) {
+            return Err(error);
+        }
         if !gate_admits(&self.shared, key) {
             bump(&self.shared.counters.revoked, 1);
             return Err(ModelError::revoked());
+        }
+        // The gate may have taken a while: look again.
+        if let Some(error) = self.resume_expired(deadline, cancel) {
+            return Err(error);
         }
         // The same containment as a batch: a backend that panics fails this call only.
         match catch_unwind(AssertUnwindSafe(|| self.shared.backend.resume(request))) {
@@ -720,7 +761,7 @@ impl<B: BatchInferenceBackend + ResumableInferenceBackend + 'static> ResumableIn
             bump(&self.shared.counters.revoked, 1);
             return Err(ModelError::revoked());
         }
-        self.run_resume(request, &BatchKey::unscoped())
+        self.run_resume(request, &BatchKey::unscoped(), None, None)
     }
 }
 

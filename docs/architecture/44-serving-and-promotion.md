@@ -101,7 +101,9 @@ A self-improvement cycle proposes a change to the system's own adaptation and me
   `Completed` or `Aborted { reason }`.
 - The day's count is the committed events plus the open tickets. An aborted cycle, a running cycle and a ticket that
   was dropped without a record all spend budget; a replayed runtime counts the same.
-- With no budget configured nothing is admitted; a budget of zero admits nothing.
+- With no budget configured nothing is admitted; a budget of zero admits nothing. The budget is set once
+  (`set_improvement_budget`): the same value again changes nothing (clock included) and any other, tighter or looser, is
+  `BudgetPinConflict`.
 - The caller does not choose the day. The runtime reads a `CycleClock` (days since the epoch; an unreadable clock admits
   nothing, `ClockUnavailable`). A project's high-water day is the latest day it has a cycle admitted or recorded for; a
   day before it is refused (`ClockRegressed`). So going to the next day and back does not reopen the first day, counting
@@ -120,7 +122,7 @@ bounds recorded and running cycles, not crashed ones.
 ### Replay backtest (`training/src/ptr_training/replay`)
 
 `HistoryPool` is append-only and chronological (a repeated name or an order that does not advance is refused before
-anything changes; 256 generations at most). `ReplaySimulator` fits an intercept and one response coefficient per
+anything changes; 256 generations at most). Generation orders and outcome counts are integers below 2**53, anything else is a `HistoryError`. `ReplaySimulator` fits an intercept and one response coefficient per
 decision from consecutive generations in which exactly one decision moved; a transition that moves two is ambiguous
 and charged to neither. `backtest(pool, error_bound=...)` holds each generation out and predicts it from the rest:
 
@@ -138,6 +140,8 @@ and charged to neither. `backtest(pool, error_bound=...)` holds each generation 
 - the within-bound decision uses the exact errors; only the report rounds; a step or slope that is not a finite number
   (a step of 5e-324 overflows the slope) leaves the decision unidentified and no NaN or infinity reaches a prediction
   or the report;
+- `choose_winner` takes the pool, not a simulator: it rebuilds the full simulator itself after matching the report's
+  fingerprint, so no fold-fitted or edited state can enter;
 - `choose_winner` aborts with `NotPredictive` on a history that predicted nothing, and with `ExtrapolationAbort` when
   the best policy asks for a decision level the history never showed.
 
@@ -174,7 +178,9 @@ simulator training happens in PTR until `predictive` has been true on a real gen
   that no stale state is resumed: context, round and scope come only from the table entry, which belongs to exactly one
   scope, so a continuation from a revoked generation is refused whatever key or other continuation the caller holds. A principal at its quota evicts its own oldest; a full table evicts the oldest of the principal holding the most
   (a per-principal FIFO and a ranking by count, no scan over entries), so one principal's flood never displaces a principal
-  under its quota, and an evicted continuation fails closed. Plain
+  under its quota, and an evicted continuation fails closed. The entry
+  also keeps the admission's deadline and cancel flag, and every resume path (continuation and trait) is refused once the
+  batcher is closed, past its deadline or cancelled, before and after the gate. Plain
   `infer` and `infer_with` open no continuation. The unscoped
   `resume` of the trait is served only by a batcher built without a gate (which serves no adapter) and is refused when a
   gate is configured. A gate that panics has not admitted the key (refused as revoked, counted); a worker that ends for

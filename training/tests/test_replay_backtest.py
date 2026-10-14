@@ -186,27 +186,27 @@ class WinnerTests(unittest.TestCase):
         self.report = backtest(self.pool, error_bound=0.01, **RULE)
 
     def test_the_best_identified_policy_in_the_observed_range_wins(self):
-        winner = choose_winner(self.simulator, self.report, [{"x": 1}, {"x": 3}, {"x": 2}])
+        winner = choose_winner(self.simulator.pool, self.report, [{"x": 1}, {"x": 3}, {"x": 2}])
         self.assertEqual(winner["decisions"], {"x": 3})
 
     def test_a_winner_beyond_observed_levels_aborts(self):
         with self.assertRaises(ExtrapolationAbort):
-            choose_winner(self.simulator, self.report, [{"x": 1}, {"x": 9}])
+            choose_winner(self.simulator.pool, self.report, [{"x": 1}, {"x": 9}])
 
     def test_no_policy_is_chosen_from_a_history_that_is_not_predictive(self):
         pool = research_pool()
         report = backtest(pool, error_bound=0.5, **RULE)
         with self.assertRaises(NotPredictive):
-            choose_winner(ReplaySimulator(pool), report, [{"oversample": 3, "anchor": 1}])
+            choose_winner(pool, report, [{"oversample": 3, "anchor": 1}])
 
     def test_a_report_of_another_history_is_refused(self):
         other = backtest(linear_pool((200, 300, 400, 501)), error_bound=0.01, **RULE)
         with self.assertRaises(ValueError):
-            choose_winner(self.simulator, other, [{"x": 1}])
+            choose_winner(self.simulator.pool, other, [{"x": 1}])
 
     def test_a_policy_using_a_decision_the_history_never_moved_is_not_identified(self):
         with self.assertRaises(ValueError):
-            choose_winner(self.simulator, self.report, [{"unseen": 1}])
+            choose_winner(self.simulator.pool, self.report, [{"unseen": 1}])
         ranked = self.simulator.rank([{"unseen": 1}, {"x": 1}])
         self.assertTrue(ranked[0]["identified"])
         self.assertFalse(ranked[1]["identified"])
@@ -316,7 +316,7 @@ class RankingNeighbourhoodAndRangeTests(unittest.TestCase):
         simulator = ReplaySimulator(pool)
         report = backtest(pool, error_bound=0.05, **RULE)
         # Both scores round to 0.3 at six places; the exact ones differ.
-        winner = choose_winner(simulator, report, [{"x": 1.0000036}, {"x": 1.000004}])
+        winner = choose_winner(simulator.pool, report, [{"x": 1.0000036}, {"x": 1.000004}])
         self.assertEqual(winner["decisions"], {"x": 1.000004})
         self.assertEqual(winner["score_reported"], round(winner["score"], 6))
         self.assertGreater(winner["score"], simulator.rank([{"x": 1.0000036}])[0]["score"])
@@ -399,3 +399,37 @@ class OversizedLevelTests(unittest.TestCase):
         self.assertEqual(len(pool.generations), 1)
         with self.assertRaises(HistoryError):
             ReplaySimulator(pool).simulate({"x": 10**10000})
+
+
+class WinnerIsRebuiltTests(unittest.TestCase):
+    def setUp(self):
+        self.pool = linear_pool()
+        self.report = backtest(self.pool, error_bound=0.05, **RULE)
+        self.assertTrue(self.report.predictive)
+
+    def test_a_simulator_cannot_be_handed_in(self):
+        with self.assertRaises(TypeError):
+            choose_winner(ReplaySimulator(self.pool, exclude="g3"), self.report, [{"x": 1}])
+
+    def test_edited_fitted_state_has_no_effect_on_the_winner(self):
+        expected = choose_winner(self.pool, self.report, [{"x": 1}, {"x": 3}, {"x": 2}])
+        tampered = ReplaySimulator(self.pool, exclude="g3")
+        tampered.responses["x"] = {"typed": -9.0}
+        again = choose_winner(tampered.pool, self.report, [{"x": 1}, {"x": 3}, {"x": 2}])
+        self.assertEqual(again["decisions"], expected["decisions"])
+        self.assertEqual(again["score"], expected["score"])
+
+
+class CountBoundsTests(unittest.TestCase):
+    def test_huge_order_and_counts_are_refused_and_leave_the_pool_unchanged(self):
+        pool = HistoryPool()
+        pool.add_generation("g0", order=0, decisions={"x": 1}, outcome=outcome(200))
+        before = pool.fingerprint()
+        with self.assertRaises(HistoryError):
+            pool.add_generation("g1", order=10**10000, decisions={"x": 2}, outcome=outcome(300))
+        with self.assertRaises(HistoryError):
+            Outcome(correct=10**10000, total=10**10001)
+        with self.assertRaises(HistoryError):
+            Outcome(correct=1, total=2**53)
+        self.assertEqual(pool.fingerprint(), before)
+        self.assertEqual(len(pool.generations), 1)

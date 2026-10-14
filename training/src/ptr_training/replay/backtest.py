@@ -46,6 +46,8 @@ MAX_GENERATIONS = 256
 MAX_DECISIONS = 64
 MAX_FAMILIES = 16
 MAX_NAME_CHARS = 128
+# Counts and orders stay exactly representable as floats and cheap to compare.
+MAX_COUNT = 2**53
 
 Level = bool | int | float | str
 
@@ -74,6 +76,8 @@ class Outcome:
             value = getattr(self, field_name)
             if isinstance(value, bool) or not isinstance(value, int):
                 raise HistoryError(f"outcome {field_name} must be an int")
+            if not 0 <= value < MAX_COUNT:
+                raise HistoryError(f"outcome {field_name} must lie in [0, 2**53)")
         if self.total < 1:
             raise HistoryError("outcome total must be at least 1: a rate of no cases is undefined")
         if not 0 <= self.correct <= self.total:
@@ -186,6 +190,8 @@ class HistoryPool:
         _check_name("generation", name)
         if isinstance(order, bool) or not isinstance(order, int):
             raise HistoryError("order must be an int")
+        if not 0 <= order < MAX_COUNT:
+            raise HistoryError("order must lie in [0, 2**53)")
         if len(self._generations) >= MAX_GENERATIONS:
             raise HistoryError(f"the pool holds {MAX_GENERATIONS} generations already")
         if any(existing.name == name for existing in self._generations):
@@ -567,19 +573,26 @@ def backtest(
 
 
 def choose_winner(
-    simulator: ReplaySimulator, report: BacktestReport, policies: Iterable[Mapping[str, Level]]
+    pool: HistoryPool, report: BacktestReport, policies: Iterable[Mapping[str, Level]]
 ) -> dict[str, Any]:
     """The best identified policy, or an abort.
+
+    The simulator is rebuilt here, on the full ``pool`` (no generation excluded), after the
+    report's fingerprint has been matched to it; a caller cannot hand in a fitted state, so a
+    simulator fitted on a fold, or one whose responses were edited, has no way in.
 
     Raises ``NotPredictive`` when the backtest of this history did not predict a held-out
     generation within its bound, ``ExtrapolationAbort`` when the best identified policy asks
     for decision levels the history never showed, and ``ValueError`` when no policy is
     identified at all or the report belongs to another history.
     """
-    if report.pool_fingerprint != simulator.pool.fingerprint():
+    if not isinstance(pool, HistoryPool):
+        raise TypeError("choose_winner takes the history pool, not a simulator")
+    if report.pool_fingerprint != pool.fingerprint():
         raise ValueError("the backtest report was made on another history")
     if not report.predictive:
         raise NotPredictive("no held-out generation was predicted within the error bound")
+    simulator = ReplaySimulator(pool)
     ranked = simulator.rank(policies)
     best = next((r for r in ranked if r["identified"]), None)
     if best is None:

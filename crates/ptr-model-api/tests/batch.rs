@@ -942,3 +942,107 @@ fn a_dead_worker_closes_the_batcher_and_answers_every_waiting_caller() {
     });
     assert_eq!(batcher.infer(&request("after")), Err(ModelError::closed()));
 }
+
+/// A clock the test sets.
+struct SetClock(std::sync::atomic::AtomicU64);
+
+impl BatchClock for SetClock {
+    fn now(&self) -> Timestamp {
+        Timestamp(self.0.load(Ordering::SeqCst))
+    }
+}
+
+fn recorder_batcher(
+    backend: &Arc<ContextRecorder>,
+    clock: Arc<dyn BatchClock>,
+    gate: Option<Arc<dyn BatchGate>>,
+) -> AdaptiveBatcher<ContextRecorder> {
+    AdaptiveBatcher::with_parts(Arc::clone(backend), policy(1, 0, 4), clock, gate).expect("built")
+}
+
+#[test]
+fn a_resume_after_the_deadline_or_a_cancellation_never_reaches_the_backend() {
+    let backend = Arc::new(ContextRecorder::default());
+    let clock = Arc::new(SetClock(std::sync::atomic::AtomicU64::new(0)));
+    let batcher = recorder_batcher(
+        &backend,
+        Arc::clone(&clock) as Arc<dyn BatchClock>,
+        Some(Arc::new(OpenGate) as Arc<dyn BatchGate>),
+    );
+    let key = key("coder");
+    let cancel = CancelFlag::default();
+    let admit = |deadline: Option<u64>, cancel: Option<CancelFlag>| BatchAdmission {
+        key: key.clone(),
+        deadline: deadline.map(Timestamp),
+        cancel,
+    };
+    let in_time = batcher
+        .infer_scoped(&request_at("a", 1), admit(Some(100), None))
+        .expect("served")
+        .continuation;
+    let cancellable = batcher
+        .infer_scoped(&request_at("b", 1), admit(None, Some(cancel.clone())))
+        .expect("served")
+        .continuation;
+    let live = batcher
+        .infer_scoped(&request_at("c", 1), admit(Some(100), None))
+        .expect("served")
+        .continuation;
+    // Within the deadline and not cancelled: runs.
+    assert!(batcher
+        .resume_continuation(live, &key, observation(1, b"x"))
+        .is_ok());
+    let ran = backend.resumed.lock().unwrap().len();
+    // The deadline passes: refused, and the backend gets nothing.
+    clock.0.store(100, Ordering::SeqCst);
+    assert_eq!(
+        batcher
+            .resume_continuation(in_time, &key, observation(1, b"x"))
+            .err(),
+        Some(ModelError::deadline_exceeded())
+    );
+    // A cancellation lands: refused, and the backend gets nothing.
+    cancel.cancel();
+    assert_eq!(
+        batcher
+            .resume_continuation(cancellable, &key, observation(1, b"x"))
+            .err(),
+        Some(ModelError::cancelled())
+    );
+    assert_eq!(backend.resumed.lock().unwrap().len(), ran);
+}
+
+#[test]
+fn every_resume_path_is_refused_once_the_batcher_is_closed() {
+    use ptr_model_api::ResumableInferenceBackend;
+    for gated in [true, false] {
+        let backend = Arc::new(ContextRecorder::default());
+        let clock = Arc::new(WorkerKillingClock {
+            armed: AtomicBool::new(false),
+        });
+        let gate = gated.then(|| Arc::new(OpenGate) as Arc<dyn BatchGate>);
+        let batcher = recorder_batcher(&backend, Arc::clone(&clock) as Arc<dyn BatchClock>, gate);
+        let key = if gated {
+            key("coder")
+        } else {
+            BatchKey::unscoped()
+        };
+        let continuation = open(&batcher, "r", &key);
+        // Kill the worker: it reads the clock when a request arrives and panics.
+        clock.armed.store(true, Ordering::SeqCst);
+        assert_eq!(batcher.infer(&request("dies")), Err(ModelError::closed()));
+        assert_eq!(
+            batcher
+                .resume_continuation(continuation, &key, observation(1, b"x"))
+                .err(),
+            Some(ModelError::closed())
+        );
+        if !gated {
+            assert_eq!(
+                batcher.resume(&common::resume_request("r")),
+                Err(ModelError::closed())
+            );
+        }
+        assert!(backend.resumed.lock().unwrap().is_empty(), "gated: {gated}");
+    }
+}

@@ -42,7 +42,9 @@ fn begin(project: &str) -> BeginImprovementCycle {
 fn runtime(per_day: u32, day: u64) -> (PtrRuntime, Arc<ManualClock>) {
     let clock = ManualClock::at(day);
     let mut runtime = PtrRuntime::new(PtrConfig::default()).expect("runtime");
-    runtime.set_improvement_budget(ImprovementCycleBudget::new(per_day), clock.clone());
+    runtime
+        .set_improvement_budget(ImprovementCycleBudget::new(per_day), clock.clone())
+        .expect("sets once");
     (runtime, clock)
 }
 
@@ -185,7 +187,9 @@ fn the_count_is_rebuilt_from_the_ledger_and_the_next_day_starts_fresh() {
 
     let mut replayed = PtrRuntime::replay(PtrConfig::default(), &history).expect("replays");
     let clock = ManualClock::at(10);
-    replayed.set_improvement_budget(ImprovementCycleBudget::new(1), clock.clone());
+    replayed
+        .set_improvement_budget(ImprovementCycleBudget::new(1), clock.clone())
+        .expect("sets once");
     assert_eq!(
         replayed.improvement_cycles_used(&ProjectId::from("alpha"), 10),
         1
@@ -213,7 +217,9 @@ fn a_history_from_the_future_refuses_cycles_until_the_clock_catches_up() {
 
     let mut replayed = PtrRuntime::replay(PtrConfig::default(), &history).expect("replays");
     let clock = ManualClock::at(19);
-    replayed.set_improvement_budget(ImprovementCycleBudget::new(1), clock.clone());
+    replayed
+        .set_improvement_budget(ImprovementCycleBudget::new(1), clock.clone())
+        .expect("sets once");
     assert_eq!(
         replayed.begin_improvement_cycle(begin("alpha")),
         Err(regressed(20, 19))
@@ -548,5 +554,38 @@ fn a_record_refused_before_the_append_leaves_the_ticket_usable() {
     assert_eq!(
         runtime.begin_improvement_cycle(begin("alpha")),
         Err(exhausted(10, 1, 1))
+    );
+}
+
+#[test]
+fn the_budget_is_set_once_and_neither_a_looser_nor_a_tighter_one_replaces_it() {
+    let (mut runtime, clock) = runtime(1, 10);
+    // Use up the one cycle of the day.
+    let ticket = runtime
+        .begin_improvement_cycle(begin("alpha"))
+        .expect("admitted");
+    runtime
+        .record_improvement_cycle(&ticket, ImprovementCycleOutcome::Completed)
+        .expect("recorded");
+    assert_eq!(
+        runtime.begin_improvement_cycle(begin("alpha")),
+        Err(exhausted(10, 1, 1))
+    );
+    // A looser budget is refused and changes nothing; so is a tighter one.
+    for requested in [2, 0] {
+        assert_eq!(
+            runtime.set_improvement_budget(ImprovementCycleBudget::new(requested), clock.clone()),
+            Err(AdapterError::BudgetPinConflict { set: 1, requested })
+        );
+    }
+    assert_eq!(
+        runtime.begin_improvement_cycle(begin("alpha")),
+        Err(exhausted(10, 1, 1)),
+        "the next cycle stays refused"
+    );
+    // The same budget again changes nothing.
+    assert_eq!(
+        runtime.set_improvement_budget(ImprovementCycleBudget::new(1), clock),
+        Ok(())
     );
 }
