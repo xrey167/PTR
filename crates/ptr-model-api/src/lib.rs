@@ -1,8 +1,13 @@
 pub mod backend;
+pub mod batch;
+mod batch_queue;
 pub mod event;
+pub mod replica;
 pub mod request;
 mod tokens;
 pub use backend::*;
+pub use batch::*;
 pub use event::*;
+pub use replica::*;
 pub use request::*;
 pub use tokens::*;
