@@ -1939,6 +1939,49 @@ fn a_proposer_revoked_between_rounds_blocks_acceptance_of_the_repaired_candidate
     assert_eq!(vcw.counters().author_no_longer_eligible, 1);
 }
 
+/// Review of #141 (round 4): repairers applied in the order A, B, A in one round leave the
+/// payload last edited by A, so A is the answer's author and the last of its authors, each Pod
+/// listed once.
+#[test]
+fn a_repairer_that_edits_again_is_the_last_author() {
+    let mut vcw = plain(roster(
+        &["gen"],
+        &[("fix_ac", &["a", "c"]), ("fix_b", &["b"])],
+    ));
+    let verifier = DocVerifier::new();
+    let mut stub = Stub::new(|_, n| doc(&format!("d{n}"), &["a", "b", "c"]))
+        .fixing("fix_ac", &["a", "c"])
+        .fixing("fix_b", &["b"]);
+    let run = run_doc(
+        &mut vcw,
+        &request("aba", 4, 4, VerificationLevel::SampleVerified),
+        &eligibility(&["gen", "fix_ac", "fix_b"]),
+        &verifier,
+        &mut stub,
+    );
+    // The repairs ran in code order: a by fix_ac, b by fix_b, c by fix_ac.
+    let repairs: Vec<&String> = stub
+        .log
+        .iter()
+        .filter(|l| l.starts_with("repair:"))
+        .collect();
+    assert_eq!(
+        repairs,
+        ["repair:fix_ac:a", "repair:fix_b:b", "repair:fix_ac:c"]
+    );
+    let answer = verified(&run);
+    let ac = PodRef::new(pod("fix_ac"), Generation(1));
+    assert_eq!(answer.author(), &ac);
+    assert_eq!(
+        answer.authors(),
+        &[
+            PodRef::new(pod("gen"), Generation(1)),
+            PodRef::new(pod("fix_b"), Generation(1)),
+            ac,
+        ]
+    );
+}
+
 /// Total (routed, cleared) credit of `pod` for `code` over all closed windows.
 fn credit(vcw: &VcwLoop<impl AdmissibleScorer>, pod_name: &str, code_name: &str) -> (u64, u64) {
     vcw.closed_windows()

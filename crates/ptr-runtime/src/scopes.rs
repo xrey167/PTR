@@ -536,20 +536,35 @@ impl ScopeRegistry {
             if flagged.is_some_and(|expected| expected != scope.cancellation_requested) {
                 return Err(invalid());
             }
-            // Walk to the root: every ancestor exists, matches, and the walk ends.
-            let mut child = scope;
-            let mut steps = 0usize;
-            while let Some(parent_id) = &child.parent {
+            // Each scope's own edge: the parent exists, is another scope and matches.
+            if let Some(parent_id) = &scope.parent {
                 let (parent, _) = scopes.get(parent_id).ok_or_else(invalid)?;
-                if parent.session != child.session || parent.project != child.project {
-                    return Err(ScopeError::ParentScopeMismatch);
-                }
-                steps += 1;
-                if parent_id == id || steps > scopes.len() {
+                if parent_id == id {
                     return Err(invalid());
                 }
-                child = parent;
+                if parent.session != scope.session || parent.project != scope.project {
+                    return Err(ScopeError::ParentScopeMismatch);
+                }
             }
+        }
+        // Every chain of parents ends at a root: one linear pass that walks each chain only
+        // until it reaches a scope already known to end at a root, and refuses a cycle.
+        let mut rooted: BTreeSet<&ScopeId> = BTreeSet::new();
+        for start in scopes.keys() {
+            let mut path: Vec<&ScopeId> = Vec::new();
+            let mut on_path: BTreeSet<&ScopeId> = BTreeSet::new();
+            let mut current = Some(start);
+            while let Some(id) = current {
+                if rooted.contains(id) {
+                    break;
+                }
+                if !on_path.insert(id) {
+                    return Err(invalid());
+                }
+                path.push(id);
+                current = scopes.get(id).and_then(|(scope, _)| scope.parent.as_ref());
+            }
+            rooted.extend(path);
         }
         let mut registry = Self {
             last_revision,
@@ -785,6 +800,50 @@ mod capacity_tests {
             state: ScopeState::Released,
             cancellation_requested: true,
         }
+    }
+
+    fn chained(depth: usize, cycle: bool) -> CompactedScopes {
+        (0..depth)
+            .map(|i| {
+                let mut entry = scope(i);
+                entry.parent = if i > 0 {
+                    Some(scope(i - 1).id)
+                } else if cycle {
+                    Some(scope(depth - 1).id)
+                } else {
+                    None
+                };
+                (entry.id.clone(), (entry, ScopeLeaseBinding::default()))
+            })
+            .collect()
+    }
+
+    /// Review of #141 (round 4): ancestry is checked in one linear pass, so a chain as deep as
+    /// [`MAX_SCOPES`] restores at once, and a cycle (here through the whole chain) is refused.
+    #[test]
+    fn a_maximal_chain_restores_and_a_cycle_is_refused() {
+        let started = std::time::Instant::now();
+        let registry =
+            ScopeRegistry::from_compacted_parts(chained(MAX_SCOPES, false), Some(Revision(1)))
+                .unwrap();
+        assert_eq!(registry.compacted_len(), MAX_SCOPES);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(20),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(matches!(
+            ScopeRegistry::from_compacted_parts(chained(MAX_SCOPES, true), Some(Revision(1))),
+            Err(ScopeError::InvalidCommittedEvent)
+        ));
+        assert!(matches!(
+            ScopeRegistry::from_compacted_parts(chained(3, true), Some(Revision(1))),
+            Err(ScopeError::InvalidCommittedEvent)
+        ));
+        // A missing parent is refused too.
+        let mut orphan = chained(3, false);
+        orphan.remove(&scope(0).id);
+        assert!(ScopeRegistry::from_compacted_parts(orphan, Some(Revision(1))).is_err());
     }
 
     /// Review of #141 (P1): at [`MAX_SCOPES`] the next creation is refused with a typed error.

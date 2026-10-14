@@ -1084,3 +1084,65 @@ fn at_the_scope_bound_creation_is_refused_and_the_export_keeps_working() {
         .get(&ptr_types::ScopeId(long("id", 0)))
         .is_ok());
 }
+
+/// A history written without the execution-section budget (as an earlier build could): the
+/// fixture's records followed by `count` scopes with long ids, each committed by replay.
+fn over_budget_history(count: usize) -> Vec<CommittedEvent> {
+    let base = fixture();
+    let mut events = base.committed_events().to_vec();
+    let revision = base.revision();
+    let long = |tag: &str, i: usize| format!("{tag}-{i:05}-{}", "x".repeat(3_000));
+    for i in 0..count {
+        let scope = plain_scope(&long("id", i), &long("session", 0), &long("project", 0));
+        let event = ptr_runtime::scopes::lifecycle_event(
+            &scope,
+            None,
+            ptr_runtime::ScopeState::Created,
+            revision,
+            ptr_types::ScopeLeaseBinding::default(),
+            None,
+        );
+        let index = CommitIndex(events.len() as u64 + 1);
+        events.push(CommittedEvent {
+            index,
+            event: LedgerEvent::ScopeLifecycle(event),
+        });
+    }
+    events
+}
+
+/// Review of #141 (round 4): replay accepts a history larger than a compacted snapshot's
+/// execution section (it was written before the budget). The runtime opens and says so at
+/// once (execution_section_overflow); the export refuses it by name (CompactionBlocked), never
+/// with a generic section limit, and new growth is refused.
+#[test]
+fn a_replayed_history_over_the_execution_budget_is_reported_and_compaction_refused_by_name() {
+    use ptr_runtime::compacted::MAX_SECTION_BYTES;
+    let mut replayed = PtrRuntime::replay(PtrConfig::default(), &over_budget_history(1_000))
+        .expect("the log stays readable");
+    let overflow = replayed
+        .execution_section_overflow()
+        .expect("the overflow is reported right after the replay");
+    assert!(overflow.bytes > MAX_SECTION_BYTES);
+    let refused = replayed.export_compacted_snapshot();
+    assert!(
+        matches!(
+            &refused,
+            Err(RuntimeError::CompactionBlocked { bytes, .. }) if *bytes == overflow.bytes
+        ),
+        "{:?}",
+        refused.as_ref().err()
+    );
+    let events = replayed.committed_events().len();
+    let grown = replayed.create_scope(
+        plain_scope("one-more", "session", "project"),
+        ptr_types::ScopeLeaseBinding::default(),
+    );
+    assert!(
+        matches!(grown, Err(RuntimeError::ExecutionSectionFull { .. })),
+        "{grown:?}"
+    );
+    assert_eq!(replayed.committed_events().len(), events);
+    // A history within the budget reports nothing.
+    assert!(fixture().execution_section_overflow().is_none());
+}

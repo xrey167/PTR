@@ -616,6 +616,17 @@ pub enum RuntimeError {
         /// The longest of its lists, in items.
         items: usize,
     },
+    /// The execution section of this runtime's committed history (a history replayed, opened
+    /// or restored from a log written before the execution-section budget) is larger than a
+    /// compacted snapshot carries, so no snapshot can be exported; see
+    /// [`PtrRuntime::execution_section_overflow`](crate::PtrRuntime::execution_section_overflow).
+    /// The log stays authoritative and complete; nothing was written.
+    CompactionBlocked {
+        /// The bytes the section would take.
+        bytes: usize,
+        /// The longest of its lists, in items.
+        items: usize,
+    },
     LegacyAdmissionIncomplete {
         request_id: RequestId,
         pod_id: ptr_types::PodId,

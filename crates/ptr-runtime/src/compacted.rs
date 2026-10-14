@@ -1706,10 +1706,25 @@ pub(crate) fn settled_entry_bytes(key: &str, outcome: &SettledOutcome) -> usize 
 /// The room a keyed unsettled attempt reserves for its settlement: its settled entry without
 /// a response, the largest a settlement is ever allowed to take when the section is full (a
 /// response that no longer fits is not retained, see [`PtrRuntime::settlement_retains_response`]).
-fn reserved_settlement_bytes(effect: &UnsettledEffect) -> usize {
-    effect.key.as_ref().map_or(0, |key| {
-        4 + key.len() + 8 + 8 + identity_bytes(&effect.identity)
-    })
+///
+/// A key that is already settled (an attempt after a `NotApplied` reconciliation) is replaced
+/// rather than added: it reserves only the difference to the entry it replaces and adds no
+/// item. Returns the reserved bytes and whether the settlement adds a settled item.
+fn reserved_settlement(
+    effect: &UnsettledEffect,
+    settled: &BTreeMap<String, SettledOutcome>,
+) -> (usize, bool) {
+    let Some(key) = effect.key.as_ref() else {
+        return (0, false);
+    };
+    let entry = 4 + key.len() + 8 + 8 + identity_bytes(&effect.identity);
+    match settled.get(key) {
+        Some(existing) => (
+            entry.saturating_sub(settled_entry_bytes(key, existing)),
+            false,
+        ),
+        None => (entry, true),
+    }
 }
 
 /// The execution section a compacted snapshot of this runtime would carry, with every keyed
@@ -1739,21 +1754,60 @@ impl SectionUse {
     }
 }
 
+/// How far the execution section of a runtime's committed history exceeds what a compacted
+/// snapshot can carry ([`PtrRuntime::execution_section_overflow`]).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ExecutionSectionOverflow {
+    /// The bytes the section would take.
+    pub bytes: usize,
+    /// The longest of its lists, in items.
+    pub items: usize,
+}
+
 impl PtrRuntime {
+    /// `Some` when the execution section of this runtime's committed history (unsettled
+    /// attempts, settled keys, scopes) does not fit a compacted snapshot. A runtime that
+    /// committed every record itself never gets here (each commit is held to the budget), but
+    /// replay, a durable open and a compacted restore accept a history written before the
+    /// budget existed, so a host checks this after opening and before it plans a compaction:
+    /// [`PtrRuntime::export_compacted_snapshot`] refuses such a history with
+    /// [`RuntimeError::CompactionBlocked`], never with a generic section limit, and every new
+    /// attempt or scope is refused with [`RuntimeError::ExecutionSectionFull`]. The runtime
+    /// itself opens: its log stays authoritative and complete, only compaction is closed to it.
+    pub fn execution_section_overflow(&self) -> Option<ExecutionSectionOverflow> {
+        let encoded = self.execution_section(false);
+        (!encoded.fits()).then(|| ExecutionSectionOverflow {
+            bytes: encoded.bytes,
+            items: encoded.unsettled.max(encoded.settled).max(encoded.scopes),
+        })
+    }
+
     /// The execution section's use now (`ExecutionObligations::encode` exactly, plus the
     /// settlement reservations).
     pub(crate) fn execution_section_use(&self) -> SectionUse {
+        self.execution_section(true)
+    }
+
+    /// The section as encoded, plus the settlement reservations when `reserve` is set.
+    fn execution_section(&self, reserve: bool) -> SectionUse {
         let (unsettled, settled) = self.execution.retained_obligations();
         let keyed = unsettled
             .values()
-            .filter(|effect| effect.key.is_some())
+            .filter(|effect| reserve && reserved_settlement(effect, settled).1)
             .count();
         SectionUse {
             bytes: 8
                 + 4
                 + unsettled
                     .values()
-                    .map(|effect| unsettled_entry_bytes(effect) + reserved_settlement_bytes(effect))
+                    .map(|effect| {
+                        unsettled_entry_bytes(effect)
+                            + if reserve {
+                                reserved_settlement(effect, settled).0
+                            } else {
+                                0
+                            }
+                    })
                     .sum::<usize>()
                 + 4
                 + settled
@@ -1802,9 +1856,11 @@ impl PtrRuntime {
                     },
                 };
                 let mut use_ = self.execution_section_use();
-                use_.bytes += unsettled_entry_bytes(&attempt) + reserved_settlement_bytes(&attempt);
+                let (reserved, adds_item) =
+                    reserved_settlement(&attempt, self.execution.retained_obligations().1);
+                use_.bytes += unsettled_entry_bytes(&attempt) + reserved;
                 use_.unsettled += 1;
-                use_.settled += usize::from(attempt.key.is_some());
+                use_.settled += usize::from(adds_item);
                 use_
             }
             ptr_ledger::LedgerEvent::ScopeLifecycle(scope) => {
@@ -1843,7 +1899,8 @@ impl PtrRuntime {
             .get(key)
             .map_or(0, |outcome| settled_entry_bytes(key, outcome));
         let with_response = 4 + key.len() + 8 + 8 + identity_bytes(&effect.identity) + 4 + len;
-        let freed = unsettled_entry_bytes(effect) + reserved_settlement_bytes(effect) + replaced;
+        let freed =
+            unsettled_entry_bytes(effect) + reserved_settlement(effect, settled).0 + replaced;
         (current.bytes + with_response).saturating_sub(freed) <= MAX_SECTION_BYTES
     }
 }
@@ -2008,6 +2065,14 @@ impl PtrRuntime {
     /// Compact the log to this floor afterwards, not before — the snapshot must be
     /// durable before the records it replaces are discarded.
     pub fn export_compacted_snapshot(&self) -> Result<CompactedSnapshot, RuntimeError> {
+        // A history written before the execution-section budget can hold more than a snapshot
+        // carries: refuse it by name, before anything is encoded.
+        if let Some(overflow) = self.execution_section_overflow() {
+            return Err(RuntimeError::CompactionBlocked {
+                bytes: overflow.bytes,
+                items: overflow.items,
+            });
+        }
         let floor = self.journal_anchor()?;
         if self.state.last_applied != floor.index.0 {
             return Err(invalid(CompactedError::StateMismatch));
@@ -3407,5 +3472,40 @@ mod scope_block_tests {
             scoped.encode().unwrap().len(),
             accounted(&scoped, registry.snapshot_bytes())
         );
+    }
+
+    /// Review of #141 (round 4): at the settled-item bound, an attempt under a key that is
+    /// already settled (a retry after a `NotApplied` reconciliation) replaces that entry and is
+    /// admitted; an attempt under a new key would add an item and is refused.
+    #[test]
+    fn a_retry_of_a_settled_key_is_admitted_at_the_item_bound() {
+        let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+        let settled: BTreeMap<String, SettledOutcome> = (0..MAX_SECTION_ITEMS)
+            .map(|i| (format!("k{i:05}"), SettledOutcome::NotApplied))
+            .collect();
+        runtime
+            .execution
+            .restore_obligations(BTreeMap::new(), settled);
+        let attempt = |key: &str| ptr_ledger::LedgerEvent::EffectAttempted {
+            key: Some(key.to_owned()),
+            project: ProjectId::from("p"),
+            principal: "alice".into(),
+            target: "capsule:a".into(),
+            operation: "write".into(),
+            capability: ptr_types::CapabilityId::from("file.write"),
+            effect: Effect::Mutation,
+            generation: Generation(1),
+            revision: Revision(1),
+            verification: ptr_types::VerificationLevel::Deterministic,
+            action_digest: [1; 32],
+        };
+        assert!(runtime.execution_section_use().settled == MAX_SECTION_ITEMS);
+        runtime
+            .check_execution_section_growth(&attempt("k00007"))
+            .unwrap();
+        assert!(matches!(
+            runtime.check_execution_section_growth(&attempt("fresh")),
+            Err(RuntimeError::ExecutionSectionFull { items, .. }) if items == MAX_SECTION_ITEMS + 1
+        ));
     }
 }

@@ -1127,9 +1127,10 @@ impl<S: AdmissibleScorer> VcwLoop<S> {
                             self.counters.repairs_applied =
                                 self.counters.repairs_applied.saturating_add(1);
                             current = edited;
-                            if !applied.contains(pod) {
-                                applied.push(pod.clone());
-                            }
+                            // The last entry is the Pod that made the last edit: a Pod that
+                            // edits again moves to the end (A, B, A gives B, A).
+                            applied.retain(|earlier| earlier != pod);
+                            applied.push(pod.clone());
                         }
                         Some(_) => {
                             self.counters.repairs_out_of_scope =
