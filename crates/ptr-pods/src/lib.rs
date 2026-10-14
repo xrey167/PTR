@@ -134,8 +134,9 @@ pub use text_generator::{
     MAX_NEW_TOKENS_LIMIT,
 };
 pub use tier_storage::{
-    ArtifactTierAdapter, ArtifactTierBinding, KvTierAdapter, KvTierBinding, ModelWeightTierAdapter,
-    ModelWeightTierBinding, PagedKvTierAdapter, PodTierError,
+    ArtifactTierAdapter, ArtifactTierBinding, ExpertWeightTierAdapter, ExpertWeightTierBinding,
+    KvTierAdapter, KvTierBinding, ModelWeightTierAdapter, ModelWeightTierBinding,
+    PagedKvTierAdapter, PodTierError, MAX_EXPERTS_PER_MODEL,
 };
 pub use transport::{PodWireRequest, PodWireResponse, TransportError};
 pub use turns::{DuplexSession, PodTurnEvent, PodTurnKind, TurnError};

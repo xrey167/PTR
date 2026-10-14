@@ -193,13 +193,13 @@ impl<B: KvTensorBackend> ManagedKvRegistry<B> {
             .issue_lease(state_id.clone(), pod_id)
             .map_err(|_| TensorKvError::StaleLease)?;
         if snapshot.schema.device != *lease.device_id() {
-            let _ = placement.revoke_lease(lease.state_id());
+            let _ = placement.revoke_lease_for(&lease);
             return Err(TensorKvError::DeviceMismatch);
         }
         let cache = match self.backend.restore(snapshot.clone(), lease.device_id()) {
             Ok(cache) => cache,
             Err(error) => {
-                let _ = placement.revoke_lease(lease.state_id());
+                let _ = placement.revoke_lease_for(&lease);
                 return Err(TensorKvError::Backend(error));
             }
         };
@@ -366,7 +366,7 @@ impl<B: KvTensorBackend> ManagedKvRegistry<B> {
             .validate_lease(&record.lease)
             .map_err(|_| TensorKvError::StaleLease)?;
         placement
-            .revoke_lease(record.lease.state_id())
+            .revoke_lease_for(&record.lease)
             .map_err(|_| TensorKvError::StaleLease)?;
         record.metadata.valid = false;
         let revoked = backend
@@ -422,7 +422,7 @@ impl<B: KvTensorBackend> ManagedKvRegistry<B> {
             .map_err(|_| TensorKvError::StaleLease)?;
         let record = self.records.remove(&handle.state_id).unwrap();
         placement
-            .revoke_lease(record.lease.state_id())
+            .revoke_lease_for(&record.lease)
             .map_err(|_| TensorKvError::StaleLease)?;
         let released = self
             .backend
@@ -459,7 +459,7 @@ impl<B: PagedKvTensorBackend> ManagedKvRegistry<B> {
             .issue_lease(state_id.clone(), pod_id)
             .map_err(|_| TensorKvError::StaleLease)?;
         if schema.device != *lease.device_id() || context.execution_manifest == [0; 32] {
-            let _ = placement.revoke_lease(lease.state_id());
+            let _ = placement.revoke_lease_for(&lease);
             return Err(TensorKvError::DeviceMismatch);
         }
         let binding = KvPageBinding {
@@ -478,7 +478,7 @@ impl<B: PagedKvTensorBackend> ManagedKvRegistry<B> {
         {
             Ok(cache) => cache,
             Err(error) => {
-                let _ = placement.revoke_lease(lease.state_id());
+                let _ = placement.revoke_lease_for(&lease);
                 return Err(TensorKvError::Backend(error));
             }
         };
@@ -487,7 +487,7 @@ impl<B: PagedKvTensorBackend> ManagedKvRegistry<B> {
             fencing_token: lease.fencing_token().0,
         };
         if let Err(error) = self.backend.bind_runtime_lease(&mut cache, runtime_binding) {
-            let _ = placement.revoke_lease(lease.state_id());
+            let _ = placement.revoke_lease_for(&lease);
             let _ = self.backend.release(cache);
             return Err(TensorKvError::Backend(error));
         }
@@ -570,7 +570,7 @@ impl<B: PagedKvTensorBackend> ManagedKvRegistry<B> {
             || snapshot.schema.model != snapshot.binding.model
             || snapshot.schema.adapter != snapshot.binding.adapter
         {
-            let _ = placement.revoke_lease(lease.state_id());
+            let _ = placement.revoke_lease_for(&lease);
             return Err(TensorKvError::TierBindingMismatch);
         }
         let mut target_binding = snapshot.binding.clone();
@@ -578,7 +578,7 @@ impl<B: PagedKvTensorBackend> ManagedKvRegistry<B> {
         let mut cache = match self.backend.restore_paged(snapshot.clone(), target_binding) {
             Ok(cache) => cache,
             Err(error) => {
-                let _ = placement.revoke_lease(lease.state_id());
+                let _ = placement.revoke_lease_for(&lease);
                 return Err(TensorKvError::Backend(error));
             }
         };
@@ -587,7 +587,7 @@ impl<B: PagedKvTensorBackend> ManagedKvRegistry<B> {
             fencing_token: lease.fencing_token().0,
         };
         if let Err(error) = self.backend.bind_runtime_lease(&mut cache, runtime_binding) {
-            let _ = placement.revoke_lease(lease.state_id());
+            let _ = placement.revoke_lease_for(&lease);
             let _ = self.backend.release(cache);
             return Err(TensorKvError::Backend(error));
         }

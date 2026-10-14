@@ -118,7 +118,7 @@ generation, digest and fence epoch), the **payload types** the operation accepts
 **authority-derived project** (`ProjectId`) the operation runs in. Pod and stage ids are unique
 only within a project (`PodRegistry` allows the same Pod id in two projects), so every lookup of
 the record's placement, inputs and worker session is keyed by that project, and a handle whose
-consumer placement, inputs or worker session belong to another project is refused. Admission and
+consumer placement, inputs or worker session belong to another project is refused. The placement controller keys placements, leases and freezes by (`ProjectId`, `PodId`), and handle admission and consumption read the placement epoch for the project of the call (`StageLiveness::placement_epoch_in`), so a stage of the same name in another project is not this handle's stage. Admission and
 consumption both ask the authority whether the operation is known, every input is still live at
 the current committed anchor, every Raw ancestor is still present (not erased) with its recorded
 digest, the consumer stage still holds the recorded destination placement and epoch and is

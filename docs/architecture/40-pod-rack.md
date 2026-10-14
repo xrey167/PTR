@@ -45,7 +45,7 @@ one Pod on one device (`:42`); `assign` places one Pod at a time (`:171`); `PodR
 is RAM, VRAM and concurrency (`crates/ptr-pods/src/semantic.rs:59`); `ResourceRequirements`
 adds an optional `DeviceId` (`crates/ptr-pods/src/neural.rs:38`). The pipeline split of doc 36
 binds a `placement_epoch` into every `ActivationFrame` but has no notion of how far the two
-stages may be apart.
+stages may be apart. Placements are keyed by (`ProjectId`, `PodId`); nodes and devices stay global.
 
 The NVL72 pattern supplies exactly the three missing nouns, and they are nouns about
 **placement**, not about what a Pod is, so they fit the rule above without touching
