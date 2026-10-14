@@ -590,3 +590,42 @@ fn responder_hello_and_decl_survive_a_full_queue() {
     a.pump(&mut ta).unwrap();
     assert_eq!(a.state(), SessionState::Negotiated);
 }
+
+#[test]
+fn reply_refused_by_serve_all_is_held_and_sent_once_after_the_peer_drains() {
+    let ((mut a, mut ta), (mut b, mut tb)) = handshake_with_capacity(2);
+    let mut executions = 0;
+    let mut handler = |p: &TypedPayload| {
+        executions += 1;
+        p.clone()
+    };
+    ta.send(&a.call(key("k"), payload(b"x")).unwrap()).unwrap();
+    ta.send(&a.call(key("k2"), payload(b"y")).unwrap()).unwrap();
+    b.pump(&mut tb).unwrap();
+    fill(&mut tb, 2);
+    // The first Reply is refused; serving stops there and the second call stays queued.
+    assert!(matches!(
+        b.serve_all(&mut tb, &mut handler),
+        Err(DriveError::Transport(TransportError::Full { .. }))
+    ));
+    assert_eq!(b.unsent_frames(), 1);
+    assert_eq!(b.queued_calls(), 1);
+    // Still full: nothing is served and nothing more is held.
+    assert!(b.serve_all(&mut tb, &mut handler).is_err());
+    assert_eq!(b.unsent_frames(), 1);
+    assert_eq!(b.queued_calls(), 1);
+    // The peer drains its inbox; retrying the drive operation delivers the held Reply first.
+    a.pump(&mut ta).unwrap();
+    assert_eq!(b.serve_all(&mut tb, &mut handler).unwrap(), 1);
+    assert_eq!(b.unsent_frames(), 0);
+    let events = a.pump(&mut ta).unwrap();
+    let replies: Vec<u64> = events
+        .iter()
+        .filter_map(|event| match event {
+            SessionEvent::Replied { seq, .. } => Some(*seq),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(replies, vec![1, 2]);
+    assert_eq!(a.outstanding_calls(), 0);
+}

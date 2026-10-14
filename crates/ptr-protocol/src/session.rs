@@ -16,7 +16,7 @@
 //! `completed_capacity` remembered idempotency keys (least recently used is evicted, after
 //! which a retry of that key would execute again), at most `completed_capacity` remembered
 //! answered sequence numbers (oldest evicted), at most `capacity` frames per queue, and at
-//! most [`MAX_UNSENT_FRAMES`] answers held by `pump` after a refused send.
+//! most [`MAX_UNSENT_FRAMES`] frames held by `pump` or `serve_all` after a refused send.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
@@ -45,7 +45,8 @@ pub const MAX_COMPLETED_CAPACITY: usize = 65_536;
 /// [`LoopbackTransport::pair`] is clamped to this.
 pub const MAX_TRANSPORT_CAPACITY: usize = 65_536;
 /// Most frames [`ProtocolSession::pump`] holds after a failed send: one applied frame produces
-/// at most two (Hello and Decl) and `pump` stops receiving until they are out.
+/// at most two (Hello and Decl) and `pump` stops receiving until they are out. `serve_all`
+/// adds one Reply only when nothing is held, then stops serving.
 pub const MAX_UNSENT_FRAMES: usize = 2;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -814,6 +815,11 @@ impl ProtocolSession {
     }
 
     /// Serves every queued call and sends the Replies; returns how many were served.
+    ///
+    /// Held frames (see [`ProtocolSession::pump`]) are sent first and nothing is served while
+    /// any remain. A Reply the transport refuses is held like a `pump` answer, because
+    /// serving already removed the call and cached its result: retrying `serve_all` or `pump`
+    /// sends it exactly once, and serving stops at the first refusal.
     pub fn serve_all<T, H>(
         &mut self,
         transport: &mut T,
@@ -823,9 +829,10 @@ impl ProtocolSession {
         T: FrameTransport,
         H: FnMut(&TypedPayload) -> TypedPayload,
     {
+        self.send_all(transport, Vec::new())?;
         let mut served = 0;
         while let Some(reply) = self.serve_next(handler).map_err(DriveError::Session)? {
-            transport.send(&reply).map_err(DriveError::Transport)?;
+            self.send_all(transport, vec![reply])?;
             served += 1;
         }
         Ok(served)
