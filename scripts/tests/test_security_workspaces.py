@@ -141,6 +141,13 @@ class SecurityWorkspaceTests(unittest.TestCase):
         def failed(command, **kwargs):
             return SimpleNamespace(returncode=101, stdout='', stderr='error')
         self.assertEqual(len(security.reachable_audit_exceptions(ROOT, run=failed)), 1)
+        # Newer Cargo reports a locked package outside the resolved graph as an
+        # unmatched package ID instead of printing nothing; that is unreachable.
+        def unmatched(command, **kwargs):
+            return SimpleNamespace(
+                returncode=101, stdout='',
+                stderr="error: package ID specification `rustls@0.23.45` did not match any packages")
+        self.assertEqual(security.reachable_audit_exceptions(ROOT, run=unmatched), [])
 
 if __name__ == '__main__':
     unittest.main()

@@ -98,8 +98,11 @@ def reachable_audit_exceptions(root: Path, run=subprocess.run) -> list[str]:
     """Exceptions whose package the workspace can build for some target or feature.
 
     `cargo tree -i <name>@<version>` over every target, every feature and every
-    edge kind prints nothing when no path leads to the package; any output (or
-    a failed command) means the exception no longer holds.
+    edge kind prints nothing when no path leads to the package. Depending on the
+    Cargo version, a package that is locked but outside the resolved graph is
+    reported either that way (exit 0, "nothing to print") or as an unmatched
+    package ID (exit 101, "did not match any packages"); both mean unreachable.
+    Any printed path, or any other failure, means the exception no longer holds.
     """
     reachable = []
     for manifest, exception in sorted(AUDIT_EXCEPTIONS.items()):
@@ -108,7 +111,9 @@ def reachable_audit_exceptions(root: Path, run=subprocess.run) -> list[str]:
                    "--locked", "--target", "all", "--all-features",
                    "-e", "normal,build,dev", "-i", f"{name}@{version}"]
         result = run(command, cwd=root, capture_output=True, **TEXT_OUTPUT)
-        if result.returncode != 0 or result.stdout.strip():
+        unmatched = (result.returncode == 101 and not result.stdout.strip()
+                     and "did not match any packages" in result.stderr)
+        if not unmatched and (result.returncode != 0 or result.stdout.strip()):
             reachable.append(f"{manifest}: {name} {version} is reachable or the graph "
                              f"check failed (exit {result.returncode})")
     return reachable
