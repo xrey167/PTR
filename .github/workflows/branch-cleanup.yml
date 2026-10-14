@@ -6,9 +6,11 @@ name: branch-cleanup
 # - workflow_dispatch with archive_branches: each named branch (not main, not an open PR head)
 #   is first preserved as the tag archive/<name> at its current tip and then deleted, whether or
 #   not main contains it. Only the branches named in the input are touched.
-# Safety: a branch is deleted only when the commit that was checked is contained in main, and
-# the deletion is a compare-and-delete (git push --force-with-lease=<ref>:<checked sha>), so a
-# branch that moves in between is kept. Branch names never go into an API URL and reach the
+# Safety: a merged-branch deletion needs the work to be in main (the PR's merge commit for the
+# automatic job, which covers merge, squash and rebase merges; the branch tip for the manual job),
+# and every deletion re-checks for an open PR on that branch right before it and is a
+# compare-and-delete (git push --force-with-lease=<ref>:<checked sha>), so a branch that moves in
+# between is kept. Branch names never go into an API URL and reach the
 # scripts only through env. Any lookup error fails the job instead of passing as "gone".
 on:
   pull_request:
@@ -53,6 +55,7 @@ jobs:
           DEFAULT: ${{ github.event.repository.default_branch }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
         run: |
           set -euo pipefail
           ref="refs/heads/$HEAD_REF"
@@ -65,8 +68,10 @@ jobs:
           open=$(gh pr list --repo "$REPO" --state open --head "$HEAD_REF" --json number --jq length)
           if [ "$open" != "0" ]; then echo "kept: $HEAD_REF heads an open PR"; exit 0; fi
           git fetch --quiet origin "$DEFAULT"
-          if ! git merge-base --is-ancestor "$HEAD_SHA" "origin/$DEFAULT"; then
-            echo "kept: $HEAD_REF is not contained in $DEFAULT"; exit 0
+          # The merge commit (also the squash or rebase result) must be in main; the head commit
+          # itself is not an ancestor after a squash or rebase merge.
+          if [ -z "$MERGE_SHA" ] || ! git merge-base --is-ancestor "$MERGE_SHA" "origin/$DEFAULT"; then
+            echo "kept: the merge of $HEAD_REF is not contained in $DEFAULT"; exit 0
           fi
           git push --force-with-lease="$ref:$HEAD_SHA" origin ":$ref"
           echo "deleted: $HEAD_REF"
@@ -91,6 +96,8 @@ jobs:
         run: |
           set -euo pipefail
           git fetch --quiet --prune origin '+refs/heads/*:refs/remotes/origin/*'
+          # Re-asked right before each deletion: a PR opened during the run is not in the snapshot.
+          has_open_pr() { [ "$(gh pr list --repo "$REPO" --state open --head "$1" --json number --jq length)" != "0" ]; }
           open_heads=$(gh pr list --repo "$REPO" --state open --limit 1000 --json headRefName --jq '.[].headRefName')
           contained=0; kept=0; failed=0
           while IFS=' ' read -r sha ref; do
@@ -106,6 +113,8 @@ jobs:
             contained=$((contained + 1))
             if [ "$DRY_RUN" = "true" ]; then
               echo "would delete: $name"
+            elif has_open_pr "$name"; then
+              echo "kept (PR opened during the run): $name"; contained=$((contained - 1)); kept=$((kept + 1))
             elif git push --force-with-lease="refs/heads/$name:$sha" origin ":refs/heads/$name"; then
               echo "deleted: $name"
             else
@@ -136,6 +145,8 @@ jobs:
           BRANCHES: ${{ inputs.archive_branches }}
         run: |
           set -euo pipefail
+          # Re-asked right before each deletion: a PR opened during the run is not in the snapshot.
+          has_open_pr() { [ "$(gh pr list --repo "$REPO" --state open --head "$1" --json number --jq length)" != "0" ]; }
           open_heads=$(gh pr list --repo "$REPO" --state open --limit 1000 --json headRefName --jq '.[].headRefName')
           archived=0; skipped=0; failed=0
           # No pathname expansion: a name such as '*' must never match files of the checkout.
@@ -163,6 +174,9 @@ jobs:
             fi
             if [ "$DRY_RUN" = "true" ]; then
               echo "would archive $name at $sha as archive/$name and delete it"; archived=$((archived + 1)); continue
+            fi
+            if has_open_pr "$name"; then
+              echo "skipped (PR opened during the run): $name"; skipped=$((skipped + 1)); continue
             fi
             git fetch --quiet --depth=1 origin "$sha"
             if [ -z "$peeled" ]; then
