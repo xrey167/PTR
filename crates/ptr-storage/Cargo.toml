@@ -12,7 +12,7 @@ tier-opendal-fs = ["tier-opendal", "opendal/services-fs"]
 tier-opendal-s3 = ["tier-opendal", "opendal/services-s3"]
 # Linux only; compiles to nothing on other targets.
 tier-pinned = ["dep:rustix", "rustix/mm", "rustix/param"]
-tier-direct-io = ["dep:rustix", "rustix/fs"]
+tier-direct-io = ["dep:rustix", "rustix/fs", "rustix/mm", "rustix/param"]
 
 [dependencies]
 ptr-types = { workspace = true }

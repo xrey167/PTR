@@ -89,8 +89,14 @@ def stale_audit_exceptions(root: Path) -> list[str]:
         name, version = exception["package"]
         packages = (tomllib.loads(lock.read_text(encoding="utf-8")).get("package", [])
                     if lock.is_file() else [])
-        if not any(p.get("name") == name and p.get("version") == version for p in packages):
+        versions = sorted(p.get("version") for p in packages if p.get("name") == name)
+        if version not in versions:
             stale.append(f"{manifest}: {name} {version} is no longer locked")
+        elif versions != [version]:
+            # cargo-audit's --ignore is by advisory ID for the whole lockfile, so a second
+            # locked version of the package would be silenced too.
+            stale.append(f"{manifest}: {name} is also locked at {versions}; "
+                         f"--ignore would cover more than {version}")
     return stale
 
 

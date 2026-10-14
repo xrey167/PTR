@@ -125,6 +125,17 @@ class SecurityWorkspaceTests(unittest.TestCase):
             self.assertEqual(len(stale), 1)
             self.assertIn('rustls 0.23.45 is no longer locked', stale[0])
 
+    def test_audit_exception_goes_stale_when_a_second_version_is_locked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'model/burn-a0').mkdir(parents=True)
+            (root / 'model/burn-a0/Cargo.lock').write_text(
+                'version = 4\n\n[[package]]\nname = "rustls"\nversion = "0.23.45"\n'
+                '\n[[package]]\nname = "rustls"\nversion = "0.23.40"\n')
+            stale = security.stale_audit_exceptions(root)
+            self.assertEqual(len(stale), 1)
+            self.assertIn('also locked at', stale[0])
+
     def test_audit_exception_fails_when_the_package_becomes_reachable(self):
         from types import SimpleNamespace
         calls = []
