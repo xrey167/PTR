@@ -235,6 +235,14 @@ fn exhaustive_outage_sweep_never_yields_an_unverified_or_unsafe_recipe() {
                                         .stages()
                                         .iter()
                                         .any(|s| s.kind.effect() == StageEffect::Effectful);
+                                    if let Some(at) = recipe
+                                        .stages()
+                                        .iter()
+                                        .position(|s| s.kind.effect() == StageEffect::Effectful)
+                                    {
+                                        // Pre-effect rule: a verifier gates the effect.
+                                        assert_eq!(recipe.stages()[at - 1].kind, StageKind::Verify);
+                                    }
                                     if effect == StageEffect::Effectful {
                                         // The effect is either performed (pod not down) or the
                                         // plan escalated; it is never silently dropped.

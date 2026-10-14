@@ -1,8 +1,9 @@
 //! A typed, validated execution plan and the deterministic planner that builds it.
 //!
 //! An [`ExecutionRecipe`] is an ordered list of [`Stage`]s with per-stage budgets. Validation
-//! requires a verifier stage after every effectful stage and a verifier stage as the terminal
-//! stage, so a recipe can never end in unverified output. The planner assembles recipes from
+//! requires a verifier stage before every effectful stage (the gate that can stop it), a
+//! verifier stage after it, and a verifier stage as the terminal stage, so a recipe can never
+//! end in unverified output. The planner assembles recipes from
 //! choices that were already made among eligible options (see `policies`); it adds no
 //! authority of its own and cannot name a Pod except through a [`CheckedCandidate`].
 
@@ -265,6 +266,11 @@ pub enum RecipeError {
     EffectWithoutVerifier {
         stage: usize,
     },
+    /// The effectful stage at `stage` has no verifier stage between it and the previous
+    /// effectful stage (or the start), so nothing gates the effect before it happens.
+    EffectWithoutPreVerifier {
+        stage: usize,
+    },
     TerminalStageNotVerifier,
     /// The recipe has nothing but verification.
     NoWorkStage,
@@ -288,6 +294,12 @@ impl fmt::Display for RecipeError {
                     "effectful stage {stage} is not followed by a verifier stage"
                 )
             }
+            Self::EffectWithoutPreVerifier { stage } => {
+                write!(
+                    f,
+                    "effectful stage {stage} is not preceded by a gating verifier stage"
+                )
+            }
             Self::TerminalStageNotVerifier => write!(f, "the terminal stage is not a verifier"),
             Self::NoWorkStage => write!(f, "recipe contains only verification"),
             Self::MissingCheckedCandidate => {
@@ -307,8 +319,9 @@ pub struct ExecutionRecipe {
 
 impl ExecutionRecipe {
     /// Validates in this order: non-empty, at most [`MAX_STAGES`], every latency budget
-    /// positive, a verifier stage after every effectful stage, a verifier as terminal stage,
-    /// and at least one non-verifier stage.
+    /// positive, a verifier stage after every effectful stage, a verifier stage before every
+    /// effectful stage since the previous one (the pre-effect gate), a verifier as terminal
+    /// stage, and at least one non-verifier stage.
     pub fn new(stages: Vec<Stage>) -> Result<Self, RecipeError> {
         if stages.is_empty() {
             return Err(RecipeError::Empty);
@@ -327,6 +340,19 @@ impl ExecutionRecipe {
                 .any(|later| later.kind == StageKind::Verify);
             if stage.kind.effect() == StageEffect::Effectful && !verified_later {
                 return Err(RecipeError::EffectWithoutVerifier { stage: index });
+            }
+        }
+        // Pre-effect gate: between the previous effectful stage (or the start) and every effectful
+        // stage there must be a verifier, so a failing verifier can stop the effect.
+        let mut gated = false;
+        for (index, stage) in stages.iter().enumerate() {
+            if stage.kind == StageKind::Verify {
+                gated = true;
+            } else if stage.kind.effect() == StageEffect::Effectful {
+                if !gated {
+                    return Err(RecipeError::EffectWithoutPreVerifier { stage: index });
+                }
+                gated = false;
             }
         }
         if stages.last().map(|s| &s.kind) != Some(&StageKind::Verify) {
@@ -431,8 +457,8 @@ pub struct PlanInputs<'a> {
 
 /// Builds recipes deterministically: the same inputs give the same recipe.
 ///
-/// Order: retrieval, optional symbolic plan, model call, optional symbolic check, Pod call,
-/// terminal verification. A request that selects no work at all gets one symbolic check so the
+/// Order: retrieval, optional symbolic plan, model call, optional symbolic check, a gating
+/// verification when the Pod call is effectful, Pod call, terminal verification. A request that selects no work at all gets one symbolic check so the
 /// recipe never contains only verification.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RecipePlanner {
@@ -500,6 +526,19 @@ impl RecipePlanner {
         }
         if stages.is_empty() {
             stages.push(symbolic(SymbolicStep::Check, budgets));
+        }
+        // The post-effect verifier added below cannot stop an effect that already happened.
+        if let Some(effectful) = stages
+            .iter()
+            .position(|s| s.kind.effect() == StageEffect::Effectful)
+        {
+            stages.insert(
+                effectful,
+                Stage {
+                    kind: StageKind::Verify,
+                    budget: budgets.verify,
+                },
+            );
         }
         stages.push(Stage {
             kind: StageKind::Verify,
@@ -612,6 +651,13 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(ok.stages().len(), 3);
+        assert_eq!(
+            ExecutionRecipe::new(vec![
+                stage(pod(StageEffect::Effectful)),
+                stage(StageKind::Verify),
+            ]),
+            Err(RecipeError::EffectWithoutPreVerifier { stage: 0 })
+        );
         assert_eq!(ok.total_cost_units(), 3);
         assert_eq!(ok.total_latency_ms(), 30);
     }
