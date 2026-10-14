@@ -228,3 +228,36 @@ fn usage_errors_exit_two_and_help_exits_zero() {
     assert!(text.contains("snapshot"), "{text}");
     assert!(text.contains("exit codes:"), "{text}");
 }
+
+#[test]
+fn control_characters_in_consumer_names_never_reach_the_terminal() {
+    // A producer with write access to the log persists a consumer name carrying an OSC title
+    // sequence; `ptrctl events` must print it escaped, both as the slowest consumer and when the
+    // operator names it with --consumer.
+    let hostile = "evil\u{1b}]0;pwned\u{7}\u{1b}[2J";
+    let dir = TempDir::new("events-escape");
+    {
+        let mut log = FileEventLog::open(dir.path(), FileLogConfig::new(16)).expect("open");
+        log.publish(record(EventClass::Projection, "ledger.commit", b"a"))
+            .expect("publish");
+        log.register(hostile, Offset(0)).expect("register");
+    }
+
+    for args in [
+        vec![dir.path().as_os_str()],
+        vec![
+            dir.path().as_os_str(),
+            OsStr::new("--consumer"),
+            OsStr::new(hostile),
+        ],
+    ] {
+        let output = run(&args);
+        assert_eq!(code(&output), 0, "{}", stderr(&output));
+        let text = stdout(&output);
+        assert!(
+            !text.contains(['\u{1b}', '\u{7}']),
+            "raw control characters were printed: {text:?}"
+        );
+        assert!(text.contains("evil\\u{1b}]0;pwned\\u{7}"), "{text}");
+    }
+}

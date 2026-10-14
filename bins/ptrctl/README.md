@@ -53,8 +53,10 @@ platforms the temp directory's inherited permissions apply. The source directory
 rewritten. Each file is copied through a reader bounded to the size counted for the 512 MiB
 check; if a live writer grew a file in between, the command exits 1 ("grew beyond") instead of
 copying more. If the snapshot has a torn tail, the command exits 1 with a message instead of
-listing a log that a writer would repair. A directory with none of those files is refused. The
-snapshot is opened with the default record-size bound, and only the slowest consumer is listed
+listing a log that a writer would repair. A directory with none of those files is refused.
+Consumer names and topics read from the log are printed escaped, so a log written by a
+lower-trust producer cannot send terminal control sequences. The snapshot is opened with the
+default record-size bound, and only the slowest consumer is listed
 unless `--consumer` names one (the crate exposes no consumer listing).
 
 ## `ptrctl trace`

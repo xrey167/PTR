@@ -269,6 +269,8 @@ fn list(request: &Request) -> Result<String, String> {
         .replay(from, request.limit)
         .map_err(|e| format!("cannot list from offset {}: {}", from.0, describe(&e)))?;
 
+    // Consumer names and topics come from the log files, which a lower-trust producer may have
+    // written: they are printed through `escape_debug` so they cannot send terminal sequences.
     let mut out = String::new();
     out.push_str(&format!(
         "log: {}\nsegments: {} records: {} low_water: {} end: {}\n",
@@ -282,14 +284,17 @@ fn list(request: &Request) -> Result<String, String> {
         let committed = log.committed(name).map_err(|e| describe(&e))?;
         let lag = log.lag(name).map_err(|e| describe(&e))?;
         out.push_str(&format!(
-            "consumer {name}: committed {} lag {lag}\n",
+            "consumer {}: committed {} lag {lag}\n",
+            name.escape_debug(),
             committed.0
         ));
     }
     match log.blocked_by() {
         Some(slowest) => out.push_str(&format!(
             "slowest consumer {}: committed {} lag {}\n",
-            slowest.consumer, slowest.committed.0, slowest.lag
+            slowest.consumer.escape_debug(),
+            slowest.committed.0,
+            slowest.lag
         )),
         None => out.push_str("slowest consumer: none registered\n"),
     }
