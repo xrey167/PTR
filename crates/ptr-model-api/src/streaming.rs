@@ -250,16 +250,6 @@ pub fn collect_stream(stream: &mut dyn EventStream) -> Result<CollectedStream, G
     }
 }
 
-struct VecSource {
-    items: VecDeque<StreamItem>,
-}
-
-impl StreamSource for VecSource {
-    fn next_item(&mut self) -> Result<Option<StreamItem>, GenerationError> {
-        Ok(self.items.pop_front())
-    }
-}
-
 /// Adaptor: any [`InferenceBackend`] as a [`StreamingBackend`].
 ///
 /// `infer` still returns its whole `Vec` at open time (that is the existing contract), so
@@ -286,19 +276,67 @@ impl<B: InferenceBackend> InferenceStreamAdapter<B> {
     }
 }
 
-fn chunk_text(text: &str, chunk_chars: usize, out: &mut VecDeque<StreamItem>) {
-    let mut chunk = String::new();
-    let mut count = 0usize;
-    for ch in text.chars() {
-        chunk.push(ch);
-        count += 1;
-        if count == chunk_chars {
-            out.push_back(StreamItem::Text(std::mem::take(&mut chunk)));
-            count = 0;
+/// Lazy source behind [`InferenceStreamAdapter`]. The backend's events are held as returned
+/// (the `infer` contract), but a `Token` text is cut into chunks only when pulled: memory is
+/// the token text plus one chunk, and the stream's stop checks run between chunks.
+struct ChunkingSource {
+    events: VecDeque<ModelEvent>,
+    /// Token text being chunked and the byte offset of its next unread character.
+    pending: Option<(String, usize)>,
+    chunk_chars: usize,
+    /// Chunks cut so far (observability for tests).
+    #[cfg(test)]
+    chunks_cut: usize,
+}
+
+impl ChunkingSource {
+    fn new(events: Vec<ModelEvent>, chunk_chars: usize) -> Self {
+        Self {
+            events: events.into(),
+            pending: None,
+            chunk_chars,
+            #[cfg(test)]
+            chunks_cut: 0,
         }
     }
-    if !chunk.is_empty() {
-        out.push_back(StreamItem::Text(chunk));
+
+    fn cut_chunk(&mut self) -> Option<StreamItem> {
+        let (text, offset) = self.pending.as_mut()?;
+        let rest = &text[*offset..];
+        let end = rest
+            .char_indices()
+            .nth(self.chunk_chars)
+            .map_or(rest.len(), |(index, _)| index);
+        let chunk = rest[..end].to_owned();
+        *offset += end;
+        if *offset >= text.len() {
+            self.pending = None;
+        }
+        #[cfg(test)]
+        {
+            self.chunks_cut += 1;
+        }
+        Some(StreamItem::Text(chunk))
+    }
+}
+
+impl StreamSource for ChunkingSource {
+    fn next_item(&mut self) -> Result<Option<StreamItem>, GenerationError> {
+        loop {
+            if let Some(item) = self.cut_chunk() {
+                return Ok(Some(item));
+            }
+            match self.events.pop_front() {
+                None => return Ok(None),
+                Some(ModelEvent::Token(text)) => {
+                    if !text.is_empty() {
+                        self.pending = Some((text, 0));
+                    }
+                }
+                Some(ModelEvent::Finished) => {}
+                Some(other) => return Ok(Some(StreamItem::Model(other))),
+            }
+        }
     }
 }
 
@@ -319,15 +357,8 @@ impl<B: InferenceBackend> StreamingBackend for InferenceStreamAdapter<B> {
             deadline.check()?;
         }
         let events = self.backend.infer(request)?;
-        let mut items = VecDeque::new();
-        for event in events {
-            match event {
-                ModelEvent::Token(text) => chunk_text(&text, self.chunk_chars, &mut items),
-                ModelEvent::Finished => {}
-                other => items.push_back(StreamItem::Model(other)),
-            }
-        }
-        Ok(Box::new(BoundedStream::new(VecSource { items }, options)))
+        let source = ChunkingSource::new(events, self.chunk_chars);
+        Ok(Box::new(BoundedStream::new(source, options)))
     }
 }
 
@@ -479,21 +510,69 @@ mod tests {
         assert!(StreamLimits::new(4, 4).is_ok());
     }
 
+    fn drain_text(source: &mut ChunkingSource) -> Vec<String> {
+        let mut out = Vec::new();
+        while let Some(item) = source.next_item().unwrap() {
+            if let StreamItem::Text(t) = item {
+                out.push(t);
+            }
+        }
+        out
+    }
+
     #[test]
     fn chunking_preserves_text() {
-        let mut out = VecDeque::new();
-        chunk_text("héllo wörld", 3, &mut out);
-        let joined: String = out
-            .iter()
-            .map(|i| match i {
-                StreamItem::Text(t) => t.as_str(),
-                _ => "",
-            })
-            .collect();
-        assert_eq!(joined, "héllo wörld");
-        assert!(out
-            .iter()
-            .all(|i| matches!(i, StreamItem::Text(t) if t.chars().count() <= 3)));
+        let mut source = ChunkingSource::new(vec![ModelEvent::Token("héllo wörld".into())], 3);
+        let chunks = drain_text(&mut source);
+        assert_eq!(chunks.concat(), "héllo wörld");
+        assert!(chunks.iter().all(|t| t.chars().count() <= 3));
+        assert_eq!(chunks.len(), 4);
+    }
+
+    #[test]
+    fn large_token_is_chunked_lazily_within_the_stream_bound() {
+        let big = "x".repeat(2_000_000);
+        let source = ChunkingSource::new(vec![ModelEvent::Token(big)], 1);
+        let options = StreamOptions {
+            limits: StreamLimits::new(1, 1).unwrap(),
+            ..StreamOptions::default()
+        };
+        let mut stream = BoundedStream::new(source, options);
+        assert!(matches!(stream.next_event(), StreamEvent::Text(_)));
+        assert_eq!(
+            stream.next_event(),
+            StreamEvent::Done {
+                finish_reason: FinishReason::MaxTokens
+            }
+        );
+        assert!(
+            stream.source.chunks_cut <= 3,
+            "cut {}",
+            stream.source.chunks_cut
+        );
+    }
+
+    #[test]
+    fn cancellation_stops_chunk_production() {
+        let cancel = CancellationToken::default();
+        let options = StreamOptions {
+            limits: StreamLimits::new(1000, 4).unwrap(),
+            cancel: cancel.clone(),
+            ..StreamOptions::default()
+        };
+        let source = ChunkingSource::new(vec![ModelEvent::Token("y".repeat(100_000))], 1);
+        let mut stream = BoundedStream::new(source, options);
+        assert!(matches!(stream.next_event(), StreamEvent::Text(_)));
+        cancel.cancel();
+        assert!(matches!(
+            stream.next_event(),
+            StreamEvent::Error(GenerationError::Cancelled { .. })
+        ));
+        assert!(
+            stream.source.chunks_cut <= 6,
+            "cut {}",
+            stream.source.chunks_cut
+        );
     }
 
     struct Endless;
