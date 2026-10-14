@@ -4,6 +4,7 @@ maturity = "scaffold"
 last_reviewed = "2026-10-13"
 
 implemented = [
+  "KnowledgeStore::register_object and admit_object refuse an object whose validity ends no later than it starts (KnowledgeStoreError::InvalidValidity)",
   "compile_structured_at / compile_selected_at (and MemoryController::compile_at / compile_candidates_at) leave out objects whose validity does not hold at the instant the context is compiled for and count them in CompiledContext::omitted_expired; the old compile_structured / compile_selected are the documented audit path with no time rule",
   "KnowledgeObject.validity (KnowledgeValidity) and is_valid_at; the content digest includes a bounded validity and is unchanged for an unbounded one",
   "MemoryClass taxonomy",
@@ -53,6 +54,7 @@ decisions = [
 ]
 
 checks = [
+  "tests/retention.rs: an object whose validity ends no later than it starts is refused at admission",
   "tests/retention.rs: an expired object is left out of a context compiled for an instant (half-open bounds, dependents of an omitted object refused, audit path unchanged)",
   "tests/retention.rs: an object's validity is half-open and enters the digest only when bounded",
   "ptr-memory tests/retention.rs: raw_history_is_digest_checked_and_idempotent, raw_history_rejects_tampering_and_conflicting_reuse",

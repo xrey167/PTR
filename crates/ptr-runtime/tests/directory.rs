@@ -147,3 +147,40 @@ fn resolved_route_carries_the_callers_deadline_instead_of_a_placeholder() {
         "no deadline stays none, not a zero sentinel"
     );
 }
+
+#[test]
+fn a_zero_deadline_is_refused_at_resolution_and_on_a_route_built_by_hand() {
+    let endpoint = endpoint(2);
+    let address = endpoint.pod.clone();
+    let mut directory = InMemoryPodDirectory::default();
+    directory.register(endpoint).unwrap();
+    let constraints = RouteConstraints {
+        capability: Some("infer".into()),
+        input_type: Some("tokens".into()),
+        deadline: Some(ptr_types::Timestamp(0)),
+        ..RouteConstraints::default()
+    };
+    assert_eq!(
+        constraints.validate(),
+        Err(ptr_types::ResolveError::InvalidDeadline)
+    );
+    assert_eq!(
+        directory.resolve(&address, &constraints),
+        Err(ptr_types::ResolveError::InvalidDeadline)
+    );
+    let mut route = directory
+        .resolve(
+            &address,
+            &RouteConstraints {
+                deadline: Some(ptr_types::Timestamp(5)),
+                ..constraints.clone()
+            },
+        )
+        .unwrap();
+    assert_eq!(route.validate(), Ok(()));
+    route.deadline = Some(ptr_types::Timestamp(0));
+    assert_eq!(
+        route.validate(),
+        Err(ptr_types::ResolveError::InvalidDeadline)
+    );
+}

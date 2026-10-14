@@ -87,6 +87,26 @@ struct PodWindow {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct EgressRefusalWindows {
     pods: BTreeMap<PodRevisionAddress, PodWindow>,
+    /// Refusals of Pods that did not fit the table while an append was failing, folded per
+    /// reason (so at most one counter per reason, however many Pods). Committed with the next
+    /// flush as events whose source is [`overflow_source`] and whose target is
+    /// [`OVERFLOW_TARGET`].
+    overflow: BTreeMap<u8, Counter>,
+    overflow_window: u64,
+}
+
+/// The source of an event that stands for refusals of Pods that did not fit the table. A
+/// well-formed address that no real Pod has.
+pub fn overflow_source() -> PodRevisionAddress {
+    PodRevisionAddress {
+        address: ptr_types::PodAddress {
+            project: ptr_types::ProjectId::from("overflow"),
+            namespace: ptr_types::NamespaceId::from("overflow"),
+            pod_id: ptr_types::PodId::from("overflow"),
+        },
+        semantic_revision: [1; 32],
+        generation: ptr_types::Generation(0),
+    }
 }
 
 /// A closed counter on its way to the ledger, with the window it was counted in so it can be
@@ -125,7 +145,7 @@ impl EgressRefusalWindows {
     }
 
     fn take_all(&mut self) -> Vec<Closed> {
-        std::mem::take(&mut self.pods)
+        let mut closed: Vec<Closed> = std::mem::take(&mut self.pods)
             .into_iter()
             .flat_map(|(source, pod)| {
                 pod.counters
@@ -133,7 +153,32 @@ impl EgressRefusalWindows {
                     .filter_map(|(key, counter)| event_of(pod.window, &source, key, counter))
                     .collect::<Vec<_>>()
             })
-            .collect()
+            .collect();
+        let overflow_window = self.overflow_window;
+        closed.extend(
+            std::mem::take(&mut self.overflow)
+                .iter()
+                .filter_map(|(code, counter)| {
+                    event_of(
+                        overflow_window,
+                        &overflow_source(),
+                        &(*code, OVERFLOW_TARGET.to_owned()),
+                        counter,
+                    )
+                }),
+        );
+        closed
+    }
+
+    /// How many refusals are counted, in the table and in the overflow.
+    #[cfg(test)]
+    fn total(&self) -> u64 {
+        self.pods
+            .values()
+            .flat_map(|pod| pod.counters.values())
+            .chain(self.overflow.values())
+            .map(|counter| u64::from(counter.count))
+            .sum()
     }
 
     /// Put a closed counter back into the window it came from, without the capacity eviction
@@ -151,6 +196,20 @@ impl EgressRefusalWindows {
         else {
             return;
         };
+        // The table never grows past its capacity here: a Pod that is not in it already, when
+        // it is full (or an event that already stands for the overflow), folds into the
+        // per-reason overflow counters, of which there are at most one per reason.
+        if source == overflow_source()
+            || (!self.pods.contains_key(&source) && self.pods.len() >= MAX_TRACKED_EGRESS_PODS)
+        {
+            self.overflow_window = window;
+            let counter = self
+                .overflow
+                .entry(reason.code())
+                .or_insert_with(|| Counter { trace_id, count: 0 });
+            counter.count = counter.count.saturating_add(count);
+            return;
+        }
         let pod = self.pods.entry(source).or_insert_with(|| PodWindow {
             window,
             counters: BTreeMap::new(),
@@ -329,12 +388,7 @@ mod tests {
     }
 
     fn total(windows: &EgressRefusalWindows) -> u64 {
-        windows
-            .pods
-            .values()
-            .flat_map(|pod| pod.counters.values())
-            .map(|counter| u64::from(counter.count))
-            .sum()
+        windows.total()
     }
 
     fn record(n: usize, at: u64) -> EgressRefusalRecord {
@@ -365,11 +419,56 @@ mod tests {
             "every counter of the table that failed to flush is still counted, and so is the \
              refusal that triggered the flush"
         );
-        assert_eq!(
-            runtime.egress_refusals.pods.len(),
-            MAX_TRACKED_EGRESS_PODS + 1,
-            "the table is larger than its capacity only while the ledger refuses appends"
+        assert!(
+            runtime.egress_refusals.pods.len() <= MAX_TRACKED_EGRESS_PODS,
+            "the table never exceeds its capacity, even while the ledger refuses appends"
         );
+    }
+
+    #[test]
+    fn ten_thousand_pods_refused_while_every_append_fails_stay_within_the_bound_and_are_all_counted(
+    ) {
+        let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+        runtime.mark_commit_uncertain_for_test();
+        for n in 0..10_000 {
+            let _ = runtime.record_egress_refusal(record(n, 1));
+            assert!(runtime.egress_refusals.pods.len() <= MAX_TRACKED_EGRESS_PODS);
+            assert!(runtime.egress_refusals.overflow.len() <= EgressRefusalReason::ALL.len());
+        }
+        assert_eq!(total(&runtime.egress_refusals), 10_000);
+    }
+
+    #[test]
+    fn overflow_counters_come_back_as_events_with_their_counts_once_the_ledger_works() {
+        let mut windows = EgressRefusalWindows::default();
+        for n in 0..MAX_TRACKED_EGRESS_PODS + 5 {
+            let taken = windows.absorb(
+                &pod(n),
+                &TraceId::from("t"),
+                EgressRefusalReason::HostNotAllowed,
+                "h:1",
+                1,
+                3,
+            );
+            // Nothing closes until the table is full; the 1025th Pod flushes it.
+            for (window, event) in taken {
+                windows.restore(window, event);
+            }
+        }
+        assert!(windows.pods.len() <= MAX_TRACKED_EGRESS_PODS);
+        assert_eq!(windows.total(), (MAX_TRACKED_EGRESS_PODS + 5) as u64);
+        let events = windows.take_all();
+        let overflow: Vec<_> = events
+            .iter()
+            .filter(|(_, event)| {
+                matches!(event, LedgerEvent::EgressRefused { source, target, .. }
+                    if *source == overflow_source() && target == OVERFLOW_TARGET)
+            })
+            .collect();
+        assert!(!overflow.is_empty());
+        for (_, event) in &events {
+            ptr_ledger::check_encodable(event).unwrap();
+        }
     }
 
     #[test]

@@ -671,3 +671,31 @@ fn an_objects_validity_is_half_open_and_part_of_its_digest_only_when_bounded() {
         "an unbounded validity leaves the digest of an older object untouched"
     );
 }
+
+#[test]
+fn an_object_whose_validity_ends_no_later_than_it_starts_is_refused_at_admission() {
+    use ptr_memory::KnowledgeStoreError;
+    use ptr_types::KnowledgeValidity;
+    for (from, until) in [(20, 20), (20, 10)] {
+        let mut never = object("never", KnowledgeLifecycle::Hot, vec![]);
+        never.validity = KnowledgeValidity {
+            valid_from: Some(Timestamp(from)),
+            valid_until: Some(Timestamp(until)),
+        };
+        let expected = KnowledgeStoreError::InvalidValidity {
+            valid_from: Some(Timestamp(from)),
+            valid_until: Some(Timestamp(until)),
+        };
+        let mut store = KnowledgeStore::default();
+        assert_eq!(store.register_object(never.clone()), Err(expected.clone()));
+        assert_eq!(store.admit_object(never), Err(expected));
+        assert!(store.object(&KnowledgeObjectId::from("never")).is_none());
+    }
+    // Open-ended and bounded intervals are fine.
+    let mut fine = object("fine", KnowledgeLifecycle::Hot, vec![]);
+    fine.validity = KnowledgeValidity {
+        valid_from: Some(Timestamp(10)),
+        valid_until: None,
+    };
+    assert_eq!(KnowledgeStore::default().register_object(fine), Ok(()));
+}

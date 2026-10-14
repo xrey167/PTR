@@ -303,8 +303,21 @@ pub struct PodRoute {
     pub fencing_token: u128,
 }
 
+impl RouteConstraints {
+    /// Refuse constraints no route can satisfy: a deadline of zero.
+    pub fn validate(&self) -> Result<(), ResolveError> {
+        if self.deadline == Some(super::Timestamp(0)) {
+            return Err(ResolveError::InvalidDeadline);
+        }
+        Ok(())
+    }
+}
+
 impl PodRoute {
     pub fn validate(&self) -> Result<(), ResolveError> {
+        if self.deadline == Some(super::Timestamp(0)) {
+            return Err(ResolveError::InvalidDeadline);
+        }
         self.destination.validate()?;
         if self.hop_limit == 0 {
             return Err(ResolveError::HopLimitExceeded);
@@ -425,8 +438,12 @@ impl PodHeader {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ResolveError {
     InvalidScheme,
-    InvalidAddress { field: &'static str },
-    MissingBinding { field: &'static str },
+    InvalidAddress {
+        field: &'static str,
+    },
+    MissingBinding {
+        field: &'static str,
+    },
     InvalidProtocolVersion,
     HopLimitExceeded,
     RouteCycle,
@@ -435,7 +452,12 @@ pub enum ResolveError {
     ConflictingEndpoint,
     ScopeMismatch,
     NotFound,
-    ConstraintMismatch { field: &'static str },
+    ConstraintMismatch {
+        field: &'static str,
+    },
+    /// A deadline of zero: the epoch itself, already past. Absence (`None`) is the way to say
+    /// there is none.
+    InvalidDeadline,
 }
 
 impl fmt::Display for ResolveError {

@@ -10,10 +10,11 @@
 
 **Maturity:** `foundation`  
 **Last reviewed:** 2026-10-13  
-**Code footprint:** 8 Rust source files · 3141 nonblank source lines · 6 integration-test files · 77 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 8 Rust source files · 3162 nonblank source lines · 6 integration-test files · 77 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
+- RouteConstraints::validate and PodRoute::validate refuse a zero deadline (ResolveError::InvalidDeadline)
 - Timestamp documents that its unit is fixed by the owning field; PodRoute.deadline is Option<Timestamp>; EgressRefusalReason::TopicRequired
 - KnowledgeValidity: a half-open validity interval (valid_from <= now < valid_until, a missing bound open) with is_valid_at and is_well_formed; EgressRefusalReason with pinned codes and names; RouteConstraints.deadline carries the caller's absolute deadline into a resolved PodRoute
 - PodHeader::validate refuses a header whose placement_epoch or fencing_token is zero, as the runtime, the tunnel and the tier binding already do, and PodRoute::validate now refuses a zero placement_epoch as well as a zero fencing_token (previously only equality with the endpoint epoch was checked), so the one frame that carries both can no longer be the layer that lets an unfenced request through
@@ -87,6 +88,7 @@
 
 ### Current automated checks
 
+- ptr-runtime/tests/directory.rs: a zero deadline is refused
 - route deadline None stays None (ptr-runtime/tests/directory.rs)
 - tests: KnowledgeValidity boundaries in ptr-search/tests/filter.rs; EgressRefusalReason codes pinned in the ptr-ledger tag-33 test; the route deadline in ptr-runtime/tests/directory.rs
 - A checkpoint header round-trips with its payload; every prefix of one is refused; trailing bytes, a short payload, an unknown format, an unknown or duplicated family name and a non-UTF-8 field are each refused with their own code

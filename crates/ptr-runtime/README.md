@@ -9,10 +9,11 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-13  
-**Code footprint:** 58 Rust source files · 48374 nonblank source lines · 92 integration-test files · 1220 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 58 Rust source files · 48470 nonblank source lines · 92 integration-test files · 1223 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
+- The egress refusal table is hard-bounded even while the ledger refuses appends: a Pod that does not fit folds into one overflow counter per reason (source overflow, target *), committed as ordinary events with their counts at the next flush; InMemoryPodDirectory::resolve refuses RouteConstraints with a zero deadline
 - Failed appends of closed refusal windows are restored to their window without capacity eviction, so no counter is lost (the table may exceed its capacity only while the ledger refuses appends); MemoryController::compile_at / compile_candidates_at compile a context for an instant
 - Egress refusals are coalesced (src/egress.rs): per Pod revision and 60 s window, one counter per (reason, target) with at most 8 distinct pairs and an overflow counter per reason, appended as one event carrying count when the window closes or on flush_egress_refusals, so a window commits at most 14 events per Pod however many refusals there were; record_native_protocol_outcome is the dispatch hook for a native protocol call's result; PodRoute.deadline is an Option (no zero sentinel)
 - PtrRuntime::record_egress_refusal(EgressRefusalRecord) commits an egress refusal (Invariants 7 and 13: redacted target, no payload) as the only writer of the record; a generic commit refuses it; PodDirectory::resolve carries RouteConstraints.deadline
@@ -244,6 +245,7 @@
 
 ### Current automated checks
 
+- src/egress.rs unit tests: ten thousand Pods refused while every append fails stay within MAX_TRACKED_EGRESS_PODS and are all counted; overflow counters come back as encodable events. tests/directory.rs: a zero deadline is refused at resolution and on a route built by hand
 - src/egress.rs unit tests: a failed flush at the pod capacity loses no counter; restore returns a counter to its window
 - tests/egress_refusal.rs: a thousand refusals become a bounded number of events whose counts add up; window rollover; the dispatch hook records only egress refusals
 - tests/egress_refusal.rs: committed, projected and replayed; malformed records refused before any append; a generic commit cannot forge one. tests/directory.rs: the route carries the caller's deadline
