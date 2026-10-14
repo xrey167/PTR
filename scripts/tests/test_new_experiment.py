@@ -115,6 +115,31 @@ class Scaffold(unittest.TestCase):
             for value in FIELDS.values():
                 self.assertIn(value, readme)
 
+    def test_a_successor_takes_the_predecessors_id_with_a_version_suffix(self):
+        """A `<ID>-v<N>-<name>` path registers the id `<ID>-v<N>` next to the predecessor."""
+        directory, root = fixture()
+        with directory:
+            target = scaffold.create(root, "model/M001-v2-existing-again", **FIELDS)
+            code, output = validate(root)
+            self.assertEqual(code, 0, output)
+            data = tomllib.loads((target / "experiment.toml").read_text(encoding="utf-8"))
+            self.assertEqual(data["id"], "M001-v2")
+            registry = tomllib.loads(
+                (root / "experiments/registry.toml").read_text(encoding="utf-8")
+            )["experiment"]
+            self.assertEqual(
+                registry[-1],
+                {"id": "M001-v2", "path": "model/M001-v2-existing-again", "status": "planned"},
+            )
+            # The same successor id twice, a bare suffix and a malformed suffix are refused.
+            for path in [
+                "model/M001-v2-twice",
+                "model/M001-v3-",
+                "model/M001-v0-name",
+            ]:
+                with self.assertRaises(ValueError, msg=path):
+                    scaffold.create(root, path, **FIELDS)
+
     def test_text_that_needs_escaping_round_trips(self):
         """Preserve special characters, Unicode, and seed order through TOML serialization."""
         directory, root = fixture()
