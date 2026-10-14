@@ -11,7 +11,8 @@ startup error (exit code 2), never a panic.
 
 - `--trace-file PATH` appends one OTLP/JSON-shaped span line per request to `PATH` (created if
   missing). The export is redacted: it never contains the request text. It is a plain file
-  writer, not an OpenTelemetry collector client.
+  writer, not an OpenTelemetry collector client. Every traced route is written, including
+  `GET /health`, so health probes add lines too.
 - `--trace-max-bytes N` caps the trace file (default 8 MiB, must be non-zero, requires
   `--trace-file`). A span that would exceed the cap is dropped and counted, not written.
 - `--ingress-diagnostics` adds an advisory `ingress_diagnostics` field to `POST /v1/requests`

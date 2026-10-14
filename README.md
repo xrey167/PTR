@@ -27,7 +27,7 @@ training pipeline for routed MoE fine-tuning, and a preregistered experiment pro
 | Area | Contents |
 |---|---|
 | [`crates/`](crates/) | 33 library crates (`ptr-*`), each with `component.toml`, `config.toml`, README with diagram, `tests/` |
-| [`bins/`](bins/README.md) | `ptrd` (daemon), `ptrctl` (CLI), `ptr-bench` (experiment harnesses), `ptr-worker` (scaffold) |
+| [`bins/`](bins/README.md) | `ptrd` (daemon), `ptrctl` (CLI), `ptr-bench` (experiment harnesses), `ptr-worker` (stdio host for deterministic CPU reference Pods over the `ptr-protocol` control session) |
 | [`bindings/ptr-py`](bindings/ptr-py/README.md) | PyO3 module `ptr_py`: governance checks and read-only VCW components for Python (own workspace) |
 | [`model/`](model/README.md) | `model/burn-a0` (trainable Burn model, own workspace), model modification specs |
 | [`training/`](training/README.md) | Python training workspace (uv-locked): run manifests, `trl-moe` backend, M011 routed PEFT |
@@ -214,7 +214,7 @@ Maturity is `component.toml`'s; features are the crate's own Cargo features (all
 | [ptr-core](crates/ptr-core/README.md) | Untrained deterministic f32 CPU reference forward pass (typed embeddings, validity-masked attention, ACT recurrence, heads, PTR-Diff step, checkpoint parity); the trainable model is `model/burn-a0` | `prototype` | — |
 | [ptr-exec](crates/ptr-exec/README.md) | Bounded `Mailbox` with explicit `Full`/`Closed` (R001); no scheduler yet | `prototype` | — |
 | [ptr-events](crates/ptr-events/README.md) | Runtime event taxonomy (incl. `PodRouted`), authority-tagged bus with backpressure and retention, CRC-framed file log with durable consumer offsets and replay; no Iggy adapter | `prototype` | — |
-| [ptr-ingress](crates/ptr-ingress/README.md) | Std-only ingress pipeline: magic-byte sniffing, text normalization with raw-byte spans, parser stack, rule-based classifier, disagreement policy; not on the request path | `prototype` | — |
+| [ptr-ingress](crates/ptr-ingress/README.md) | Std-only ingress pipeline: magic-byte sniffing, text normalization with raw-byte spans, parser stack, rule-based classifier, disagreement policy; used by `ptrctl ingest` and as opt-in advisory diagnostics in `ptr-server`, not on the request path | `prototype` | — |
 | [ptr-inspect](crates/ptr-inspect/README.md) | Inspection tree, bounded visitor, structured diff, `Secret`/`Private`/`RawEvidence` redaction, tree/compact/JSON renderers | `prototype` | — |
 | [ptr-observe](crates/ptr-observe/README.md) | Tracing field names, `FlowSignature`, sink port, bounded spans, redacting sink, OTLP/JSON-shaped file exporter, plan-vs-execution correlation, active span tree | `prototype` | `tracing-adapter` |
 | [ptr-verifier](crates/ptr-verifier/README.md) | Verification reports and fabric; deterministic verifiers for arithmetic (big integer), JSON Schema, code tests, facts, revision/generation and evidence promotion; snapshot-bound fabric; prototype process verifier without sandboxing | `prototype` | — |
