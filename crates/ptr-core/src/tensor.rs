@@ -454,6 +454,8 @@ impl SeededRng {
 
 /// Xavier/Glorot uniform initialisation: limit `sqrt(6 / (rows + cols))`.
 pub fn xavier_uniform(rows: usize, cols: usize, rng: &mut SeededRng) -> Result<Matrix, ShapeError> {
+    // Validate first: `rows + cols` overflows for dimensions the shape check rejects anyway.
+    Matrix::check_dims(rows, cols)?;
     let limit = (6.0 / (rows + cols) as f32).sqrt();
     uniform_matrix(rows, cols, limit, rng)
 }
@@ -478,6 +480,13 @@ mod tests {
 
     fn m(rows: usize, cols: usize, d: &[f32]) -> Matrix {
         Matrix::new(rows, cols, d.to_vec()).unwrap()
+    }
+
+    #[test]
+    fn xavier_rejects_overflowing_dimensions_with_a_typed_error() {
+        let mut rng = SeededRng::new(1);
+        assert!(xavier_uniform(usize::MAX, 1, &mut rng).is_err());
+        assert!(xavier_uniform(1, usize::MAX, &mut rng).is_err());
     }
 
     #[test]
