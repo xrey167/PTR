@@ -289,6 +289,12 @@ def main() -> None:
     parser.add_argument("--out", type=Path)
     parser.add_argument("--execute", action="store_true")
     parser.add_argument(
+        "--memory-report",
+        action="store_true",
+        help="print the GPU memory estimate of a trl-moe config (ptr_training.moe.memory) and "
+        "exit; writes no manifest and trains nothing",
+    )
+    parser.add_argument(
         "--allow-missing-preflight",
         action="store_true",
         help="run without a matching preflight record; only for evidence_class pipeline-smoke",
@@ -296,6 +302,15 @@ def main() -> None:
     args = parser.parse_args()
 
     config_path = args.config if args.config.is_absolute() else ROOT / args.config
+    if args.memory_report:
+        if args.execute:
+            raise SystemExit("--memory-report and --execute are exclusive")
+        backend = load(config_path).get("training", {}).get("backend")
+        if backend != "trl-moe":
+            raise SystemExit(f"--memory-report covers backend 'trl-moe' only, not {backend!r}")
+        from ptr_training.moe import memory
+
+        raise SystemExit(memory.main(["--config", str(config_path)]))
     manifest = build_manifest(config_path)
     out = args.out
     if out is None:
