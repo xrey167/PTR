@@ -38,7 +38,7 @@
 - rkyv/local codec adapter (the JSON debug adapter is render-only; there is no JSON parser and no rkyv adapter)
 - The control frames are not in the prost schemas under proto/ and have no prost conversion; the codec is a separate hand-written format, and the wider PodWire design may define these frames differently
 - Nothing over a real network speaks the control frames: the only speaker is the in-memory ProtocolSession over LoopbackTransport, with no timeouts, retry scheduling, reconnection, authentication or Hello nonce check; ptr-podwire carries Pod access in its own bounded format and does not use this session layer
-- No carrier backend exists behind the handle: HostShm, CudaIpc, DevicePeer, PinnedHost and NvmeFile are typed locators only (the carriers are the future ptr-fabric crate, doc 42 stages S1 to S4), and the Remote locator names a frame digest without a chunk transfer behind it; the handle has no experiment record yet (E009 is only a proposal in doc 42 section 6)
+- No carrier backend exists behind the handle: HostShm, CudaIpc, DevicePeer, PinnedHost and NvmeFile are typed locators only (ptr-fabric provides the Bytes and the sealed-memfd HostShm carriers; CudaIpc, DevicePeer and PinnedHost remain future, doc 42 stages S1 to S4), and the Remote locator names a frame digest without a chunk transfer behind it; the handle has no experiment record yet (E009 is only a proposal in doc 42 section 6)
 - The activation schemas are hand-written bounded codecs beside the prost schemas, not generated ones; a Raw ancestry, input lineage, mode and taint field is E008's and will be a new type id, not a change of the v1 one
 
 ### Next milestones

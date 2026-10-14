@@ -248,6 +248,16 @@ jobs:
       - run: rustup toolchain install 1.99.0 --profile minimal
       - run: cargo +1.99.0 test -p ptr-podwire --features podwire-backend --locked
 
+  fabric-shm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo +stable test -p ptr-fabric --features shm-backend --locked
+      - run: cargo +stable clippy -p ptr-fabric --features shm-backend --all-targets --locked -- -D warnings
+      - run: rustup toolchain install 1.99.0 --profile minimal
+      - run: cargo +1.99.0 test -p ptr-fabric --features shm-backend --locked
+
   storage-tiers:
     runs-on: ubuntu-latest
     steps:
@@ -257,7 +267,8 @@ jobs:
           components: clippy
       - run: cargo +stable test -p ptr-storage --features tier-opendal-fs --test opendal_tier --locked
       - run: cargo +stable check -p ptr-storage --features tier-opendal-fs,tier-opendal-s3 --locked
-      - run: cargo +stable clippy -p ptr-storage --all-targets --features tier-opendal-fs,tier-opendal-s3 --locked -- -D warnings
+      - run: cargo +stable test -p ptr-storage --features tier-pinned,tier-direct-io --locked
+      - run: cargo +stable clippy -p ptr-storage --all-targets --features tier-opendal-fs,tier-opendal-s3,tier-pinned,tier-direct-io --locked -- -D warnings
 
   # Feature gates that no other job compiles. Not covered: `candle-cuda`
   # (ptr-pods / ptr-runtime) needs the CUDA toolkit, which these runners do not

@@ -1,0 +1,8 @@
+flowchart LR
+    P["Producer\nexport a tensor"] --> B["ptr-fabric\nBytes carrier"]
+    P --> S["ptr-fabric\nHostShm carrier (Linux, shm-backend)"]
+    B -. "inline, at most MAX_INLINE_BYTES" .-> H["TensorHandle\nptr-protocol"]
+    S -. "sealed memfd, offset 0,\nsize = byte_len" .-> H
+    C["Consumer\nimport a tensor"] --> V["checks: locator, length,\nseals, offset, size"]
+    V --> D["content digest\nverified before use"]
+    D -. "verify_content / content_digest" .-> H

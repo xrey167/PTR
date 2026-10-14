@@ -16,7 +16,7 @@ through the ledger, the verifier and the hard effect boundary.
 
 ## 2. Crate layering
 
-The workspace is 33 library crates plus `ptrd`, `ptrctl`, `ptr-bench` and `ptr-worker`, placed in
+The workspace is 34 library crates plus `ptrd`, `ptrctl`, `ptr-bench` and `ptr-worker`, placed in
 eight ranked layers by [`research/catalogs/crate-layers.toml`](../research/catalogs/crate-layers.toml).
 `scripts/check_crate_layering.py` (CI) refuses an upward dependency and a backend crate outside
 its owner; the only tolerated exception is `ptr-bench` → `tokio-postgres`
@@ -25,7 +25,7 @@ its owner; the only tolerated exception is `ptr-bench` → `tokio-postgres`
 | Rank | Layer | Role | Crates |
 |---:|---|---|---|
 | 0 | kernel | shared vocabulary | `ptr-types` |
-| 1 | foundation | one concern each, depend on the kernel only | `ptr-semdb`, `ptr-ledger`, `ptr-model-api`, `ptr-security`, `ptr-protocol`, `ptr-storage`, `ptr-memory`, `ptr-lineage`, `ptr-core`, `ptr-exec`, `ptr-events`, `ptr-config`, `ptr-analytics`, `ptr-ingress`, `ptr-inspect`, `ptr-observe` |
+| 1 | foundation | one concern each, depend on the kernel only | `ptr-semdb`, `ptr-ledger`, `ptr-model-api`, `ptr-security`, `ptr-protocol`, `ptr-storage`, `ptr-fabric`, `ptr-memory`, `ptr-lineage`, `ptr-core`, `ptr-exec`, `ptr-events`, `ptr-config`, `ptr-analytics`, `ptr-ingress`, `ptr-inspect`, `ptr-observe` |
 | 2 | domain | built on foundation crates | `ptr-verifier`, `ptr-search`, `ptr-net`, `ptr-labeling` |
 | 3 | composition | combine domain crates | `ptr-pods`, `ptr-branch`, `ptr-feedback`, `ptr-fastmem`, `ptr-cluster` |
 | 4 | projection | routing and materialization | `ptr-router`, `ptr-state`, `ptr-worker` |
