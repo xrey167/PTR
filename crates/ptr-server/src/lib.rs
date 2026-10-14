@@ -40,6 +40,7 @@ pub use options::{
     IngressDiagnosticsLimits, IngressDiagnosticsMode, RequestTracingOptions, ServerOptions,
     ServerOptionsError, DEFAULT_MAX_CONCURRENT_INGRESS_DIAGNOSTICS,
     DEFAULT_MAX_INGRESS_ANALYZED_BYTES, DEFAULT_MAX_TRACE_EXPORT_BYTES,
+    MAX_INGRESS_DIAGNOSTICS_BUDGET_BYTES,
 };
 
 pub use vcw::{
@@ -385,7 +386,9 @@ impl ServerState {
     ///
     /// # Errors
     /// [`ServerOptionsError::ZeroIngressConcurrency`] or
-    /// [`ServerOptionsError::ZeroIngressAnalysisCap`] for a zero limit.
+    /// [`ServerOptionsError::ZeroIngressAnalysisCap`] for a zero limit, and
+    /// [`ServerOptionsError::IngressDiagnosticsBudgetExceeded`] when `max_concurrent *
+    /// max_analyzed_bytes` exceeds [`MAX_INGRESS_DIAGNOSTICS_BUDGET_BYTES`].
     pub fn with_ingress_diagnostics_limits(
         mut self,
         limits: IngressDiagnosticsLimits,

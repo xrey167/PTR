@@ -5,7 +5,7 @@
 
 **Component count:** 33  
 **Maturity distribution:** `foundation`: 1, `prototype`: 32  
-**Rust footprint:** 346 source files · 171242 nonblank source lines · 286 integration-test files · 4005 test markers (`#[test]`, `#[tokio::test]`)
+**Rust footprint:** 346 source files · 171306 nonblank source lines · 286 integration-test files · 4006 test markers (`#[test]`, `#[tokio::test]`)
 
 | Component | Maturity | Rust files | LOC | Test files | Tests | Implemented items | Missing items | Experiments | Evaluations |
 |---|---:|---:|---:|---:|---:|---:|---:|---|---|
@@ -37,7 +37,7 @@
 | [ptr-search](../../crates/ptr-search/README.md) | `prototype` | 5 | 2480 | 6 | 82 | 14 | 6 | Q001:planned, Q002:frozen, E002:planned, E003:planned | lexical-search:open, local-vector-search:open, gpu-vector-search:open, distributed-search:open, structural-code-search:open |
 | [ptr-security](../../crates/ptr-security/README.md) | `prototype` | 1 | 126 | 2 | 8 | 6 | 4 | L001:superseded, E001:planned | security-context:open |
 | [ptr-semdb](../../crates/ptr-semdb/README.md) | `prototype` | 2 | 864 | 4 | 37 | 20 | 5 | S001:frozen, S002:frozen, E004:planned | semantic-db:open |
-| [ptr-server](../../crates/ptr-server/README.md) | `prototype` | 13 | 4807 | 9 | 107 | 25 | 8 | E001:planned, E003:planned | — |
+| [ptr-server](../../crates/ptr-server/README.md) | `prototype` | 13 | 4871 | 9 | 108 | 26 | 8 | E001:planned, E003:planned | — |
 | [ptr-state](../../crates/ptr-state/README.md) | `prototype` | 1 | 1195 | 3 | 17 | 21 | 4 | L001:superseded, L002:frozen, E004:planned | materialized-state:open |
 | [ptr-storage](../../crates/ptr-storage/README.md) | `prototype` | 4 | 1565 | 5 | 19 | 12 | 4 | E004:planned | object-storage:open |
 | [ptr-types](../../crates/ptr-types/README.md) | `foundation` | 8 | 3162 | 6 | 77 | 37 | 10 | M005:planned, L001:superseded | — |

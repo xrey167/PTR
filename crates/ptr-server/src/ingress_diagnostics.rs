@@ -8,9 +8,12 @@
 //! Bounded (Invariant #8): the pipeline allocates per-character offset tables (about 56 bytes
 //! per character), so at most `max_concurrent` analyses run at once (a request that finds no
 //! free permit skips its diagnostics and never waits) and only a `max_analyzed_bytes` prefix
-//! of the text is analysed.
+//! of the text is analysed; their product may not exceed
+//! `MAX_INGRESS_DIAGNOSTICS_BUDGET_BYTES` (1 MiB, about 56 MiB of tables in the worst case).
 
-use crate::options::{IngressDiagnosticsLimits, ServerOptionsError};
+use crate::options::{
+    IngressDiagnosticsLimits, ServerOptionsError, MAX_INGRESS_DIAGNOSTICS_BUDGET_BYTES,
+};
 use ptr_ingress::{
     ArtifactKind, CrossCheckStatus, DisagreementReason, IngestHints, IngressConfig,
     IngressPipeline, LabelScore, RawInput,
@@ -43,6 +46,14 @@ impl IngressDiagnosticsRunner {
         }
         if limits.max_analyzed_bytes == 0 {
             return Err(ServerOptionsError::ZeroIngressAnalysisCap);
+        }
+        // The caller's limits are not trusted: the bytes under analysis at once stay within a
+        // fixed budget whatever the two values are.
+        let in_flight_bytes = limits.max_concurrent.checked_mul(limits.max_analyzed_bytes);
+        if in_flight_bytes.is_none_or(|bytes| bytes > MAX_INGRESS_DIAGNOSTICS_BUDGET_BYTES) {
+            return Err(ServerOptionsError::IngressDiagnosticsBudgetExceeded {
+                budget: MAX_INGRESS_DIAGNOSTICS_BUDGET_BYTES,
+            });
         }
         Ok(Self {
             // The pipeline refuses anything above the analysis cap itself as well.
@@ -283,5 +294,43 @@ mod tests {
             refused(1, 0),
             Some(ServerOptionsError::ZeroIngressAnalysisCap)
         ));
+    }
+
+    #[test]
+    fn limits_above_the_hard_budget_are_refused() {
+        use crate::options::MAX_INGRESS_DIAGNOSTICS_BUDGET_BYTES as BUDGET;
+        let refused = |max_concurrent, max_analyzed_bytes| {
+            IngressDiagnosticsRunner::new(IngressDiagnosticsLimits {
+                max_concurrent,
+                max_analyzed_bytes,
+            })
+            .err()
+        };
+        for (max_concurrent, max_analyzed_bytes) in [
+            (usize::MAX, usize::MAX),
+            (1, usize::MAX),
+            (usize::MAX, 1),
+            (128, 1024 * 1024),
+            (1, BUDGET + 1),
+            (2, BUDGET / 2 + 1),
+        ] {
+            assert!(
+                matches!(
+                    refused(max_concurrent, max_analyzed_bytes),
+                    Some(ServerOptionsError::IngressDiagnosticsBudgetExceeded { budget })
+                        if budget == BUDGET
+                ),
+                "{max_concurrent} x {max_analyzed_bytes} must be refused"
+            );
+        }
+        // The default limits and the edge of the budget are accepted.
+        assert!(IngressDiagnosticsRunner::new(IngressDiagnosticsLimits::default()).is_ok());
+        assert!(refused(1, BUDGET).is_none());
+        assert!(refused(BUDGET, 1).is_none());
+        assert!(
+            !ServerOptionsError::IngressDiagnosticsBudgetExceeded { budget: BUDGET }
+                .to_string()
+                .is_empty()
+        );
     }
 }

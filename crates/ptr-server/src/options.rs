@@ -25,6 +25,10 @@ pub enum IngressDiagnosticsMode {
 pub const DEFAULT_MAX_CONCURRENT_INGRESS_DIAGNOSTICS: usize = 2;
 /// Default cap on the request-text prefix that is analysed, in bytes.
 pub const DEFAULT_MAX_INGRESS_ANALYZED_BYTES: usize = 64 * 1024;
+/// Hard ceiling on `max_concurrent * max_analyzed_bytes`, the bytes that may be under analysis
+/// at once. At about 56 bytes of offset tables per analysed character this bounds the
+/// diagnostics to roughly 56 MiB however the limits are chosen (the defaults use 128 KiB of it).
+pub const MAX_INGRESS_DIAGNOSTICS_BUDGET_BYTES: usize = 1024 * 1024;
 
 /// Resource bounds of the advisory ingress diagnostics (Invariant #8). The pipeline builds
 /// per-character offset tables (about 56 bytes per character), so the bounds are separate from,
@@ -35,7 +39,9 @@ pub struct IngressDiagnosticsLimits {
     /// (`"skipped": "busy"`) instead of waiting. Must be non-zero.
     pub max_concurrent: usize,
     /// Only this many leading bytes of the request text (cut at a character boundary) are
-    /// analysed; the report then carries `"truncated": true`. Must be non-zero.
+    /// analysed; the report then carries `"truncated": true`. Must be non-zero, and
+    /// `max_concurrent * max_analyzed_bytes` may not exceed
+    /// [`MAX_INGRESS_DIAGNOSTICS_BUDGET_BYTES`].
     pub max_analyzed_bytes: usize,
 }
 
@@ -83,6 +89,9 @@ pub enum ServerOptionsError {
     ZeroIngressConcurrency,
     /// `IngressDiagnosticsLimits::max_analyzed_bytes` was zero.
     ZeroIngressAnalysisCap,
+    /// `max_concurrent * max_analyzed_bytes` exceeds the hard budget
+    /// ([`MAX_INGRESS_DIAGNOSTICS_BUDGET_BYTES`]).
+    IngressDiagnosticsBudgetExceeded { budget: usize },
     /// The export file could not be created or opened for appending.
     TraceExportUnavailable {
         path: PathBuf,
@@ -96,6 +105,10 @@ impl fmt::Display for ServerOptionsError {
             Self::ZeroTraceExportCap => f.write_str("max_export_bytes must be non-zero"),
             Self::ZeroIngressConcurrency => f.write_str("max_concurrent must be non-zero"),
             Self::ZeroIngressAnalysisCap => f.write_str("max_analyzed_bytes must be non-zero"),
+            Self::IngressDiagnosticsBudgetExceeded { budget } => write!(
+                f,
+                "max_concurrent * max_analyzed_bytes must not exceed {budget} bytes"
+            ),
             Self::TraceExportUnavailable { path, kind } => {
                 write!(f, "trace export file {} unusable: {kind}", path.display())
             }
