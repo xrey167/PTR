@@ -141,6 +141,12 @@ pub enum SessionError {
     /// The frame this call would produce cannot be encoded (empty or oversized field, frame
     /// over the cap). Refused before any session state changed.
     Encode(CodecError),
+    /// The call with this idempotency key already executed, but its reply could not be encoded
+    /// and so was never sent. The protocol has no error reply frame, so the retry is refused
+    /// with this error instead of executing the handler a second time.
+    ReplyUnencodable {
+        key: IdempotencyKey,
+    },
 }
 
 /// Refuses a frame the codec would refuse, using the codec itself so the limits live in one
@@ -227,7 +233,9 @@ struct Inbound {
 struct Completed {
     key: IdempotencyKey,
     digest: [u8; 32],
-    reply: TypedPayload,
+    /// `None` is a tombstone: the handler ran but its reply could not be encoded, so no reply
+    /// exists to serve. A retry of the key must not execute the handler again.
+    reply: Option<TypedPayload>,
 }
 
 /// One end of a control session.
@@ -465,23 +473,21 @@ impl ProtocolSession {
             seq: call.seq,
             payload: reply.clone(),
         };
-        // A reply the transport cannot encode is never cached: a retry of the call would
-        // otherwise be answered with the same unsendable reply forever. The call is dropped
-        // from the queue (the handler's fault), so the inbound window slot is not leaked.
-        if let Err(error) = ensure_encodable(&frame) {
-            self.close_if_drained();
-            return Err(error);
-        }
+        // The handler has already run, so its effect happened. A reply the transport cannot
+        // encode is remembered as a tombstone (no reply payload): a retry of the key is refused
+        // with `ReplyUnencodable` instead of executing the handler again. The call is dropped
+        // from the queue, so the inbound window slot is not leaked.
+        let encoded = ensure_encodable(&frame);
         if self.completed.len() >= self.config.completed_capacity {
             self.completed.pop_front();
         }
         self.completed.push_back(Completed {
             key: call.key,
             digest: call.digest,
-            reply,
+            reply: encoded.is_ok().then_some(reply),
         });
         self.close_if_drained();
-        Ok(Some(frame))
+        encoded.map(|()| Some(frame))
     }
 
     /// Applies one received frame.
@@ -676,6 +682,9 @@ impl ProtocolSession {
             };
             let reply = done.reply.clone();
             self.completed.push_back(done);
+            let Some(reply) = reply else {
+                return Err(SessionError::ReplyUnencodable { key });
+            };
             return Ok(Handled {
                 send: vec![ControlFrame::Reply {
                     seq,
