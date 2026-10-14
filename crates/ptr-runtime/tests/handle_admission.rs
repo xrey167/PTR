@@ -259,12 +259,13 @@ fn table() -> HandleTable {
     table
 }
 
+/// A handle on a carrier that is not shared (`NvmeFile`): released on `Consumed`, on producer
+/// replacement and at the deadline plus the skew.
 fn handle(world: &World, nonce: u64, deadline_ms: u64) -> TensorHandle {
     let mut handle = TensorHandle {
-        carrier: Carrier::HostShm,
-        locator: CarrierLocator::HostShm {
-            fd_slot: 100 + nonce as u32,
-            offset: 0,
+        carrier: Carrier::NvmeFile,
+        locator: CarrierLocator::NvmeFile {
+            chunk_digest: [100 + nonce as u8; 32],
         },
         dtype: BoundaryDtype::F32,
         shape: vec![1, 2],
@@ -283,6 +284,18 @@ fn handle(world: &World, nonce: u64, deadline_ms: u64) -> TensorHandle {
         payload_type: TypeId::from(PAYLOAD),
         content_digest: content_digest(&[nonce as u8; 8]),
         signature: [0; 64],
+    };
+    handle.signature = signer().sign(&handle_signing_bytes(&handle)).to_bytes();
+    handle
+}
+
+/// The same handle on a shared carrier (`HostShm`): released only after verified teardown.
+fn shared_handle(world: &World, nonce: u64, deadline_ms: u64) -> TensorHandle {
+    let mut handle = handle(world, nonce, deadline_ms);
+    handle.carrier = Carrier::HostShm;
+    handle.locator = CarrierLocator::HostShm {
+        fd_slot: 100 + nonce as u32,
+        offset: 0,
     };
     handle.signature = signer().sign(&handle_signing_bytes(&handle)).to_bytes();
     handle
@@ -322,21 +335,30 @@ fn consume(
 }
 
 #[test]
-fn an_admitted_handle_is_consumed_once_and_the_producer_may_reclaim() {
+fn an_admitted_shared_handle_is_consumed_once_and_released_only_after_teardown() {
     let world = world();
     let mut table = table();
-    let sent = handle(&world, 1, 500);
+    let sent = shared_handle(&world, 1, 500);
     let admitted = admit(&mut table, &world, 10, &sent).expect("admitted");
     assert_eq!(admitted.shape(), &[1, 2]);
     assert_eq!(table.open_handles(), 1);
 
     let consumed = consume(&mut table, &world, 20, admitted).expect("consumed");
     assert_eq!(consumed.locator(), &sent.locator);
-    assert_eq!(consumed.reclaim().reason, ReclaimReason::Consumed);
-    assert_eq!(consumed.reclaim().handle_nonce, 1);
+    // `HostShm` is shared: `Consumed` frees nothing (doc 42 rule 3b).
+    assert!(consumed.reclaim().is_none());
     assert_eq!(table.open_handles(), 0);
-    // The producer was told once, on consumption; the deadline has nothing to add.
+    assert_eq!(table.inflight_bytes(PRINCIPAL), Some(8));
+    // Neither does the deadline plus the skew.
     assert!(table.expire(10_000).is_empty());
+    assert_eq!(table.inflight_bytes(PRINCIPAL), Some(8));
+    // The supervisor has reaped both worker domains: the buffer is released once.
+    let notices = table.release_after_teardown(PRINCIPAL);
+    assert_eq!(notices.len(), 1);
+    assert_eq!(notices[0].reason, ReclaimReason::TornDown);
+    assert_eq!(notices[0].handle_nonce, 1);
+    assert_eq!(table.inflight_bytes(PRINCIPAL), Some(0));
+    assert!(table.release_after_teardown(PRINCIPAL).is_empty());
 }
 
 #[test]
@@ -420,12 +442,11 @@ fn an_unused_handle_yields_one_reclaim_notice_at_its_deadline_plus_skew() {
     assert_eq!(notices.len(), 1);
     assert_eq!(notices[0].reason, ReclaimReason::Expired);
     assert_eq!(notices[0].handle_nonce, 1);
-    assert_eq!(notices[0].carrier, Carrier::HostShm);
+    assert_eq!(notices[0].carrier, Carrier::NvmeFile);
     assert_eq!(
         notices[0].locator,
-        CarrierLocator::HostShm {
-            fd_slot: 101,
-            offset: 0
+        CarrierLocator::NvmeFile {
+            chunk_digest: [101; 32]
         }
     );
     assert!(table.expire(601).is_empty());
@@ -972,9 +993,12 @@ fn the_matching_project_and_sessions_are_admitted_and_consumed() {
             operations: &operations,
         })
         .expect("consumed");
-    assert_eq!(consumed.reclaim().reason, ReclaimReason::Consumed);
     assert_eq!(
-        ptr_runtime::revalidate_operation(&consumed, &operations),
+        consumed.reclaim().map(|notice| notice.reason),
+        Some(ReclaimReason::Consumed)
+    );
+    assert_eq!(
+        ptr_runtime::revalidate_operation(&consumed, &operations, 30),
         Ok(())
     );
 }
@@ -1035,7 +1059,7 @@ fn admission_consume_and_output_revalidation_ask_the_authority_with_the_same_cap
             operations: &operations,
         })
         .expect("consumed");
-    ptr_runtime::revalidate_operation(&consumed, &operations).expect("still current");
+    ptr_runtime::revalidate_operation(&consumed, &operations, 30).expect("still current");
     let expected = (project(), CONSUMER_SESSION, PRODUCER_SESSION, 500);
     assert_eq!(
         operations.asked.borrow().as_slice(),

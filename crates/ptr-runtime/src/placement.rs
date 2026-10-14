@@ -130,15 +130,22 @@ impl PodPlacementController {
         self.epoch
     }
 
+    /// Register a node, or replace the record of a node already registered.
+    ///
+    /// Registering a `NodeId` that is already known is a **replacement** (a new node process or
+    /// a new host under the same id), never a refresh: a refresh is a [`Self::heartbeat`]. The
+    /// record carries no incarnation, so the controller cannot tell that the replacement offers
+    /// the same devices with the same contents; every placement and every lease on that node is
+    /// revoked, and frames produced by the previous incarnation are refused by split-stage
+    /// admission (`placement` answers `NoPlacement`). Re-placement goes through `assign` under
+    /// a new epoch. The controller epoch moves once for the event.
     pub fn register_node(&mut self, node: NodeRecord) -> Result<(), PlacementError> {
         let node_id = node.node_id.clone();
-        self.nodes.insert(node_id.clone(), node);
-        // Replacing a node record is a topology change: a lease on a device the
-        // new record no longer offers, or offers as failed, must not outlive it.
-        // The same holds for a placement: it is removed, and the controller epoch moves once
-        // for the event (the bump below).
-        self.revoke_unavailable_placements(&node_id);
-        self.revoke_unavailable_leases(&node_id);
+        let replaced = self.nodes.insert(node_id.clone(), node).is_some();
+        if replaced {
+            self.revoke_placements_on_node(&node_id);
+            self.revoke_for_node(&node_id);
+        }
         self.bump_epoch()?;
         Ok(())
     }
@@ -392,6 +399,21 @@ impl PodPlacementController {
             }
         }
         !gone.is_empty()
+    }
+
+    /// Revoke every placement on `node_id`, usable device or not, keeping a tombstone each.
+    fn revoke_placements_on_node(&mut self, node_id: &NodeId) {
+        let gone: Vec<PodId> = self
+            .placements
+            .iter()
+            .filter(|(_, p)| p.node_id == *node_id)
+            .map(|(pod_id, _)| pod_id.clone())
+            .collect();
+        for pod_id in &gone {
+            if let Some(placement) = self.placements.remove(pod_id) {
+                self.revoked.insert(pod_id.clone(), placement);
+            }
+        }
     }
 
     fn revoke_for_pod(&mut self, pod_id: &PodId) {

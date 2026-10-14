@@ -43,14 +43,19 @@
 //! 3. **Single use with a deadline** (rule 2): the nonce is tombstoned on consumption, and the
 //!    tombstone is kept until the signed deadline plus the skew, after which the handle is
 //!    refused as expired anyway.
-//! 4. **Producer-owned memory** (rule 3): every claimed buffer is reported once, as a
-//!    [`ReclaimNotice`], when the producer may reclaim it: on consumption, on producer
-//!    replacement or removal, or by [`HandleTable::expire`] after the deadline plus the skew.
-//!    **The producer reclaims on the notice, not earlier.** The notice of a consumed handle
-//!    travels in the [`ConsumedHandle`]; the driver must hold it back until the consumer has
-//!    unmapped the region, and the in-flight byte budget is released at that notice, so the
-//!    release at `consume` time is only sound because the producer cannot act before it
-//!    receives the notice.
+//! 4. **Producer-owned memory** (rules 3 and 3b): every claimed buffer is reported once, as a
+//!    [`ReclaimNotice`], when the producer may reclaim it, and its bytes stay charged to the
+//!    producer's in-flight budget until then. **The producer reclaims on the notice, not
+//!    earlier.** For a carrier that is not shared with another process (`InProcess`, `Bytes`,
+//!    `NvmeFile`, `Remote`) the notice comes on consumption (it travels in the
+//!    [`ConsumedHandle`], and the driver holds it back until the consumer is done), on producer
+//!    replacement or removal, or from [`HandleTable::expire`] after the deadline plus the skew.
+//!    A **shared** carrier (`HostShm`, `CudaIpc`, `DevicePeer`, `PinnedHost`) is released only
+//!    by [`HandleTable::release_after_teardown`], which the supervisor calls after it has
+//!    reaped both worker domains and drained their control sockets: `Consumed` is a message
+//!    from a worker that may keep its mapping, so it frees nothing, and neither does the
+//!    deadline or a producer replacement. A producer whose shared buffers are not torn down
+//!    therefore saturates its budget and is refused with a typed error.
 //! 5. **Content commitment**: the handle carries the SHA-256 of the tensor bytes under its
 //!    signature, but admission reads no memory and cannot check it. The consumer must map the
 //!    sealed, immutable region, call [`ConsumedHandle::verify_content`] on the mapped bytes and
@@ -58,11 +63,12 @@
 //!    signing: ownership of the contents passes to the consumer until `Consumed` or reclaim.
 //! 6. **Retention through the skew window**: the consumer must stop at the signed deadline
 //!    ([`HandleTable::admit`] and [`HandleTable::consume`] refuse `now_ms >= deadline`), but
-//!    the producer may reclaim a buffer only after `Consumed` or once the deadline **plus**
-//!    [`HandlePolicy::max_clock_skew_ms`] has passed, never at the bare deadline: its clock and
-//!    the consumer's may differ by the skew, and a consumer still inside its deadline must not
-//!    see memory reused. [`HandleTable::expire`] returns a [`ReclaimNotice`] only from
-//!    deadline plus skew.
+//!    the producer may reclaim a non-shared buffer only after `Consumed` or once the deadline
+//!    **plus** [`HandlePolicy::max_clock_skew_ms`] has passed, never at the bare deadline: its
+//!    clock and the consumer's may differ by the skew, and a consumer still inside its deadline
+//!    must not see memory reused. [`HandleTable::expire`] returns a [`ReclaimNotice`] only from
+//!    deadline plus skew. Output computed from the tensor is admitted only before the deadline
+//!    too ([`revalidate_operation`] takes the current time).
 //!
 //! **Bounds** (invariant 8). Open handles are bounded table-wide
 //! ([`HandlePolicy::max_open_handles`]) and per producer
@@ -71,7 +77,8 @@
 //! the bytes a producer still has claimed by
 //! [`HandlePolicy::max_inflight_bytes_per_principal`] (counting handles alone would let a few
 //! handles pin gigabytes). A claim is held until its [`ReclaimNotice`] is emitted, so an
-//! abandoned handle keeps its bytes until [`HandleTable::expire`]. A full table refuses; it
+//! abandoned handle keeps its bytes until [`HandleTable::expire`] (a shared one until
+//! [`HandleTable::release_after_teardown`], its slot kept as well). A full table refuses; it
 //! never evicts, and slots are freed only by `expire`. The deadline of an admitted handle is at
 //! most `now + max_handle_lifetime_ms + max_clock_skew_ms` (computed with saturating
 //! arithmetic), so a tombstone cannot be pinned beyond that horizon. The set of principals is
@@ -312,14 +319,20 @@ pub enum HandleRejection {
 
 /// Why the producer may reclaim a buffer.
 ///
-/// A notice releases this table's admission budget; it does not by itself free shared memory.
-/// For [`ReclaimReason::Expired`] and [`ReclaimReason::Abandoned`] the consumer has not confirmed
-/// that it unmapped, so the driver must first terminate and reap the consumer worker (which
-/// closes its descriptors, mappings and CUDA imports) before the producer frees the buffer, and
-/// the producer's own capped pool keeps the buffer charged until then (doc 42 rule 3b).
+/// A notice releases this table's admission budget for the handle's bytes. For a carrier that is
+/// not shared with another process (`InProcess`, `Bytes`, `NvmeFile`, `Remote`) the notice comes
+/// with [`ReclaimReason::Consumed`], on producer replacement or removal, or at the deadline plus
+/// the skew. For [`ReclaimReason::Expired`] and [`ReclaimReason::Abandoned`] the consumer has not
+/// confirmed that it is done, so the driver must first terminate and reap the consumer worker
+/// before the producer frees the buffer.
+///
+/// A **shared** carrier (`HostShm`, `CudaIpc`, `DevicePeer`, `PinnedHost`) is released only with
+/// [`ReclaimReason::TornDown`], from [`HandleTable::release_after_teardown`]: never at
+/// `Consumed`, never at the deadline alone and never because the producer was replaced or
+/// removed (doc 42 rule 3b). Until then its bytes stay charged to the producer's budget.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ReclaimReason {
-    /// The consumer used the handle.
+    /// The consumer used the handle (non-shared carriers only).
     Consumed,
     /// The deadline plus the skew passed on an open handle.
     Expired,
@@ -329,6 +342,8 @@ pub enum ReclaimReason {
     ProducerReplaced,
     /// The producer was removed with [`HandleTable::unregister_producer`].
     ProducerRemoved,
+    /// The supervisor verified the teardown of both worker domains (shared carriers only).
+    TornDown,
 }
 
 /// What the producer may reclaim, reported once per handle. The locator of a
@@ -468,14 +483,17 @@ impl AdmittedHandle {
 
 /// A handle revalidated at use: the consumer may now reach the tensor through its locator.
 ///
-/// The [`ReclaimNotice`] it carries is what lets the producer reclaim the buffer. The driver
-/// must hold the notice back until the consumer has unmapped the region and only then deliver
-/// it to the producer (doc 42 rule 3): the producer reclaims on the notice, not earlier.
+/// For a carrier that is not shared it carries the [`ReclaimNotice`] that lets the producer
+/// reclaim the buffer. The driver must hold the notice back until the consumer is done with the
+/// buffer and only then deliver it to the producer (doc 42 rule 3): the producer reclaims on the
+/// notice, not earlier. A shared carrier carries none: `Consumed` frees nothing there, and the
+/// bytes stay charged until [`HandleTable::release_after_teardown`] (doc 42 rule 3b).
 #[must_use = "dropping the handle loses the reclaim notice the producer is waiting for"]
 #[derive(Eq, PartialEq)]
 pub struct ConsumedHandle {
     handle: TensorHandle,
-    reclaim: ReclaimNotice,
+    reclaim: Option<ReclaimNotice>,
+    principal: String,
     /// Captured at admission; `revalidate_operation` hands them to the authority again.
     project: ProjectId,
     consumer_session: WorkerSession,
@@ -487,7 +505,7 @@ impl fmt::Debug for ConsumedHandle {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("ConsumedHandle")
-            .field("principal", &self.reclaim.principal)
+            .field("principal", &self.principal)
             .field("handle_nonce", &self.handle.handle_nonce)
             .field("carrier", &self.handle.carrier)
             .field("byte_len", &self.handle.byte_len)
@@ -510,15 +528,22 @@ impl ConsumedHandle {
         verify_content(&self.handle, bytes).map_err(HandleRejection::Content)
     }
 
-    /// What the producer may reclaim, once the consumer has unmapped.
-    pub fn reclaim(&self) -> &ReclaimNotice {
-        &self.reclaim
+    /// What the producer may reclaim once the consumer is done, for a carrier that is not
+    /// shared. `None` for a shared carrier: its bytes are released only by
+    /// [`HandleTable::release_after_teardown`].
+    pub fn reclaim(&self) -> Option<&ReclaimNotice> {
+        self.reclaim.as_ref()
     }
 }
 
 /// Revalidate the operation of a consumed handle against the authority, for the runtime to call
-/// when it admits the output computed from the tensor (doc 42 rule 4): a fault at `consume`
-/// cannot cover computation that started before the fault.
+/// at `now_ms` when it admits the output computed from the tensor (doc 42 rule 4): a fault at
+/// `consume` cannot cover computation that started before the fault.
+///
+/// The handle's own signed deadline is checked first: output admitted at or after it
+/// (`deadline <= now`) is refused as [`HandleRejection::Expired`], because the consumer had to
+/// stop touching the tensor at the deadline and the producer may reclaim the buffer from the
+/// deadline plus the skew. A longer-lived operation does not extend the handle.
 ///
 /// This covers **only the authority's operation record**: the operation is known, its inputs are
 /// live, it is Exact, the handle's chain equals the expected chain and the payload type is
@@ -529,8 +554,12 @@ impl ConsumedHandle {
 pub fn revalidate_operation(
     consumed: &ConsumedHandle,
     operations: &dyn OperationLiveness,
+    now_ms: u64,
 ) -> Result<(), HandleRejection> {
     let handle = consumed.handle();
+    if handle.signed_absolute_deadline_ms <= now_ms {
+        return Err(HandleRejection::Expired);
+    }
     operations
         .operation_admits(OperationCheck {
             parent_operation_id: handle.parent_operation_id,
@@ -680,8 +709,8 @@ impl HandleTable {
         producer.key = key;
         producer.stage_identity = stage_identity.to_owned();
         producer.session = session;
-        let released = abandon_open(producer, principal, ReclaimReason::ProducerReplaced);
-        self.open_total = self.open_total.saturating_sub(released.len());
+        let (released, closed) = abandon_open(producer, principal, ReclaimReason::ProducerReplaced);
+        self.open_total = self.open_total.saturating_sub(closed);
         released
     }
 
@@ -695,8 +724,8 @@ impl HandleTable {
             return Vec::new();
         };
         producer.active = false;
-        let released = abandon_open(producer, principal, ReclaimReason::ProducerRemoved);
-        self.open_total = self.open_total.saturating_sub(released.len());
+        let (released, closed) = abandon_open(producer, principal, ReclaimReason::ProducerRemoved);
+        self.open_total = self.open_total.saturating_sub(closed);
         released
     }
 
@@ -900,20 +929,27 @@ impl HandleTable {
             return Err(rejection);
         }
         slot.state = SlotState::Consumed;
-        slot.claim = None;
-        let reclaim = ReclaimNotice {
-            principal: admitted.principal,
-            handle_nonce: admitted.handle.handle_nonce,
-            handle_digest: slot.digest,
-            carrier: admitted.handle.carrier,
-            locator: reclaim_locator(&admitted.handle.locator),
-            byte_len: admitted.handle.byte_len,
-            reason: ReclaimReason::Consumed,
+        // A shared carrier keeps its claim: `Consumed` comes from the consumer worker, which
+        // may keep its mapping, so the bytes stay charged until verified teardown (rule 3b).
+        let reclaim = if is_shared(admitted.handle.carrier) {
+            None
+        } else {
+            slot.claim = None;
+            Some(ReclaimNotice {
+                principal: admitted.principal.clone(),
+                handle_nonce: admitted.handle.handle_nonce,
+                handle_digest: slot.digest,
+                carrier: admitted.handle.carrier,
+                locator: reclaim_locator(&admitted.handle.locator),
+                byte_len: admitted.handle.byte_len,
+                reason: ReclaimReason::Consumed,
+            })
         };
         self.open_total = self.open_total.saturating_sub(1);
         Ok(ConsumedHandle {
             handle: admitted.handle,
             reclaim,
+            principal: admitted.principal,
             project: admitted.project,
             consumer_session: admitted.consumer_session,
             producer_session: admitted.producer_session,
@@ -932,7 +968,9 @@ impl HandleTable {
     /// **plus the skew** has passed (never the bare deadline: a handle at exactly its deadline is
     /// not yet reclaimable), so the producer reclaims the buffer, and drop every slot
     /// (consumed tombstones included) whose retention has ended, and every removed producer
-    /// that holds no slot any more. A handle is reported once.
+    /// that holds no slot any more. A handle is reported once. A handle on a shared carrier is
+    /// not reported here: an open one is closed, and its slot and bytes stay until
+    /// [`Self::release_after_teardown`].
     pub fn expire(&mut self, now_ms: u64) -> Vec<ReclaimNotice> {
         let now_ms = self.advance(now_ms);
         let policy = self.policy;
@@ -946,6 +984,21 @@ impl HandleTable {
                 .map(|(nonce, _)| *nonce)
                 .collect();
             for nonce in due {
+                // A shared claim outlives the deadline: the slot (and its nonce tombstone)
+                // stays, closed, until `release_after_teardown` takes the claim.
+                if let Some(slot) = producer.slots.get_mut(&nonce) {
+                    if slot
+                        .claim
+                        .as_ref()
+                        .is_some_and(|claim| is_shared(claim.carrier))
+                    {
+                        if matches!(slot.state, SlotState::Open { .. }) {
+                            slot.state = SlotState::Abandoned;
+                            closed_open += 1;
+                        }
+                        continue;
+                    }
+                }
                 let Some(slot) = producer.slots.remove(&nonce) else {
                     continue;
                 };
@@ -968,26 +1021,87 @@ impl HandleTable {
             .retain(|_, producer| producer.active || !producer.slots.is_empty());
         notices
     }
+
+    /// Release the shared buffers of `principal` after **verified teardown** (doc 42 rule 3b):
+    /// the supervisor calls this only once it has terminated and reaped both the consumer
+    /// worker's domain of this table and the producer worker's domain of `principal` since the
+    /// exports, and drained the old control socket of each. `Consumed`, the deadline and a
+    /// producer replacement never release a shared buffer; this does, once, with
+    /// [`ReclaimReason::TornDown`]. Open handles of the principal are closed first (their
+    /// workers are gone). Nonce tombstones stay until [`Self::expire`] drops them at the
+    /// deadline plus the skew. Claims of carriers that are not shared are left to the other
+    /// paths.
+    #[must_use = "the returned notices name buffers the producer may reclaim"]
+    pub fn release_after_teardown(&mut self, principal: &str) -> Vec<ReclaimNotice> {
+        let Some(producer) = self.producers.get_mut(principal) else {
+            return Vec::new();
+        };
+        let mut notices = Vec::new();
+        let mut closed = 0usize;
+        for (nonce, slot) in &mut producer.slots {
+            if !slot
+                .claim
+                .as_ref()
+                .is_some_and(|claim| is_shared(claim.carrier))
+            {
+                continue;
+            }
+            if matches!(slot.state, SlotState::Open { .. }) {
+                slot.state = SlotState::Abandoned;
+                closed += 1;
+            }
+            notices.extend(slot.claim.take().map(|claim| {
+                notice(
+                    principal,
+                    *nonce,
+                    slot.digest,
+                    claim,
+                    ReclaimReason::TornDown,
+                )
+            }));
+        }
+        self.open_total = self.open_total.saturating_sub(closed);
+        notices
+    }
 }
 
-/// Abandon the open handles of `producer` and take their claims: one notice per handle.
+/// Abandon the open handles of `producer` and take the claims of those whose carrier is not
+/// shared: one notice per such handle. A shared claim stays until verified teardown. Returns the
+/// notices and the number of handles closed.
 fn abandon_open(
     producer: &mut Producer,
     principal: &str,
     reason: ReclaimReason,
-) -> Vec<ReclaimNotice> {
+) -> (Vec<ReclaimNotice>, usize) {
     let mut notices = Vec::new();
+    let mut closed = 0usize;
     for (nonce, slot) in &mut producer.slots {
         if matches!(slot.state, SlotState::Open { .. }) {
             slot.state = SlotState::Abandoned;
-            notices.extend(
-                slot.claim
-                    .take()
-                    .map(|claim| notice(principal, *nonce, slot.digest, claim, reason)),
-            );
+            closed += 1;
+            if slot
+                .claim
+                .as_ref()
+                .is_some_and(|claim| !is_shared(claim.carrier))
+            {
+                notices.extend(
+                    slot.claim
+                        .take()
+                        .map(|claim| notice(principal, *nonce, slot.digest, claim, reason)),
+                );
+            }
         }
     }
-    notices
+    (notices, closed)
+}
+
+/// The carriers whose buffer another process may still reference after `Consumed`, released
+/// only on verified teardown (doc 42 rule 3b).
+fn is_shared(carrier: Carrier) -> bool {
+    match carrier {
+        Carrier::HostShm | Carrier::CudaIpc | Carrier::DevicePeer | Carrier::PinnedHost => true,
+        Carrier::InProcess | Carrier::Bytes | Carrier::NvmeFile | Carrier::Remote => false,
+    }
 }
 
 /// The producer's handles in the `Open` state (a scan of its own, bounded slots).
@@ -1239,12 +1353,13 @@ mod tests {
         }
     }
 
+    /// A handle on a carrier that is not shared (`NvmeFile`): released on `Consumed`, on
+    /// producer replacement and at the deadline plus the skew.
     fn signed(nonce: u64, deadline_ms: u64) -> TensorHandle {
         let mut handle = TensorHandle {
-            carrier: Carrier::HostShm,
-            locator: CarrierLocator::HostShm {
-                fd_slot: nonce as u32,
-                offset: 0,
+            carrier: Carrier::NvmeFile,
+            locator: CarrierLocator::NvmeFile {
+                chunk_digest: [nonce as u8; 32],
             },
             dtype: BoundaryDtype::F32,
             shape: vec![2, 2],
@@ -1263,6 +1378,18 @@ mod tests {
             payload_type: TypeId::from(PAYLOAD),
             content_digest: content_digest(&[nonce as u8; 16]),
             signature: [0; 64],
+        };
+        resign(&mut handle);
+        handle
+    }
+
+    /// The same handle on a shared carrier (`HostShm`): released only after verified teardown.
+    fn shared(nonce: u64, deadline_ms: u64) -> TensorHandle {
+        let mut handle = signed(nonce, deadline_ms);
+        handle.carrier = Carrier::HostShm;
+        handle.locator = CarrierLocator::HostShm {
+            fd_slot: nonce as u32,
+            offset: 0,
         };
         resign(&mut handle);
         handle
@@ -1650,11 +1777,13 @@ mod tests {
         let consumed = consume(&mut table, &live, 20, admitted).expect("consumed");
         assert_eq!(consumed.locator(), &handle.locator);
         assert_eq!(consumed.handle(), &handle);
-        let notice = consumed.reclaim();
+        let notice = consumed
+            .reclaim()
+            .expect("a non-shared carrier is released at consume");
         assert_eq!(notice.reason, ReclaimReason::Consumed);
         assert_eq!(notice.handle_nonce, 7);
         assert_eq!(notice.byte_len, 16);
-        assert_eq!(notice.carrier, Carrier::HostShm);
+        assert_eq!(notice.carrier, Carrier::NvmeFile);
         // Nothing is left for the deadline to report.
         assert!(table.expire(1_000).is_empty());
     }
@@ -2231,10 +2360,10 @@ mod tests {
                 operations: &operations,
             })
             .expect("consumed");
-        assert_eq!(revalidate_operation(&consumed, &operations), Ok(()));
+        assert_eq!(revalidate_operation(&consumed, &operations, 30), Ok(()));
         operations.dead.borrow_mut().push("semdb/a".to_owned());
         assert_eq!(
-            revalidate_operation(&consumed, &operations),
+            revalidate_operation(&consumed, &operations, 30),
             Err(HandleRejection::Operation(OperationFault::InputNotLive {
                 operation: OP,
                 input: "semdb/a".to_owned()
@@ -2322,7 +2451,7 @@ mod tests {
     fn debug_output_of_a_ticket_and_a_source_omits_the_locator() {
         let live = live();
         let mut table = table();
-        let handle = signed(9, 500);
+        let handle = shared(9, 500);
         let admitted = admit(&mut table, &live, 10, &handle).expect("admitted");
         let shown = format!("{admitted:?} {:?}", HandleSource::Decoded(&handle));
         assert!(!shown.contains("fd_slot"), "{shown}");
@@ -2421,7 +2550,7 @@ mod tests {
         let consumed = consume(&mut table, &live, 20, admitted).expect("consumed");
         assert_eq!(consumed.locator(), &handle.locator);
         assert_eq!(
-            consumed.reclaim().locator,
+            consumed.reclaim().expect("bytes are not shared").locator,
             CarrierLocator::Bytes { inline: vec![] }
         );
     }
@@ -2453,7 +2582,7 @@ mod tests {
             })
             .expect("consumed");
         *operations.last.borrow_mut() = None;
-        assert_eq!(revalidate_operation(&consumed, &operations), Ok(()));
+        assert_eq!(revalidate_operation(&consumed, &operations, 30), Ok(()));
         assert_eq!(
             operations.last.borrow().clone(),
             Some((project(), CONSUMER_SESSION, PRODUCER_SESSION))
@@ -2464,10 +2593,140 @@ mod tests {
             .borrow_mut()
             .insert(OP, (project(), WorkerSession(99), PRODUCER_SESSION));
         assert_eq!(
-            revalidate_operation(&consumed, &operations),
+            revalidate_operation(&consumed, &operations, 30),
             Err(HandleRejection::Operation(
                 OperationFault::ConsumerSessionMismatch { operation: OP }
             ))
+        );
+    }
+
+    #[test]
+    fn a_shared_buffer_stays_charged_after_consume_and_the_deadline_until_teardown() {
+        let live = live();
+        let mut table = table();
+        let admitted = admit(&mut table, &live, 10, &shared(1, 500)).expect("admitted");
+        let consumed = consume(&mut table, &live, 20, admitted).expect("consumed");
+        // `Consumed` comes from the consumer worker: it frees nothing for a shared carrier.
+        assert!(consumed.reclaim().is_none());
+        assert_eq!(table.inflight_bytes(PRINCIPAL), Some(16));
+        // Neither does the deadline plus the skew: the slot and its bytes stay.
+        assert!(table.expire(600).is_empty());
+        assert_eq!(table.inflight_bytes(PRINCIPAL), Some(16));
+        assert_eq!(table.slots_held(PRINCIPAL), Some(1));
+        // Verified teardown releases it, once.
+        let notices = table.release_after_teardown(PRINCIPAL);
+        assert_eq!(notices.len(), 1);
+        assert_eq!(notices[0].reason, ReclaimReason::TornDown);
+        assert_eq!(notices[0].carrier, Carrier::HostShm);
+        assert_eq!(notices[0].handle_nonce, 1);
+        assert_eq!(table.inflight_bytes(PRINCIPAL), Some(0));
+        assert!(table.release_after_teardown(PRINCIPAL).is_empty());
+        // The tombstone is dropped at the next expire after its retention.
+        assert!(table.expire(600).is_empty());
+        assert_eq!(table.slots_held(PRINCIPAL), Some(0));
+    }
+
+    #[test]
+    fn repeated_shared_consumes_without_teardown_saturate_the_budget() {
+        let live = live();
+        let mut table = table();
+        for nonce in 1..=4 {
+            let admitted = admit(&mut table, &live, 10, &shared(nonce, 500)).expect("admitted");
+            let consumed = consume(&mut table, &live, 11, admitted).expect("consumed");
+            assert!(consumed.reclaim().is_none());
+        }
+        assert_eq!(
+            admit(&mut table, &live, 12, &shared(5, 500)).unwrap_err(),
+            HandleRejection::InflightBytesExceeded {
+                limit: 64,
+                in_flight: 64,
+                requested: 16
+            }
+        );
+        assert_eq!(table.release_after_teardown(PRINCIPAL).len(), 4);
+        assert!(admit(&mut table, &live, 13, &shared(5, 500)).is_ok());
+    }
+
+    #[test]
+    fn an_open_shared_handle_past_its_deadline_is_closed_but_keeps_its_bytes_and_nonce() {
+        let live = live();
+        let mut table = table();
+        let _admitted = admit(&mut table, &live, 10, &shared(1, 500)).expect("admitted");
+        assert!(table.expire(600).is_empty());
+        assert_eq!(table.open_handles(), 0);
+        assert_eq!(table.inflight_bytes(PRINCIPAL), Some(16));
+        // The nonce stays refused while the slot is kept.
+        assert_eq!(
+            admit(&mut table, &live, 601, &shared(1, 1_000)).unwrap_err(),
+            HandleRejection::Abandoned
+        );
+        let notices = table.release_after_teardown(PRINCIPAL);
+        assert_eq!(notices.len(), 1);
+        assert_eq!(notices[0].reason, ReclaimReason::TornDown);
+    }
+
+    #[test]
+    fn teardown_closes_open_shared_handles_and_leaves_other_carriers_alone() {
+        let live = live();
+        let mut table = table();
+        let _open = admit(&mut table, &live, 10, &shared(1, 500)).expect("admitted");
+        let _other = admit(&mut table, &live, 10, &signed(2, 500)).expect("admitted");
+        assert_eq!(table.open_handles(), 2);
+        let notices = table.release_after_teardown(PRINCIPAL);
+        assert_eq!(notices.len(), 1);
+        assert_eq!(notices[0].handle_nonce, 1);
+        assert_eq!(table.open_handles(), 1);
+        assert_eq!(table.inflight_bytes(PRINCIPAL), Some(16));
+    }
+
+    #[test]
+    fn a_replaced_producer_releases_no_shared_buffer() {
+        let live = live();
+        let mut table = table();
+        let _open = admit(&mut table, &live, 10, &shared(1, 500)).expect("admitted");
+        let _plain = admit(&mut table, &live, 10, &signed(2, 500)).expect("admitted");
+        let released = table.register_producer(
+            PRINCIPAL,
+            signer().verifying_key(),
+            "stage",
+            WorkerSession(PRODUCER_SESSION.0 + 1),
+        );
+        // Only the non-shared claim is returned; both handles are closed.
+        assert_eq!(released.len(), 1);
+        assert_eq!(released[0].handle_nonce, 2);
+        assert_eq!(released[0].reason, ReclaimReason::ProducerReplaced);
+        assert_eq!(table.open_handles(), 0);
+        assert_eq!(table.inflight_bytes(PRINCIPAL), Some(16));
+        let notices = table.release_after_teardown(PRINCIPAL);
+        assert_eq!(notices.len(), 1);
+        assert_eq!(notices[0].handle_nonce, 1);
+        assert_eq!(table.open_handles(), 0);
+    }
+
+    #[test]
+    fn output_computed_at_or_after_the_handle_deadline_is_refused() {
+        let live = live();
+        let mut table = table();
+        let operations = Operations::default();
+        operations.know(OP, &["semdb/a"], standard_chain(), &[PAYLOAD]);
+        let admitted = admit_under(&mut table, &live, &operations, &signed(1, 500)).expect("ok");
+        let consumed = table
+            .consume(ConsumeRequest {
+                now_ms: 20,
+                admitted,
+                live: &live,
+                operations: &operations,
+            })
+            .expect("consumed");
+        // The operation outlives the handle; the handle's own deadline still bounds the output.
+        assert_eq!(revalidate_operation(&consumed, &operations, 499), Ok(()));
+        assert_eq!(
+            revalidate_operation(&consumed, &operations, 500),
+            Err(HandleRejection::Expired)
+        );
+        assert_eq!(
+            revalidate_operation(&consumed, &operations, 10_000),
+            Err(HandleRejection::Expired)
         );
     }
 }

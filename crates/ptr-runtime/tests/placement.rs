@@ -421,10 +421,43 @@ fn re_registering_a_node_without_the_device_revokes_its_placements() {
 }
 
 #[test]
-fn re_registering_a_node_with_its_device_keeps_the_placement() {
+fn re_registering_a_node_with_the_same_devices_is_a_replacement_and_revokes_everything_on_it() {
+    // The record has no incarnation: a new node process under the same id with the same
+    // healthy devices must not inherit the placements and leases of the old one.
+    let mut controller = PodPlacementController::default();
+    let lease = leased(&mut controller);
+    let before = controller.epoch();
+    controller.register_node(node()).unwrap();
+    assert_eq!(
+        controller.placement(&PodId::from("pod")).map(|p| p.epoch),
+        Err(PlacementError::NoPlacement)
+    );
+    assert_eq!(
+        controller.validate_lease(&lease),
+        Err(PlacementError::StaleLease)
+    );
+    assert_eq!(controller.epoch().0, before.0 + 1);
+    // Re-placement under a new epoch works on the replacement.
+    let placement = controller
+        .assign(
+            PodId::from("pod"),
+            ArtifactId::from("artifact"),
+            Generation(1),
+            NodeId::from("node-a"),
+            DeviceId::from("cuda:0"),
+            8,
+        )
+        .unwrap();
+    assert!(placement.epoch.0 > before.0);
+}
+
+#[test]
+fn registering_another_node_keeps_the_placements_of_the_first() {
     let mut controller = PodPlacementController::default();
     placed(&mut controller);
-    controller.register_node(node()).unwrap();
+    let mut other = node();
+    other.node_id = NodeId::from("node-b");
+    controller.register_node(other).unwrap();
     assert!(controller.placement(&PodId::from("pod")).is_ok());
 }
 

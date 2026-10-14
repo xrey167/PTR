@@ -365,3 +365,16 @@ fn a_frame_produced_on_a_device_that_then_failed_is_refused() {
     // The entry was evicted at that use, so it is gone afterwards.
     assert!(cache.lookup(&key, &live(&world)).is_err());
 }
+
+#[test]
+fn a_frame_produced_before_its_node_was_replaced_is_refused() {
+    let mut world = world();
+    let old = frame(&world);
+    admit_frame(&old, KvReuseMode::Exact, &live(&world)).unwrap();
+    // A new node process registers under the same id with the same healthy device.
+    world.placement.register_node(node("n1")).unwrap();
+    assert!(matches!(
+        admit_frame(&old, KvReuseMode::Exact, &live(&world)),
+        Err(ChainFault::StalePlacement { .. })
+    ));
+}
