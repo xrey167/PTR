@@ -189,11 +189,15 @@ fn span_row(span: &Json) -> Result<SpanRow, String> {
     })
 }
 
+/// Every field taken from the file (trace and span ids, parent ids, names) is printed through
+/// `escape_debug`, so a hostile file cannot send terminal control sequences; status messages
+/// are already `Debug`-quoted.
 fn render_trace(out: &mut String, trace_id: &str, rows: &[SpanRow]) {
     let first = rows.iter().map(|r| r.start).min().unwrap_or(0);
     let last = rows.iter().map(|r| r.end).max().unwrap_or(0);
     out.push_str(&format!(
-        "trace {trace_id}: {} span(s), {} ns\n",
+        "trace {}: {} span(s), {} ns\n",
+        trace_id.escape_debug(),
         rows.len(),
         last.saturating_sub(first)
     ));
@@ -222,7 +226,7 @@ fn render_trace(out: &mut String, trace_id: &str, rows: &[SpanRow]) {
         let row = &rows[index];
         let orphan = match row.parent.as_deref() {
             Some(parent) if !by_id.contains_key(parent) => {
-                format!(" (parent {parent} not in file)")
+                format!(" (parent {} not in file)", parent.escape_debug())
             }
             _ => String::new(),
         };
@@ -239,7 +243,7 @@ fn render_trace(out: &mut String, trace_id: &str, rows: &[SpanRow]) {
             row.end.saturating_sub(row.start),
             row.status,
             row.events,
-            row.id
+            row.id.escape_debug()
         ));
         if let Some(kids) = children.get(&index) {
             stack.extend(kids.iter().rev().map(|&kid| (kid, depth + 1)));
@@ -249,7 +253,7 @@ fn render_trace(out: &mut String, trace_id: &str, rows: &[SpanRow]) {
         out.push_str(&format!(
             "  unreachable (parent cycle): {} span={}\n",
             row.name.escape_debug(),
-            row.id
+            row.id.escape_debug()
         ));
     }
 }

@@ -61,7 +61,9 @@ unless `--consumer` names one (the crate exposes no consumer listing).
 
 Summarizes a file written by `ptr_observe::OtlpJsonFileExporter`: one tree per trace with each
 span's duration in nanoseconds, status (`OK`, `UNSET`, `ERROR "message"`) and event count. A span
-whose parent is not in the file is shown as a root and marked. ptr-observe has no reader, so
+whose parent is not in the file is shown as a root and marked. Every value taken from the file
+(trace, span and parent ids, names, status messages) is printed escaped, so a hostile file cannot
+send terminal control sequences. ptr-observe has no reader, so
 `bins/ptrctl/src/trace.rs` and `json.rs` hold a small bounded reader (16 MiB, 100000 spans,
 nesting 32) for exactly the exporter's line layout; it is not a general OTLP reader. Times are
 the exporter's ticks plus its epoch offset, so durations are meaningful and absolute times may

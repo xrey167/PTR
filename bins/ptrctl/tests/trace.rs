@@ -211,3 +211,43 @@ fn a_very_deep_parent_chain_renders_with_bounded_indentation_and_output() {
         text.len()
     );
 }
+
+#[test]
+fn control_characters_in_identifiers_never_reach_the_terminal() {
+    // JSON escapes decode to ESC/BEL: an OSC title sequence, a screen clear and a colour code.
+    let span = |id: &str, parent: Option<&str>| {
+        let parent = parent
+            .map(|p| format!("\"parentSpanId\":\"{p}\","))
+            .unwrap_or_default();
+        format!(
+            "{{\"traceId\":\"t\\u001b]0;pwned\\u0007\",\"spanId\":\"{id}\",{parent}\
+             \"name\":\"n\",\"startTimeUnixNano\":\"1\",\"endTimeUnixNano\":\"2\",\
+             \"events\":[],\"status\":{{\"code\":0}}}}"
+        )
+    };
+    let spans = [
+        // A root, an orphan whose parent is not in the file, and a two-span parent cycle.
+        span("root\\u001b[2J", None),
+        span("orphan", Some("gone\\u001b[31m")),
+        span("c1\\u001b[0m", Some("c2\\u0007")),
+        span("c2\\u0007", Some("c1\\u001b[0m")),
+    ];
+    let content = format!(
+        "{{\"resourceSpans\":[{{\"scopeSpans\":[{{\"spans\":[{}]}}]}}]}}\n",
+        spans.join(",")
+    );
+    let dir = TempDir::new("trace-escape");
+    let path = dir.file("hostile.jsonl", content.as_bytes());
+
+    let output = run(&[path.as_os_str()]);
+    assert_eq!(code(&output), 0, "{}", stderr(&output));
+    let text = stdout(&output);
+    assert!(
+        !text.contains(['\u{1b}', '\u{7}']),
+        "raw control characters were printed: {text:?}"
+    );
+    // The identifiers are still shown, escaped.
+    assert!(text.contains("\\u{1b}]0;pwned\\u{7}"), "{text}");
+    assert!(text.contains("gone\\u{1b}[31m not in file"), "{text}");
+    assert!(text.contains("unreachable (parent cycle)"), "{text}");
+}
