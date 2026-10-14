@@ -3,9 +3,9 @@
 > Generated from every `crates/*/component.toml` plus code-derived metrics. Do not hand-edit.  
 > Refresh with `python3 scripts/update_component_docs.py --write`.
 
-**Component count:** 33  
-**Maturity distribution:** `foundation`: 1, `prototype`: 32  
-**Rust footprint:** 350 source files · 179137 nonblank source lines · 291 integration-test files · 4238 test markers (`#[test]`, `#[tokio::test]`)
+**Component count:** 34  
+**Maturity distribution:** `foundation`: 1, `prototype`: 33  
+**Rust footprint:** 356 source files · 180083 nonblank source lines · 296 integration-test files · 4283 test markers (`#[test]`, `#[tokio::test]`)
 
 | Component | Maturity | Rust files | LOC | Test files | Tests | Implemented items | Missing items | Experiments | Evaluations |
 |---|---:|---:|---:|---:|---:|---:|---:|---|---|
@@ -17,6 +17,7 @@
 | [ptr-events](../../crates/ptr-events/README.md) | `prototype` | 5 | 2716 | 5 | 77 | 22 | 5 | E001:planned, F001:frozen | event-streaming:open |
 | [ptr-exec](../../crates/ptr-exec/README.md) | `prototype` | 3 | 458 | 2 | 18 | 7 | 7 | R001:frozen, E001:planned, E003:planned | execution-runtime:open |
 | [ptr-execwire](../../crates/ptr-execwire/README.md) | `prototype` | 5 | 1597 | 3 | 36 | 18 | 9 | — | — |
+| [ptr-fabric](../../crates/ptr-fabric/README.md) | `prototype` | 4 | 362 | 3 | 23 | 5 | 6 | — | — |
 | [ptr-fastmem](../../crates/ptr-fastmem/README.md) | `prototype` | 9 | 3189 | 4 | 85 | 13 | 3 | M008:frozen, L003:completed | fast-weight-memory:open |
 | [ptr-feedback](../../crates/ptr-feedback/README.md) | `prototype` | 11 | 4740 | 7 | 99 | 13 | 4 | F001:frozen, E001:planned | — |
 | [ptr-ingress](../../crates/ptr-ingress/README.md) | `prototype` | 9 | 3722 | 6 | 97 | 12 | 8 | E001:planned, E004:planned | ingress-classifier:open |
@@ -39,7 +40,7 @@
 | [ptr-semdb](../../crates/ptr-semdb/README.md) | `prototype` | 2 | 864 | 4 | 37 | 20 | 5 | S001:frozen, S002:frozen, E004:planned | semantic-db:open |
 | [ptr-server](../../crates/ptr-server/README.md) | `prototype` | 13 | 5118 | 9 | 114 | 26 | 8 | E001:planned, E003:planned | — |
 | [ptr-state](../../crates/ptr-state/README.md) | `prototype` | 1 | 1195 | 3 | 17 | 21 | 4 | L001:superseded, L002:frozen, E004:planned | materialized-state:open |
-| [ptr-storage](../../crates/ptr-storage/README.md) | `prototype` | 4 | 1565 | 5 | 19 | 12 | 4 | E004:planned | object-storage:open |
+| [ptr-storage](../../crates/ptr-storage/README.md) | `prototype` | 6 | 2149 | 7 | 41 | 14 | 7 | E004:planned | object-storage:open |
 | [ptr-types](../../crates/ptr-types/README.md) | `foundation` | 8 | 3162 | 6 | 77 | 37 | 10 | M005:planned, L001:superseded | — |
 | [ptr-verifier](../../crates/ptr-verifier/README.md) | `prototype` | 11 | 7254 | 7 | 130 | 14 | 7 | F001:frozen, Q002:frozen, E001:planned | code-quality-verifier:open |
 

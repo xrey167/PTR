@@ -1,6 +1,6 @@
 # PTR Component Documentation
 
-Every workspace crate (33) has a local README and a dedicated Mermaid source diagram. Purposes below state what the crate does today; `component.toml` and the [status dashboard](STATUS.md) list what is missing.
+Every workspace crate (34) has a local README and a dedicated Mermaid source diagram. Purposes below state what the crate does today; `component.toml` and the [status dashboard](STATUS.md) list what is missing.
 
 [**Implementation status dashboard →**](STATUS.md)
 
@@ -28,6 +28,7 @@ Every workspace crate (33) has a local README and a dedicated Mermaid source dia
 | [ptr-cluster](../../crates/ptr-cluster/README.md) | Carries raft messages between authenticated PTR endpoints on `ALPN_RAFT`, composing `ptr-ledger`'s consensus with `ptr-net`'s transport. | [diagram](../diagrams/components/ptr-cluster.mmd) |
 | [ptr-execwire](../../crates/ptr-execwire/README.md) | Carries one execution request and its receipt between authenticated PTR endpoints on `ALPN_EXEC`, composing `ptr-runtime`'s execution authority with `ptr-net`'s transport. | [diagram](../diagrams/components/ptr-execwire.mmd) |
 | [ptr-podwire](../../crates/ptr-podwire/README.md) | Carries one Pod invocation and its answer between authenticated PTR endpoints on `ALPN_PODWIRE`, composing `ptr-pods`' registry with `ptr-net`'s transport. | [diagram](../diagrams/components/ptr-podwire.mmd) |
+| [ptr-fabric](../../crates/ptr-fabric/README.md) | Moves or maps the bytes behind a tensor handle (inline `Bytes`, sealed-memfd `HostShm` on Linux) and verifies them against the handle's digest before use. | [diagram](../diagrams/components/ptr-fabric.mmd) |
 | [ptr-events](../../crates/ptr-events/README.md) | Runtime event taxonomy and an at-least-once producer/consumer contract; no streaming backend is built. | [diagram](../diagrams/components/ptr-events.mmd) |
 | [ptr-observe](../../crates/ptr-observe/README.md) | Records structured runtime execution without requiring natural-language chain-of-thought logging. | [diagram](../diagrams/components/ptr-observe.mmd) |
 | [ptr-inspect](../../crates/ptr-inspect/README.md) | Allows generic inspection and rendering of typed Rust values without collapsing the runtime into untyped JSON. | [diagram](../diagrams/components/ptr-inspect.mmd) |

@@ -29,6 +29,7 @@ crates = [
   "ptr-core",
   "ptr-events",
   "ptr-exec",
+  "ptr-fabric",
   "ptr-ingress",
   "ptr-inspect",
   "ptr-ledger",

@@ -264,6 +264,13 @@ storage-tiers:
     - make ci-storage-tiers
   rules: *rules-heavy
 
+fabric-shm:
+  <<: *rust
+  stage: backends
+  script:
+    - make ci-fabric-shm
+  rules: *rules-heavy
+
 feature-gates:
   <<: *rust
   stage: backends
