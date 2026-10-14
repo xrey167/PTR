@@ -5,7 +5,9 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use ptr_verifier::{CommandRequest, ProcessCommandVerifier, ProcessConfig, ProcessLimits};
+use ptr_verifier::{
+    CommandRequest, ProcessCommandVerifier, ProcessConfig, ProcessLimits, MAX_STUCK_CAPTURE_THREADS,
+};
 
 fn threads() -> usize {
     std::fs::read_to_string("/proc/self/status")
@@ -30,15 +32,16 @@ fn repeated_runs_with_a_pipe_holding_grandchild_do_not_accumulate_threads() {
         ..ProcessLimits::default()
     };
     let verifier = ProcessCommandVerifier::new(ProcessConfig::new(vec![sh], limits).unwrap());
-    let request = CommandRequest::new(&["/bin/sh", "-c", "sleep 20 & exit 0"]);
+    let request = CommandRequest::new(&["/bin/sh", "-c", "sleep 40 & exit 0"]);
     let before = threads();
-    for _ in 0..10 {
+    // 40 runs would leave 80 blocked readers without the bound.
+    for _ in 0..40 {
         let run = verifier.run(&request).unwrap();
         assert!(run.output_truncated);
     }
     let leaked = threads().saturating_sub(before);
     assert!(
-        leaked <= 16,
-        "{leaked} capture threads are still blocked after 10 runs"
+        leaked <= MAX_STUCK_CAPTURE_THREADS,
+        "{leaked} capture threads are still blocked after 40 runs"
     );
 }

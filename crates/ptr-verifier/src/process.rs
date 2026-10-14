@@ -22,7 +22,9 @@
 //! * argument count, argument size and the number of allowlisted executables are bounded;
 //! * blocked capture threads are bounded process-wide. A grandchild that inherits the pipes and
 //!   outlives the command keeps its two reader threads blocked until it exits or closes them.
-//!   Each such abandoned thread counts against [`MAX_STUCK_CAPTURE_THREADS`]; while the bound is
+//!   Both slots of a run are reserved atomically against [`MAX_STUCK_CAPTURE_THREADS`] before any
+//!   reader starts and each is released when its reader ends, so concurrent runs cannot exceed
+//!   the bound (it also caps concurrently capturing runs at half of it); while the bound is
 //!   reached a run starts with its output discarded (`/dev/null`, no thread) and is marked
 //!   `output_truncated`. The count falls again as the grandchildren end.
 //!
@@ -39,7 +41,7 @@
 use std::io::Read;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU64, AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -60,9 +62,11 @@ pub const MAX_TIMEOUT: Duration = Duration::from_secs(60);
 pub const MAX_CAPTURE_BYTES: usize = 1 << 20;
 /// How long to wait for a reader thread after the child is gone (a grandchild may hold the pipe).
 const DRAIN_GRACE: Duration = Duration::from_millis(500);
-/// Most capture threads that may stay blocked on a pipe a grandchild still holds, process-wide.
-/// At the bound, further runs discard their output instead of starting more readers.
-pub const MAX_STUCK_CAPTURE_THREADS: usize = 16;
+/// Most live capture threads process-wide, including those left blocked on a pipe a grandchild
+/// still holds (two per run, so at most 32 runs capture concurrently). At the bound, further runs
+/// discard their output instead of starting more readers; the verdict still follows the exit
+/// code and the run carries the soft `process.output_truncated` finding.
+pub const MAX_STUCK_CAPTURE_THREADS: usize = 64;
 /// Interval of the `try_wait` poll.
 const POLL: Duration = Duration::from_millis(5);
 
@@ -302,11 +306,26 @@ impl Drop for ScratchDir {
     }
 }
 
-/// Counts capture threads that were abandoned (drain timeout) while still blocked on a pipe.
+/// Process-wide bound on live capture threads. A slot is reserved atomically before a reader is
+/// spawned and released when that reader ends, so a reader blocked on a pipe held by a
+/// grandchild keeps its slot until it unblocks. Check-then-spawn would let a concurrent wave of
+/// runs all pass the check; a reservation cannot be oversubscribed.
 #[derive(Debug)]
 struct StuckBudget {
-    stuck: AtomicUsize,
+    in_flight: AtomicUsize,
     max: usize,
+}
+
+/// One reserved capture-thread slot, released on drop (also on panic or early return).
+#[derive(Debug)]
+struct Slot {
+    budget: Arc<StuckBudget>,
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        self.budget.in_flight.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 impl StuckBudget {
@@ -314,38 +333,44 @@ impl StuckBudget {
         static GLOBAL: OnceLock<Arc<StuckBudget>> = OnceLock::new();
         Arc::clone(GLOBAL.get_or_init(|| {
             Arc::new(StuckBudget {
-                stuck: AtomicUsize::new(0),
+                in_flight: AtomicUsize::new(0),
                 max: MAX_STUCK_CAPTURE_THREADS,
             })
         }))
     }
 
-    fn has_room(&self) -> bool {
-        self.stuck.load(Ordering::Acquire) < self.max
+    /// Atomically reserves `count` slots, all or none.
+    fn reserve(self: &Arc<Self>, count: usize) -> Option<Vec<Slot>> {
+        self.in_flight
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                current
+                    .checked_add(count)
+                    .filter(|total| *total <= self.max)
+            })
+            .ok()?;
+        Some(
+            (0..count)
+                .map(|_| Slot {
+                    budget: Arc::clone(self),
+                })
+                .collect(),
+        )
     }
 }
 
-const READING: u8 = 0;
-const ABANDONED: u8 = 1;
-const FINISHED: u8 = 2;
-
 struct Capture {
     rx: mpsc::Receiver<(Vec<u8>, bool)>,
-    state: Arc<AtomicU8>,
-    budget: Arc<StuckBudget>,
 }
 
-/// Reads `stream` to the end on a thread, keeping at most `limit` bytes.
+/// Reads `stream` to the end on a thread, keeping at most `limit` bytes. The thread owns `slot`
+/// and releases it when it ends.
 fn capture<R: Read + Send + 'static>(
     stream: Option<R>,
     limit: usize,
-    budget: &Arc<StuckBudget>,
+    slot: Slot,
 ) -> Option<Capture> {
     let mut stream = stream?;
     let (tx, rx) = mpsc::channel();
-    let state = Arc::new(AtomicU8::new(READING));
-    let thread_state = Arc::clone(&state);
-    let thread_budget = Arc::clone(budget);
     let spawned = std::thread::Builder::new()
         .name("ptr-verifier-capture".into())
         .spawn(move || {
@@ -362,16 +387,10 @@ fn capture<R: Read + Send + 'static>(
                     }
                 }
             }
+            drop(slot);
             let _ = tx.send((kept, truncated));
-            if thread_state.swap(FINISHED, Ordering::AcqRel) == ABANDONED {
-                thread_budget.stuck.fetch_sub(1, Ordering::AcqRel);
-            }
         });
-    spawned.ok().map(|_| Capture {
-        rx,
-        state,
-        budget: Arc::clone(budget),
-    })
+    spawned.ok().map(|_| Capture { rx })
 }
 
 fn collect(capture: Option<Capture>, deadline: Instant) -> (Vec<u8>, bool) {
@@ -379,25 +398,11 @@ fn collect(capture: Option<Capture>, deadline: Instant) -> (Vec<u8>, bool) {
         // No reader: the output is incomplete.
         return (Vec::new(), true);
     };
-    match capture
+    capture
         .rx
         .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-    {
-        Ok(result) => result,
-        Err(_) => {
-            // Count first, then hand over: if the thread finishes in between it sees ABANDONED
-            // only after the increment, so the count never underflows.
-            capture.budget.stuck.fetch_add(1, Ordering::AcqRel);
-            if capture
-                .state
-                .compare_exchange(READING, ABANDONED, Ordering::AcqRel, Ordering::Acquire)
-                .is_err()
-            {
-                capture.budget.stuck.fetch_sub(1, Ordering::AcqRel);
-            }
-            (Vec::new(), true)
-        }
-    }
+        // Abandoned: the thread keeps its slot until the pipe closes.
+        .unwrap_or_else(|_| (Vec::new(), true))
 }
 
 impl ProcessCommandVerifier {
@@ -474,7 +479,9 @@ impl ProcessCommandVerifier {
         };
         let limits = self.config.limits;
         // At the stuck-thread bound no reader is started: the output goes to /dev/null.
-        let capturing = budget.has_room();
+        // Both slots are reserved atomically, so concurrent runs cannot oversubscribe the bound.
+        let mut slots = budget.reserve(2);
+        let capturing = slots.is_some();
         let sink = || {
             if capturing {
                 Stdio::piped()
@@ -504,8 +511,14 @@ impl ProcessCommandVerifier {
             }
         };
         let pid = child.id();
-        let stdout = capture(child.stdout.take(), limits.max_capture_bytes, budget);
-        let stderr = capture(child.stderr.take(), limits.max_capture_bytes, budget);
+        let stdout = slots
+            .as_mut()
+            .and_then(Vec::pop)
+            .and_then(|slot| capture(child.stdout.take(), limits.max_capture_bytes, slot));
+        let stderr = slots
+            .as_mut()
+            .and_then(Vec::pop)
+            .and_then(|slot| capture(child.stderr.take(), limits.max_capture_bytes, slot));
         let deadline = started + limits.timeout;
         let exit = loop {
             match child.try_wait() {
@@ -756,29 +769,69 @@ mod tests {
             return;
         };
         let budget = Arc::new(StuckBudget {
-            stuck: AtomicUsize::new(0),
+            in_flight: AtomicUsize::new(0),
             max: 2,
         });
         let holder = argv("sh", &["-c", "sleep 3 & exit 0"]);
         let run = v.run_with(&holder, &budget).unwrap();
         assert_eq!(run.exit, ProcessExit::Code(0));
         assert!(run.output_truncated);
-        assert_eq!(budget.stuck.load(Ordering::Acquire), 2);
+        assert_eq!(budget.in_flight.load(Ordering::Acquire), 2);
         // At the bound the next run starts no reader: it returns at once with flagged output.
         let skipped = v.run_with(&holder, &budget).unwrap();
         assert_eq!(skipped.exit, ProcessExit::Code(0));
         assert!(skipped.output_truncated);
         assert!(skipped.elapsed < DRAIN_GRACE, "{:?}", skipped.elapsed);
-        assert_eq!(budget.stuck.load(Ordering::Acquire), 2);
+        assert_eq!(budget.in_flight.load(Ordering::Acquire), 2);
         // A budget with room still captures normally and counts nothing.
         let roomy = Arc::new(StuckBudget {
-            stuck: AtomicUsize::new(0),
+            in_flight: AtomicUsize::new(0),
             max: 2,
         });
         let echoed = v.run_with(&argv("echo", &["hi"]), &roomy).unwrap();
         assert_eq!(echoed.stdout, b"hi\n");
         assert!(!echoed.output_truncated);
-        assert_eq!(roomy.stuck.load(Ordering::Acquire), 0);
+        assert_eq!(roomy.in_flight.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn concurrent_reservations_never_exceed_the_cap() {
+        const THREADS: usize = 64;
+        let budget = Arc::new(StuckBudget {
+            in_flight: AtomicUsize::new(0),
+            max: 16,
+        });
+        let barrier = Arc::new(std::sync::Barrier::new(THREADS));
+        let handles: Vec<_> = (0..THREADS)
+            .map(|_| {
+                let budget = Arc::clone(&budget);
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    let held = budget.reserve(2);
+                    assert!(budget.in_flight.load(Ordering::Acquire) <= 16);
+                    held
+                })
+            })
+            .collect();
+        let held: Vec<_> = handles
+            .into_iter()
+            .filter_map(|h| h.join().unwrap())
+            .collect();
+        assert_eq!(held.len(), 8, "exactly max/2 reservations of two succeed");
+        assert_eq!(budget.in_flight.load(Ordering::Acquire), 16);
+        assert!(budget.reserve(1).is_none());
+        drop(held);
+        assert_eq!(budget.in_flight.load(Ordering::Acquire), 0);
+        // All or none: one free slot cannot satisfy a request for two.
+        let odd = Arc::new(StuckBudget {
+            in_flight: AtomicUsize::new(0),
+            max: 3,
+        });
+        let first = odd.reserve(2);
+        assert!(odd.reserve(2).is_none());
+        assert_eq!(odd.in_flight.load(Ordering::Acquire), 2);
+        drop(first);
     }
 
     #[test]

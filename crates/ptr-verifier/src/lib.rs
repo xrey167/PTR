@@ -35,7 +35,7 @@ pub use fact::{fact_key, BoundReport, FactClaim, FactVerifier};
 pub use json_schema::JsonSchemaVerifier;
 pub use process::{
     CommandRequest, ProcessCommandVerifier, ProcessConfig, ProcessConfigError, ProcessExit,
-    ProcessLimits, ProcessRejection, ProcessRun,
+    ProcessLimits, ProcessRejection, ProcessRun, MAX_STUCK_CAPTURE_THREADS,
 };
 pub use promotion::{
     Evidence, EvidenceOrigin, PromotionClaim, PromotionPolicy, PromotionPolicyError,
