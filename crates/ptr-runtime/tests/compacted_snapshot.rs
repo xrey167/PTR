@@ -836,3 +836,313 @@ fn a_scope_left_open_above_the_floor_needs_recovery_after_a_restore_as_after_a_r
     assert!(restored.scopes().recovery_required(&id));
     assert!(restored.scopes().ensure_available(&id).is_err());
 }
+
+/// Issue #141: the scopes created below the floor travel with the snapshot (execution section
+/// PTREX003). Before, a restored runtime forgot them: an unreleased one was never recovered and
+/// a retained record about one was refused as an unknown scope.
+#[test]
+fn a_scope_created_below_the_floor_keeps_its_recovery_obligation_after_a_restore() {
+    use ptr_runtime::{ExecutionScope, ScopeState};
+    use ptr_types::{ProjectId, ScopeId, ScopeLeaseBinding, SessionId, Timestamp};
+
+    let scope = |id: &str, parent: Option<&str>| ExecutionScope {
+        id: ScopeId::from(id),
+        parent: parent.map(ScopeId::from),
+        session: SessionId::from("session"),
+        project: ProjectId::from("project"),
+        created_at: Timestamp(1),
+        deadline: Some(Timestamp(99)),
+        state: ScopeState::Created,
+        cancellation_requested: false,
+    };
+    let lease = ScopeLeaseBinding::default;
+    let (open, child, done) = (
+        ScopeId::from("open"),
+        ScopeId::from("child"),
+        ScopeId::from("done"),
+    );
+    let mut runtime = fixture();
+    runtime.create_scope(scope("open", None), lease()).unwrap();
+    runtime
+        .create_scope(scope("child", Some("open")), lease())
+        .unwrap();
+    runtime.create_scope(scope("done", None), lease()).unwrap();
+    for next in [ScopeState::Cancelled, ScopeState::Released] {
+        runtime
+            .transition_scope(&done, next, lease(), None)
+            .unwrap();
+    }
+    let snapshot = runtime.export_compacted_snapshot().unwrap();
+    let floor = runtime.committed_events().len();
+    let section = 80 + {
+        let bytes = snapshot.bytes();
+        let semantic = u64::from_le_bytes(bytes[56..64].try_into().unwrap()) as usize;
+        let lifecycle = u64::from_le_bytes(bytes[64..72].try_into().unwrap()) as usize;
+        semantic + lifecycle
+    };
+    assert_eq!(&snapshot.bytes()[section..section + 8], b"PTREX003");
+    // A snapshot with a scope moves the outer magic, so an older build stops there.
+    assert_eq!(&snapshot.bytes()[..8], b"PTRCS010");
+    // The scope block under an older outer magic is refused by version, even when resealed.
+    let mut relabelled = snapshot.bytes().to_vec();
+    relabelled[..8].copy_from_slice(b"PTRCS006");
+    let anchor = reseal(
+        &mut relabelled,
+        snapshot.anchor().floor,
+        snapshot.anchor().revision,
+    );
+    assert!(matches!(
+        restore_error(&relabelled, anchor),
+        Some(RuntimeError::Compacted(CompactedError::UnsupportedVersion))
+    ));
+
+    // Above the floor: the open scope moves on, a scope under the child is created.
+    runtime
+        .transition_scope(&open, ScopeState::Admitted, lease(), None)
+        .unwrap();
+    runtime
+        .create_scope(scope("grandchild", Some("child")), lease())
+        .unwrap();
+    let above_floor: Vec<CommittedEvent> = runtime.committed_events()[floor..].to_vec();
+
+    let replayed = PtrRuntime::replay(PtrConfig::default(), runtime.committed_events()).unwrap();
+    let restored = PtrRuntime::restore_compacted(
+        PtrConfig::default(),
+        snapshot.bytes(),
+        snapshot.anchor(),
+        &above_floor,
+    )
+    .unwrap();
+    for id in [&open, &child, &done, &ScopeId::from("grandchild")] {
+        assert_eq!(
+            restored.scopes().get(id).unwrap(),
+            replayed.scopes().get(id).unwrap(),
+            "{id}"
+        );
+        assert_eq!(
+            restored.scopes().lease(id).unwrap(),
+            replayed.scopes().lease(id).unwrap(),
+            "{id}"
+        );
+    }
+    assert_eq!(
+        restored.scopes().recoverable_scopes(),
+        replayed.scopes().recoverable_scopes()
+    );
+    assert!(restored.scopes().recovery_required(&open));
+    assert!(restored.scopes().recovery_required(&child));
+    assert!(!restored.scopes().recovery_required(&done));
+
+    // Restoring at the floor alone keeps the obligation too, and a scope id used below the
+    // floor cannot be created again, as in a replay.
+    let mut at_floor = PtrRuntime::restore_compacted(
+        PtrConfig::default(),
+        snapshot.bytes(),
+        snapshot.anchor(),
+        &[],
+    )
+    .unwrap();
+    assert!(at_floor.scopes().recovery_required(&open));
+    assert!(at_floor.create_scope(scope("done", None), lease()).is_err());
+}
+
+/// A snapshot without any scope keeps the earlier execution layout byte for byte.
+#[test]
+fn a_snapshot_without_scopes_keeps_the_earlier_execution_layout() {
+    let runtime = fixture();
+    let snapshot = runtime.export_compacted_snapshot().unwrap();
+    let bytes = snapshot.bytes();
+    let semantic = u64::from_le_bytes(bytes[56..64].try_into().unwrap()) as usize;
+    let lifecycle = u64::from_le_bytes(bytes[64..72].try_into().unwrap()) as usize;
+    let section = 80 + semantic + lifecycle;
+    assert_eq!(&bytes[section..section + 8], b"PTREX002");
+    assert_eq!(&bytes[..8], b"PTRCS006");
+    // PTRCS010 requires the scope block: a scope-free section under it is refused.
+    let mut relabelled = bytes.to_vec();
+    relabelled[..8].copy_from_slice(b"PTRCS010");
+    let anchor = reseal(
+        &mut relabelled,
+        snapshot.anchor().floor,
+        snapshot.anchor().revision,
+    );
+    assert!(matches!(
+        restore_error(&relabelled, anchor),
+        Some(RuntimeError::Compacted(CompactedError::UnsupportedVersion))
+    ));
+}
+
+fn plain_scope(id: &str, session: &str, project: &str) -> ptr_runtime::ExecutionScope {
+    ptr_runtime::ExecutionScope {
+        id: ptr_types::ScopeId::from(id),
+        parent: None,
+        session: ptr_types::SessionId::from(session),
+        project: ptr_types::ProjectId::from(project),
+        created_at: ptr_types::Timestamp(1),
+        deadline: None,
+        state: ptr_runtime::ScopeState::Created,
+        cancellation_requested: false,
+    }
+}
+
+/// Review of #141 (P1): a long history of created and released scopes still exports and
+/// restores, and a released id stays taken after the restore.
+#[test]
+fn many_created_and_released_scopes_still_export_and_restore() {
+    use ptr_runtime::ScopeState;
+    use ptr_types::{ScopeId, ScopeLeaseBinding};
+
+    let mut runtime = fixture();
+    let count = 2_000;
+    for i in 0..count {
+        let id = ScopeId(format!("scope-{i:05}"));
+        runtime
+            .create_scope(
+                plain_scope(&id.0, "session", "project"),
+                ScopeLeaseBinding::default(),
+            )
+            .unwrap();
+        for next in [ScopeState::Cancelled, ScopeState::Released] {
+            runtime
+                .transition_scope(&id, next, ScopeLeaseBinding::default(), None)
+                .unwrap();
+        }
+    }
+    assert!(runtime.scopes().snapshot_bytes() <= ptr_runtime::compacted::MAX_SECTION_BYTES);
+    let snapshot = runtime.export_compacted_snapshot().unwrap();
+    let mut restored = PtrRuntime::restore_compacted(
+        PtrConfig::default(),
+        snapshot.bytes(),
+        snapshot.anchor(),
+        &[],
+    )
+    .unwrap();
+    assert!(restored.scopes().recoverable_scopes().is_empty());
+    assert_eq!(
+        restored.scopes().snapshot_bytes(),
+        runtime.scopes().snapshot_bytes()
+    );
+    assert!(restored
+        .create_scope(
+            plain_scope("scope-00007", "session", "project"),
+            ScopeLeaseBinding::default()
+        )
+        .is_err());
+}
+
+/// Review of #141: at the execution section's bound the next scope is refused with a typed
+/// error and nothing is committed; the export keeps working, before and after the refusal.
+#[test]
+fn at_the_scope_bound_creation_is_refused_and_the_export_keeps_working() {
+    use ptr_runtime::compacted::MAX_SECTION_BYTES;
+    use ptr_types::ScopeLeaseBinding;
+
+    let mut runtime = fixture();
+    // Long ids reach the byte bound after a few hundred scopes.
+    let long = |tag: &str, i: usize| format!("{tag}-{i:05}-{}", "x".repeat(3_000));
+    let mut created = 0;
+    let refusal = loop {
+        let scope = plain_scope(
+            &long("id", created),
+            &long("session", 0),
+            &long("project", 0),
+        );
+        let events = runtime.committed_events().len();
+        match runtime.create_scope(scope, ScopeLeaseBinding::default()) {
+            Ok(_) => created += 1,
+            Err(error) => {
+                assert_eq!(
+                    runtime.committed_events().len(),
+                    events,
+                    "nothing committed"
+                );
+                break error;
+            }
+        }
+        assert!(created < 10_000, "the bound was never reached");
+    };
+    assert!(
+        matches!(
+            refusal,
+            RuntimeError::ExecutionSectionFull { bytes, .. } if bytes > MAX_SECTION_BYTES
+        ),
+        "{refusal:?}"
+    );
+    assert!(created > 100);
+    assert!(runtime.scopes().snapshot_bytes() <= MAX_SECTION_BYTES);
+    let snapshot = runtime.export_compacted_snapshot().unwrap();
+    let restored = PtrRuntime::restore_compacted(
+        PtrConfig::default(),
+        snapshot.bytes(),
+        snapshot.anchor(),
+        &[],
+    )
+    .unwrap();
+    assert_eq!(restored.scopes().recoverable_scopes().len(), created);
+    // The refusal is a creation refusal: the registry still answers for every scope it holds.
+    assert!(restored
+        .scopes()
+        .get(&ptr_types::ScopeId(long("id", 0)))
+        .is_ok());
+}
+
+/// A history written without the execution-section budget (as an earlier build could): the
+/// fixture's records followed by `count` scopes with long ids, each committed by replay.
+fn over_budget_history(count: usize) -> Vec<CommittedEvent> {
+    let base = fixture();
+    let mut events = base.committed_events().to_vec();
+    let revision = base.revision();
+    let long = |tag: &str, i: usize| format!("{tag}-{i:05}-{}", "x".repeat(3_000));
+    for i in 0..count {
+        let scope = plain_scope(&long("id", i), &long("session", 0), &long("project", 0));
+        let event = ptr_runtime::scopes::lifecycle_event(
+            &scope,
+            None,
+            ptr_runtime::ScopeState::Created,
+            revision,
+            ptr_types::ScopeLeaseBinding::default(),
+            None,
+        );
+        let index = CommitIndex(events.len() as u64 + 1);
+        events.push(CommittedEvent {
+            index,
+            event: LedgerEvent::ScopeLifecycle(event),
+        });
+    }
+    events
+}
+
+/// Review of #141 (round 4): replay accepts a history larger than a compacted snapshot's
+/// execution section (it was written before the budget). The runtime opens and says so at
+/// once (execution_section_overflow); the export refuses it by name (CompactionBlocked), never
+/// with a generic section limit, and new growth is refused.
+#[test]
+fn a_replayed_history_over_the_execution_budget_is_reported_and_compaction_refused_by_name() {
+    use ptr_runtime::compacted::MAX_SECTION_BYTES;
+    let mut replayed = PtrRuntime::replay(PtrConfig::default(), &over_budget_history(1_000))
+        .expect("the log stays readable");
+    let overflow = replayed
+        .execution_section_overflow()
+        .expect("the overflow is reported right after the replay");
+    assert!(overflow.bytes > MAX_SECTION_BYTES);
+    let refused = replayed.export_compacted_snapshot();
+    assert!(
+        matches!(
+            &refused,
+            Err(RuntimeError::CompactionBlocked { bytes, .. }) if *bytes == overflow.bytes
+        ),
+        "{:?}",
+        refused.as_ref().err()
+    );
+    let events = replayed.committed_events().len();
+    let grown = replayed.create_scope(
+        plain_scope("one-more", "session", "project"),
+        ptr_types::ScopeLeaseBinding::default(),
+    );
+    assert!(
+        matches!(grown, Err(RuntimeError::ExecutionSectionFull { .. })),
+        "{grown:?}"
+    );
+    assert_eq!(replayed.committed_events().len(), events);
+    // A history within the budget reports nothing.
+    assert!(fixture().execution_section_overflow().is_none());
+}

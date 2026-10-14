@@ -260,8 +260,9 @@ pub struct VerifiedAnswer<P> {
     payload: P,
     /// The Pod that made the last edit.
     author: PodRef,
-    /// Every Pod whose output is in the payload, in the order it contributed (the last one
-    /// included). Never empty.
+    /// Every Pod whose output is in the payload, in the order it last contributed (the last one
+    /// included): for a repaired payload the proposer and every repairer whose edit was applied
+    /// in any round. Never empty.
     authors: Vec<PodRef>,
     project: ProjectId,
     request_id: RequestId,
@@ -779,6 +780,10 @@ enum Plan<P> {
     },
     Repair {
         previous: P,
+        /// Every Pod whose output is in `previous` (its proposer and the repairers whose edits
+        /// were applied in earlier rounds). Their output stays in the repaired candidate, so they
+        /// stay its authors.
+        previous_authors: Vec<PodRef>,
         actions: Vec<(PodRef, FindingCode)>,
     },
     Escalate {
@@ -801,8 +806,12 @@ struct Attempt<P> {
 }
 
 enum Produced<P> {
-    /// A candidate and every Pod whose output is in it: the proposer, the repairers whose edits
-    /// were applied (in order), or the escalation author. Never empty.
+    /// A candidate and every Pod whose output is in it, never empty. For a proposal, the
+    /// proposer. For a repair, the authors of the repaired candidate (its proposer and every
+    /// repairer whose edit was applied in an earlier round) followed by the repairers whose
+    /// edits were applied in this round; a Pod that contributes again moves to the end, so the
+    /// last entry is the Pod that made the last edit. For an escalation, the escalation author,
+    /// who answers for the whole payload it returns.
     Candidate {
         value: P,
         authors: Vec<PodRef>,
@@ -941,7 +950,7 @@ impl<S: AdmissibleScorer> VcwLoop<S> {
                 );
                 return Ok(Finished::Exhausted(reason));
             }
-            let (next, next_decision) = match self.route_next(session, &judged, value) {
+            let (next, next_decision) = match self.route_next(session, &judged, value, &authors) {
                 Ok(routed) => routed,
                 Err(error) => {
                     // The candidate was verified and spent budget; keep it in the partial trace.
@@ -1089,7 +1098,11 @@ impl<S: AdmissibleScorer> VcwLoop<S> {
                     None => Produced::Nothing,
                 }
             }
-            Plan::Repair { previous, actions } => {
+            Plan::Repair {
+                previous,
+                previous_authors,
+                actions,
+            } => {
                 let mut current = previous.clone();
                 let mut applied: Vec<PodRef> = Vec::new();
                 for (pod, code) in actions {
@@ -1114,9 +1127,10 @@ impl<S: AdmissibleScorer> VcwLoop<S> {
                             self.counters.repairs_applied =
                                 self.counters.repairs_applied.saturating_add(1);
                             current = edited;
-                            if !applied.contains(pod) {
-                                applied.push(pod.clone());
-                            }
+                            // The last entry is the Pod that made the last edit: a Pod that
+                            // edits again moves to the end (A, B, A gives B, A).
+                            applied.retain(|earlier| earlier != pod);
+                            applied.push(pod.clone());
                         }
                         Some(_) => {
                             self.counters.repairs_out_of_scope =
@@ -1133,7 +1147,7 @@ impl<S: AdmissibleScorer> VcwLoop<S> {
                 } else {
                     Produced::Candidate {
                         value: current,
-                        authors: applied,
+                        authors: repaired_authors(previous_authors, &applied),
                     }
                 }
             }
@@ -1167,6 +1181,19 @@ impl<S: AdmissibleScorer> VcwLoop<S> {
             }
         }
     }
+}
+
+/// The authors of a repaired candidate: the authors of the candidate it was made from, then the
+/// repairers whose edits were applied, in order. A Pod already listed moves to the end, so every
+/// Pod appears once and the last entry made the last edit.
+fn repaired_authors(previous: &[PodRef], applied: &[PodRef]) -> Vec<PodRef> {
+    let mut authors: Vec<PodRef> = previous
+        .iter()
+        .filter(|pod| !applied.contains(pod))
+        .cloned()
+        .collect();
+    authors.extend(applied.iter().cloned());
+    authors
 }
 
 struct Judged {
@@ -1476,6 +1503,7 @@ impl<S: AdmissibleScorer> VcwLoop<S> {
         session: &mut Session<'_, P>,
         judged: &Judged,
         value: P,
+        authors: &[PodRef],
     ) -> Result<(Attempt<P>, StepDecision), VcwError> {
         let escalating = |attempt: &Attempt<P>| matches!(attempt.plan, Plan::Escalate { .. });
         // An accepted candidate whose author is no longer eligible is replaced by a fresh draw.
@@ -1565,6 +1593,7 @@ impl<S: AdmissibleScorer> VcwLoop<S> {
                         role: SelfRole::Repair,
                         plan: Plan::Repair {
                             previous: value,
+                            previous_authors: authors.to_vec(),
                             actions,
                         },
                         routes: records,

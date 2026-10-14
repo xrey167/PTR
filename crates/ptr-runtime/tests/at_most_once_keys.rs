@@ -1356,3 +1356,100 @@ fn a_snapshot_whose_recorded_project_or_principal_is_malformed_is_refused() {
         PtrRuntime::restore_compacted(PtrConfig::default(), bytes, snapshot.anchor(), &[]).is_ok()
     );
 }
+
+fn tiny_scope(id: &str, filler: usize) -> ptr_runtime::ExecutionScope {
+    let pad = "x".repeat(filler);
+    ptr_runtime::ExecutionScope {
+        id: ptr_types::ScopeId(format!("{id}{pad}")),
+        parent: None,
+        session: ptr_types::SessionId(format!("session{pad}")),
+        project: ptr_types::ProjectId(format!("project{pad}")),
+        created_at: ptr_types::Timestamp(1),
+        deadline: None,
+        state: ptr_runtime::ScopeState::Created,
+        cancellation_requested: false,
+    }
+}
+
+/// Review of #141 (round 3): the execution section of a compacted snapshot (unsettled
+/// attempts, settled keys with their retained responses, the scope block) has one budget.
+/// Responses are retained while they fit and recorded without the response once they no
+/// longer do; a scope that would overflow the section is refused, and so is an attempt once
+/// scopes filled it; nothing is committed by a refusal and the export keeps working.
+#[test]
+fn obligations_and_scopes_share_one_execution_section_budget() {
+    use ptr_runtime::compacted::MAX_SECTION_BYTES;
+    let (mut runtime, action) = fixture();
+    let echo = Echo::default();
+    let alice = synchronous(&mut runtime, "alice", &action, &echo);
+    let big = vec![b'x'; 1_000_000];
+
+    // Retained responses fill most of the section; one stops being retained.
+    let mut not_retained = None;
+    for i in 0..12 {
+        let request = with_payload(
+            &action,
+            &[big.as_slice(), format!("{i}").as_bytes()].concat(),
+        );
+        let key = format!("bulk-{i}");
+        let permit = once(&runtime, &alice, &request, &key);
+        runtime.execute_prepared(&alice, permit).unwrap();
+        let permit = once(&runtime, &alice, &request, &key);
+        match runtime.execute_prepared(&alice, permit) {
+            Ok(_) => {}
+            Err(ExecutionError::ResponseNotRetained { .. }) => {
+                not_retained = Some(i);
+                break;
+            }
+            Err(other) => panic!("{other:?}"),
+        }
+    }
+    assert!(not_retained.is_some(), "every response was retained");
+    runtime.export_compacted_snapshot().unwrap();
+
+    // A scope that would overflow the section is refused, then smaller ones fill the rest.
+    let full = |result: &Result<CommitIndex, RuntimeError>| matches!(result, Err(RuntimeError::ExecutionSectionFull { bytes, .. }) if *bytes > MAX_SECTION_BYTES);
+    for (tag, filler) in [("big", 3_000), ("small", 0)] {
+        let mut i = 0;
+        loop {
+            let events = runtime.committed_events().len();
+            let result = runtime.create_scope(
+                tiny_scope(&format!("{tag}-{i:05}"), filler),
+                Default::default(),
+            );
+            if result.is_err() {
+                assert!(full(&result), "{result:?}");
+                assert_eq!(
+                    runtime.committed_events().len(),
+                    events,
+                    "nothing committed"
+                );
+                break;
+            }
+            i += 1;
+            assert!(i < 100_000);
+        }
+    }
+    let snapshot = runtime.export_compacted_snapshot().unwrap();
+    assert!(snapshot.bytes().len() > MAX_SECTION_BYTES / 2);
+
+    // With the section full, an attempt (and the room its settlement reserves) is refused
+    // before it is recorded; the executor is not reached.
+    let calls = echo.calls();
+    let events = runtime.committed_events().len();
+    let permit = once(
+        &runtime,
+        &alice,
+        &with_payload(&action, b"late"),
+        "late-key",
+    );
+    let refused = runtime.execute_prepared(&alice, permit);
+    assert!(
+        matches!(&refused, Err(ExecutionError::Audit(error)) if matches!(**error, RuntimeError::ExecutionSectionFull { .. })),
+        "{refused:?}"
+    );
+    assert_eq!(runtime.committed_events().len(), events);
+    assert_eq!(echo.calls(), calls);
+    let restored = round_trip(&runtime, &action);
+    assert!(restored.unsettled_effects().is_empty());
+}

@@ -225,15 +225,9 @@ impl SpecialistTrainer for SimulatedTrainer {
         }
         // The collateral the trainer states is part of what the ledger commits to.
         for collateral in &self.collateral {
-            manifest.capabilities.push(CapabilityId::from(
-                format!(
-                    "sim:collateral:{}:{}:{}",
-                    collateral.pod.0,
-                    collateral.code,
-                    (collateral.success_after * 1_000_000.0).round() as u64
-                )
-                .as_str(),
-            ));
+            manifest
+                .capabilities
+                .push(collateral_capability(collateral));
         }
         let manifest_digest =
             ManifestDigest::new(manifest.digest()).map_err(|_| TrainingError::ZeroDigest)?;
@@ -249,6 +243,24 @@ impl SpecialistTrainer for SimulatedTrainer {
             provenance: Self::PROVENANCE,
         })
     }
+}
+
+/// The `sim:collateral:` capability of one stated collateral, version 2 (issue #141): the Pod id
+/// and the code are each preceded by their byte length, so a `:` inside either cannot move a
+/// field boundary. Version 1 joined them with a bare `:`, and Pod `a:b` with code `c` read the
+/// same as Pod `a` with code `b:c`.
+fn collateral_capability(collateral: &Collateral) -> CapabilityId {
+    CapabilityId::from(
+        format!(
+            "sim:collateral:v2:{}:{}:{}:{}:{}",
+            collateral.pod.0.len(),
+            collateral.pod.0,
+            collateral.code.len(),
+            collateral.code,
+            (collateral.success_after * 1_000_000.0).round() as u64
+        )
+        .as_str(),
+    )
 }
 
 /// The codes a manifest declares it repairs (`repairs:<code>` capabilities), in code order.
@@ -323,6 +335,21 @@ mod tests {
         assert_ne!(harmful.manifest_digest, milder.manifest_digest);
         assert_eq!(repaired_codes(&a.manifest), a.codes);
         assert_eq!(a.provenance, SimulatedTrainer::PROVENANCE);
+    }
+
+    /// Issue #141: a `:` inside the Pod id or the code must not move a field boundary.
+    #[test]
+    fn collateral_with_a_colon_in_the_pod_or_code_does_not_alias() {
+        let left = trainer()
+            .with_collateral("a:b", "c", 0.5)
+            .train(&request(&["x"]))
+            .unwrap();
+        let right = trainer()
+            .with_collateral("a", "b:c", 0.5)
+            .train(&request(&["x"]))
+            .unwrap();
+        assert_ne!(left.manifest.capabilities, right.manifest.capabilities);
+        assert_ne!(left.manifest_digest, right.manifest_digest);
     }
 
     #[test]

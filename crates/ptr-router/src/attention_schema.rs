@@ -77,7 +77,8 @@
 //!
 //! Contexts, Pods per context, the accuracy window, the preference table (replaced wholesale
 //! by [`AttentionSchema::apply_hints`], with a time-to-live in observed records), the duplicate
-//! ring and the generation table are capped ([`SchemaLimits`]); counters saturate. Statistics
+//! ring and the generation table are capped ([`SchemaLimits`]; the generation table evicts the
+//! Pod seen least recently, with its statistics); counters saturate. Statistics
 //! are dropped when a Pod's generation changes, and a hint applies only to the generation most
 //! recently seen. No clock, no randomness. Diagnostic entropy uses `ln` and is not part of the
 //! digest. Interior state is behind a mutex; a poisoned lock is recovered.
@@ -97,7 +98,9 @@ use std::sync::{Arc, Mutex, MutexGuard};
 const EMA_RATE: f64 = 0.0625;
 /// Quantization resolution of the router's sampling widths.
 const RESOLUTION: f64 = 9_007_199_254_740_992.0;
-/// Pods whose generation is tracked (further Pods can never match a hint).
+/// Pods whose generation is tracked. When the table is full, a newly seen Pod evicts the Pod
+/// seen least recently, whose statistics are dropped with it (an untracked Pod's generation
+/// change could not be noticed, so it keeps no statistics either).
 const MAX_TRACKED_GENERATIONS: usize = 1024;
 
 /// Capacity bounds of an [`AttentionSchema`].
@@ -380,13 +383,23 @@ struct Preference {
     stamp: u64,
 }
 
+/// The generation a Pod was last seen at, and the epoch it was last seen in (the eviction order
+/// of the generation table).
+#[derive(Clone, Copy, Debug)]
+struct Tracked {
+    generation: Generation,
+    last_seen: u64,
+}
+
 #[derive(Debug, Default)]
 struct State {
     contexts: BTreeMap<SchemaKey, ClassState>,
     overflow: ClassState,
     overflow_observations: u64,
     epoch: u64,
-    generations: BTreeMap<PodId, Generation>,
+    generations: BTreeMap<PodId, Tracked>,
+    /// Pods evicted from the full generation table.
+    generations_evicted: u64,
     seen_ring: VecDeque<(Digest, SchemaKey, u8)>,
     seen_set: BTreeSet<(Digest, SchemaKey, u8)>,
     duplicates: u64,
@@ -559,21 +572,66 @@ impl AttentionSchema {
     }
 
     /// Drops the statistics of a Pod whose generation changed, then tracks the new generation.
+    /// The table is bounded: a Pod not yet tracked evicts the least recently seen Pod (ties: the
+    /// smallest id) when the table is full, and the evicted Pod's statistics are dropped.
     fn track_generation(&self, state: &mut State, pod: &PodId, generation: Generation) {
-        match state.generations.get(pod).copied() {
-            Some(known) if known == generation => {}
-            Some(_) => {
-                state.generations.insert(pod.clone(), generation);
-                for class in state.contexts.values_mut() {
-                    class.purge(pod);
+        let now = Tracked {
+            generation,
+            last_seen: state.epoch,
+        };
+        match state.generations.insert(pod.clone(), now) {
+            Some(known) if known.generation == generation => {}
+            Some(_) => Self::purge_everywhere(state, pod),
+            None => {
+                // Once the table has evicted, a Pod it does not track may be one it evicted, and
+                // whatever it holds was gathered at a generation nobody recorded: it starts empty
+                // (a support member's statistics carry no generation of their own).
+                if state.generations_evicted > 0 {
+                    Self::purge_everywhere(state, pod);
                 }
-                state.overflow.purge(pod);
+                while state.generations.len() > MAX_TRACKED_GENERATIONS {
+                    let Some(oldest) = state
+                        .generations
+                        .iter()
+                        .filter(|(tracked, _)| *tracked != pod)
+                        .min_by_key(|(_, entry)| entry.last_seen)
+                        .map(|(tracked, _)| tracked.clone())
+                    else {
+                        break;
+                    };
+                    state.generations.remove(&oldest);
+                    state.generations_evicted = state.generations_evicted.saturating_add(1);
+                    Self::purge_everywhere(state, &oldest);
+                }
+                // From the first eviction on, no statistics exist for a Pod the table does not
+                // track: a support member that was never chosen has no recorded generation, so
+                // nothing would notice it change. Its entries go now, at the transition.
+                if state.generations_evicted > 0 {
+                    Self::purge_untracked(state);
+                }
             }
-            None if state.generations.len() < MAX_TRACKED_GENERATIONS => {
-                state.generations.insert(pod.clone(), generation);
-            }
-            None => {}
         }
+    }
+
+    /// Drop every statistic of a Pod the generation table does not track.
+    fn purge_untracked(state: &mut State) {
+        let State {
+            contexts,
+            overflow,
+            generations,
+            ..
+        } = state;
+        for class in contexts.values_mut().chain(std::iter::once(overflow)) {
+            class.ema.retain(|pod, _| generations.contains_key(pod));
+            class.pods.retain(|pod, _| generations.contains_key(pod));
+        }
+    }
+
+    fn purge_everywhere(state: &mut State, pod: &PodId) {
+        for class in state.contexts.values_mut() {
+            class.purge(pod);
+        }
+        state.overflow.purge(pod);
     }
 
     /// Learns from one actual router choice: forecasts it first, scores the forecast against
@@ -631,8 +689,35 @@ impl AttentionSchema {
         if overflowed {
             state.overflow_observations = state.overflow_observations.saturating_add(1);
         }
+        // After an eviction, a support member the table does not track gets no new statistics:
+        // it may be an evicted Pod, and nothing would notice its next generation.
+        let evicting = state.generations_evicted > 0;
+        let untracked: BTreeSet<PodId> = if evicting {
+            support
+                .iter()
+                .filter(|(pod, _)| !state.generations.contains_key(pod))
+                .map(|(pod, _)| pod.clone())
+                .collect()
+        } else {
+            BTreeSet::new()
+        };
+        let stale: Vec<PodId> = if evicting {
+            let empty = ClassState::default();
+            Self::class_state(&state, &key, &self.limits, &empty)
+                .ema
+                .keys()
+                .filter(|pod| !state.generations.contains_key(*pod))
+                .cloned()
+                .collect()
+        } else {
+            Vec::new()
+        };
         let class = Self::class_state_mut(&mut state, key, &self.limits);
         class.observed = class.observed.saturating_add(1);
+        // Defence in depth: an untracked entry is neither updated nor kept once evicting.
+        for pod in &stale {
+            class.ema.remove(pod);
+        }
         for (pod, value) in class.ema.iter_mut() {
             let p = support
                 .iter()
@@ -641,7 +726,10 @@ impl AttentionSchema {
             *value += (p - *value) * EMA_RATE;
         }
         for (pod, p) in &support {
-            if !class.ema.contains_key(pod) && class.ema.len() < max_pods {
+            if !class.ema.contains_key(pod)
+                && class.ema.len() < max_pods
+                && !untracked.contains(pod)
+            {
                 class.ema.insert(pod.clone(), *p);
             }
         }
@@ -819,7 +907,10 @@ impl AttentionSchema {
         };
         state.preferences.get(code).is_some_and(|preference| {
             preference.pod == *pod
-                && state.generations.get(pod) == Some(&preference.generation)
+                && state
+                    .generations
+                    .get(pod)
+                    .is_some_and(|tracked| tracked.generation == preference.generation)
                 && state.epoch.saturating_sub(preference.stamp) <= self.limits.preference_ttl
         })
     }
@@ -830,7 +921,9 @@ impl AttentionSchema {
     }
 
     fn digest_locked(&self, state: &State) -> [u8; 32] {
-        let mut out = DigestWriter::new("ptr-router/attention-schema/v2");
+        // v3 (issue #141): the generation table records when each Pod was last seen (its
+        // eviction order) and how many Pods it evicted.
+        let mut out = DigestWriter::new("ptr-router/attention-schema/v3");
         out.u64(self.limits.max_contexts as u64);
         out.u64(self.limits.max_pods_per_context as u64);
         out.u64(self.limits.window as u64);
@@ -847,10 +940,12 @@ impl AttentionSchema {
         out.u64(state.overflow_observations);
         out.u64(state.epoch);
         out.u64(state.generations.len() as u64);
-        for (pod, generation) in &state.generations {
+        for (pod, tracked) in &state.generations {
             out.str(&pod.0);
-            out.u64(generation.0);
+            out.u64(tracked.generation.0);
+            out.u64(tracked.last_seen);
         }
+        out.u64(state.generations_evicted);
         out.u64(state.duplicates);
         out.u64(state.observations);
         out.u64(state.trivial);
@@ -998,5 +1093,200 @@ impl<S: AdmissibleScorer> AdmissibleScorer for ControlledScorer<S> {
                 (pod, weight * factor)
             })
             .collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::RouteDistribution;
+
+    fn pod(i: usize) -> PodId {
+        PodId::from(format!("p{i}").as_str())
+    }
+
+    /// Issue #141: the generation table never grows past its cap, a newly seen Pod is still
+    /// tracked when it is full (the least recently seen Pod makes room), and an evicted Pod's
+    /// statistics go with it.
+    #[test]
+    fn the_generation_table_stays_bounded_and_keeps_tracking_new_pods() {
+        let schema = AttentionSchema::new(SchemaLimits::default()).unwrap();
+        let mut state = State::default();
+        let total = 3 * MAX_TRACKED_GENERATIONS;
+        for i in 0..total {
+            state.epoch = i as u64;
+            schema.track_generation(&mut state, &pod(i), Generation(1));
+            state.overflow.ema.insert(pod(i), 1.0);
+            assert!(state.generations.len() <= MAX_TRACKED_GENERATIONS);
+        }
+        assert_eq!(state.generations.len(), MAX_TRACKED_GENERATIONS);
+        assert_eq!(
+            state.generations_evicted,
+            (total - MAX_TRACKED_GENERATIONS) as u64
+        );
+        // The most recent Pods are tracked; the oldest were evicted with their statistics.
+        assert!(state.generations.contains_key(&pod(total - 1)));
+        assert!(!state.generations.contains_key(&pod(0)));
+        assert!(!state.overflow.ema.contains_key(&pod(0)));
+        assert!(state.overflow.ema.contains_key(&pod(total - 1)));
+
+        // A Pod seen again is refreshed and survives the next eviction.
+        let keep = pod(total - MAX_TRACKED_GENERATIONS);
+        state.epoch = total as u64;
+        schema.track_generation(&mut state, &keep, Generation(1));
+        state.epoch = total as u64 + 1;
+        schema.track_generation(&mut state, &pod(total), Generation(1));
+        assert!(state.generations.contains_key(&keep));
+        assert!(!state
+            .generations
+            .contains_key(&pod(total - MAX_TRACKED_GENERATIONS + 1)));
+
+        // A tracked Pod at a new generation loses its statistics, as before.
+        // (Continued below in the_evicted_pod_gathers_no_statistics_and_returns_empty.)
+        state.overflow.ema.insert(keep.clone(), 1.0);
+        schema.track_generation(&mut state, &keep, Generation(2));
+        assert!(!state.overflow.ema.contains_key(&keep));
+    }
+
+    /// Once the table has evicted, every statistic belongs to a tracked Pod.
+    fn assert_only_tracked_statistics(schema: &AttentionSchema) {
+        let state = schema.state();
+        if state.generations_evicted == 0 {
+            return;
+        }
+        for class in state
+            .contexts
+            .values()
+            .chain(std::iter::once(&state.overflow))
+        {
+            for pod in class.ema.keys().chain(class.pods.keys()) {
+                assert!(
+                    state.generations.contains_key(pod),
+                    "statistics for the untracked Pod {pod}"
+                );
+            }
+        }
+    }
+
+    /// Review of #141 (round 3): a Pod seen only as a support member before the first
+    /// eviction has a moving-average entry and no generation. The first eviction drops it, and
+    /// it is neither kept nor updated afterwards, so ema keys stay within the tracked Pods.
+    #[test]
+    fn a_support_only_pod_loses_its_statistics_at_the_first_eviction() {
+        let schema = AttentionSchema::new(SchemaLimits::default()).unwrap();
+        let half = RouteDistribution::RESOLUTION / 2;
+        let ghost = PodId::from("ghost");
+        let record = |i: usize, chosen: &PodId, other: &PodId| {
+            let mut support = vec![(chosen.clone(), half), (other.clone(), half)];
+            support.sort();
+            FindingRouteRecord::for_test(
+                &format!("g{i}"),
+                RouteClass::Repair(FindingCode::new("x")),
+                support,
+                chosen.clone(),
+                Generation(1),
+            )
+        };
+        let has_ema = |schema: &AttentionSchema, p: &PodId| {
+            let state = schema.state();
+            state
+                .contexts
+                .values()
+                .chain(std::iter::once(&state.overflow))
+                .any(|class| class.ema.contains_key(p))
+        };
+        // Before any eviction the ghost gathers an entry as a support member only.
+        schema.observe(&record(0, &pod(0), &ghost));
+        assert!(has_ema(&schema, &ghost));
+        assert!(!schema.state().generations.contains_key(&ghost));
+        // Fill the table to the brim, the ghost keeps riding along in the support.
+        for i in 1..MAX_TRACKED_GENERATIONS {
+            schema.observe(&record(i, &pod(i), &ghost));
+        }
+        assert_eq!(schema.state().generations_evicted, 0);
+        assert!(has_ema(&schema, &ghost), "kept while nothing was evicted");
+        // The first eviction: the ghost's entry goes with it.
+        schema.observe(&record(
+            MAX_TRACKED_GENERATIONS,
+            &pod(MAX_TRACKED_GENERATIONS),
+            &ghost,
+        ));
+        assert!(schema.state().generations_evicted > 0);
+        assert!(
+            !has_ema(&schema, &ghost),
+            "the untracked entry survived the first eviction"
+        );
+        assert_only_tracked_statistics(&schema);
+        // Afterwards it is neither re-created nor updated.
+        for i in 0..20 {
+            let n = 2 * MAX_TRACKED_GENERATIONS + i;
+            schema.observe(&record(n, &pod(n), &ghost));
+            assert_only_tracked_statistics(&schema);
+        }
+        assert!(!has_ema(&schema, &ghost));
+    }
+
+    /// Review of #141 (P1): once the table has evicted, a Pod it does not track gathers no
+    /// statistics as a support member of other records, and a Pod that returns (at a new
+    /// generation) starts with none, so history of an unrecorded generation never steers it.
+    #[test]
+    fn the_evicted_pod_gathers_no_statistics_and_returns_empty() {
+        let schema = AttentionSchema::new(SchemaLimits::default()).unwrap();
+        let half = RouteDistribution::RESOLUTION / 2;
+        let record = |i: usize, chosen: &PodId, other: &PodId, generation: u64| {
+            let mut support = vec![(chosen.clone(), half), (other.clone(), half)];
+            support.sort();
+            FindingRouteRecord::for_test(
+                &format!("r{i}"),
+                RouteClass::Repair(FindingCode::new("x")),
+                support,
+                chosen.clone(),
+                Generation(generation),
+            )
+        };
+        let victim = pod(0);
+        // The victim is chosen once, then crowded out of the table by more than its capacity.
+        schema.observe(&record(0, &victim, &pod(1), 1));
+        for i in 1..=MAX_TRACKED_GENERATIONS + 1 {
+            schema.observe(&record(i, &pod(i), &pod(i + 1), 1));
+        }
+        let ema_of = |schema: &AttentionSchema, p: &PodId| {
+            let state = schema.state();
+            state
+                .contexts
+                .values()
+                .chain(std::iter::once(&state.overflow))
+                .any(|class| class.ema.contains_key(p) || class.pods.contains_key(p))
+        };
+        {
+            let state = schema.state();
+            assert!(state.generations_evicted > 0);
+            assert!(!state.generations.contains_key(&victim));
+        }
+        assert!(!ema_of(&schema, &victim), "evicted with its statistics");
+        // While untracked it appears in other records' support: nothing is gathered for it.
+        let base = 10 * MAX_TRACKED_GENERATIONS;
+        for i in 0..5 {
+            schema.observe(&record(base + i, &pod(base + i), &victim, 1));
+        }
+        assert!(
+            !ema_of(&schema, &victim),
+            "an untracked support member gathered statistics"
+        );
+        assert_only_tracked_statistics(&schema);
+        // It returns at a new generation and starts empty, apart from this record's own view.
+        schema.observe(&record(base + 10, &victim, &pod(base + 11), 2));
+        let state = schema.state();
+        assert_eq!(
+            state.generations.get(&victim).map(|t| t.generation),
+            Some(Generation(2))
+        );
+        let seen: u64 = state
+            .contexts
+            .values()
+            .filter_map(|class| class.pods.get(&victim))
+            .map(|stat| stat.seen)
+            .sum();
+        assert_eq!(seen, 1, "only the returning record counts");
     }
 }

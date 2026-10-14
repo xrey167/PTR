@@ -9,8 +9,8 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-10-13  
-**Code footprint:** 40 Rust source files · 18987 nonblank source lines · 27 integration-test files · 345 test markers (`#[test]`, `#[tokio::test]`)
+**Last reviewed:** 2026-10-14  
+**Code footprint:** 40 Rust source files · 19013 nonblank source lines · 27 integration-test files · 347 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -71,6 +71,7 @@
 - run_stage_in_regime takes a StageRun (span, residual, rows, StageRows::Prefill or DecodeStep, optional frame positions) instead of positional parameters; the frame's positions must be the next positions of the cache (Qwen2StackError::StagePositions), and a row that fails truncates the cache back to where the run started, so a failed run leaves the cache unchanged (the rollback helper is unit-tested with a position-offset cache and a revoked cache; a fault in the middle of a row is not injected).
 - A stage run that fails part-way is rolled back to the cache's sequence length before the run (not to its next position, which differs for a cache restored at a position offset), and a rollback that itself fails is reported together with the failed run's own error as Qwen2StackError::RollbackFailed (the cache then holds the rows of the failed run and must be discarded); a unit test with a position-offset cache and one with a revoked cache (the injected rollback fault) cover both; the position arithmetic of the admission is checked (an offset that overflows is a typed refusal, not a wrap or a panic).
 - QwenCpuStats counts decode_steps (single-token forward passes after prefill) directly, and decode_tokens_per_second divides them by decode time instead of generated_tokens minus requests, which an immediate end-of-turn request understated (unit test in src/qwen_cpu/generator.rs, feature qwen-cpu)
+- PodOutput::digest is versioned (issue #141): version 2 starts with the domain tag ptr.pods.output.v2 and writes the dependency count before the sorted dependencies and the provenance count before the sorted provenance entries, so a 32-byte dependency of the form u64le(23) || 23 bytes || 0x00 no longer reads as a provenance entry and two different outputs no longer share a digest; PodOutput::legacy_v1_digest keeps the uncounted version-1 encoding only for checking records committed before version 2 (tests/output.rs shows the two aliasing outputs equal under v1 and distinct under v2)
 
 ### Missing for the target architecture
 

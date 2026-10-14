@@ -35,12 +35,36 @@ pub enum OutputError {
     TypeMismatch { expected: TypeId, actual: TypeId },
 }
 
+/// Domain tag of [`PodOutput::digest`], version 2.
+const POD_OUTPUT_DIGEST_DOMAIN_V2: &[u8] = b"ptr.pods.output.v2";
+
 impl PodOutput {
+    /// The canonical digest, version 2: a domain tag, then kind, payload, generation, the
+    /// manifest and artifact digests, revision, verified flag, the sorted dependencies preceded
+    /// by their count and the sorted provenance entries preceded by their count.
+    ///
+    /// Version 1 ([`Self::legacy_v1_digest`]) carried neither count, so a 32-byte dependency of
+    /// the form `u64le(23) || 23 bytes || 0x00` read as a provenance entry and two different
+    /// outputs could hash to the same digest (issue #141). The counts and the domain tag make
+    /// the encoding prefix-free, and the tag keeps a v2 digest from equalling a v1 one.
     pub fn digest(&self) -> Digest {
+        let mut bytes = POD_OUTPUT_DIGEST_DOMAIN_V2.to_vec();
+        self.encode_fields(&mut bytes, true);
+        Sha256::digest(bytes).into()
+    }
+
+    /// The version-1 digest, which [`Self::digest`] replaced. It is ambiguous (see there) and is
+    /// kept only to check records committed before version 2; nothing new may be bound to it.
+    pub fn legacy_v1_digest(&self) -> Digest {
         let mut bytes = Vec::new();
+        self.encode_fields(&mut bytes, false);
+        Sha256::digest(bytes).into()
+    }
+
+    fn encode_fields(&self, bytes: &mut Vec<u8>, counted: bool) {
         bytes.push(self.kind_code());
-        put_string(&mut bytes, &self.payload.type_id.0);
-        put_bytes(&mut bytes, &self.payload.bytes);
+        put_string(bytes, &self.payload.type_id.0);
+        put_bytes(bytes, &self.payload.bytes);
         bytes.extend_from_slice(&self.generation.0.to_le_bytes());
         bytes.extend_from_slice(&self.manifest_digest);
         bytes.extend_from_slice(&self.artifact_digest);
@@ -48,6 +72,9 @@ impl PodOutput {
         bytes.push(u8::from(self.verified));
         let mut dependencies = self.dependencies.clone();
         dependencies.sort();
+        if counted {
+            bytes.extend_from_slice(&(dependencies.len() as u64).to_le_bytes());
+        }
         for dependency in dependencies {
             bytes.extend_from_slice(&dependency);
         }
@@ -58,17 +85,19 @@ impl PodOutput {
                 .cmp(&right.source.0)
                 .then_with(|| left.note.cmp(&right.note))
         });
+        if counted {
+            bytes.extend_from_slice(&(provenance.len() as u64).to_le_bytes());
+        }
         for item in provenance {
-            put_string(&mut bytes, &item.source.0);
+            put_string(bytes, &item.source.0);
             match item.note {
                 Some(note) => {
                     bytes.push(1);
-                    put_string(&mut bytes, &note);
+                    put_string(bytes, &note);
                 }
                 None => bytes.push(0),
             }
         }
-        Sha256::digest(bytes).into()
     }
 
     pub fn kind_code(&self) -> u8 {

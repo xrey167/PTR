@@ -1243,7 +1243,13 @@ impl PtrRuntime {
         output: Vec<u8>,
     ) -> Result<CommitIndex, RuntimeError> {
         let response_digest = integrity::sha256(&output);
-        let response = (output.len() <= MAX_RETAINED_RESPONSE).then_some(output);
+        // A response is retained within the bound and only while the compacted snapshot's
+        // execution section still fits with it; otherwise the outcome is recorded without it
+        // (a retry is then refused, never answered with something else), which always fits in
+        // the room the attempt reserved.
+        let retain = output.len() <= MAX_RETAINED_RESPONSE
+            && self.settlement_retains_response(attempt, output.len());
+        let response = retain.then_some(output);
         self.commit_settlement(LedgerEvent::EffectSettled {
             attempt,
             response,

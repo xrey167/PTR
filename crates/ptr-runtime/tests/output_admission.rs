@@ -673,3 +673,318 @@ fn a_foreign_hypothesis_record_is_not_the_admissions_follow_up() {
             if recorded == &branch_id
     )));
 }
+
+/// Issue #141: admission records the version-2 output digest; a record committed before
+/// version 2 carries the version-1 digest and still replays; any other digest is refused.
+#[test]
+fn a_hypothesis_record_replays_under_the_current_or_the_legacy_output_digest_only() {
+    let mut first = runtime_with_scope();
+    first
+        .admit_pod_output(request(PodOutputKind::Hypothesis), &Pass)
+        .unwrap();
+    let recorded = first
+        .committed_events()
+        .iter()
+        .find_map(|committed| match &committed.event {
+            event @ ptr_ledger::LedgerEvent::PodHypothesisCommitted { .. } => Some(event.clone()),
+            _ => None,
+        })
+        .unwrap();
+    let output = request(PodOutputKind::Hypothesis).output;
+    let ptr_ledger::LedgerEvent::PodHypothesisCommitted { output_digest, .. } = &recorded else {
+        unreachable!();
+    };
+    assert_eq!(*output_digest, output.digest());
+    assert_ne!(*output_digest, output.legacy_v1_digest());
+
+    let with_digest = |digest: ptr_types::Digest| {
+        let mut event = recorded.clone();
+        let ptr_ledger::LedgerEvent::PodHypothesisCommitted { output_digest, .. } = &mut event
+        else {
+            unreachable!();
+        };
+        *output_digest = digest;
+        event
+    };
+    let admission = first
+        .committed_events()
+        .iter()
+        .find(|c| matches!(c.event, ptr_ledger::LedgerEvent::PodOutputAdmitted { .. }))
+        .unwrap()
+        .event
+        .clone();
+    // Already in a log: the version-1 digest replays; any other digest is refused.
+    let replayed = runtime_with(vec![
+        admission.clone(),
+        with_digest(output.legacy_v1_digest()),
+    ]);
+    assert!(replayed.committed_events().len() > 2);
+    let mut events = runtime_with_scope().committed_events().to_vec();
+    for event in [admission, with_digest([7; 32])] {
+        let index = ptr_types::CommitIndex(events.len() as u64 + 1);
+        events.push(ptr_ledger::CommittedEvent { index, event });
+    }
+    assert!(PtrRuntime::replay(PtrConfig::default(), &events).is_err());
+
+    // Review of #141: a new record through the public commit path must carry version 2; the
+    // version-1 digest is refused there and nothing is appended.
+    let mut fresh = runtime_with_only_the_admission_record(&first);
+    let before = fresh.committed_events().len();
+    let refused = fresh.commit(with_digest(output.legacy_v1_digest()));
+    assert!(
+        matches!(&refused, Err(ptr_runtime::RuntimeError::PodOutputAdmission(m)) if m.contains("digest mismatch")),
+        "{refused:?}"
+    );
+    assert_eq!(fresh.committed_events().len(), before);
+    fresh.commit(with_digest(output.digest())).unwrap();
+    assert!(fresh.commit(with_digest([7; 32])).is_err());
+}
+
+/// The admission (and, for a hypothesis, its follow-up) a pre-version-2 build would have written
+/// for `request`: the records of a complete run with the output digest replaced by version 1.
+fn legacy_records(
+    request: &PodOutputAdmissionRequest,
+    with_followup: bool,
+) -> Vec<ptr_ledger::LedgerEvent> {
+    let legacy = request.output.legacy_v1_digest();
+    let hex: String = legacy.iter().map(|b| format!("{b:02x}")).collect();
+    let mut first = runtime_with_scope();
+    first.admit_pod_output(request.clone(), &Pass).unwrap();
+    let mut out = Vec::new();
+    for committed in first.committed_events() {
+        match &committed.event {
+            event @ ptr_ledger::LedgerEvent::PodOutputAdmitted { .. } => {
+                let mut event = event.clone();
+                if let ptr_ledger::LedgerEvent::PodOutputAdmitted { output_digest, .. } = &mut event
+                {
+                    *output_digest = legacy;
+                }
+                out.push(event);
+            }
+            event @ ptr_ledger::LedgerEvent::PodHypothesisCommitted { .. } if with_followup => {
+                let mut event = event.clone();
+                if let ptr_ledger::LedgerEvent::PodHypothesisCommitted {
+                    output_digest,
+                    branch_id,
+                    ..
+                } = &mut event
+                {
+                    *output_digest = legacy;
+                    *branch_id = format!("pod-branch:request:pod:{hex}");
+                }
+                out.push(event);
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// A runtime whose log holds the scoped fixture followed by `records`, written by an earlier
+/// build: the records are replayed, as a log already on disk is, not committed anew (a new
+/// record must carry the version-2 digest).
+fn runtime_with(records: Vec<ptr_ledger::LedgerEvent>) -> PtrRuntime {
+    // The scope is created live after the replay: a scope replayed from the log would need
+    // recovery before it takes any work, which is not what these tests are about.
+    let mut base = PtrRuntime::new(PtrConfig::default()).unwrap();
+    base.ingest_text(RequestId::from("request"), "ground truth")
+        .unwrap();
+    let mut events = base.committed_events().to_vec();
+    for event in records {
+        let index = ptr_types::CommitIndex(events.len() as u64 + 1);
+        events.push(ptr_ledger::CommittedEvent { index, event });
+    }
+    let mut runtime = PtrRuntime::replay(PtrConfig::default(), &events).unwrap();
+    runtime
+        .create_scope(
+            ExecutionScope {
+                id: ScopeId::from("scope"),
+                parent: None,
+                session: SessionId::from("session"),
+                project: ProjectId::from("project"),
+                created_at: Timestamp(1),
+                deadline: None,
+                state: ScopeState::Created,
+                cancellation_requested: false,
+            },
+            ScopeLeaseBinding::default(),
+        )
+        .unwrap();
+    runtime
+}
+
+/// Review of #141: a retry of an admission recorded under the version-1 output digest returns
+/// the recorded result only when its follow-up is already in the ledger, and appends nothing.
+#[test]
+fn a_legacy_admission_with_its_follow_up_answers_a_retry_idempotently() {
+    let hypothesis = request(PodOutputKind::Hypothesis);
+    let legacy = hypothesis.output.legacy_v1_digest();
+    let hex: String = legacy.iter().map(|b| format!("{b:02x}")).collect();
+    let mut runtime = runtime_with(legacy_records(&hypothesis, true));
+    let events = runtime.committed_events().len();
+    for _ in 0..2 {
+        let retried = runtime.admit_pod_output(hypothesis.clone(), &Pass).unwrap();
+        assert_eq!(
+            retried,
+            PodOutputAdmission::Hypothesis {
+                branch_id: format!("pod-branch:request:pod:{hex}")
+            }
+        );
+        assert_eq!(runtime.committed_events().len(), events);
+    }
+}
+
+/// Review of #141 (P1): version 1 is not injective. A lone version-1 admission whose follow-up
+/// is missing is not completed by a retry, neither for the identical output nor for a different
+/// output that has the same version-1 digest: the retry is refused with a typed error and
+/// nothing is appended. A different output with another digest still conflicts, and a fresh
+/// request is unaffected.
+#[test]
+fn an_incomplete_legacy_admission_is_refused_for_the_identical_and_a_colliding_output() {
+    // Two different outputs that share their version-1 digest (see ptr-pods tests/output.rs).
+    let source = "abcdefghijklmnopqrstuvw";
+    let mut forged = [0u8; 32];
+    forged[..8].copy_from_slice(&23u64.to_le_bytes());
+    forged[8..31].copy_from_slice(source.as_bytes());
+    let kept = ProvenanceRef {
+        source: ptr_types::EvidenceId::from("zzz"),
+        note: None,
+    };
+    // Both carry a manifest that also binds the forged digest, so it is a known dependency.
+    let with_forged_binding = |mut request: PodOutputAdmissionRequest| {
+        let manifest = ExecutionManifest::build(
+            Generation(1),
+            vec![
+                LineageBinding {
+                    key: "knowledge:fact".into(),
+                    generation: Generation(1),
+                    digest: [3; 32],
+                },
+                LineageBinding {
+                    key: "knowledge:forged".into(),
+                    generation: Generation(1),
+                    digest: forged,
+                },
+            ],
+            vec![LineageBinding {
+                key: "artifact:pod".into(),
+                generation: Generation(1),
+                digest: [2; 32],
+            }],
+            vec!["raw:test".into()],
+            None,
+            Revision(1),
+            [4; 32],
+            PrincipalId::from("principal"),
+            Revision(1),
+        )
+        .unwrap();
+        request.manifest_digest = manifest.manifest_digest;
+        request.output.manifest_digest = manifest.manifest_digest;
+        request.manifest = manifest;
+        request
+    };
+    let mut admitted = with_forged_binding(request(PodOutputKind::Observation));
+    admitted.output.dependencies = vec![forged];
+    admitted.output.provenance = vec![kept.clone()];
+    let mut colliding = with_forged_binding(request(PodOutputKind::Observation));
+    colliding.output.dependencies = Vec::new();
+    colliding.output.provenance = vec![
+        ProvenanceRef {
+            source: ptr_types::EvidenceId::from(source),
+            note: None,
+        },
+        kept,
+    ];
+    assert_ne!(admitted.output, colliding.output);
+    assert_eq!(
+        admitted.output.legacy_v1_digest(),
+        colliding.output.legacy_v1_digest()
+    );
+
+    // Crash between the admission record and its promotion: only the record is in the ledger.
+    let mut runtime = runtime_with(legacy_records(&admitted, false));
+    let events = runtime.committed_events().len();
+    for retry in [admitted.clone(), colliding.clone()] {
+        let refused = runtime.admit_pod_output(retry, &Pass);
+        assert!(
+            matches!(
+                &refused,
+                Err(ptr_runtime::RuntimeError::LegacyAdmissionIncomplete { request_id, pod_id })
+                    if request_id == &RequestId::from("request") && pod_id.0 == "pod"
+            ),
+            "{refused:?}"
+        );
+        assert_eq!(runtime.committed_events().len(), events, "nothing appended");
+    }
+    // Review of #141 (round 5): a retry that carries an approximate KV taint is refused just
+    // the same, before its taint is recorded: nothing at all is appended.
+    for retry in [admitted.clone(), colliding] {
+        let mut tainted = retry;
+        tainted.kv_taint = ptr_model_api::KvReuseTaint::Approximate {
+            report_digest: [5; 32],
+        };
+        let refused = runtime.admit_pod_output(tainted, &Pass);
+        assert!(
+            matches!(
+                &refused,
+                Err(ptr_runtime::RuntimeError::LegacyAdmissionIncomplete { .. })
+            ),
+            "{refused:?}"
+        );
+        assert_eq!(runtime.committed_events().len(), events, "nothing appended");
+        assert!(!runtime.committed_events().iter().any(|committed| matches!(
+            committed.event,
+            ptr_ledger::LedgerEvent::KvTaintCommitted { .. }
+        )));
+    }
+    // A different output with another digest is still a reused request id.
+    let mut other = request(PodOutputKind::Observation);
+    other.output.payload.bytes = b"another output".to_vec();
+    let conflict = runtime.admit_pod_output(other, &Pass);
+    assert!(
+        matches!(&conflict, Err(ptr_runtime::RuntimeError::PodOutputAdmission(message)) if message.contains("different output")),
+        "{conflict:?}"
+    );
+    // A fresh request is admitted under version 2 as usual.
+    let mut fresh = request(PodOutputKind::Observation);
+    fresh.request_id = RequestId::from("fresh");
+    runtime
+        .ingest_text(RequestId::from("fresh"), "ground truth")
+        .unwrap();
+    let PodOutputAdmission::ObservationCandidate { semantic_key, .. } =
+        runtime.admit_pod_output(fresh.clone(), &Pass).unwrap()
+    else {
+        panic!("expected a candidate");
+    };
+    assert_eq!(
+        semantic_key,
+        ptr_runtime::semantic::pod_candidate_key(
+            &RequestId::from("fresh"),
+            &ptr_types::PodId::from("pod"),
+            &fresh.output.digest(),
+        )
+    );
+}
+
+/// Review of #141: a hypothesis output marked verified is refused before anything is appended
+/// (its record would be rebuilt unverified and fail its digest, leaving an admission no retry
+/// could complete); an ordinary hypothesis still admits and replays.
+#[test]
+fn a_hypothesis_marked_verified_is_refused_before_any_append() {
+    let mut runtime = runtime_with_scope();
+    let events = runtime.committed_events().len();
+    let mut verified = request(PodOutputKind::Hypothesis);
+    verified.output.verified = true;
+    let refused = runtime.admit_pod_output(verified, &Pass);
+    assert!(
+        matches!(&refused, Err(ptr_runtime::RuntimeError::PodOutputAdmission(m)) if m.contains("cannot be marked verified")),
+        "{refused:?}"
+    );
+    assert_eq!(runtime.committed_events().len(), events, "nothing appended");
+    let admitted = runtime
+        .admit_pod_output(request(PodOutputKind::Hypothesis), &Pass)
+        .unwrap();
+    assert!(matches!(admitted, PodOutputAdmission::Hypothesis { .. }));
+    PtrRuntime::replay(PtrConfig::default(), runtime.committed_events()).unwrap();
+}

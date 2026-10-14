@@ -28,7 +28,10 @@ pub const MAX_TRACE_CODES: usize = 32;
 /// Bytes of one recorded code.
 pub const MAX_TRACE_CODE_BYTES: usize = 128;
 
-const TRACE_DOMAIN: &[u8] = b"ptr.runtime.vcw.trace.v1";
+/// v2: a repaired candidate's `authors` keep its proposer and earlier repairers (issue #141). The
+/// encoding is unchanged; the version separates digests of traces recorded under the v1 meaning
+/// (only the repairers of the last round) from the current one.
+const TRACE_DOMAIN: &[u8] = b"ptr.runtime.vcw.trace.v2";
 
 /// The verifier report of one candidate, without messages.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -169,9 +172,10 @@ pub struct CandidateTrace {
 pub struct TraceStep {
     pub round: u32,
     pub origin: StepOrigin,
-    /// Every Pod whose output is in the candidate, in the order it contributed: the proposer, the
-    /// repair Pods whose edits were applied, or the escalation author. Empty when the attempt
-    /// produced no candidate.
+    /// Every Pod whose output is in the candidate, in the order it last contributed: the
+    /// proposer; for a repaired candidate also every repairer whose edit was applied, in this
+    /// round or an earlier one (the proposer stays listed); or the escalation author. Empty when
+    /// the attempt produced no candidate.
     pub authors: Vec<PodRef>,
     /// Every sampled routing decision that led to this attempt, with support and propensity.
     pub routes: Vec<FindingRouteRecord>,
