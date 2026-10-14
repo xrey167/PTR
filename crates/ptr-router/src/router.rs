@@ -389,7 +389,7 @@ impl From<DistributionError> for RouteError {
 pub struct RoutedError {
     request_id: RequestId,
     request_digest: Digest,
-    error: RouteError,
+    error: Box<RouteError>,
 }
 
 impl RoutedError {
@@ -397,7 +397,7 @@ impl RoutedError {
         Self {
             request_id: request.request_id.clone(),
             request_digest: request.request_digest,
-            error,
+            error: Box::new(error),
         }
     }
 
@@ -414,7 +414,7 @@ impl RoutedError {
     }
 
     pub fn into_error(self) -> RouteError {
-        self.error
+        *self.error
     }
 }
 
@@ -430,7 +430,7 @@ impl fmt::Display for RoutedError {
 
 impl std::error::Error for RoutedError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&self.error)
+        Some(&*self.error)
     }
 }
 

@@ -102,11 +102,7 @@ impl Tally {
 
     /// `numerator / denominator` as an integer permille rounded down.
     fn permille(numerator: u64, denominator: u64) -> i64 {
-        if denominator == 0 {
-            0
-        } else {
-            (numerator * 1000 / denominator) as i64
-        }
+        (numerator * 1000).checked_div(denominator).unwrap_or(0) as i64
     }
 
     fn accuracy_permille(&self) -> i64 {
@@ -134,11 +130,9 @@ impl Tally {
 
 /// `(left - right) / probes` in permille, rounded down (towards minus infinity).
 fn gap_permille(left: u64, right: u64, probes: u64) -> i64 {
-    if probes == 0 {
-        0
-    } else {
-        ((left as i128 - right as i128) * 1000).div_euclid(probes as i128) as i64
-    }
+    ((left as i128 - right as i128) * 1000)
+        .checked_div_euclid(probes as i128)
+        .unwrap_or(0) as i64
 }
 
 /// A digest that differs for every probe index (a single byte would repeat after 255).

@@ -716,7 +716,7 @@ impl Error for RouterBuildError {}
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum FindingRouteErrorKind {
-    Scorer(RouteError),
+    Scorer(Box<RouteError>),
     Distribution(DistributionError),
     InvalidPropensity(PropensityError),
     /// The scorer named a Pod the verifier did not admit (or that is not eligible).
@@ -786,7 +786,7 @@ impl fmt::Display for FindingRouteError {
 impl Error for FindingRouteError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match &self.kind {
-            FindingRouteErrorKind::Scorer(error) => Some(error),
+            FindingRouteErrorKind::Scorer(error) => Some(&**error),
             FindingRouteErrorKind::Distribution(error) => Some(error),
             FindingRouteErrorKind::InvalidPropensity(error) => Some(error),
             FindingRouteErrorKind::NonceExhausted(error) => Some(error),
@@ -1050,7 +1050,7 @@ pub(crate) fn mixed_distribution<S: AdmissibleScorer + ?Sized>(
     let admissible = context.admissible;
     let weights = scorer
         .weights(context)
-        .map_err(FindingRouteErrorKind::Scorer)?;
+        .map_err(|error| FindingRouteErrorKind::Scorer(Box::new(error)))?;
     if let Some((pod, _)) = weights.iter().find(|(pod, _)| !admissible.contains(pod)) {
         return Err(FindingRouteErrorKind::OutsideAdmissibleSet { pod: pod.clone() });
     }
