@@ -144,8 +144,9 @@ simulator training happens in PTR until `predictive` has been true on a real gen
 - **Generation at use (invariant 3).** A `BatchGate` is asked about the key of every batch immediately before the model
   runs; a revoked generation is refused at that use (`ModelError::revoked()`), not only when it was queued. A key that
   names an adapter is refused when the batcher was built without a gate (there is no admit-all default). A `resume`
-  passes the gate under the scoped key its request was admitted under (remembered by request id for the most recent
-  4096 requests; an id the batcher does not remember is refused, never mapped to the unscoped key; `resume_with` takes
+  passes the gate under the scoped key its request was admitted under (bound by request id when the request is
+  admitted, for the most recent 4096 requests; an id keeps its first scope, a second admission under another scope is
+  refused as a duplicate, and a refused request leaves no binding; an id the batcher does not remember is refused, never mapped to the unscoped key; `resume_with` takes
   the key explicitly), with the same panic containment as a batch. Deadlines and cancellations are checked again after the gate, immediately before the backend call.
 - **Failure containment.** A backend panic or a wrong-length answer fails its batch and the batcher keeps serving; every
   caller gets exactly one answer, also on drop. Request text is never printed by `Debug`.

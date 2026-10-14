@@ -669,3 +669,98 @@ fn a_backend_panic_in_resume_fails_that_call_and_the_batcher_keeps_serving() {
     assert_eq!(batcher.stats().backend_errors, 1);
     assert!(batcher.infer(&request("after")).is_ok());
 }
+
+#[test]
+fn a_request_id_cannot_be_rebound_to_another_scope_and_resume_keeps_the_original() {
+    use ptr_model_api::ResumableInferenceBackend;
+    let gate = Arc::new(RevocableProject {
+        revoked: AtomicBool::new(false),
+        project: "p",
+    });
+    let batcher = echo_batcher(Arc::clone(&gate) as Arc<dyn BatchGate>);
+    batcher
+        .infer_with(&request("r1"), keyed("p", "coder"))
+        .expect("served");
+    // The same id under another project is refused, not allowed to take the binding.
+    assert_eq!(
+        batcher.infer_with(&request("r1"), keyed("q", "coder")),
+        Err(ModelError::duplicate_request())
+    );
+    // The same id under the same scope is the same request again.
+    assert!(batcher
+        .infer_with(&request("r1"), keyed("p", "coder"))
+        .is_ok());
+    gate.revoked.store(true, Ordering::SeqCst);
+    assert_eq!(
+        batcher.resume(&common::resume_request("r1")),
+        Err(ModelError::revoked()),
+        "resume still checks project p, the scope r1 was admitted under"
+    );
+}
+
+/// A backend that holds every call until the test lets it go, and can resume.
+struct HeldEcho {
+    latch: Arc<Latch>,
+}
+
+impl ptr_model_api::InferenceBackend for HeldEcho {
+    fn name(&self) -> &'static str {
+        "held-echo"
+    }
+
+    fn infer(&self, _request: &ptr_model_api::ModelRequest) -> Result<Vec<ModelEvent>, ModelError> {
+        self.latch.wait();
+        Ok(vec![ModelEvent::Finished])
+    }
+}
+
+impl ptr_model_api::BatchInferenceBackend for HeldEcho {}
+
+impl ptr_model_api::ResumableInferenceBackend for HeldEcho {
+    fn resume(
+        &self,
+        _request: &ptr_model_api::ModelResumeRequest,
+    ) -> Result<Vec<ModelEvent>, ModelError> {
+        Ok(vec![ModelEvent::Finished])
+    }
+}
+
+#[test]
+fn a_refused_request_leaves_no_binding_behind() {
+    use ptr_model_api::ResumableInferenceBackend;
+    let latch = Arc::new(Latch::default());
+    let batcher = AdaptiveBatcher::with_parts(
+        Arc::new(HeldEcho {
+            latch: Arc::clone(&latch),
+        }),
+        policy(1, 0, 1),
+        Arc::new(SystemClock),
+        Some(Arc::new(OpenGate) as Arc<dyn BatchGate>),
+    )
+    .expect("built");
+    std::thread::scope(|scope| {
+        let batcher = &batcher;
+        let held = scope.spawn(move || batcher.infer_with(&request("held"), keyed("p", "coder")));
+        assert!(eventually(PATIENT, || batcher.stats().dispatched == 1));
+        let queued =
+            scope.spawn(move || batcher.infer_with(&request("queued"), keyed("p", "coder")));
+        assert!(eventually(PATIENT, || batcher.queued() == 1));
+        // The queue is full: this request is refused and must leave nothing behind.
+        assert_eq!(
+            batcher.infer_with(&request("refused"), keyed("p", "coder")),
+            Err(ModelError::overloaded())
+        );
+        assert_eq!(
+            batcher.resume(&common::resume_request("refused")),
+            Err(ModelError::revoked()),
+            "no binding exists for a request that was never admitted"
+        );
+        // And the id is free to be admitted under any scope once there is room.
+        latch.open();
+        held.join().expect("thread").expect("served");
+        queued.join().expect("thread").expect("served");
+        assert!(batcher
+            .infer_with(&request("refused"), keyed("q", "coder"))
+            .is_ok());
+    });
+}

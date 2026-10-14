@@ -273,15 +273,24 @@ struct RememberedKeys {
 }
 
 impl RememberedKeys {
+    /// Whether `id` is bound to a scope other than `key`.
+    fn conflicts(&self, id: &RequestId, key: &BatchKey) -> bool {
+        self.keys.get(id).is_some_and(|bound| bound != key)
+    }
+
+    /// Bind `id` to `key`. An existing binding is never replaced: callers check
+    /// [`RememberedKeys::conflicts`] first, and the same scope again changes nothing.
     fn remember(&mut self, id: RequestId, key: BatchKey) {
-        if self.keys.insert(id.clone(), key).is_none() {
-            if self.order.len() >= MAX_REMEMBERED_KEYS {
-                if let Some(oldest) = self.order.pop_front() {
-                    self.keys.remove(&oldest);
-                }
-            }
-            self.order.push_back(id);
+        if self.keys.contains_key(&id) {
+            return;
         }
+        if self.order.len() >= MAX_REMEMBERED_KEYS {
+            if let Some(oldest) = self.order.pop_front() {
+                self.keys.remove(&oldest);
+            }
+        }
+        self.keys.insert(id.clone(), key);
+        self.order.push_back(id);
     }
 }
 
@@ -406,18 +415,28 @@ impl<B: BatchInferenceBackend + 'static> AdaptiveBatcher<B> {
             if state.closed {
                 return Err(ModelError::closed());
             }
-            state
+            // A request id keeps the scope it was first admitted under: a second admission under
+            // another scope is refused, not allowed to take the binding over.
+            if state
                 .remembered
-                .remember(request.request_id.clone(), admission.key.clone());
+                .conflicts(&request.request_id, &admission.key)
+            {
+                return Err(ModelError::duplicate_request());
+            }
             let job = Job {
                 request: request.clone(),
                 reply,
             };
+            let key = admission.key.clone();
             match state
                 .queue
                 .push(admission.key, deadline, admission.cancel, job, now)
             {
-                Ok(()) => bump(&counters.accepted, 1),
+                Ok(()) => {
+                    // Bound only once the request is admitted: a refused one leaves no binding.
+                    state.remembered.remember(request.request_id.clone(), key);
+                    bump(&counters.accepted, 1);
+                }
                 Err(QueueFull) => {
                     bump(&counters.overloaded, 1);
                     return Err(ModelError::overloaded());

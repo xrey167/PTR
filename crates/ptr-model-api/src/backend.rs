@@ -20,6 +20,8 @@ pub enum ModelErrorKind {
     /// The backend failed for a reason that is not the request's (a panic, a malformed batch
     /// answer, an unreachable replica).
     BackendFailure,
+    /// A request id is already bound to another scope.
+    DuplicateRequest,
     /// Any other failure, including a refusal of the request itself (validation, policy). The
     /// default of [`ModelError::new`].
     Other,
@@ -86,6 +88,14 @@ impl ModelError {
 
     pub fn closed() -> Self {
         Self::with_kind(ModelErrorKind::Closed, "model backend closed")
+    }
+
+    /// The request id is already bound to a different scope; the request was not admitted.
+    pub fn duplicate_request() -> Self {
+        Self::with_kind(
+            ModelErrorKind::DuplicateRequest,
+            "request id already bound to another scope",
+        )
     }
 
     pub fn backend_failure() -> Self {
