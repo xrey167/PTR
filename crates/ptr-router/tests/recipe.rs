@@ -73,16 +73,17 @@ fn full_recipe_has_the_documented_order() {
             step: SymbolicStep::Check
         }
     ));
+    assert_eq!(k[3], &StageKind::Verify);
     assert_eq!(
-        k[3],
+        k[4],
         &StageKind::PodCall {
             class: CapabilityId::from("read"),
             pod: PodId::from("zeta"),
             effect: StageEffect::Effectful
         }
     );
-    assert_eq!(k[4], &StageKind::Verify);
-    assert_eq!(k.len(), 5);
+    assert_eq!(k[5], &StageKind::Verify);
+    assert_eq!(k.len(), 6);
     assert!(recipe.total_latency_ms() >= 500);
 }
 
@@ -177,6 +178,13 @@ fn every_planner_output_ends_in_verification_and_is_deterministic() {
                         assert_eq!(first.stages().last().unwrap().kind, StageKind::Verify);
                         // The same invariant holds when re-validated from the stage list.
                         ExecutionRecipe::new(first.stages().to_vec()).unwrap();
+                        if let Some(at) = first
+                            .stages()
+                            .iter()
+                            .position(|s| s.kind.effect() == StageEffect::Effectful)
+                        {
+                            assert_eq!(first.stages()[at - 1].kind, StageKind::Verify);
+                        }
                         count += 1;
                     }
                 }
@@ -225,7 +233,60 @@ fn recipes_without_a_verifier_after_an_effect_are_rejected() {
         ]),
         Err(RecipeError::EffectWithoutVerifier { stage: 2 })
     );
-    assert!(ExecutionRecipe::new(vec![stage(effectful_pod()), stage(StageKind::Verify)]).is_ok());
+    assert!(ExecutionRecipe::new(vec![
+        stage(StageKind::Verify),
+        stage(effectful_pod()),
+        stage(StageKind::Verify)
+    ])
+    .is_ok());
+}
+
+#[test]
+fn an_effect_must_be_gated_by_a_verifier_before_it_runs() {
+    // Post-effect verification alone cannot stop the mutation: the effect has already happened.
+    assert_eq!(
+        ExecutionRecipe::new(vec![stage(effectful_pod()), stage(StageKind::Verify)]),
+        Err(RecipeError::EffectWithoutPreVerifier { stage: 0 })
+    );
+    // A verifier before an earlier effect does not gate a later one.
+    assert_eq!(
+        ExecutionRecipe::new(vec![
+            stage(StageKind::Verify),
+            stage(effectful_pod()),
+            stage(effectful_pod()),
+            stage(StageKind::Verify),
+        ]),
+        Err(RecipeError::EffectWithoutPreVerifier { stage: 2 })
+    );
+    assert!(ExecutionRecipe::new(vec![
+        stage(StageKind::Verify),
+        stage(effectful_pod()),
+        stage(StageKind::Verify),
+        stage(effectful_pod()),
+        stage(StageKind::Verify),
+    ])
+    .is_ok());
+}
+
+#[test]
+fn the_planner_gates_an_effectful_pod_with_a_pre_effect_verifier() {
+    let candidate = candidate("r1", "zeta");
+    let profile = profile(StageEffect::Effectful);
+    let recipe = RecipePlanner::default()
+        .plan(&PlanInputs {
+            profile: &profile,
+            reasoning: ReasoningMode::Direct,
+            search: SearchMode::Skip,
+            model: None,
+            pod_use: PodUse::Call,
+            candidate: Some(&candidate),
+        })
+        .unwrap();
+    let k = kinds(&recipe);
+    assert_eq!(k.len(), 3);
+    assert_eq!(k[0], &StageKind::Verify);
+    assert!(matches!(k[1], StageKind::PodCall { .. }));
+    assert_eq!(k[2], &StageKind::Verify);
 }
 
 #[test]
