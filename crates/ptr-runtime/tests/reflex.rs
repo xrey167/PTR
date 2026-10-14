@@ -637,6 +637,50 @@ mod with_a_default {
     }
 
     #[test]
+    fn a_primary_pod_with_an_effect_beyond_read_is_never_invoked_so_nothing_fails_over() {
+        // An effect that may have happened before an error cannot be uncertain here: a pod
+        // beyond Pure and Read is refused before it is invoked, and the default does not run.
+        let (pods, counts) = registry(&[
+            PodSpec {
+                effect: Effect::Mutation,
+                ..spec("zeta", Behaviour::Fail)
+            },
+            spec("alpha", Behaviour::Prefix("fb:")),
+        ]);
+        let mut runtime = runtime();
+        let fallback = revision("alpha", 1);
+        make_live(&mut runtime, &fallback);
+        plan(&mut runtime, "alpha", 2, fallback);
+        let outcome = run_plain(&mut runtime, "r1", &pods, &PASS);
+        assert_eq!(
+            outcome,
+            Err(RuntimeError::PodEffectRequiresActionBoundary { pod: "zeta".into() })
+        );
+        assert_eq!(invocations(&counts, "zeta"), 0);
+        assert_eq!(invocations(&counts, "alpha"), 0);
+        let counters = runtime.reflex_counters();
+        assert_eq!((counters.misses(), counters.failovers()), (0, 0));
+    }
+
+    #[test]
+    fn a_failing_read_primary_still_fails_over() {
+        let (pods, counts) = registry(&[
+            PodSpec {
+                effect: Effect::Read,
+                ..spec("zeta", Behaviour::Fail)
+            },
+            spec("alpha", Behaviour::Prefix("fb:")),
+        ]);
+        let mut runtime = runtime();
+        let fallback = revision("alpha", 1);
+        make_live(&mut runtime, &fallback);
+        plan(&mut runtime, "alpha", 2, fallback);
+        run_plain(&mut runtime, "r1", &pods, &PASS).unwrap();
+        assert_eq!(invocations(&counts, "alpha"), 1);
+        assert!(runtime.reflex_counters().all_misses_covered());
+    }
+
+    #[test]
     fn a_default_pod_with_an_effect_beyond_read_is_refused_and_never_invoked() {
         let (pods, counts) = registry(&[
             spec("primary", Behaviour::Echo),

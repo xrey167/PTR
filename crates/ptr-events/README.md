@@ -9,11 +9,12 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `scaffold`  
-**Last reviewed:** 2026-10-10  
-**Code footprint:** 2 Rust source files · 306 nonblank source lines · 2 integration-test files · 8 test markers (`#[test]`, `#[tokio::test]`)
+**Last reviewed:** 2026-10-14  
+**Code footprint:** 2 Rust source files · 323 nonblank source lines · 2 integration-test files · 8 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
+- RuntimeEvent::{ReflexHit { pod }, ReflexMiss { reason }, ReflexFailover { to }} (work package 2): telemetry of the reflex counters, emitted by ptr-runtime. ReflexMiss carries a stable pod-free code (ptr_router::MissReason::code) and precedes the PodInvoked of a failover pod; ReflexFailover is emitted only after the default pod output was promoted by the same verifier path, so a refused failover has no such event. In memory, not ledger records, no authority; the counters (PtrRuntime::reflex_counters), not this bounded log, are the count
 - RuntimeEvent taxonomy for request/snapshot/candidate/Pod/verifier/commit lifecycle
 - EventEnvelope with sequence number
 - RuntimeEvent::PodRouted { pod, propensity: f64, nonce: [u8; 16], draw: u64, key_id: [u8; 8] } records a Pod chosen by the trusted checked routing path (ptr-router route_checked) with its propensity, decision nonce, keyed draw and the non-secret sampling key id; the runtime emits it before PodInvoked, and the key itself is never an event field
@@ -53,6 +54,7 @@
 
 ### Current automated checks
 
+- ptr-runtime tests/reflex.rs asserts the order ReflexMiss, PodInvoked, ReflexFailover, that a refused or failed failover emits no ReflexFailover, and that a hit emits ReflexHit
 - ptr-runtime tests/routed_pods.rs emits and asserts RuntimeEvent::PodRouted (key id, incrementing nonce, replayed draw)
 - workspace fmt/check/test/clippy
 - tests/bus.rs redelivery until commit, backpressure instead of loss, monotone bounded commits

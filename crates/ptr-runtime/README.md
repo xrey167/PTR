@@ -9,7 +9,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-14  
-**Code footprint:** 61 Rust source files · 51433 nonblank source lines · 96 integration-test files · 1331 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 61 Rust source files · 51436 nonblank source lines · 96 integration-test files · 1333 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -272,7 +272,7 @@
 
 ### Current automated checks
 
-- tests/reflex.rs (35 tests): a miss without a plan is PodUnavailable and counted as uncovered; an abstention without a plan keeps the pod-free RouteFailed reason; each abstention reason and no-representation are counted apart and covered by the default; the miss event precedes the default invocation which precedes ReflexFailover and no PodRouted is logged; all_misses_covered turns false when one miss is uncovered; a revoked, a superseded and a never-live default generation are refused at use; a default outside the registry or in another project is refused; an effect beyond Read is refused before invocation (Read is allowed); a verifier contradiction of the default output is not promoted (one ledger record: the request); a failing default leaves the miss uncovered; a failing primary is a dispatch miss and fails over; the attempt budget counts the primary dispatch; the default is not retried when it just failed; a plan of one project does not cover another; nothing observed is not covered; a primary answer the verifier refuses is neither hit nor miss; failures are in the latency window; a replayed runtime has no counters and no plans; plan configuration refusals and the plan bound
+- tests/reflex.rs (37 tests): a pod beyond Read is refused before any invocation so no error can hide an effect and nothing fails over, a failing Read primary still fails over; a miss without a plan is PodUnavailable and counted as uncovered; an abstention without a plan keeps the pod-free RouteFailed reason; each abstention reason and no-representation are counted apart and covered by the default; the miss event precedes the default invocation which precedes ReflexFailover and no PodRouted is logged; all_misses_covered turns false when one miss is uncovered; a revoked, a superseded and a never-live default generation are refused at use; a default outside the registry or in another project is refused; an effect beyond Read is refused before invocation (Read is allowed); a verifier contradiction of the default output is not promoted (one ledger record: the request); a failing default leaves the miss uncovered; a failing primary is a dispatch miss and fails over; the attempt budget counts the primary dispatch; the default is not retried when it just failed; a plan of one project does not cover another; nothing observed is not covered; a primary answer the verifier refuses is neither hit nor miss; failures are in the latency window; a replayed runtime has no counters and no plans; plan configuration refusals and the plan bound
 - src/stepped.rs: the legacy-equivalence test compares the new dispatch with the loop it replaced on every exit, leaving the reflex telemetry events out (the old loop predates them) and renumbering the rest
 - tests/manifest_resolver.rs: a_dependency_fan_out_over_the_closure_bound_is_refused_before_it_is_walked
 - tests/manifest_resolver.rs: an_expired_dependency_blocks_admission_and_later_resolution_of_the_manifest. src/egress.rs: refusals_from_different_traces_share_a_counter_that_says_so

@@ -322,6 +322,9 @@ impl PtrRuntime {
         let output = match invoked {
             Ok(output) => output,
             Err(message) => {
+                // Only a Pure or Read pod gets here (an effectful one was refused above, before
+                // any invocation), so an error cannot hide an effect that may already have
+                // happened (invariant 7): failing over to a second answer is safe.
                 self.record_miss(MissReason::DispatchError);
                 return self.fail_over(
                     request,
