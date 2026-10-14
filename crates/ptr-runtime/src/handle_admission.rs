@@ -81,8 +81,11 @@
 //! [`HandleTable::release_after_teardown`], its slot kept as well). A full table refuses; it
 //! never evicts, and slots are freed only by `expire`. The deadline of an admitted handle is at
 //! most `now + max_handle_lifetime_ms + max_clock_skew_ms` (computed with saturating
-//! arithmetic), so a tombstone cannot be pinned beyond that horizon. The set of principals is
-//! bounded by the trusted deployment: [`HandleTable::register_producer`] is a host call, never
+//! arithmetic), so a tombstone cannot be pinned beyond that horizon, except the slot of a
+//! shared claim, which stays until its teardown is reported and the next `expire` after it;
+//! those slots still count against [`HandlePolicy::max_tombstones_per_principal`] and the
+//! byte budget, so a producer that is never torn down is refused, not grown. The set of
+//! principals is bounded by the trusted deployment: [`HandleTable::register_producer`] is a host call, never
 //! driven by a peer.
 //!
 //! **Bounded work before authentication.** Before the signature verifies, `admit` does work
@@ -406,6 +409,17 @@ pub struct ConsumeRequest<'a> {
     pub operations: &'a dyn OperationLiveness,
 }
 
+/// A verified teardown the supervisor reports to [`HandleTable::release_after_teardown`]: the
+/// producer worker of `principal` that ran under `producer_session` and the consumer worker that
+/// ran under `consumer_session` have both been terminated and reaped, and the old control socket
+/// of each has been drained.
+#[derive(Clone, Copy, Debug)]
+pub struct Teardown<'a> {
+    pub principal: &'a str,
+    pub producer_session: WorkerSession,
+    pub consumer_session: WorkerSession,
+}
+
 /// A handle whose signature, stage, audience, deadline, chain and placement epoch were good
 /// when it was admitted. It is a single-use ticket: it is not `Clone`, and
 /// [`HandleTable::consume`] and [`HandleTable::abandon`] take it by value. It shows what the
@@ -543,7 +557,9 @@ impl ConsumedHandle {
 /// The handle's own signed deadline is checked first: output admitted at or after it
 /// (`deadline <= now`) is refused as [`HandleRejection::Expired`], because the consumer had to
 /// stop touching the tensor at the deadline and the producer may reclaim the buffer from the
-/// deadline plus the skew. A longer-lived operation does not extend the handle.
+/// deadline plus the skew. A longer-lived operation does not extend the handle. `now_ms` must
+/// come from the same clock that drives the [`HandleTable`] of the handle (the table's clock is
+/// trusted and clamped monotonic; this function holds no clock of its own).
 ///
 /// This covers **only the authority's operation record**: the operation is known, its inputs are
 /// live, it is Exact, the handle's chain equals the expected chain and the payload type is
@@ -592,6 +608,10 @@ struct Slot {
     deadline_ms: u64,
     digest: [u8; 32],
     claim: Option<Claim>,
+    /// The worker sessions the handle was admitted under; a teardown releases only the slots
+    /// of the pair it reaped.
+    producer_session: WorkerSession,
+    consumer_session: WorkerSession,
 }
 
 struct Producer {
@@ -676,8 +696,10 @@ impl HandleTable {
     /// Registering the same key, stage identity and session again (a reconnect) changes nothing.
     /// Registering another key, stage identity or session (a respawned producer) abandons the
     /// principal's open handles: they can no longer be consumed, their nonces stay tombstoned
-    /// until their deadline plus the skew, and the buffers they claimed are returned once, with
-    /// [`ReclaimReason::ProducerReplaced`]. Only that release frees their bytes from the budget.
+    /// until their deadline plus the skew, and the buffers they claimed on a carrier that is not
+    /// shared are returned once, with [`ReclaimReason::ProducerReplaced`], which frees their
+    /// bytes from the budget. A shared buffer is not returned here: it stays charged until
+    /// [`Self::release_after_teardown`] (doc 42 rule 3b).
     #[must_use = "the returned notices name buffers the producer may reclaim"]
     pub fn register_producer(
         &mut self,
@@ -715,9 +737,11 @@ impl HandleTable {
     }
 
     /// Remove a producer: it can no longer present handles, its open handles are abandoned and
-    /// their buffers returned once, with [`ReclaimReason::ProducerRemoved`]. Its tombstones and
-    /// the claims of handles abandoned earlier stay until [`Self::expire`] drops them, so a
-    /// replay of a used nonce stays refused if the principal is registered again.
+    /// their buffers on a carrier that is not shared returned once, with
+    /// [`ReclaimReason::ProducerRemoved`]. Its tombstones and the claims of handles abandoned
+    /// earlier stay until [`Self::expire`] drops them (shared claims and their slots until
+    /// [`Self::release_after_teardown`]), so a replay of a used nonce stays refused if the
+    /// principal is registered again.
     #[must_use = "the returned notices name buffers the producer may reclaim"]
     pub fn unregister_producer(&mut self, principal: &str) -> Vec<ReclaimNotice> {
         let Some(producer) = self.producers.get_mut(principal) else {
@@ -851,6 +875,8 @@ impl HandleTable {
                     locator: reclaim_locator(&handle.locator),
                     byte_len: handle.byte_len,
                 }),
+                producer_session: producer.session,
+                consumer_session: request.consumer_session,
             },
         );
         Ok(AdmittedHandle {
@@ -957,7 +983,8 @@ impl HandleTable {
     }
 
     /// The consumer gives an admitted handle up unused. The nonce is tombstoned; the claim and
-    /// its bytes are held until [`Self::expire`] reports them after the deadline plus the skew.
+    /// its bytes are held until [`Self::expire`] reports them after the deadline plus the skew
+    /// (a shared claim until [`Self::release_after_teardown`]).
     pub fn abandon(&mut self, admitted: AdmittedHandle) -> Result<(), HandleRejection> {
         self.open_slot(&admitted)?.state = SlotState::Abandoned;
         self.open_total = self.open_total.saturating_sub(1);
@@ -1022,27 +1049,31 @@ impl HandleTable {
         notices
     }
 
-    /// Release the shared buffers of `principal` after **verified teardown** (doc 42 rule 3b):
-    /// the supervisor calls this only once it has terminated and reaped both the consumer
-    /// worker's domain of this table and the producer worker's domain of `principal` since the
-    /// exports, and drained the old control socket of each. `Consumed`, the deadline and a
+    /// Release shared buffers after **verified teardown** (doc 42 rule 3b): the supervisor
+    /// calls this only once it has terminated and reaped both worker domains named by
+    /// `teardown` and drained the old control socket of each. `Consumed`, the deadline and a
     /// producer replacement never release a shared buffer; this does, once, with
-    /// [`ReclaimReason::TornDown`]. Open handles of the principal are closed first (their
-    /// workers are gone). Nonce tombstones stay until [`Self::expire`] drops them at the
-    /// deadline plus the skew. Claims of carriers that are not shared are left to the other
-    /// paths.
+    /// [`ReclaimReason::TornDown`], and only for the handles admitted under **exactly** that
+    /// producer session and consumer session: a handle of a respawned pair, admitted after the
+    /// reap under new sessions, is not touched even if the call arrives late. Open handles of
+    /// that pair are closed first (their workers are gone). Nonce tombstones stay until
+    /// [`Self::expire`] drops them at the deadline plus the skew. Claims of carriers that are
+    /// not shared are left to the other paths.
     #[must_use = "the returned notices name buffers the producer may reclaim"]
-    pub fn release_after_teardown(&mut self, principal: &str) -> Vec<ReclaimNotice> {
+    pub fn release_after_teardown(&mut self, teardown: Teardown<'_>) -> Vec<ReclaimNotice> {
+        let principal = teardown.principal;
         let Some(producer) = self.producers.get_mut(principal) else {
             return Vec::new();
         };
         let mut notices = Vec::new();
         let mut closed = 0usize;
         for (nonce, slot) in &mut producer.slots {
-            if !slot
-                .claim
-                .as_ref()
-                .is_some_and(|claim| is_shared(claim.carrier))
+            if slot.producer_session != teardown.producer_session
+                || slot.consumer_session != teardown.consumer_session
+                || !slot
+                    .claim
+                    .as_ref()
+                    .is_some_and(|claim| is_shared(claim.carrier))
             {
                 continue;
             }
@@ -1381,6 +1412,15 @@ mod tests {
         };
         resign(&mut handle);
         handle
+    }
+
+    /// The teardown of the producer and consumer workers every test admits under.
+    fn torn_down() -> Teardown<'static> {
+        Teardown {
+            principal: PRINCIPAL,
+            producer_session: PRODUCER_SESSION,
+            consumer_session: CONSUMER_SESSION,
+        }
     }
 
     /// The same handle on a shared carrier (`HostShm`): released only after verified teardown.
@@ -2614,13 +2654,13 @@ mod tests {
         assert_eq!(table.inflight_bytes(PRINCIPAL), Some(16));
         assert_eq!(table.slots_held(PRINCIPAL), Some(1));
         // Verified teardown releases it, once.
-        let notices = table.release_after_teardown(PRINCIPAL);
+        let notices = table.release_after_teardown(torn_down());
         assert_eq!(notices.len(), 1);
         assert_eq!(notices[0].reason, ReclaimReason::TornDown);
         assert_eq!(notices[0].carrier, Carrier::HostShm);
         assert_eq!(notices[0].handle_nonce, 1);
         assert_eq!(table.inflight_bytes(PRINCIPAL), Some(0));
-        assert!(table.release_after_teardown(PRINCIPAL).is_empty());
+        assert!(table.release_after_teardown(torn_down()).is_empty());
         // The tombstone is dropped at the next expire after its retention.
         assert!(table.expire(600).is_empty());
         assert_eq!(table.slots_held(PRINCIPAL), Some(0));
@@ -2643,7 +2683,7 @@ mod tests {
                 requested: 16
             }
         );
-        assert_eq!(table.release_after_teardown(PRINCIPAL).len(), 4);
+        assert_eq!(table.release_after_teardown(torn_down()).len(), 4);
         assert!(admit(&mut table, &live, 13, &shared(5, 500)).is_ok());
     }
 
@@ -2660,7 +2700,7 @@ mod tests {
             admit(&mut table, &live, 601, &shared(1, 1_000)).unwrap_err(),
             HandleRejection::Abandoned
         );
-        let notices = table.release_after_teardown(PRINCIPAL);
+        let notices = table.release_after_teardown(torn_down());
         assert_eq!(notices.len(), 1);
         assert_eq!(notices[0].reason, ReclaimReason::TornDown);
     }
@@ -2672,7 +2712,7 @@ mod tests {
         let _open = admit(&mut table, &live, 10, &shared(1, 500)).expect("admitted");
         let _other = admit(&mut table, &live, 10, &signed(2, 500)).expect("admitted");
         assert_eq!(table.open_handles(), 2);
-        let notices = table.release_after_teardown(PRINCIPAL);
+        let notices = table.release_after_teardown(torn_down());
         assert_eq!(notices.len(), 1);
         assert_eq!(notices[0].handle_nonce, 1);
         assert_eq!(table.open_handles(), 1);
@@ -2697,7 +2737,7 @@ mod tests {
         assert_eq!(released[0].reason, ReclaimReason::ProducerReplaced);
         assert_eq!(table.open_handles(), 0);
         assert_eq!(table.inflight_bytes(PRINCIPAL), Some(16));
-        let notices = table.release_after_teardown(PRINCIPAL);
+        let notices = table.release_after_teardown(torn_down());
         assert_eq!(notices.len(), 1);
         assert_eq!(notices[0].handle_nonce, 1);
         assert_eq!(table.open_handles(), 0);
@@ -2728,5 +2768,67 @@ mod tests {
             revalidate_operation(&consumed, &operations, 10_000),
             Err(HandleRejection::Expired)
         );
+    }
+
+    #[test]
+    fn a_late_teardown_of_the_old_pair_leaves_the_handles_of_the_respawned_pair_alone() {
+        let live = live();
+        let mut table = table();
+        let old = admit(&mut table, &live, 10, &shared(1, 500)).expect("admitted");
+        let _ = consume(&mut table, &live, 11, old).expect("consumed");
+        // The supervisor respawns the producer under a new session; the new worker exports
+        // and its handle is admitted before the teardown of the old pair is reported.
+        let respawned = WorkerSession(PRODUCER_SESSION.0 + 1);
+        assert!(table
+            .register_producer(PRINCIPAL, signer().verifying_key(), "stage", respawned)
+            .is_empty());
+        let _new = admit(&mut table, &live, 12, &shared(2, 500)).expect("admitted");
+        let notices = table.release_after_teardown(torn_down());
+        assert_eq!(notices.len(), 1);
+        assert_eq!(notices[0].handle_nonce, 1);
+        assert_eq!(table.open_handles(), 1);
+        assert_eq!(table.inflight_bytes(PRINCIPAL), Some(16));
+        // A teardown naming another consumer session releases nothing either.
+        assert!(table
+            .release_after_teardown(Teardown {
+                principal: PRINCIPAL,
+                producer_session: respawned,
+                consumer_session: WorkerSession(CONSUMER_SESSION.0 + 1),
+            })
+            .is_empty());
+        assert_eq!(table.inflight_bytes(PRINCIPAL), Some(16));
+    }
+
+    #[test]
+    fn closing_a_shared_handle_at_expiry_and_its_teardown_count_it_once() {
+        let live = live();
+        let mut table = table();
+        let _shared = admit(&mut table, &live, 10, &shared(1, 500)).expect("admitted");
+        let _plain = admit(&mut table, &live, 10, &signed(2, 1_000)).expect("admitted");
+        assert_eq!(table.open_handles(), 2);
+        assert!(table.expire(600).is_empty());
+        assert_eq!(table.open_handles(), 1);
+        assert_eq!(table.release_after_teardown(torn_down()).len(), 1);
+        assert_eq!(table.open_handles(), 1);
+        let late = table.expire(1_100);
+        assert_eq!(late.len(), 1);
+        assert_eq!(late[0].reason, ReclaimReason::Expired);
+        assert_eq!(table.open_handles(), 0);
+        assert_eq!(table.slots_held(PRINCIPAL), Some(0));
+    }
+
+    #[test]
+    fn a_removed_producer_keeps_its_shared_bytes_until_teardown_and_then_goes() {
+        let live = live();
+        let mut table = table();
+        let _open = admit(&mut table, &live, 10, &shared(1, 500)).expect("admitted");
+        assert!(table.unregister_producer(PRINCIPAL).is_empty());
+        assert_eq!(table.open_handles(), 0);
+        assert_eq!(table.inflight_bytes(PRINCIPAL), Some(16));
+        assert!(table.expire(600).is_empty());
+        assert_eq!(table.slots_held(PRINCIPAL), Some(1));
+        assert_eq!(table.release_after_teardown(torn_down()).len(), 1);
+        assert!(table.expire(600).is_empty());
+        assert_eq!(table.slots_held(PRINCIPAL), None);
     }
 }

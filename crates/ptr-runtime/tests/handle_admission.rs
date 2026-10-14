@@ -11,7 +11,7 @@ use ptr_runtime::{
     AdmittedHandle, ChainFault, ConsumeRequest, ConsumedHandle, DeviceHealth, DeviceRecord,
     HandleAdmissionRequest, HandlePolicy, HandleRejection, HandleSource, HandleTable, NodeHealth,
     NodeRecord, OperationCheck, OperationFault, OperationLiveness, PodPlacementController,
-    PtrRuntime, ReclaimReason, RuntimeStageLiveness, WorkerSession,
+    PtrRuntime, ReclaimReason, RuntimeStageLiveness, Teardown, WorkerSession,
 };
 use ptr_types::{
     ArtifactId, CapsuleId, DeviceId, Generation, NodeId, PodId, ProjectId, Timestamp, TypeId,
@@ -289,6 +289,15 @@ fn handle(world: &World, nonce: u64, deadline_ms: u64) -> TensorHandle {
     handle
 }
 
+/// The supervisor's report that the producer and consumer workers of the tests are reaped.
+fn torn_down() -> Teardown<'static> {
+    Teardown {
+        principal: PRINCIPAL,
+        producer_session: PRODUCER_SESSION,
+        consumer_session: CONSUMER_SESSION,
+    }
+}
+
 /// The same handle on a shared carrier (`HostShm`): released only after verified teardown.
 fn shared_handle(world: &World, nonce: u64, deadline_ms: u64) -> TensorHandle {
     let mut handle = handle(world, nonce, deadline_ms);
@@ -353,12 +362,12 @@ fn an_admitted_shared_handle_is_consumed_once_and_released_only_after_teardown()
     assert!(table.expire(10_000).is_empty());
     assert_eq!(table.inflight_bytes(PRINCIPAL), Some(8));
     // The supervisor has reaped both worker domains: the buffer is released once.
-    let notices = table.release_after_teardown(PRINCIPAL);
+    let notices = table.release_after_teardown(torn_down());
     assert_eq!(notices.len(), 1);
     assert_eq!(notices[0].reason, ReclaimReason::TornDown);
     assert_eq!(notices[0].handle_nonce, 1);
     assert_eq!(table.inflight_bytes(PRINCIPAL), Some(0));
-    assert!(table.release_after_teardown(PRINCIPAL).is_empty());
+    assert!(table.release_after_teardown(torn_down()).is_empty());
 }
 
 #[test]
