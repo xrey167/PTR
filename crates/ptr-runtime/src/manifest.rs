@@ -464,6 +464,50 @@ pub trait RuntimeExecutionManifestResolver: Send + Sync {
     fn resolve(&self, digest: &Digest) -> Result<ValidatedExecutionManifest, RuntimeManifestError>;
 }
 
+/// The check a wire host makes, on every request, that an admitted manifest still holds at the
+/// instant it is used: the instant is the host's clock, in the unit the bound knowledge objects
+/// state their validity in. Whoever attaches a manifest registry to a host must supply one, so
+/// a host cannot serve a manifest without asking whether its knowledge has expired.
+pub trait ManifestValidity: Send + Sync {
+    fn ensure_valid_at(&self, digest: &Digest, now: Timestamp) -> Result<(), RuntimeManifestError>;
+}
+
+/// [`ManifestValidity`] over the runtime's manifest registry and its knowledge store: the
+/// manifest must be admitted and not revoked, and every object it binds must still exist, not
+/// be invalidated and hold at `now`.
+#[derive(Clone)]
+pub struct KnowledgeManifestValidity {
+    registry: std::sync::Arc<std::sync::RwLock<ExecutionManifestRegistry>>,
+    knowledge: std::sync::Arc<std::sync::RwLock<KnowledgeStore>>,
+}
+
+impl KnowledgeManifestValidity {
+    pub fn new(
+        registry: std::sync::Arc<std::sync::RwLock<ExecutionManifestRegistry>>,
+        knowledge: std::sync::Arc<std::sync::RwLock<KnowledgeStore>>,
+    ) -> Self {
+        Self {
+            registry,
+            knowledge,
+        }
+    }
+}
+
+impl ManifestValidity for KnowledgeManifestValidity {
+    fn ensure_valid_at(&self, digest: &Digest, now: Timestamp) -> Result<(), RuntimeManifestError> {
+        // A poisoned lock is a failed check, never a pass.
+        let registry = self
+            .registry
+            .read()
+            .map_err(|_| RuntimeManifestError::UnknownManifestDigest(*digest))?;
+        let knowledge = self
+            .knowledge
+            .read()
+            .map_err(|_| RuntimeManifestError::UnknownManifestDigest(*digest))?;
+        registry.resolve_at(digest, &knowledge, now).map(|_| ())
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct ExecutionManifestRegistry {
     admitted: BTreeMap<Digest, ValidatedExecutionManifest>,
@@ -518,6 +562,18 @@ impl ExecutionManifestRegistry {
             manifest,
             runtime_revision,
         })
+    }
+
+    /// Resolve for use at `now`: admitted, not revoked, and every bound object still holds.
+    pub fn resolve_at(
+        &self,
+        digest: &Digest,
+        knowledge: &KnowledgeStore,
+        now: Timestamp,
+    ) -> Result<ValidatedExecutionManifest, RuntimeManifestError> {
+        let resolved = self.resolve(digest)?;
+        resolved.ensure_knowledge_valid_at(knowledge, now)?;
+        Ok(resolved)
     }
 
     pub fn is_revoked(&self, digest: &Digest) -> bool {

@@ -73,9 +73,9 @@ pub use kv_secondary::{
     SecondaryStats, DEFAULT_WINDOW_TOKENS, SECONDARY_SECTION_MAX_BYTES,
 };
 pub use manifest::{
-    validate_and_build, validate_authority, ExecutionManifestRegistry, ManifestAuthorityRegistry,
-    ManifestBindingAuthority, RuntimeExecutionManifestResolver, RuntimeManifestError,
-    ValidatedExecutionManifest,
+    validate_and_build, validate_authority, ExecutionManifestRegistry, KnowledgeManifestValidity,
+    ManifestAuthorityRegistry, ManifestBindingAuthority, ManifestValidity,
+    RuntimeExecutionManifestResolver, RuntimeManifestError, ValidatedExecutionManifest,
 };
 pub use merge::{
     ChangeOrigin, HoldReason, MergeAuthority, MergeHold, MergeOutcome, MergePreview, MergeReceipt,

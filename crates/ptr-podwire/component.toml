@@ -4,6 +4,7 @@ maturity = "prototype"
 last_reviewed = "2026-10-13"
 
 implemented = [
+  "PodHost::with_runtime_manifest_registry and bind_v2_runtime_admitted require a ptr_runtime::ManifestValidity: both receive paths (serve_once_v2, serve_v2_incoming) check it with the host clock after the registry resolved the digest, and a failure refuses the request before the Pod is invoked (PodWireError::ManifestNoLongerValid)",
   "A request whose remaining time equals the configured timeout is deadline-bound: its timeout is DeadlineExceeded { sent: true }, not a transport error",
   "The one-shot PodClient::request_v2 checks an answer with the same validation as PodSession::request_v2 (validate_answer_v2): the echoed address binding, including its deadline, must equal the request's, so a responder cannot strip or extend a deadline",
   "PodWireError::DeadlineExceeded carries sent (false: expired before anything left, safe to retry with a new deadline; true: expired while waiting, the host may have run it); forward_to takes the relay clock and gives a deadline-less parent a V4 child with origin_ts; unix_millis_now reads a clock before the epoch as u64::MAX so every deadline is past",
@@ -75,6 +76,7 @@ decisions = [
 ]
 
 checks = [
+  "tests/wire.rs: a manifest that still holds is served; a failing validity check refuses the request with the Pod not invoked; revocation still blocks",
   "src/endpoint.rs budget_tests: a wait that ends exactly at the deadline is the deadline's own",
   "tests/wire.rs: a one-shot V4 request whose answer echoes a stripped or an extended deadline is rejected",
   "tests/wire.rs: the one-shot client tells a timeout after the send from an expiry before it; tests/frame_v4.rs: forward_to on a binding without a deadline; src/frame.rs unit tests: a clock before the epoch expires every deadline",

@@ -297,11 +297,10 @@ impl EgressRefusalWindows {
         if !self.pods.contains_key(source) && self.pods.len() >= MAX_TRACKED_EGRESS_PODS {
             closed.extend(self.take_all());
         }
-        if self
-            .pods
-            .get(source)
-            .is_some_and(|pod| pod.window != window)
-        {
+        if self.pods.get(source).is_some_and(|pod| pod.window < window) {
+            // Only a later window rolls the Pod over. An observation from an earlier window
+            // (clock skew, out-of-order reports) is counted in the open one, so timestamps
+            // alternating around a boundary cannot make every refusal its own event.
             closed.extend(self.take_pod(source));
         }
         // A counter that this refusal would push past u32::MAX closes its window first, so the
@@ -666,6 +665,32 @@ mod tests {
             ),
             "{events:?}"
         );
+    }
+
+    #[test]
+    fn timestamps_alternating_around_a_window_boundary_roll_over_at_most_once() {
+        let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+        let boundary = 7 * EGRESS_WINDOW_MILLIS;
+        let mut refusals = 0u64;
+        for n in 0..20u64 {
+            let at = if n % 2 == 0 {
+                boundary - 1
+            } else {
+                boundary + 1
+            };
+            runtime.record_egress_refusal(record(0, at)).unwrap();
+            refusals += 1;
+        }
+        let events = egress_events(&runtime);
+        assert!(events.len() <= 1, "{} rollovers", events.len());
+        let committed: u64 = events
+            .iter()
+            .map(|event| match event {
+                LedgerEvent::EgressRefused { count, .. } => u64::from(*count),
+                _ => 0,
+            })
+            .sum();
+        assert_eq!(committed + total(&runtime.egress_refusals), refusals);
     }
 
     #[test]

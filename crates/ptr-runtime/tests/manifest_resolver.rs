@@ -543,3 +543,45 @@ fn a_manifest_admitted_while_its_object_held_is_not_resolved_after_the_object_en
         Err(ptr_runtime::RuntimeManifestError::RevokedKnowledgeGeneration { .. })
     ));
 }
+
+#[test]
+fn the_knowledge_backed_validity_check_refuses_once_a_bound_object_ends() {
+    use ptr_runtime::ManifestValidity;
+    use std::sync::{Arc, RwLock};
+
+    let (knowledge, object) = bounded_knowledge(10, 20);
+    let pod = descriptor();
+    let mut artifacts = InMemoryArtifactCatalog::default();
+    artifacts.admit(pod.clone()).unwrap();
+    let candidate = manifest(&object, &pod);
+    let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+    runtime
+        .admit_execution_manifest(
+            candidate.clone(),
+            &knowledge,
+            &artifacts,
+            ptr_types::Timestamp(15),
+        )
+        .unwrap();
+    let digest = candidate.manifest_digest;
+    let validity = ptr_runtime::KnowledgeManifestValidity::new(
+        runtime.execution_manifest_registry(),
+        Arc::new(RwLock::new(knowledge)),
+    );
+    assert_eq!(
+        validity.ensure_valid_at(&digest, ptr_types::Timestamp(19)),
+        Ok(())
+    );
+    assert!(matches!(
+        validity.ensure_valid_at(&digest, ptr_types::Timestamp(20)),
+        Err(ptr_runtime::RuntimeManifestError::ExpiredKnowledgeGeneration { .. })
+    ));
+    assert!(matches!(
+        validity.ensure_valid_at(&[7; 32], ptr_types::Timestamp(15)),
+        Err(ptr_runtime::RuntimeManifestError::UnknownManifestDigest(_))
+    ));
+    runtime.revoke_execution_manifest(digest).unwrap();
+    assert!(validity
+        .ensure_valid_at(&digest, ptr_types::Timestamp(15))
+        .is_err());
+}

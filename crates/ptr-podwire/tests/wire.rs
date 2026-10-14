@@ -1249,8 +1249,29 @@ async fn v2_session_reuses_one_authenticated_connection() {
     assert_eq!(*invocations.lock().unwrap(), 1);
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn live_manifest_revocation_blocks_an_existing_binding_before_invoke() {
+/// A validity check a test can flip, standing in for the runtime's knowledge-backed one.
+struct SwitchedValidity(Mutex<Option<ptr_runtime::RuntimeManifestError>>);
+
+impl ptr_runtime::ManifestValidity for SwitchedValidity {
+    fn ensure_valid_at(
+        &self,
+        _digest: &[u8; 32],
+        _now: Timestamp,
+    ) -> Result<(), ptr_runtime::RuntimeManifestError> {
+        match self.0.lock().unwrap().clone() {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+}
+
+/// Serve one request against a host with a runtime manifest registry attached: the manifest is
+/// admitted, then optionally revoked, and the validity check answers as given. Returns the
+/// outcome and how many times the Pod ran.
+async fn serve_with_runtime_manifest(
+    revoke: bool,
+    validity: Arc<SwitchedValidity>,
+) -> (PodOutcome, usize) {
     let client = PodClient::bind().await.unwrap();
     let invocations = Arc::new(Mutex::new(0));
     let admitted = pod("alpha", &invocations);
@@ -1278,7 +1299,7 @@ async fn live_manifest_revocation_blocks_an_existing_binding_before_invoke() {
     let host = PodHost::bind(pods, policy, Pass)
         .await
         .unwrap()
-        .with_runtime_manifest_registry(Arc::clone(&registry));
+        .with_runtime_manifest_registry(Arc::clone(&registry), validity);
     let binding = host
         .bind_v2_stateful_addressed(
             &ProjectId::from("alpha"),
@@ -1293,7 +1314,9 @@ async fn live_manifest_revocation_blocks_an_existing_binding_before_invoke() {
         .with_execution_manifest(execution_manifest)
         .unwrap();
 
-    registry.write().unwrap().revoke(digest).unwrap();
+    if revoke {
+        registry.write().unwrap().revoke(digest).unwrap();
+    }
 
     let host_identity = host.identity().public_key.clone();
     let address = located(host.address());
@@ -1303,16 +1326,54 @@ async fn live_manifest_revocation_blocks_an_existing_binding_before_invoke() {
     request.placement_epoch = Some(3);
     request.fencing_token = Some(55);
     let answer = session.request_v2(&request).await.unwrap();
+    session.close().await;
+    assert_eq!(server.await.unwrap().len(), 1);
+    let ran = *invocations.lock().unwrap();
+    (answer.outcome, ran)
+}
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn live_manifest_revocation_blocks_an_existing_binding_before_invoke() {
+    let (outcome, ran) =
+        serve_with_runtime_manifest(true, Arc::new(SwitchedValidity(Mutex::new(None)))).await;
     assert_eq!(
-        answer.outcome,
+        outcome,
         PodOutcome::Refused {
             code: RefusalCode::Unavailable
         }
     );
-    assert_eq!(*invocations.lock().unwrap(), 0);
-    session.close().await;
-    assert_eq!(server.await.unwrap().len(), 1);
+    assert_eq!(ran, 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_manifest_that_still_holds_is_served() {
+    let (outcome, ran) =
+        serve_with_runtime_manifest(false, Arc::new(SwitchedValidity(Mutex::new(None)))).await;
+    assert!(
+        matches!(outcome, PodOutcome::Answered { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(ran, 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failing_validity_check_refuses_the_request_before_the_pod_is_invoked() {
+    for error in [
+        ptr_runtime::RuntimeManifestError::PolicyRevisionMissing,
+        ptr_runtime::RuntimeManifestError::InvalidManifest,
+        ptr_runtime::RuntimeManifestError::UnknownManifestDigest([3; 32]),
+    ] {
+        let (outcome, ran) =
+            serve_with_runtime_manifest(false, Arc::new(SwitchedValidity(Mutex::new(Some(error)))))
+                .await;
+        assert_eq!(
+            outcome,
+            PodOutcome::Refused {
+                code: RefusalCode::Unavailable
+            }
+        );
+        assert_eq!(ran, 0, "the Pod is not invoked");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

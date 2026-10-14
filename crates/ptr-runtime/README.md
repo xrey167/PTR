@@ -9,10 +9,12 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-13  
-**Code footprint:** 58 Rust source files · 48725 nonblank source lines · 92 integration-test files · 1228 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 58 Rust source files · 48800 nonblank source lines · 92 integration-test files · 1230 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
+- ManifestValidity (the per-request check a wire host makes that an admitted manifest still holds) and KnowledgeManifestValidity over the manifest registry and the knowledge store; ExecutionManifestRegistry::resolve_at
+- Only a later window rolls a Pod's refusal counters over; an observation from an earlier window is counted in the open one, so timestamps alternating around a window boundary cannot produce an event per refusal
 - Egress refusal counters never wrap silently: a counter that would pass u32::MAX closes its window first, and one that cannot be flushed pins at u32::MAX with saturated = true on the event. The refusal flush respects the execution fence (commit_gated, not commit_settlement): while an effect awaits settlement or the last append is uncertain, closed windows stay in the bounded table and are committed by the next flush. admit_execution_manifest and _with_authority take the instant and refuse a bound knowledge object that does not hold then (RuntimeManifestError::ExpiredKnowledgeGeneration); resolve_execution_manifest_at re-checks existence, invalidation and validity of every bound object at the instant of use
 - Restoring counters after a failed rollover applies the same per-Pod fold as counting (at most 8 exact targets plus one overflow target per reason), so a long ledger outage cannot grow a Pod's counters
 - The egress refusal table is hard-bounded even while the ledger refuses appends: a Pod that does not fit folds into one overflow counter per reason (source EgressRefusalSource::Overflow, target *), committed as ordinary events with their counts at the next flush; InMemoryPodDirectory::resolve refuses RouteConstraints with a zero deadline
@@ -247,6 +249,8 @@
 
 ### Current automated checks
 
+- tests/manifest_resolver.rs: the knowledge-backed validity check refuses once a bound object ends, for an unknown digest and after revocation
+- src/egress.rs: timestamps_alternating_around_a_window_boundary_roll_over_at_most_once
 - src/egress.rs unit tests: a_fenced_runtime_commits_no_refusal_and_loses_none_until_the_fence_is_lifted, a_counter_that_would_pass_u32_max_closes_its_window_or_says_it_saturated. tests/manifest_resolver.rs: an expired or not-yet-valid object cannot be bound into a manifest; a manifest admitted while its object held is not resolved after the object ends or is invalidated
 - src/egress.rs: failed_rollovers_of_one_pod_with_a_new_target_each_keep_its_keys_bounded
 - src/egress.rs unit tests: ten thousand Pods refused while every append fails stay within MAX_TRACKED_EGRESS_PODS and are all counted; overflow counters come back as encodable events. tests/directory.rs: a zero deadline is refused at resolution and on a route built by hand
