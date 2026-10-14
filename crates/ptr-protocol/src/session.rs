@@ -14,7 +14,8 @@
 //!
 //! Bounds (Invariant 8): at most `window` outstanding calls in each direction, at most
 //! `completed_capacity` remembered idempotency keys (least recently used is evicted, after
-//! which a retry of that key would execute again), at most `capacity` frames per queue.
+//! which a retry of that key would execute again), at most `completed_capacity` remembered
+//! answered sequence numbers (oldest evicted), at most `capacity` frames per queue.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
@@ -133,7 +134,9 @@ pub enum SessionEvent {
     CallQueued {
         seq: u64,
     },
-    /// The same call arrived again while still queued; the one answer will serve both.
+    /// The same call arrived again while still queued (the one answer will serve both), or a
+    /// Reply repeated the answer to a call that already completed (counted by
+    /// [`ProtocolSession::duplicate_replies_ignored`]).
     DuplicateIgnored {
         seq: u64,
     },
@@ -207,6 +210,11 @@ pub struct ProtocolSession {
     pending: VecDeque<Inbound>,
     /// Front is the least recently used.
     completed: VecDeque<Completed>,
+    /// Outbound calls answered recently: sequence number and Reply payload digest, bounded by
+    /// `completed_capacity`. A repeated Reply (late original plus the answer to a retry) is
+    /// recognised here instead of being an unknown sequence number. Front is the oldest.
+    answered: VecDeque<(u64, [u8; 32])>,
+    duplicate_replies: usize,
     bye_sent: bool,
     bye_received: bool,
     farewell: Option<ControlFrame>,
@@ -231,6 +239,8 @@ impl ProtocolSession {
             outbound: BTreeMap::new(),
             pending: VecDeque::new(),
             completed: VecDeque::new(),
+            answered: VecDeque::new(),
+            duplicate_replies: 0,
             bye_sent: false,
             bye_received: false,
             farewell: None,
@@ -270,6 +280,11 @@ impl ProtocolSession {
     /// Idempotency keys currently remembered.
     pub fn completed_keys(&self) -> usize {
         self.completed.len()
+    }
+
+    /// Replies dropped because they repeated the answer to a call that already completed.
+    pub fn duplicate_replies_ignored(&self) -> usize {
+        self.duplicate_replies
     }
 
     /// The Bye to send after a negotiation failure closed the session, once.
@@ -446,9 +461,21 @@ impl ProtocolSession {
                 payload,
             } => self.on_call(seq, idempotency_key, payload),
             ControlFrame::Reply { seq, payload } => {
+                let digest = payload_digest(&payload);
                 if self.outbound.remove(&seq).is_none() {
+                    if self.answered.contains(&(seq, digest)) {
+                        self.duplicate_replies = self.duplicate_replies.saturating_add(1);
+                        return Ok(Handled {
+                            send: Vec::new(),
+                            event: SessionEvent::DuplicateIgnored { seq },
+                        });
+                    }
                     return Err(SessionError::UnknownSeq { seq });
                 }
+                if self.answered.len() >= self.config.completed_capacity {
+                    self.answered.pop_front();
+                }
+                self.answered.push_back((seq, digest));
                 self.close_if_drained();
                 Ok(Handled {
                     send: Vec::new(),
@@ -1034,6 +1061,39 @@ mod tests {
             SessionError::InboundWindowExceeded { limit: 2 }
         );
         assert_eq!(b.queued_calls(), 2);
+    }
+
+    #[test]
+    fn answered_record_is_bounded_and_forgets_oldest() {
+        let mut config = SessionConfig::new("a", offer(1), 7);
+        config.completed_capacity = 2;
+        let mut a = ProtocolSession::new(config).unwrap();
+        let mut b = session("b", 1);
+        let hello = a.start().unwrap();
+        let back = deliver(&mut b, vec![hello]);
+        let tail = deliver(&mut a, back);
+        deliver(&mut b, tail);
+        for n in 0..3u8 {
+            let call = a.call(key(&format!("k{n}")), payload(&[n])).unwrap();
+            let reply = deliver(&mut b, vec![call]);
+            assert!(reply.is_empty());
+            let reply = b.serve_next(&mut echo).unwrap().unwrap();
+            a.on_frame(reply).unwrap();
+        }
+        let again = |seq: u64, n: u8| ControlFrame::Reply {
+            seq,
+            payload: payload(&[n]),
+        };
+        // Seqs 2 and 3 are remembered; seq 1 was evicted and is unknown again.
+        assert_eq!(
+            a.on_frame(again(3, 2)).unwrap().event,
+            SessionEvent::DuplicateIgnored { seq: 3 }
+        );
+        assert_eq!(
+            a.on_frame(again(1, 0)).unwrap_err(),
+            SessionError::UnknownSeq { seq: 1 }
+        );
+        assert_eq!(a.duplicate_replies_ignored(), 1);
     }
 
     #[test]
