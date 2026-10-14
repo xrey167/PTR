@@ -96,7 +96,7 @@ pub use paged_kv::{
 pub use protocol::{
     ConnectionScope, DeliveryMode, EgressPolicy, MessagePattern, NativeProtocolExecutor,
     NativeProtocolRequest, NativeProtocolResponse, NetworkEndpoint, PodLink, PodLinkError,
-    ProtocolBinding, ProtocolError, ProtocolProfile,
+    ProtocolBinding, ProtocolError, ProtocolProfile, MAX_TRACE_ID_BYTES,
 };
 pub use qwen::{
     Qwen2Activation, Qwen2DecoderInput, Qwen2DecoderOutput, Qwen2DecoderWeights, Qwen2LayerConfig,

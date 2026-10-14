@@ -227,6 +227,10 @@ impl EgressPolicy {
     }
 }
 
+/// The longest trace a link may carry, in bytes: the bound the ledger puts on the trace of a
+/// recorded egress refusal, so every refusal of a valid link can be recorded.
+pub const MAX_TRACE_ID_BYTES: usize = 256;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PodLink {
     pub trace_id: String,
@@ -263,7 +267,10 @@ impl PodLink {
         self.target
             .validate()
             .map_err(|_| PodLinkError::InvalidAddress)?;
-        if self.trace_id.is_empty() || self.hop_limit == 0 || self.deadline.0 <= now.0 {
+        if self.trace_id.is_empty() || self.trace_id.len() > MAX_TRACE_ID_BYTES {
+            return Err(PodLinkError::InvalidTrace);
+        }
+        if self.hop_limit == 0 || self.deadline.0 <= now.0 {
             return Err(PodLinkError::DeadlineOrHopLimit);
         }
         if self.source.project != self.target.address.project
@@ -338,6 +345,8 @@ pub enum PodLinkError {
     AccessDenied,
     MissingAttestation,
     DeadlineOrHopLimit,
+    /// The trace is empty or longer than [`MAX_TRACE_ID_BYTES`].
+    InvalidTrace,
     CycleDetected,
     InvalidEgressPolicy,
 }

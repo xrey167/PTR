@@ -397,3 +397,31 @@ async fn an_expired_millisecond_deadline_is_refused_by_the_frame_builder_and_by_
         ProtocolError::Deadline
     );
 }
+
+#[test]
+fn a_hop_back_to_the_pod_that_sent_the_request_is_refused() {
+    let a = PodAddress::new("alpha".into(), "test".into(), "a".into()).unwrap();
+    let revision = |name: &str| PodRevisionAddress {
+        address: PodAddress::new("alpha".into(), "test".into(), name.into()).unwrap(),
+        semantic_revision: [3; 32],
+        generation: Generation(1),
+    };
+    let mut at_b = binding(Some((1_000, 100)));
+    at_b.source = Some(a.clone());
+    at_b.destination = revision("b");
+    // A to B and back to A.
+    assert_eq!(
+        at_b.forward_to(revision("a"), None, Timestamp(150)),
+        Err(FrameError::InvalidField { field: "visited" })
+    );
+    // A to B to C and back to A is a cycle too: the original source stays on the trail.
+    let at_c = at_b
+        .forward_to(revision("c"), None, Timestamp(150))
+        .unwrap();
+    assert_eq!(at_c.visited, vec![a, at_b.destination.address.clone()]);
+    assert_eq!(
+        at_c.forward_to(revision("a"), None, Timestamp(150)),
+        Err(FrameError::InvalidField { field: "visited" })
+    );
+    assert!(at_c.forward_to(revision("d"), None, Timestamp(150)).is_ok());
+}

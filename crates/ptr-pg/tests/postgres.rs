@@ -1357,7 +1357,7 @@ async fn a_document_of_a_revoked_generation_is_never_returned_although_it_is_sti
         .await
         .unwrap();
     let results = substrate
-        .search(&HybridQuery {
+        .search_all_projects_for_audit(&HybridQuery {
             project: None,
             text: Some("revocation".into()),
             embedding: Some((space().id, vec![0.0, 1.0, 0.0, 0.0])),
@@ -2469,7 +2469,12 @@ async fn rebuild_drops_projection_and_derived_caches_but_keeps_working_state() {
         rank_constant: 60.0,
         filter: ptr_search::SearchFilter::audit_without_time(),
     };
-    assert!(substrate.search(&query).await.unwrap().lexical.is_empty());
+    assert!(substrate
+        .search_all_projects_for_audit(&query)
+        .await
+        .unwrap()
+        .lexical
+        .is_empty());
     substrate.drop_all().await.unwrap();
 }
 
@@ -3838,7 +3843,12 @@ async fn vector_search_is_not_truncated_at_the_default_candidate_list() {
             rank_constant: 60.0,
             filter: ptr_search::SearchFilter::audit_without_time(),
         };
-        let results = substrate.search(&query).await.unwrap();
+        let results = if query.project.is_none() {
+            substrate.search_all_projects_for_audit(&query).await
+        } else {
+            substrate.search(&query).await
+        }
+        .unwrap();
         assert_eq!(results.vector.len(), 100, "{:?}", query.project);
     }
     substrate.drop_all().await.unwrap();
@@ -6798,7 +6808,11 @@ async fn a_generation_is_indexed_from_one_content_and_re_embedded_only_with_it()
         rank_constant: 60.0,
         filter: ptr_search::SearchFilter::audit_without_time(),
     };
-    let hit = &substrate.search(&query).await.unwrap().vector[0];
+    let hit = &substrate
+        .search_all_projects_for_audit(&query)
+        .await
+        .unwrap()
+        .vector[0];
     assert!(hit.score > 0.99, "{}", hit.score);
     // Other content for the same live generation: refused, and the stored
     // document is kept.
@@ -6945,7 +6959,13 @@ async fn the_filtered_vector_query_reads_its_space_s_hnsw_index() {
             rank_constant: 60.0,
             filter: ptr_search::SearchFilter::audit_without_time(),
         };
-        assert_eq!(substrate.search(&query).await.unwrap().vector.len(), 10);
+        let results = if query.project.is_none() {
+            substrate.search_all_projects_for_audit(&query).await
+        } else {
+            substrate.search(&query).await
+        }
+        .unwrap();
+        assert_eq!(results.vector.len(), 10);
     }
     let mut after = scans().await;
     for _ in 0..300 {

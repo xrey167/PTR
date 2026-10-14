@@ -4,6 +4,8 @@ maturity = "prototype"
 last_reviewed = "2026-10-13"
 
 implemented = [
+  "A binding taken from the runtime (with_runtime_execution_manifest, bind_v2_runtime_admitted) carries its ManifestValidity and asks it on every request it serves, whether or not the host has a manifest registry attached",
+  "PodAddressBinding::forward_to puts the sending Pod on the visited trail and refuses a hop to any visited Pod, so A to B and back to A, or A to B to C to A, is refused",
   "PodHost::with_runtime_manifest_registry and bind_v2_runtime_admitted require a ptr_runtime::ManifestValidity: both receive paths (serve_once_v2, serve_v2_incoming) check it with the host clock after the registry resolved the digest, and a failure refuses the request before the Pod is invoked (PodWireError::ManifestNoLongerValid)",
   "A request whose remaining time equals the configured timeout is deadline-bound: its timeout is DeadlineExceeded { sent: true }, not a transport error",
   "The one-shot PodClient::request_v2 checks an answer with the same validation as PodSession::request_v2 (validate_answer_v2): the echoed address binding, including its deadline, must equal the request's, so a responder cannot strip or extend a deadline",
@@ -76,6 +78,8 @@ decisions = [
 ]
 
 checks = [
+  "tests/wire.rs: a_runtime_backed_binding_asks_its_validity_on_every_request_without_a_host_registry",
+  "tests/frame_v4.rs: a_hop_back_to_the_pod_that_sent_the_request_is_refused",
   "tests/wire.rs: a manifest that still holds is served; a failing validity check refuses the request with the Pod not invoked; revocation still blocks",
   "src/endpoint.rs budget_tests: a wait that ends exactly at the deadline is the deadline's own",
   "tests/wire.rs: a one-shot V4 request whose answer echoes a stripped or an extended deadline is rejected",

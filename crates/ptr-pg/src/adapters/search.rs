@@ -71,8 +71,8 @@ pub struct HybridQuery {
     /// customary default.
     pub rank_constant: f32,
     /// Who is asking, when the answer must hold and which metadata it must carry. Applied
-    /// inside each mode's scan, before its `limit`. The default sees project-wide documents
-    /// only.
+    /// inside each mode's scan, before its `limit`. A filter that names nobody sees
+    /// project-wide documents only, of `project`: [`PgSubstrate::search`] needs a project.
     pub filter: SearchFilter,
 }
 
@@ -349,6 +349,36 @@ impl PgSubstrate {
     /// `query.vector_weight`, or `query.weights` for weights whose total
     /// could fuse to an infinite score.
     pub async fn search(&mut self, query: &HybridQuery) -> Result<SearchResults, PgError> {
+        self.search_checked(query, false).await
+    }
+
+    /// The one search across every project, for an audit or an administrator: the query must
+    /// carry the audit filter ([`SearchFilter::audit_without_time`] shape: no time rule) and
+    /// names no project. [`Self::search`] refuses a query without a project, because a
+    /// document with an empty access list is visible to its whole project and must not become
+    /// visible to the askers of other projects.
+    ///
+    /// # Errors
+    /// As [`Self::search`], and [`ptr_search::FilterError::AuditFilterRequired`] when the
+    /// filter carries a time rule.
+    pub async fn search_all_projects_for_audit(
+        &mut self,
+        query: &HybridQuery,
+    ) -> Result<SearchResults, PgError> {
+        if query.filter.now.is_some() || query.project.is_some() {
+            return Err(PgError::InvalidSearchFilter {
+                field: "query.filter",
+                error: ptr_search::FilterError::AuditFilterRequired,
+            });
+        }
+        self.search_checked(query, true).await
+    }
+
+    async fn search_checked(
+        &mut self,
+        query: &HybridQuery,
+        all_projects: bool,
+    ) -> Result<SearchResults, PgError> {
         if query.limit == 0 {
             return Err(PgError::OutOfRange {
                 field: "query.limit",
@@ -381,6 +411,12 @@ impl PgSubstrate {
                 field: "query.filter",
                 error,
             })?;
+        if query.project.is_none() && !all_projects {
+            return Err(PgError::InvalidSearchFilter {
+                field: "query.project",
+                error: ptr_search::FilterError::ProjectRequired,
+            });
+        }
         let schemas = self.schemas.clone();
         let (projection, derived) = (schemas.projection.as_str(), schemas.derived.as_str());
         let project = query.project.as_ref().map(|project| project.0.clone());

@@ -320,8 +320,18 @@ impl PodAddressBinding {
             .checked_sub(1)
             .filter(|left| *left > 0)
             .ok_or(FrameError::InvalidField { field: "hop_limit" })?;
+        // The Pod that sent this request is on the trail too, or a hop back to it (A to B and
+        // back to A) would not look like a revisit.
         let mut visited = self.visited.clone();
+        if let Some(source) = &self.source {
+            if !visited.contains(source) {
+                visited.push(source.clone());
+            }
+        }
         visited.push(self.destination.address.clone());
+        if visited.contains(&destination.address) {
+            return Err(FrameError::InvalidField { field: "visited" });
+        }
         let deadline = match (self.deadline, requested) {
             (Some(_), Some(requested)) => Some(self.narrowed_deadline(requested)),
             (None, Some(requested)) => Some(requested),

@@ -10,10 +10,11 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-13  
-**Code footprint:** 17 Rust source files · 6782 nonblank source lines · 3 integration-test files · 169 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 17 Rust source files · 6816 nonblank source lines · 3 integration-test files · 170 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
+- PgSubstrate::search needs a project (FilterError::ProjectRequired): project-wide documents stay inside their project; the only search across projects is search_all_projects_for_audit, which takes the audit filter and no project
 - Retrieval eligibility in SQL (ADR-0024): derived migration 0002_search_filters (principals, valid_from, valid_until, semantic_role, predicate, tags, GIN and btree indexes), SearchDocument.attributes, HybridQuery.filter applied inside the lexical WHERE and the inner HNSW query before the limit, PgError::InvalidSearchFilter, projection mapping of the egress.refused event
 - An instance is the three schemas SchemaSet::with_prefix makes of one prefix, never pg or a prefix beginning pg_, whose names PostgreSQL reserves for system schemas and would refuse to create; connect_with refuses any other set (InvalidSchemaSet) before it connects, so the names are distinct and no two instances share a schema, and a rebuild, a migration or the projector never touches another instance's
 - Identifiers are a lowercase ASCII letter followed by at most 39 lowercase ASCII letters, digits or underscores, and never a keyword PostgreSQL 16 to 18 reserves (pg_get_keywords categories R and T), so every schema and space name interpolates into DDL unquoted
@@ -110,6 +111,7 @@
 
 ### Current automated checks
 
+- tests/search_filters.rs: a_search_needs_a_project_so_project_wide_documents_stay_inside_their_project
 - tests/search_filters.rs (needs PTR_PG_TEST_DSN): another principal sees nothing, expired rows drop out before the limit, the filter inside the HNSW scan still returns limit hits, the SQL predicate admits exactly what SearchFilter::admits admits, re-indexing replaces the access list, malformed filters are refused before SQL
 - a merged outcome is refused before its merge is projected, at another index than the projected one, and for a branch whose id only begins like a merged one's, writing nothing; the projected index is recorded once; after a projection rebuild it is refused until the projection has caught up (a_merged_outcome_must_match_the_projected_merge)
 - unit tests for identifiers, catalogs, capability parsing, lifecycle mapping and metric SQL

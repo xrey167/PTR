@@ -108,6 +108,25 @@ impl ExecutionManifestResolver for ExecutionManifest {
     }
 }
 
+/// The validity check a runtime-backed binding carries into every request it serves. Compared
+/// by identity, which is all a binding's equality needs.
+#[derive(Clone)]
+struct ManifestValidityHandle(Arc<dyn ptr_runtime::ManifestValidity>);
+
+impl std::fmt::Debug for ManifestValidityHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ManifestValidity")
+    }
+}
+
+impl PartialEq for ManifestValidityHandle {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for ManifestValidityHandle {}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PodWireV2Binding {
     artifact_id: ArtifactId,
@@ -121,9 +140,30 @@ pub struct PodWireV2Binding {
     protocol: Option<ProtocolBinding>,
     admission: Option<PodAdmissionBinding>,
     mesh: Option<MeshEndpointBinding>,
+    /// Set by [`Self::with_runtime_execution_manifest`]: the check that the manifest the
+    /// binding was taken from the runtime for still holds, asked on every request the
+    /// binding serves whether or not the host has a manifest registry attached.
+    runtime_validity: Option<ManifestValidityHandle>,
 }
 
 impl PodWireV2Binding {
+    /// The per-request half of a runtime-backed binding: its manifest must still hold now.
+    /// A binding that did not come from the runtime asks nothing.
+    fn check_runtime_validity(&self) -> Result<(), PodWireError> {
+        let Some(validity) = &self.runtime_validity else {
+            return Ok(());
+        };
+        let digest = self
+            .execution_manifest
+            .as_ref()
+            .map(|manifest| manifest.manifest_digest)
+            .ok_or(PodWireError::V2BindingUnavailable)?;
+        validity
+            .0
+            .ensure_valid_at(&digest, now_millis())
+            .map_err(PodWireError::ManifestNoLongerValid)
+    }
+
     pub fn artifact_id(&self) -> &ArtifactId {
         &self.artifact_id
     }
@@ -193,7 +233,7 @@ impl PodWireV2Binding {
     pub fn with_runtime_execution_manifest(
         self,
         runtime: &ptr_runtime::PtrRuntime,
-        validity: &dyn ptr_runtime::ManifestValidity,
+        validity: Arc<dyn ptr_runtime::ManifestValidity>,
         digest: &Digest,
     ) -> Result<Self, PodWireError> {
         let validated = runtime
@@ -202,7 +242,9 @@ impl PodWireV2Binding {
         validity
             .ensure_valid_at(digest, now_millis())
             .map_err(PodWireError::ManifestNoLongerValid)?;
-        self.with_execution_manifest(validated.manifest)
+        let mut bound = self.with_execution_manifest(validated.manifest)?;
+        bound.runtime_validity = Some(ManifestValidityHandle(validity));
+        Ok(bound)
     }
 
     pub fn with_mesh(mut self, mesh: MeshEndpointBinding) -> Result<Self, PodWireError> {
@@ -495,6 +537,7 @@ impl PodHost {
             protocol: None,
             admission: None,
             mesh: None,
+            runtime_validity: None,
         })
     }
 
@@ -600,7 +643,7 @@ impl PodHost {
         placement_epoch: u64,
         fencing_token: u128,
         admission: PodAdmissionBinding,
-        validity: &dyn ptr_runtime::ManifestValidity,
+        validity: Arc<dyn ptr_runtime::ManifestValidity>,
         execution_manifest: &Digest,
     ) -> Result<PodWireV2Binding, PodWireError> {
         self.bind_v2_admitted(
@@ -799,7 +842,10 @@ impl PodHost {
                         },
                         Some(PodWireError::V2BindingUnavailable),
                     )
-                } else if let Err(error) = self.check_runtime_manifest(&request) {
+                } else if let Err(error) = self
+                    .check_runtime_manifest(&request)
+                    .and_then(|()| binding.check_runtime_validity())
+                {
                     (
                         request_id,
                         request.generation,
@@ -1021,7 +1067,10 @@ impl PodHost {
                         },
                         Some(PodWireError::V2BindingUnavailable),
                     )
-                } else if let Err(error) = self.check_runtime_manifest(&request) {
+                } else if let Err(error) = self
+                    .check_runtime_manifest(&request)
+                    .and_then(|()| binding.check_runtime_validity())
+                {
                     (
                         request_id,
                         request.generation,

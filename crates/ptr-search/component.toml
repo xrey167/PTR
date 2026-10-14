@@ -4,6 +4,7 @@ maturity = "prototype"
 last_reviewed = "2026-10-13"
 
 implemented = [
+  "FilterError::ProjectRequired and FilterError::AuditFilterRequired: the refusals a backend raises for a search without a project and for an all-projects search without the audit filter",
   "AliasTable bounds its input in bytes before normalising (MAX_QUERY_BYTES, MAX_ALIAS_BYTES)",
   "SearchFilter has no Default (SearchFilter::at, audit_without_time); promote_verified_at / promote_verified_with_at ask the authority again (lifecycle and validity) at the instant of reliance",
   "Retrieval eligibility (ADR-0024): backend-neutral SearchFilter (principal, groups, instant, role, predicate, any-of tags) with validate and the reference predicate admits, SearchAttributes for documents, SearchQuery carrying the filter into SearchIndex::search; SearchHit::observe_at / observe_resolved_at hold a hit to the authority's half-open validity, promote_verified_at / promote_verified_with_at check it again at the instant of reliance (ValidityRefusal, TimedPromotionError) and the untimed promotion refuses a time-checked hit; AliasTable, a closed alias query resolver (longest whole-word match, Unknown / Ambiguous)",

@@ -4,6 +4,7 @@ maturity = "prototype"
 last_reviewed = "2026-10-13"
 
 implemented = [
+  "PodLink::validate bounds the trace at MAX_TRACE_ID_BYTES (256, the ledger bound of a recorded refusal) and refuses it as PodLinkError::InvalidTrace",
   "TCP and UDP executors refuse a request under a topic policy or on an MQTT link with EgressRefusalReason::TopicUnverifiable (code 6), because they send the payload unchanged and cannot tie a declared topic to the wire; check_publication is kept for an executor that reads the topic from its frame",
   "Topic policy is total: a policy that lists topics refuses a request that names none (EgressRefusalReason::TopicRequired); a refused topic is recorded as a digest prefix and length (redact_topic), a host or port refusal as a hashed host with its port (redact_endpoint, host:<16 hex>:<len>:<port>); PodLink and native validation use milliseconds since the epoch",
   "Egress enforcement (src/egress.rs): MQTT-style topic filters (+ and #, $-topics, bounded) checked against EgressPolicy.topics, EgressPolicy::check_endpoint / check_topic, ProtocolError::EgressRefused { target, reason } with a redacted target, NativeProtocolRequest.topic, and FrameRateLimiter, a bounded integer token bucket per Pod lease wired into the TCP and UDP executors",
@@ -62,6 +63,7 @@ implemented = [
 ]
 
 missing = [
+  "Native TCP/UDP exchange bounded by the remaining link deadline (one budget across connect/write/read): each operation still uses the full executor timeout",
   "MQTT executor binding the checked topic to the wire (the TCP and UDP executors refuse topic policies as TopicUnverifiable until one exists)",
   "Workspace: only ptr-runtime's VcwLoop drives it (one workspace per request, simulated or test experts), slot content is not committed to the ledger, and no experiment shows that a workspace or displacement helps a model (F007 measured the workspace only as an implementation check in a world that declares a broadcast reader); determinism assumes a pure host verifier and registry, and submit-time bounds (PendingFull) depend on arrival order; the host must bound verifier wall-clock time and a panicking AuthorRegistry is not caught",
   "Adapters and MoE are not yet wired into ptr-runtime's KvSession/backend: nothing there binds an adapter or expert dependency to a session, re-resolves the binding at restart or tags batch-variant routing Approximate; the catalog and fork paths still have no layer scope or cross-adapter prefix sharing; the MoE has no capacity-free load balancing loss and no trained weights, and the MLP-only adapter is a block-output correction, not a gate/up/down LoRA",
@@ -99,6 +101,7 @@ decisions = [
 ]
 
 checks = [
+  "tests/semantic.rs: a_link_trace_is_bounded_so_every_refusal_of_it_can_be_recorded",
   "tests/egress.rs: a declared topic under a topic policy is refused by the TCP and UDP executors; an MQTT link is refused; the topic check itself is tested on the policy",
   "tests/egress.rs: topic required, topic digest not the topic, expired and future millisecond deadlines",
   "tests/egress.rs: wildcard matching, filter-versus-topic, malformed filters, host / port / topic reasons with redacted targets, a lease out of budget, a flood bounded by the bucket; src/egress.rs unit tests for the bucket arithmetic",

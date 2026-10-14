@@ -1658,3 +1658,90 @@ async fn v4_one_shot_client_rejects_an_answer_whose_address_binding_was_changed(
     }
     responder_task.abort();
 }
+
+/// A host with no manifest registry attached serving a binding taken from the runtime: the
+/// binding's own validity check runs on every request. Returns the outcome and the number of
+/// Pod invocations, after `expire` has run once the binding exists.
+async fn serve_runtime_backed_binding(
+    expire: Option<ptr_runtime::RuntimeManifestError>,
+) -> (PodOutcome, usize) {
+    let client = PodClient::bind().await.unwrap();
+    let invocations = Arc::new(Mutex::new(0));
+    let admitted = pod("alpha", &invocations);
+    let manifest = admitted.manifest().clone();
+    let execution_manifest = execution_manifest(&manifest, Generation(7), Revision(12));
+    let digest = execution_manifest.manifest_digest;
+
+    let runtime = ptr_runtime::PtrRuntime::new(ptr_config::PtrConfig::default()).unwrap();
+    runtime
+        .execution_manifest_registry()
+        .write()
+        .unwrap()
+        .admit(ValidatedExecutionManifest {
+            manifest: execution_manifest,
+            knowledge: vec![],
+            artifacts: vec![],
+            runtime_revision: Revision(12),
+        })
+        .unwrap();
+
+    let mut pods = PodRegistry::default();
+    pods.register(admitted);
+    let mut policy = PodAccessPolicy::new();
+    policy
+        .admit(NodeId(client.identity().public_key), scope("alpha"))
+        .unwrap();
+    let host = PodHost::bind(pods, policy, Pass).await.unwrap();
+    let validity = Arc::new(SwitchedValidity(Mutex::new(None)));
+    let binding = host
+        .bind_v2_stateful_addressed(
+            &ProjectId::from("alpha"),
+            &PodId::from("summarizer"),
+            ArtifactId::from("summarizer-artifact"),
+            Generation(7),
+            Revision(12),
+            3,
+            55,
+        )
+        .unwrap()
+        .with_runtime_execution_manifest(&runtime, validity.clone(), &digest)
+        .unwrap();
+    // The bound object ends after the binding was made.
+    *validity.0.lock().unwrap() = expire;
+
+    let host_identity = host.identity().public_key.clone();
+    let address = located(host.address());
+    let server = tokio::spawn(async move { host.serve_session_v2(&binding, 1).await.unwrap() });
+    let session = client.connect_session(address, 1).await.unwrap();
+    let mut request = request_v2(host_identity, 100, &manifest, Generation(7), Revision(12));
+    request.placement_epoch = Some(3);
+    request.fencing_token = Some(55);
+    request.execution_manifest = Some(digest);
+    let answer = session.request_v2(&request).await.unwrap();
+    session.close().await;
+    assert_eq!(server.await.unwrap().len(), 1);
+    let ran = *invocations.lock().unwrap();
+    (answer.outcome, ran)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_runtime_backed_binding_asks_its_validity_on_every_request_without_a_host_registry() {
+    let (outcome, ran) = serve_runtime_backed_binding(None).await;
+    assert!(
+        matches!(outcome, PodOutcome::Answered { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(ran, 1);
+
+    let (outcome, ran) = serve_runtime_backed_binding(Some(
+        ptr_runtime::RuntimeManifestError::PolicyRevisionMissing,
+    ))
+    .await;
+    assert_eq!(
+        outcome,
+        PodOutcome::Refused {
+            code: RefusalCode::Unavailable
+        }
+    );
+    assert_eq!(ran, 0, "the Pod is not invoked");
+}

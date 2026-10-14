@@ -586,3 +586,90 @@ async fn a_malformed_filter_or_attribute_set_is_refused_before_any_sql_runs() {
     );
     substrate.drop_all().await.unwrap();
 }
+
+#[tokio::test]
+async fn a_search_needs_a_project_so_project_wide_documents_stay_inside_their_project() {
+    let mut substrate = substrate().await;
+    substrate.register_space(&space()).await.unwrap();
+    let in_project = |index: u64, project: &str, id: &str| CommittedEvent {
+        index: CommitIndex(index),
+        event: LedgerEvent::CapsuleCommitted {
+            project: ProjectId::from(project),
+            capsule: CapsuleId::from(id),
+            generation: Generation(1),
+        },
+    };
+    substrate
+        .replay(&[
+            in_project(1, "atlas", "a-open"),
+            in_project(2, "borealis", "b-open"),
+        ])
+        .await
+        .unwrap();
+    for (name, embedding) in [
+        ("a-open", [1.0, 0.0, 0.0, 0.0]),
+        ("b-open", [0.9, 0.1, 0.0, 0.0]),
+    ] {
+        substrate
+            .upsert_document(&document(name, embedding, SearchAttributes::default()))
+            .await
+            .unwrap();
+    }
+    let asked = |project: Option<&str>, filter: SearchFilter| HybridQuery {
+        project: project.map(ProjectId::from),
+        ..query(10, filter)
+    };
+
+    // No project: refused, whatever the filter says, before any scan.
+    for filter in [asking("alice", &[], 5), SearchFilter::at(Timestamp(5))] {
+        assert_eq!(
+            substrate.search(&asked(None, filter)).await.unwrap_err(),
+            PgError::InvalidSearchFilter {
+                field: "query.project",
+                error: FilterError::ProjectRequired,
+            }
+        );
+    }
+    assert!(matches!(
+        substrate
+            .search(&asked(None, SearchFilter::audit_without_time()))
+            .await,
+        Err(PgError::InvalidSearchFilter {
+            error: FilterError::ProjectRequired,
+            ..
+        })
+    ));
+
+    // With a project: only that project's project-wide documents.
+    for (project, expected) in [("atlas", "a-open"), ("borealis", "b-open")] {
+        let results = substrate
+            .search(&asked(Some(project), SearchFilter::at(Timestamp(5))))
+            .await
+            .unwrap();
+        assert_eq!(names(&results.lexical), set(&[expected]), "{project}");
+        assert_eq!(names(&results.vector), set(&[expected]), "{project}");
+    }
+
+    // The audit entry sees every project, and only with the audit filter and no project.
+    let everything = substrate
+        .search_all_projects_for_audit(&asked(None, SearchFilter::audit_without_time()))
+        .await
+        .unwrap();
+    assert_eq!(names(&everything.lexical), set(&["a-open", "b-open"]));
+    for (project, filter) in [
+        (None, SearchFilter::at(Timestamp(5))),
+        (Some("atlas"), SearchFilter::audit_without_time()),
+    ] {
+        assert_eq!(
+            substrate
+                .search_all_projects_for_audit(&asked(project, filter))
+                .await
+                .unwrap_err(),
+            PgError::InvalidSearchFilter {
+                field: "query.filter",
+                error: FilterError::AuditFilterRequired,
+            }
+        );
+    }
+    substrate.drop_all().await.unwrap();
+}

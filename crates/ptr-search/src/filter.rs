@@ -54,6 +54,13 @@ pub enum FilterError {
     ControlCharacter { field: &'static str },
     /// A validity whose end does not come after its start holds at no instant.
     EmptyValidity,
+    /// A search that is not an audit named no project: documents without an access list are
+    /// visible to their whole project, so without a project they would be visible to every
+    /// project's askers.
+    ProjectRequired,
+    /// A search across all projects that does not state its audit nature by carrying no time
+    /// rule ([`SearchFilter::audit_without_time`]).
+    AuditFilterRequired,
 }
 
 impl FilterError {
@@ -65,6 +72,8 @@ impl FilterError {
             Self::TooMany { .. } => "PTR_SEARCH_FILTER_TOO_MANY",
             Self::ControlCharacter { .. } => "PTR_SEARCH_FILTER_CONTROL_CHARACTER",
             Self::EmptyValidity => "PTR_SEARCH_FILTER_EMPTY_VALIDITY",
+            Self::ProjectRequired => "PTR_SEARCH_FILTER_PROJECT_REQUIRED",
+            Self::AuditFilterRequired => "PTR_SEARCH_FILTER_AUDIT_REQUIRED",
         }
     }
 }
@@ -93,6 +102,10 @@ impl fmt::Display for FilterError {
                 write!(formatter, "{field} holds a control character")
             }
             Self::EmptyValidity => formatter.write_str("the validity ends no later than it starts"),
+            Self::ProjectRequired => formatter.write_str("project required"),
+            Self::AuditFilterRequired => {
+                formatter.write_str("a search across all projects needs the audit filter")
+            }
         }
     }
 }
