@@ -28,19 +28,43 @@
 //! routed to a wrong pod, or to any pod when the probe names none), each also as an integer
 //! permille rounded down. The harness only measures; `criteria.toml` judges, and the experiment
 //! stays `planned` until its preregistration is frozen.
+//!
+//! The `reflex` block is a second and a third claim, kept apart from the routing comparison: the
+//! `learned` router is put behind the runtime's real failover path (a fallback plan naming the
+//! lexically smallest pod as the default, whose generation the lifecycle holds live) and every
+//! probe is dispatched as a Pod request. `reflex_failover_coverage` is the mechanism (every miss
+//! of the learned router is caught by the default pod); `reflex_dispatch_hits` is the benefit
+//! (the dispatches the learned router makes itself are correct more often than sending every
+//! request to the default). Neither is read from the routing arms, and a block that exercised
+//! nothing (no miss, no hit) is reported as such so the criteria call the seed INVALID instead of
+//! passing it.
 
+use ptr_config::PtrConfig;
+use ptr_ledger::LedgerEvent;
+use ptr_model_api::{
+    InferenceBackend, ModelError, ModelEvent, ModelRequest, ModelResumeRequest,
+    ResumableInferenceBackend,
+};
 use ptr_pods::{DynPod, PodManifest, PodRegistry};
 use ptr_protocol::TypedPayload;
 use ptr_router::{
-    route_checked, DecisionNonce, EncoderRef, LearnedPodRouter, LearnedRouterConfig,
-    PodRepresentation, PodRepresentationParts, PodRouter, RepresentationStore, RouteError,
-    RouteFeatures, RouteRequest, Router, SamplingKey,
+    route_checked, CheckedRouter, DecisionNonce, EncoderRef, FallbackPlan, LearnedPodRouter,
+    LearnedRouterConfig, NonceSequence, PodRepresentation, PodRepresentationParts, PodRouter,
+    RepresentationStore, RouteError, RouteFeatures, RouteRequest, RoutedChoice, RoutedError,
+    Router, SamplingKey,
 };
-use ptr_types::{CapabilityId, Effect, PodId, ProjectId, RequestId, TypeId};
+use ptr_runtime::{pod_lifecycle_target, PodSampler, PtrRuntime, RouteQuery, SetFallbackPlan};
+use ptr_types::{
+    CapabilityId, CapsuleId, Effect, Generation, NamespaceId, PodAddress, PodId,
+    PodRevisionAddress, Probability, ProjectId, RequestId, TypeId, VerificationLevel,
+};
+use ptr_verifier::{VerificationReport, VerificationStatus, Verifier};
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
+use std::sync::Mutex;
 
 /// The preregistered thresholds of the `learned` arm, in permille. They restate
 /// `LearnedRouterConfig::default()` and `config.toml`'s `abstain_below_permille` and
@@ -395,6 +419,7 @@ fn run_seed(seed: u64, smoke: bool) -> Result<Value, String> {
     let (mut cosine_tally, mut constant_tally, mut oracle_tally) =
         (Tally::default(), Tally::default(), Tally::default());
     let mut sweep_tallies = vec![Tally::default(); SWEEP.len()];
+    let mut reflex_probes: Vec<ReflexProbe> = Vec::new();
     for (index, probe) in world["probes"]
         .as_array()
         .ok_or("probes missing")?
@@ -407,6 +432,11 @@ fn run_seed(seed: u64, smoke: bool) -> Result<Value, String> {
             .with_vector(query.clone())
             .map_err(|error| error.to_string())?;
         let request_id = RequestId::from(format!("probe-{index}").as_str());
+        reflex_probes.push(ReflexProbe {
+            request_id: request_id.0.clone(),
+            vector: query.clone(),
+            label: label.clone(),
+        });
         let request = RouteRequest {
             registry: &registry,
             project: &project,
@@ -440,6 +470,22 @@ fn run_seed(seed: u64, smoke: bool) -> Result<Value, String> {
         oracle_tally.record(label.as_ref(), &ceiling);
     }
 
+    let reflex = reflex_pass(
+        learned_router(
+            &encoder,
+            &representations,
+            ABSTAIN_BELOW_PERMILLE,
+            MIN_MARGIN_PERMILLE,
+        )?,
+        &registry,
+        &project,
+        &reflex_probes,
+        // The baseline of the dispatch claim: description cosine answers every probe.
+        DispatchBaseline {
+            correct: cosine_tally.correct,
+            dispatches: cosine_tally.probes,
+        },
+    )?;
     let sweep_report: Vec<Value> = SWEEP
         .iter()
         .zip(&sweep_tallies)
@@ -475,6 +521,7 @@ fn run_seed(seed: u64, smoke: bool) -> Result<Value, String> {
             "oracle": oracle_tally.metrics(),
         },
         "sweep": sweep_report,
+        "reflex": reflex,
         // Signed, rounded down: the primary criterion reads these as integers.
         "accuracy_gap_permille": gap_permille(
             learned_tally.correct,
@@ -489,6 +536,247 @@ fn run_seed(seed: u64, smoke: bool) -> Result<Value, String> {
         "learned_accuracy_above_cosine": accuracy(&learned_tally) > accuracy(&cosine_tally),
         "learned_false_route_not_above_cosine":
             false_rate(&learned_tally) <= false_rate(&cosine_tally),
+    }))
+}
+
+/// What the reflex pass needs of one probe: the query vector the learned router sees and the
+/// pod the probe names (if any).
+struct ReflexProbe {
+    request_id: String,
+    vector: Vec<f32>,
+    label: Option<PodId>,
+}
+
+/// The learned router behind the runtime's trusted routing path. The runtime asks it for the
+/// request features; here those are the probe's query vector, looked up by request id (PTR has no
+/// Rust encoder: the host supplies the embedding, and in this harness the world file does).
+struct HarnessSampler {
+    router: CheckedRouter<LearnedPodRouter>,
+    vectors: BTreeMap<String, Vec<f32>>,
+    /// The pod the router chose, by request id.
+    routed: Mutex<BTreeMap<String, PodId>>,
+}
+
+impl PodSampler for HarnessSampler {
+    fn route(&self, request: &RouteRequest<'_>) -> Result<Option<RoutedChoice>, RoutedError> {
+        let choice = self.router.route(request)?;
+        if let (Some(choice), Ok(mut routed)) = (&choice, self.routed.lock()) {
+            routed.insert(request.request_id.0.clone(), choice.route().pod_id.clone());
+        }
+        Ok(choice)
+    }
+
+    fn key_id(&self) -> [u8; 8] {
+        self.router.key_id()
+    }
+
+    fn features(&self, query: &RouteQuery<'_>) -> Result<RouteFeatures, RouteError> {
+        let vector = self
+            .vectors
+            .get(&query.request_id.0)
+            .cloned()
+            .ok_or_else(|| RouteError::InvalidFeatures {
+                message: "no query vector for the request".into(),
+            })?;
+        RouteFeatures::new().with_vector(vector)
+    }
+}
+
+/// Asks for one Pod of the experiment's capability and finishes after its answer.
+struct AskOnce;
+
+impl InferenceBackend for AskOnce {
+    fn name(&self) -> &'static str {
+        "r015-ask"
+    }
+
+    fn infer(&self, _: &ModelRequest) -> Result<Vec<ModelEvent>, ModelError> {
+        Ok(vec![ModelEvent::PodRequested {
+            capability: CapabilityId::from("answer"),
+            input_type: TypeId::from("Text"),
+            payload: b"probe".to_vec(),
+        }])
+    }
+}
+
+impl ResumableInferenceBackend for AskOnce {
+    fn resume(&self, _: &ModelResumeRequest) -> Result<Vec<ModelEvent>, ModelError> {
+        Ok(vec![ModelEvent::Finished])
+    }
+}
+
+/// The probe pods are echoes: every answer passes.
+struct AcceptAll;
+
+impl Verifier<TypedPayload> for AcceptAll {
+    fn verify(&self, _: &TypedPayload) -> VerificationReport {
+        VerificationReport {
+            status: VerificationStatus::Pass,
+            level: VerificationLevel::Deterministic,
+            score: Probability::new(1.0).expect("one is a probability"),
+            findings: vec![],
+        }
+    }
+}
+
+/// What the baseline of the dispatch claim got right, and how many dispatches it made.
+struct DispatchBaseline {
+    correct: u64,
+    dispatches: u64,
+}
+
+impl DispatchBaseline {
+    /// `learned_correct / learned_dispatches - correct / dispatches` in permille, rounded down
+    /// (towards minus infinity); 0 when either side made no dispatch.
+    fn precision_gap_permille(&self, learned_correct: u64, learned_dispatches: u64) -> i64 {
+        let denominator = i128::from(learned_dispatches) * i128::from(self.dispatches);
+        let numerator = i128::from(learned_correct) * i128::from(self.dispatches)
+            - i128::from(self.correct) * i128::from(learned_dispatches);
+        (numerator * 1000)
+            .checked_div_euclid(denominator)
+            .unwrap_or(0) as i64
+    }
+}
+
+/// The default pod's attempt budget: the routed attempt and the default.
+const REFLEX_MAX_ATTEMPTS: u8 = 2;
+
+/// Dispatches every probe as a Pod request through the real runtime, with the learned router in
+/// front and a fallback plan behind it, and reports what the reflex counters say. The default pod
+/// is the lexically smallest pod id, fixed before any run (`config.toml`).
+fn reflex_pass(
+    learned: LearnedPodRouter,
+    registry: &PodRegistry,
+    project: &ProjectId,
+    probes: &[ReflexProbe],
+    baseline: DispatchBaseline,
+) -> Result<Value, String> {
+    let default_pod = registry
+        .candidates(
+            project,
+            &CapabilityId::from("answer"),
+            &TypeId::from("Text"),
+        )
+        .into_iter()
+        .min()
+        .ok_or("the registry has no pod")?;
+    let revision = PodRevisionAddress {
+        address: PodAddress::new(
+            project.clone(),
+            NamespaceId::from("r015"),
+            default_pod.clone(),
+        )
+        .map_err(|error| format!("default pod address: {error:?}"))?,
+        semantic_revision: [1; 32],
+        generation: Generation(1),
+    };
+    let mut runtime = PtrRuntime::new(PtrConfig::default()).map_err(|e| format!("{e:?}"))?;
+    runtime
+        .commit(LedgerEvent::CapsuleCommitted {
+            project: project.0.as_str().into(),
+            capsule: CapsuleId::from(pod_lifecycle_target(&revision).as_str()),
+            generation: revision.generation,
+        })
+        .map_err(|error| format!("default pod lifecycle: {error:?}"))?;
+    runtime
+        .set_fallback_plan(SetFallbackPlan {
+            project: project.clone(),
+            capability: CapabilityId::from("answer"),
+            plan: FallbackPlan::new(Some(default_pod.clone()), REFLEX_MAX_ATTEMPTS)
+                .map_err(|error| error.to_string())?,
+            default_revision: Some(revision),
+        })
+        .map_err(|error| format!("fallback plan: {error:?}"))?;
+    let sampler = HarnessSampler {
+        router: CheckedRouter::new(
+            learned,
+            SamplingKey::from_bytes([0x15; 32]),
+            NonceSequence::starting_at([0x15; 8], 0),
+        ),
+        vectors: probes
+            .iter()
+            .map(|probe| (probe.request_id.clone(), probe.vector.clone()))
+            .collect(),
+        routed: Mutex::new(BTreeMap::new()),
+    };
+
+    let (mut hits_correct, mut default_only_correct) = (0u64, 0u64);
+    for probe in probes {
+        let hits_before = runtime.reflex_counters().hits();
+        // A refused request (nothing covered it) is a counted miss, not a harness failure.
+        let _ = runtime.run_resumable_with_pods_using_router(
+            RequestId::from(probe.request_id.as_str()),
+            project,
+            "probe",
+            &AskOnce,
+            registry,
+            &sampler,
+            &AcceptAll,
+            2,
+        );
+        if probe.label.as_ref() == Some(&default_pod) {
+            default_only_correct += 1;
+        }
+        // A hit is the learned router's own dispatch; it is correct when the probe names that pod.
+        if runtime.reflex_counters().hits() > hits_before {
+            let routed = sampler
+                .routed
+                .lock()
+                .map_err(|_| "routed-pod record poisoned".to_owned())?
+                .get(&probe.request_id)
+                .cloned();
+            if routed.is_some() && routed == probe.label {
+                hits_correct += 1;
+            }
+        }
+    }
+
+    let counters = runtime.reflex_counters();
+    let misses = counters.misses();
+    let failovers = counters.failovers();
+    let miss_reasons: BTreeMap<&str, u64> = counters
+        .miss_reasons()
+        .iter()
+        .map(|(reason, count)| (reason.code(), *count))
+        .collect();
+    let uncovered_reasons: BTreeMap<&str, u64> = counters
+        .uncovered_reasons()
+        .iter()
+        .map(|(reason, count)| (reason.code(), *count))
+        .collect();
+    Ok(json!({
+        "default_pod": default_pod.to_string(),
+        "max_attempts": REFLEX_MAX_ATTEMPTS,
+        "requests": probes.len(),
+        "dispatch_hits": counters.hits(),
+        "misses": misses,
+        "failovers": failovers,
+        "rejected": counters.rejected(),
+        "uncovered": counters.uncovered(),
+        "inconsistent": counters.inconsistent(),
+        "miss_reasons": miss_reasons,
+        "uncovered_reasons": uncovered_reasons,
+        // The mechanism claim: the share of misses the default pod caught, permille rounded
+        // down. With no miss the rate is 0 and `misses` fails the coverage rule: a failover
+        // path that was never exercised is not a pass.
+        "failover_coverage_permille": Tally::permille(failovers, misses),
+        "all_misses_covered": counters.all_misses_covered(),
+        // The benefit claim: of the dispatches the learned router makes itself (the hits), the
+        // share that went to the pod the probe names, against the same share for description
+        // cosine, which dispatches every probe. Signed permille of the difference, rounded down.
+        // With no hit the precision is 0 and `dispatch_hits` fails the coverage rule: a router
+        // that never dispatched is not a pass.
+        "dispatch_hits_correct": hits_correct,
+        "dispatch_precision_permille": Tally::permille(hits_correct, counters.hits()),
+        "baseline_precision_permille": Tally::permille(baseline.correct, baseline.dispatches),
+        "dispatch_precision_gap_permille": baseline.precision_gap_permille(
+            hits_correct,
+            counters.hits(),
+        ),
+        // Reported, not judged: what sending every labelled probe to the default would get right.
+        "default_only_correct": default_only_correct,
+        "latency_samples": counters.latency().len(),
+        "latency_failed": counters.latency().failed(),
     }))
 }
 
@@ -592,6 +880,11 @@ mod tests {
         for expected in [
             line("abstain_below_permille", ABSTAIN_BELOW_PERMILLE.to_string()),
             line("abstain_margin_permille", MIN_MARGIN_PERMILLE.to_string()),
+            line("reflex_max_attempts", REFLEX_MAX_ATTEMPTS.to_string()),
+            line(
+                "reflex_default_pod_rule",
+                "\"lexically-smallest-pod-id\"".into(),
+            ),
             line(
                 "sweep_abstain_below_permille",
                 list(SWEEP.iter().map(|pair| pair.0).collect()),
@@ -609,6 +902,46 @@ mod tests {
             f64::from(ABSTAIN_BELOW_PERMILLE) / 1000.0
         );
         assert_eq!(default.min_margin, f64::from(MIN_MARGIN_PERMILLE) / 1000.0);
+    }
+
+    #[test]
+    fn the_dispatch_precision_gap_rounds_towards_minus_infinity_and_needs_dispatches() {
+        let baseline = DispatchBaseline {
+            correct: 1,
+            dispatches: 3,
+        };
+        // 2/2 against 1/3: 666.67 permille, rounded down.
+        assert_eq!(baseline.precision_gap_permille(2, 2), 666);
+        // 0/3 against 1/3: -333.33 rounds to -334.
+        assert_eq!(baseline.precision_gap_permille(0, 3), -334);
+        assert_eq!(baseline.precision_gap_permille(1, 3), 0);
+        // No dispatch of the learned router: no precision, so no gap (the coverage rule fails).
+        assert_eq!(baseline.precision_gap_permille(0, 0), 0);
+    }
+
+    #[test]
+    fn every_reflex_reference_of_the_criteria_is_a_key_the_harness_prints() {
+        let criteria = include_str!(
+            "../../../../experiments/runtime/R015-dragonfly-pod-addressing/criteria.toml"
+        );
+        let source = include_str!("r015.rs");
+        let keys: Vec<&str> = criteria
+            .lines()
+            .filter(|line| !line.trim_start().starts_with('#'))
+            .flat_map(|line| line.split('"'))
+            .filter_map(|token| {
+                token
+                    .split_whitespace()
+                    .find_map(|t| t.strip_prefix("reflex."))
+            })
+            .collect();
+        assert!(!keys.is_empty(), "the criteria name no reflex key");
+        for key in keys {
+            assert!(
+                source.contains(&format!("\"{key}\":")),
+                "criteria.toml reads reflex.{key} but the harness does not print it"
+            );
+        }
     }
 
     #[test]

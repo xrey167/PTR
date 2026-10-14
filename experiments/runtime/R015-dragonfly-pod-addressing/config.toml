@@ -36,6 +36,11 @@ abstain_margin_permille = 150
 # fixed before any confirmatory run. The sweep is reported, never used to pick a threshold.
 sweep_abstain_below_permille = [400, 500, 600, 500]
 sweep_min_margin_permille = [100, 150, 200, 300]
+# The reflex claims (PREREGISTRATION.md 4a): the learned router runs behind the runtime's failover path,
+# with the lexically smallest pod id as the default pod and at most this many dispatch attempts per
+# request (the routed attempt and the default). Fixed before any run.
+reflex_default_pod_rule = "lexically-smallest-pod-id"
+reflex_max_attempts = 2
 # How far below the cosine baseline's routing_accuracy the learned router may fall and still count.
 # Derived from the plan, not from data: no margin. The criterion is routing_accuracy >= cosine_only
 # and false_route_rate < cosine_only on every confirmatory seed.

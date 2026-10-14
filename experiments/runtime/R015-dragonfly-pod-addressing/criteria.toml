@@ -49,3 +49,45 @@ falsifiers = [
   "accuracy_gap_permille >= 0",
   "false_route_gap_permille >= 1",
 ]
+
+# Claims 2 and 3 (reflex). They are separate claims, judged on their own: a seed that is INVALID or
+# failing for one of them says nothing about the routing claim above or about the other, and none of
+# them can rescue or sink another. The rules read `reflex.*` of the same JSON object (the harness puts
+# the learned router behind the runtime's real failover path: a fallback plan naming the lexically
+# smallest pod as default, whose generation the lifecycle holds live; every probe is a Pod request).
+#
+# Both are guarded against the vacuous pass that a counter check gives at zero: "every miss was caught"
+# is true when there was no miss, and "the router dispatched" is meaningless when it never did. A seed
+# in which the path was not exercised is INVALID, not a pass.
+#
+# Claim 2, `reflex_failover_coverage` (mechanism): every miss of the learned router (an abstention or a
+# pod without a learned address) is caught by the default pod, which serves it through the same
+# verifier path. It says the plumbing holds; it says nothing about the default answering correctly (a
+# probe that names no pod is "served" by the default too). The faults the runtime must refuse a
+# failover for (revoked or superseded default, default outside the registry, effect beyond read, a
+# verifier contradiction) are held by `crates/ptr-runtime/tests/reflex.rs`, not by this harness.
+[claims.reflex_failover_coverage]
+coverage = [
+  "reflex.requests == probes",
+  "reflex.misses >= 1",
+  "reflex.inconsistent <= 0",
+]
+falsifiers = [
+  "reflex.failover_coverage_permille >= 1000",
+]
+
+# Claim 3, `reflex_dispatch_hits` (benefit): of the dispatches the learned router makes itself, the
+# share that went to the pod the probe names is above the same share for description cosine, which
+# dispatches every probe (the baseline is the best non-learned router of the experiment, not the
+# constant-score floor and not "send everything to the default"). The count of correct dispatches
+# against the default alone (`reflex.default_only_correct`) and the counters of the failover path are
+# reported, not judged.
+[claims.reflex_dispatch_hits]
+coverage = [
+  "reflex.requests == probes",
+  "reflex.dispatch_hits >= 1",
+  "reflex.inconsistent <= 0",
+]
+falsifiers = [
+  "reflex.dispatch_precision_gap_permille >= 1",
+]
