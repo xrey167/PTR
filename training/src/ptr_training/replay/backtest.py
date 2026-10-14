@@ -39,6 +39,7 @@ import json
 import math
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Any
 
 MAX_GENERATIONS = 256
@@ -212,9 +213,11 @@ class HistoryPool:
             Generation(
                 name=name,
                 order=order,
-                decisions=dict(decisions),
-                outcome=dict(outcome),
-                levels=levels,
+                # Read-only views over private copies: neither the caller's dicts nor a
+                # generation handed out by ``generations`` can change the history afterwards.
+                decisions=MappingProxyType(dict(decisions)),
+                outcome=MappingProxyType(dict(outcome)),
+                levels=MappingProxyType(levels),
             )
         )
 

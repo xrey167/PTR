@@ -31,7 +31,7 @@ use crate::{
     InferenceBackend, ModelError, ModelEvent, ModelRequest, ModelResumeRequest,
     ResumableInferenceBackend,
 };
-use ptr_types::{Generation, RequestId, Timestamp};
+use ptr_types::{Generation, Timestamp};
 use std::fmt;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -261,43 +261,9 @@ impl fmt::Debug for Job {
     }
 }
 
-/// The most request ids whose scoped key is remembered for a later `resume`.
-const MAX_REMEMBERED_KEYS: usize = 4096;
-
-/// The scoped keys of recent requests by id, oldest evicted first, so a `resume` is held to the
-/// key its `infer` was admitted under.
-#[derive(Default)]
-struct RememberedKeys {
-    order: std::collections::VecDeque<RequestId>,
-    keys: std::collections::HashMap<RequestId, BatchKey>,
-}
-
-impl RememberedKeys {
-    /// Whether `id` is bound to a scope other than `key`.
-    fn conflicts(&self, id: &RequestId, key: &BatchKey) -> bool {
-        self.keys.get(id).is_some_and(|bound| bound != key)
-    }
-
-    /// Bind `id` to `key`. An existing binding is never replaced: callers check
-    /// [`RememberedKeys::conflicts`] first, and the same scope again changes nothing.
-    fn remember(&mut self, id: RequestId, key: BatchKey) {
-        if self.keys.contains_key(&id) {
-            return;
-        }
-        if self.order.len() >= MAX_REMEMBERED_KEYS {
-            if let Some(oldest) = self.order.pop_front() {
-                self.keys.remove(&oldest);
-            }
-        }
-        self.keys.insert(id.clone(), key);
-        self.order.push_back(id);
-    }
-}
-
 struct State {
     queue: BatchQueue<Job>,
     closed: bool,
-    remembered: RememberedKeys,
 }
 
 struct Shared<B> {
@@ -362,7 +328,6 @@ impl<B: BatchInferenceBackend + 'static> AdaptiveBatcher<B> {
             state: Mutex::new(State {
                 queue: BatchQueue::new(policy),
                 closed: false,
-                remembered: RememberedKeys::default(),
             }),
             wake: Condvar::new(),
             counters: Counters::default(),
@@ -370,7 +335,12 @@ impl<B: BatchInferenceBackend + 'static> AdaptiveBatcher<B> {
         let worker_shared = Arc::clone(&shared);
         let worker = std::thread::Builder::new()
             .name("ptr-batcher".into())
-            .spawn(move || run_worker(&worker_shared))
+            .spawn(move || {
+                // Whatever ends the worker, nobody may be left waiting on a queue it no longer
+                // serves: the batcher closes and every queued caller is answered.
+                let _ = catch_unwind(AssertUnwindSafe(|| run_worker(&worker_shared)));
+                close_and_drain(&worker_shared);
+            })
             .map_err(|error| BatchError::SpawnFailed(error.to_string()))?;
         Ok(Self {
             shared,
@@ -415,28 +385,15 @@ impl<B: BatchInferenceBackend + 'static> AdaptiveBatcher<B> {
             if state.closed {
                 return Err(ModelError::closed());
             }
-            // A request id keeps the scope it was first admitted under: a second admission under
-            // another scope is refused, not allowed to take the binding over.
-            if state
-                .remembered
-                .conflicts(&request.request_id, &admission.key)
-            {
-                return Err(ModelError::duplicate_request());
-            }
             let job = Job {
                 request: request.clone(),
                 reply,
             };
-            let key = admission.key.clone();
             match state
                 .queue
                 .push(admission.key, deadline, admission.cancel, job, now)
             {
-                Ok(()) => {
-                    // Bound only once the request is admitted: a refused one leaves no binding.
-                    state.remembered.remember(request.request_id.clone(), key);
-                    bump(&counters.accepted, 1);
-                }
+                Ok(()) => bump(&counters.accepted, 1),
                 Err(QueueFull) => {
                     bump(&counters.overloaded, 1);
                     return Err(ModelError::overloaded());
@@ -464,11 +421,7 @@ impl<B: BatchInferenceBackend + 'static> AdaptiveBatcher<B> {
     where
         B: ResumableInferenceBackend,
     {
-        let admitted = match &self.shared.gate {
-            Some(gate) => gate.admits(key),
-            None => key.adapter.is_none(),
-        };
-        if !admitted {
+        if !gate_admits(&self.shared, key) {
             bump(&self.shared.counters.revoked, 1);
             return Err(ModelError::revoked());
         }
@@ -534,28 +487,36 @@ impl<B: BatchInferenceBackend + 'static> InferenceBackend for AdaptiveBatcher<B>
 impl<B: BatchInferenceBackend + ResumableInferenceBackend + 'static> ResumableInferenceBackend
     for AdaptiveBatcher<B>
 {
-    /// A resume carries its whole observation, so it is not batched: it goes straight to the
-    /// backend, after the gate has admitted the key its request was admitted under (remembered
-    /// by request id for the most recent 4096 requests). A generation revoked since the `infer`
-    /// stops the resume. A request id this batcher does not remember (never seen here, or
-    /// evicted) is refused with [`ModelError::revoked`]: there is no scope to ask the gate
-    /// about, and an unscoped key must never stand in for it. A caller that knows the scope
-    /// uses [`AdaptiveBatcher::resume_with`].
+    /// A resume without a scope. A request id says nothing about the scope it was admitted
+    /// under, and the batcher keeps no such binding, so this form is only for a batcher built
+    /// without a gate (which serves no adapter at all): it runs the unscoped key. With a gate
+    /// configured it is refused with [`ModelError::revoked`]; a caller that serves adapters
+    /// resumes through [`AdaptiveBatcher::resume_with`] with the key it holds.
     fn resume(&self, request: &ModelResumeRequest) -> Result<Vec<ModelEvent>, ModelError> {
-        let key = self
-            .shared
-            .lock()
-            .remembered
-            .keys
-            .get(&request.request_id)
-            .cloned();
-        match key {
-            Some(key) => self.resume_with(request, &key),
-            None => {
-                bump(&self.shared.counters.revoked, 1);
-                Err(ModelError::revoked())
-            }
+        if self.shared.gate.is_some() {
+            bump(&self.shared.counters.revoked, 1);
+            return Err(ModelError::revoked());
         }
+        self.resume_with(request, &BatchKey::unscoped())
+    }
+}
+
+/// Whether `key` may run now. A gate that panics has not admitted it: the answer is a refusal,
+/// counted with the other revocations, and the worker and the caller carry on.
+fn gate_admits<B>(shared: &Shared<B>, key: &BatchKey) -> bool {
+    match &shared.gate {
+        Some(gate) => catch_unwind(AssertUnwindSafe(|| gate.admits(key))).unwrap_or(false),
+        None => key.adapter.is_none(),
+    }
+}
+
+/// Close the batcher and answer everything still queued. Run when the worker ends, however it
+/// ends, so a caller never waits on a queue nothing serves.
+fn close_and_drain<B>(shared: &Shared<B>) {
+    let mut state = shared.lock();
+    state.closed = true;
+    for entry in state.queue.drain() {
+        answer(entry, Err(ModelError::closed()));
     }
 }
 
@@ -613,10 +574,9 @@ fn run_batch<B: BatchInferenceBackend + 'static>(shared: &Shared<B>, batch: Vec<
     let counters = &shared.counters;
     // Asked for every batch, at the moment of use. Without a gate only a key that names no
     // adapter can have been queued; anything else is refused here as well.
-    let admitted = batch.first().is_some_and(|first| match &shared.gate {
-        Some(gate) => gate.admits(&first.key),
-        None => first.key.adapter.is_none(),
-    });
+    let admitted = batch
+        .first()
+        .is_some_and(|first| gate_admits(shared, &first.key));
     if !admitted {
         bump(&counters.revoked, batch.len());
         for entry in batch {

@@ -419,26 +419,6 @@ fn a_key_naming_an_adapter_is_refused_when_no_gate_vouches_for_it() {
     assert!(batcher.infer(&request("plain")).is_ok());
 }
 
-#[test]
-fn a_resume_is_stopped_by_a_closed_gate() {
-    use ptr_model_api::{ReferenceEchoBackend, ResumableInferenceBackend};
-    let gate = Arc::new(SwitchGate(AtomicBool::new(true)));
-    let batcher = AdaptiveBatcher::with_parts(
-        Arc::new(ReferenceEchoBackend),
-        policy(1, 0, 4),
-        Arc::new(SystemClock),
-        Some(Arc::clone(&gate) as Arc<dyn BatchGate>),
-    )
-    .expect("built");
-    batcher.infer(&request("r")).expect("served");
-    assert!(batcher.resume(&common::resume_request("r")).is_ok());
-    gate.0.store(false, Ordering::SeqCst);
-    assert_eq!(
-        batcher.resume(&common::resume_request("r")),
-        Err(ModelError::revoked())
-    );
-}
-
 /// Admits everything except one project once it is revoked; the unscoped key stays admitted.
 struct RevocableProject {
     revoked: AtomicBool,
@@ -459,33 +439,6 @@ fn echo_batcher(gate: Arc<dyn BatchGate>) -> AdaptiveBatcher<ptr_model_api::Refe
         Some(gate),
     )
     .expect("built")
-}
-
-#[test]
-fn a_resume_is_held_to_the_scoped_key_its_request_was_admitted_under() {
-    use ptr_model_api::ResumableInferenceBackend;
-    let gate = Arc::new(RevocableProject {
-        revoked: AtomicBool::new(false),
-        project: "p",
-    });
-    let batcher = echo_batcher(Arc::clone(&gate) as Arc<dyn BatchGate>);
-    batcher
-        .infer_with(&request("r1"), keyed("p", "coder"))
-        .expect("served");
-    assert!(batcher.resume(&common::resume_request("r1")).is_ok());
-    // The generation is revoked after the first call. The unscoped key would still be admitted;
-    // the key the request was admitted under is not.
-    gate.revoked.store(true, Ordering::SeqCst);
-    assert_eq!(
-        batcher.resume(&common::resume_request("r1")),
-        Err(ModelError::revoked())
-    );
-    // A request the batcher never saw has no scope to ask the gate about: refused, and the
-    // unscoped key (still admitted) does not stand in for it.
-    assert_eq!(
-        batcher.resume(&common::resume_request("other")),
-        Err(ModelError::revoked())
-    );
 }
 
 #[test]
@@ -606,29 +559,6 @@ fn a_cancellation_that_lands_while_the_gate_decides_keeps_the_request_from_the_b
     assert_eq!(batcher.stats().cancelled, 1);
 }
 
-#[test]
-fn a_resume_whose_request_was_evicted_from_the_key_cache_is_refused() {
-    use ptr_model_api::ResumableInferenceBackend;
-    let batcher = echo_batcher(Arc::new(OpenGate));
-    batcher
-        .infer_with(&request("first"), keyed("p", "coder"))
-        .expect("served");
-    assert!(batcher.resume(&common::resume_request("first")).is_ok());
-    // 4096 other requests push the first one out of the bounded cache.
-    for n in 0..4096 {
-        batcher
-            .infer_with(&request(&format!("other-{n}")), keyed("p", "coder"))
-            .expect("served");
-    }
-    assert_eq!(
-        batcher.resume(&common::resume_request("first")),
-        Err(ModelError::revoked())
-    );
-    assert!(batcher
-        .resume(&common::resume_request("other-4095"))
-        .is_ok());
-}
-
 /// A backend whose resume panics.
 struct PanickingResume;
 
@@ -671,96 +601,169 @@ fn a_backend_panic_in_resume_fails_that_call_and_the_batcher_keeps_serving() {
 }
 
 #[test]
-fn a_request_id_cannot_be_rebound_to_another_scope_and_resume_keeps_the_original() {
+fn a_resume_is_stopped_by_a_closed_gate() {
+    let gate = Arc::new(SwitchGate(AtomicBool::new(true)));
+    let batcher = echo_batcher(Arc::clone(&gate) as Arc<dyn BatchGate>);
+    let scoped = key("coder");
+    assert!(batcher
+        .resume_with(&common::resume_request("r"), &scoped)
+        .is_ok());
+    gate.0.store(false, Ordering::SeqCst);
+    assert_eq!(
+        batcher.resume_with(&common::resume_request("r"), &scoped),
+        Err(ModelError::revoked())
+    );
+}
+
+#[test]
+fn a_resume_is_judged_under_the_key_the_caller_holds_and_never_under_a_request_id() {
     use ptr_model_api::ResumableInferenceBackend;
     let gate = Arc::new(RevocableProject {
         revoked: AtomicBool::new(false),
         project: "p",
     });
     let batcher = echo_batcher(Arc::clone(&gate) as Arc<dyn BatchGate>);
+    let scope_p = BatchKey {
+        project: Some("p".into()),
+        adapter: Some("coder".into()),
+        principal: None,
+        generation: Generation(1),
+    };
     batcher
         .infer_with(&request("r1"), keyed("p", "coder"))
         .expect("served");
-    // The same id under another project is refused, not allowed to take the binding.
-    assert_eq!(
-        batcher.infer_with(&request("r1"), keyed("q", "coder")),
-        Err(ModelError::duplicate_request())
-    );
-    // The same id under the same scope is the same request again.
     assert!(batcher
-        .infer_with(&request("r1"), keyed("p", "coder"))
+        .resume_with(&common::resume_request("r1"), &scope_p)
         .is_ok());
     gate.revoked.store(true, Ordering::SeqCst);
     assert_eq!(
-        batcher.resume(&common::resume_request("r1")),
+        batcher.resume_with(&common::resume_request("r1"), &scope_p),
         Err(ModelError::revoked()),
-        "resume still checks project p, the scope r1 was admitted under"
+        "the revoked generation is refused at this use"
+    );
+    // The unscoped form carries no scope and a gate is configured: refused, even for a project
+    // that is not revoked and even though the unscoped key itself would be admitted.
+    assert_eq!(
+        batcher.resume(&common::resume_request("r1")),
+        Err(ModelError::revoked())
     );
 }
 
-/// A backend that holds every call until the test lets it go, and can resume.
-struct HeldEcho {
-    latch: Arc<Latch>,
+#[test]
+fn reusing_or_evicting_request_ids_cannot_redirect_a_resume_to_another_scope() {
+    let gate = Arc::new(RevocableProject {
+        revoked: AtomicBool::new(false),
+        project: "p",
+    });
+    let batcher = echo_batcher(Arc::clone(&gate) as Arc<dyn BatchGate>);
+    let live = BatchKey {
+        project: Some("q".into()),
+        adapter: Some("coder".into()),
+        principal: None,
+        generation: Generation(1),
+    };
+    let doomed = BatchKey {
+        project: Some("p".into()),
+        ..live.clone()
+    };
+    // Many requests, one id reused under both scopes: the batcher keeps no id-to-scope table to
+    // fill, evict or overwrite.
+    for n in 0..5000 {
+        batcher
+            .infer_with(&request(&format!("r-{n}")), keyed("q", "coder"))
+            .expect("served");
+    }
+    batcher
+        .infer_with(&request("shared-id"), keyed("p", "coder"))
+        .expect("served");
+    batcher
+        .infer_with(&request("shared-id"), keyed("q", "coder"))
+        .expect("the same id under another scope is simply another request");
+    gate.revoked.store(true, Ordering::SeqCst);
+    let resume = common::resume_request("shared-id");
+    assert_eq!(
+        batcher.resume_with(&resume, &doomed),
+        Err(ModelError::revoked())
+    );
+    assert!(batcher.resume_with(&resume, &live).is_ok());
 }
 
-impl ptr_model_api::InferenceBackend for HeldEcho {
-    fn name(&self) -> &'static str {
-        "held-echo"
-    }
-
-    fn infer(&self, _request: &ptr_model_api::ModelRequest) -> Result<Vec<ModelEvent>, ModelError> {
-        self.latch.wait();
-        Ok(vec![ModelEvent::Finished])
-    }
+#[test]
+fn the_unscoped_resume_serves_only_a_batcher_without_a_gate() {
+    use ptr_model_api::{ReferenceEchoBackend, ResumableInferenceBackend};
+    let ungated =
+        AdaptiveBatcher::new(Arc::new(ReferenceEchoBackend), policy(1, 0, 4)).expect("built");
+    assert!(ungated.resume(&common::resume_request("r")).is_ok());
+    let gated = echo_batcher(Arc::new(OpenGate));
+    assert_eq!(
+        gated.resume(&common::resume_request("r")),
+        Err(ModelError::revoked())
+    );
 }
 
-impl ptr_model_api::BatchInferenceBackend for HeldEcho {}
+/// A gate that panics when asked.
+struct PanickingGate;
 
-impl ptr_model_api::ResumableInferenceBackend for HeldEcho {
-    fn resume(
-        &self,
-        _request: &ptr_model_api::ModelResumeRequest,
-    ) -> Result<Vec<ModelEvent>, ModelError> {
-        Ok(vec![ModelEvent::Finished])
+impl BatchGate for PanickingGate {
+    fn admits(&self, _key: &BatchKey) -> bool {
+        panic!("gate panics on purpose");
     }
 }
 
 #[test]
-fn a_refused_request_leaves_no_binding_behind() {
-    use ptr_model_api::ResumableInferenceBackend;
-    let latch = Arc::new(Latch::default());
+fn a_gate_that_panics_refuses_the_batch_and_the_worker_keeps_serving() {
+    let batcher = echo_batcher(Arc::new(PanickingGate));
+    for n in 0..3 {
+        assert_eq!(
+            batcher.infer_with(&request(&format!("r{n}")), keyed("p", "coder")),
+            Err(ModelError::revoked())
+        );
+    }
+    assert_eq!(batcher.stats().dispatched, 0);
+    assert_eq!(batcher.stats().revoked, 4 - 1);
+    assert_eq!(
+        batcher.resume_with(&common::resume_request("r"), &key("coder")),
+        Err(ModelError::revoked())
+    );
+}
+
+/// A clock that panics on the batcher's worker thread once armed.
+struct WorkerKillingClock {
+    armed: AtomicBool,
+}
+
+impl BatchClock for WorkerKillingClock {
+    fn now(&self) -> Timestamp {
+        if self.armed.load(Ordering::SeqCst) && std::thread::current().name() == Some("ptr-batcher")
+        {
+            panic!("the worker dies on purpose");
+        }
+        Timestamp(0)
+    }
+}
+
+#[test]
+fn a_dead_worker_closes_the_batcher_and_answers_every_waiting_caller() {
+    let clock = Arc::new(WorkerKillingClock {
+        armed: AtomicBool::new(false),
+    });
     let batcher = AdaptiveBatcher::with_parts(
-        Arc::new(HeldEcho {
-            latch: Arc::clone(&latch),
-        }),
-        policy(1, 0, 1),
-        Arc::new(SystemClock),
+        Arc::new(RecordingBackend::default()),
+        policy(2, 10_000, 8),
+        Arc::clone(&clock) as Arc<dyn BatchClock>,
         Some(Arc::new(OpenGate) as Arc<dyn BatchGate>),
     )
     .expect("built");
     std::thread::scope(|scope| {
         let batcher = &batcher;
-        let held = scope.spawn(move || batcher.infer_with(&request("held"), keyed("p", "coder")));
-        assert!(eventually(PATIENT, || batcher.stats().dispatched == 1));
-        let queued =
-            scope.spawn(move || batcher.infer_with(&request("queued"), keyed("p", "coder")));
+        // Waits for company that never comes (max_wait is long, the batch is not full).
+        let waiting = scope.spawn(move || batcher.infer(&request("waiting")));
         assert!(eventually(PATIENT, || batcher.queued() == 1));
-        // The queue is full: this request is refused and must leave nothing behind.
-        assert_eq!(
-            batcher.infer_with(&request("refused"), keyed("p", "coder")),
-            Err(ModelError::overloaded())
-        );
-        assert_eq!(
-            batcher.resume(&common::resume_request("refused")),
-            Err(ModelError::revoked()),
-            "no binding exists for a request that was never admitted"
-        );
-        // And the id is free to be admitted under any scope once there is room.
-        latch.open();
-        held.join().expect("thread").expect("served");
-        queued.join().expect("thread").expect("served");
-        assert!(batcher
-            .infer_with(&request("refused"), keyed("q", "coder"))
-            .is_ok());
+        clock.armed.store(true, Ordering::SeqCst);
+        // Waking the worker makes it read the clock, which kills it.
+        let second = scope.spawn(move || batcher.infer(&request("second")));
+        assert_eq!(waiting.join().expect("thread"), Err(ModelError::closed()));
+        assert_eq!(second.join().expect("thread"), Err(ModelError::closed()));
     });
+    assert_eq!(batcher.infer(&request("after")), Err(ModelError::closed()));
 }

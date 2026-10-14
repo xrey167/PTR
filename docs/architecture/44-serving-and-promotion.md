@@ -62,6 +62,12 @@ report digest); revocation adds a tombstone. A generation must advance, and a re
 again. `serving_adapter` and `check_adapter_use` read the lifecycle on every call, so a revocation, a supersession or
 a replay is seen at the next use (invariant 3). The runtime holds at most 4096 adapters.
 
+**KV entries follow the adapter.** A KV prefix entry recorded under an adapter depends on `KvDependency::adapter(key,
+generation, digest)`, where the identity is the lifecycle key. Committing `AdapterPromoted` supersedes the adapter
+dependencies under that key below the promoted generation, and `AdapterRevoked` invalidates exactly the revoked
+generation; both cancel pinned forks and retire the entries, scoped to the adapter kind so no other kind or other
+adapter key is touched. `ImprovementCycleRecorded` invalidates nothing.
+
 **Limits.**
 
 - No compacted snapshot layout carries the bindings or the cycle counts. `export_compacted_snapshot` refuses while
@@ -147,11 +153,12 @@ simulator training happens in PTR until `predictive` has been true on a real gen
   nobody knows.
 - **Generation at use (invariant 3).** A `BatchGate` is asked about the key of every batch immediately before the model
   runs; a revoked generation is refused at that use (`ModelError::revoked()`), not only when it was queued. A key that
-  names an adapter is refused when the batcher was built without a gate (there is no admit-all default). A `resume`
-  passes the gate under the scoped key its request was admitted under (bound by request id when the request is
-  admitted, for the most recent 4096 requests; an id keeps its first scope, a second admission under another scope is
-  refused as a duplicate, and a refused request leaves no binding; an id the batcher does not remember is refused, never mapped to the unscoped key; `resume_with` takes
-  the key explicitly), with the same panic containment as a batch. Deadlines and cancellations are checked again after the gate, immediately before the backend call.
+  names an adapter is refused when the batcher was built without a gate (there is no admit-all default). A resume
+  passes the gate under the key the caller holds (`resume_with(request, key)`); the batcher keeps no request-id-to-scope
+  table, because an id is not a credential and a bounded table can be filled, evicted or overwritten. The unscoped
+  `resume` of the trait is served only by a batcher built without a gate (which serves no adapter) and is refused when a
+  gate is configured. A gate that panics has not admitted the key (refused as revoked, counted); a worker that ends for
+  any reason closes the batcher and answers every queued caller with `closed`. Resume has the same panic containment as a batch. Deadlines and cancellations are checked again after the gate, immediately before the backend call.
 - **Failure containment.** A backend panic or a wrong-length answer fails its batch and the batcher keeps serving; every
   caller gets exactly one answer, also on drop. Request text is never printed by `Debug`.
 

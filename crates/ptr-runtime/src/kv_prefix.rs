@@ -1299,6 +1299,20 @@ impl KvPrefixCatalog {
         self.take_retirements()
     }
 
+    /// Like [`Self::invalidate_inputs`] restricted to dependencies of `kind`: the exact
+    /// `(identity, generation)` pairs, and nothing of another kind that shares an identity.
+    pub fn invalidate_kind_inputs(
+        &mut self,
+        kind: KvDependencyKind,
+        invalidated: &BTreeSet<(String, Generation)>,
+    ) -> Vec<KvPrefixKey> {
+        let identities: BTreeSet<&str> = invalidated.iter().map(|(id, _)| id.as_str()).collect();
+        self.tombstone_matching(&identities, |dep| {
+            dep.kind == kind && invalidated.contains(&(dep.identity.clone(), dep.generation))
+        });
+        self.take_retirements()
+    }
+
     /// Tombstone every entry with an expert dependency. Used when an expert structural
     /// record cannot be decoded and its operands are therefore unknown (fail closed).
     pub fn invalidate_all_experts(&mut self) -> Vec<KvPrefixKey> {
@@ -2850,6 +2864,30 @@ pub(crate) fn invalidate_catalog_for_event(
         LedgerEvent::ExpertFenceCommitted { .. } => {
             catalog.invalidate_expert_fences(&crate::expert::expert_fence_epochs(event))
         }
+        // A promoted adapter generation supersedes every earlier one, and a revoked one is
+        // invalid exactly: entries recorded under the adapter's lifecycle key are retired now,
+        // before the lifecycle state moves, as for the other lifecycle events. The dependency
+        // identity of a promoted adapter is its lifecycle key (`KvDependency::adapter`).
+        LedgerEvent::AdapterPromoted {
+            project,
+            adapter,
+            generation,
+            ..
+        } => catalog.invalidate_kind_superseded(
+            KvDependencyKind::Adapter,
+            &BTreeMap::from([(crate::adapter::adapter_key(project, adapter), *generation)]),
+        ),
+        LedgerEvent::AdapterRevoked {
+            project,
+            adapter,
+            generation,
+            ..
+        } => catalog.invalidate_kind_inputs(
+            KvDependencyKind::Adapter,
+            &BTreeSet::from([(crate::adapter::adapter_key(project, adapter), *generation)]),
+        ),
+        // A cycle record changes no generation any entry depends on.
+        LedgerEvent::ImprovementCycleRecorded { .. } => return None,
         _ => return None,
     };
     Some(retire)

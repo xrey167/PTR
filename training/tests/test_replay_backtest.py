@@ -344,3 +344,24 @@ class RankingNeighbourhoodAndRangeTests(unittest.TestCase):
         self.assertEqual(simulator.limits["x"], (0.0, 2.0))
         self.assertEqual(simulator.extrapolation({"x": 0}), [])
         self.assertNotEqual(simulator.extrapolation({"x": 3}), [])
+
+
+class ImmutableHistoryTests(unittest.TestCase):
+    def test_a_generation_taken_from_the_pool_cannot_be_edited(self):
+        pool = linear_pool()
+        before = pool.fingerprint()
+        generation = pool.generations[0]
+        for mapping in (generation.decisions, generation.outcome, generation.levels):
+            with self.assertRaises(TypeError):
+                mapping["x"] = None  # type: ignore[index]
+        self.assertEqual(pool.fingerprint(), before)
+
+    def test_the_callers_dicts_are_copied_on_the_way_in(self):
+        pool = HistoryPool()
+        decisions = {"x": 1}
+        pool.add_generation("g0", order=0, decisions=decisions, outcome=outcome(200))
+        before = pool.fingerprint()
+        decisions["x"] = 99
+        decisions["y"] = 3
+        self.assertEqual(pool.fingerprint(), before)
+        self.assertEqual(dict(pool.generations[0].decisions), {"x": 1})
