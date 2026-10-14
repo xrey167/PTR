@@ -4856,6 +4856,7 @@ name = "ptr-worker"
 version = "0.1.0"
 dependencies = [
  "ptr-pods",
+ "ptr-protocol",
  "ptr-types",
 ]
 
