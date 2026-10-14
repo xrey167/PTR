@@ -45,3 +45,8 @@ ptr-verifier = { workspace = true }
 name = "postgres"
 path = "tests/postgres.rs"
 required-features = ["postgres-backend"]
+
+[[test]]
+name = "search_filters"
+path = "tests/search_filters.rs"
+required-features = ["postgres-backend"]

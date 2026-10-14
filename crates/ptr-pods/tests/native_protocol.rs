@@ -58,6 +58,7 @@ fn request(link: PodLink, port: u16) -> NativeProtocolRequest {
             host: "127.0.0.1".into(),
             port,
         },
+        topic: None,
     }
 }
 
@@ -137,8 +138,12 @@ async fn udp_executor_round_trips_a_typed_datagram_and_rejects_unlisted_ports() 
             port.saturating_add(1),
         ))
         .await;
-    assert!(matches!(
-        rejected,
-        Err(ptr_pods::ProtocolError::InvalidEndpoint)
-    ));
+    assert_eq!(
+        rejected.unwrap_err(),
+        ptr_pods::ProtocolError::EgressRefused {
+            target: ptr_pods::redact_endpoint("127.0.0.1", port.saturating_add(1)),
+            reason: ptr_types::EgressRefusalReason::PortNotAllowed,
+        },
+        "an unlisted port is a policy decision and carries its reason and redacted target"
+    );
 }

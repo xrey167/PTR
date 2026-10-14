@@ -5,8 +5,9 @@ mod kv;
 mod retention;
 
 pub use context::{
-    compile_selected, compile_structured, CompiledContext, ContextCandidate, ContextCompileError,
-    ContextCompiler, ContextEntry, StructuredContextCompiler, TokenBudget,
+    compile_selected, compile_selected_at, compile_structured, compile_structured_at,
+    CompiledContext, ContextCandidate, ContextCompileError, ContextCompiler, ContextEntry,
+    StructuredContextCompiler, TokenBudget,
 };
 pub use ingestion::{
     BasicKnowledgeObjectBuilder, DeterministicEntityExtractor, DeterministicTokenizer, Entity,

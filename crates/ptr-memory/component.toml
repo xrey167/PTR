@@ -1,9 +1,13 @@
 version = 1
 id = "ptr-memory"
 maturity = "scaffold"
-last_reviewed = "2026-10-03"
+last_reviewed = "2026-10-13"
 
 implemented = [
+  "KnowledgeObject::digest and content_digest hash length-prefixed, count-prefixed fields and a fixed binary validity (presence byte and two u64), so no choice of strings in a retrieval key, relation or provenance note can make two different objects collide; digests differ from those of earlier builds (nothing committed pins them)",
+  "KnowledgeStore::register_object and admit_object refuse an object whose validity ends no later than it starts (KnowledgeStoreError::InvalidValidity)",
+  "compile_structured_at / compile_selected_at (and MemoryController::compile_at / compile_candidates_at) leave out objects whose validity does not hold at the instant the context is compiled for and count them in CompiledContext::omitted_expired; the old compile_structured / compile_selected are the documented audit path with no time rule",
+  "KnowledgeObject.validity (KnowledgeValidity) and is_valid_at; the content digest includes a bounded validity and is unchanged for an unbounded one",
   "MemoryClass taxonomy",
   "SemanticCapsule with lifecycle/provenance/goal/constraint/known/hypothesis/unknown/relation fields",
   "VerifiedProcedure scaffold with replay_verified flag",
@@ -51,6 +55,10 @@ decisions = [
 ]
 
 checks = [
+  "tests/retention.rs: text_that_looks_like_another_field_cannot_collide_with_it",
+  "tests/retention.rs: an object whose validity ends no later than it starts is refused at admission",
+  "tests/retention.rs: an expired object is left out of a context compiled for an instant (half-open bounds, dependents of an omitted object refused, audit path unchanged)",
+  "tests/retention.rs: an object's validity is half-open and enters the digest only when bounded",
   "ptr-memory tests/retention.rs: raw_history_is_digest_checked_and_idempotent, raw_history_rejects_tampering_and_conflicting_reuse",
   "ptr-memory tests/retention.rs: knowledge_generation_is_immutable_and_context_digest_tracks_content, lifecycle_transition_does_not_mutate_immutable_generation_digest, invalidation_propagates_to_dependents, invalidation_is_not_archive, transition_to_invalidated_cascades_like_invalidate, reactivating_a_generation_keeps_its_recorded_demotion, activation_that_would_invalidate_itself_is_refused_without_side_effects",
   "ptr-memory tests/retention.rs: retention_preserves_pinned_objects, retention_drops_result_before_dropping_call, retention_rejects_duplicate_scores",

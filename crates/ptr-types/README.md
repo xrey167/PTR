@@ -9,11 +9,14 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `foundation`  
-**Last reviewed:** 2026-10-04  
-**Code footprint:** 8 Rust source files · 3031 nonblank source lines · 6 integration-test files · 77 test markers (`#[test]`, `#[tokio::test]`)
+**Last reviewed:** 2026-10-13  
+**Code footprint:** 8 Rust source files · 3162 nonblank source lines · 6 integration-test files · 77 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
+- RouteConstraints::validate and PodRoute::validate refuse a zero deadline (ResolveError::InvalidDeadline)
+- Timestamp documents that its unit is fixed by the owning field; PodRoute.deadline is Option<Timestamp>; EgressRefusalReason::TopicRequired
+- KnowledgeValidity: a half-open validity interval (valid_from <= now < valid_until, a missing bound open) with is_valid_at and is_well_formed; EgressRefusalReason with pinned codes and names; RouteConstraints.deadline carries the caller's absolute deadline into a resolved PodRoute
 - PodHeader::validate refuses a header whose placement_epoch or fencing_token is zero, as the runtime, the tunnel and the tier binding already do, and PodRoute::validate now refuses a zero placement_epoch as well as a zero fencing_token (previously only equality with the endpoint epoch was checked), so the one frame that carries both can no longer be the layer that lets an unfenced request through
 - CheckpointHeader carries a stored model artifact's identity: magic, an explicit format version, the model name, the codebook version, the whole assignment verbatim rather than a digest, the slot-encoding version, and the table widths the weights were built for; thirteen distinct refusals with no defaulting path
 - The header records the slot-encoding version because nothing else could: every other identity in it eventually shows up as a tensor shape, while an encoding produces the model's input and no parameters, so a checkpoint run under another definition has tensors that are the right shape all the way down
@@ -85,6 +88,9 @@
 
 ### Current automated checks
 
+- ptr-runtime/tests/directory.rs: a zero deadline is refused
+- route deadline None stays None (ptr-runtime/tests/directory.rs)
+- tests: KnowledgeValidity boundaries in ptr-search/tests/filter.rs; EgressRefusalReason codes pinned in the ptr-ledger tag-37 test; the route deadline in ptr-runtime/tests/directory.rs
 - A checkpoint header round-trips with its payload; every prefix of one is refused; trailing bytes, a short payload, an unknown format, an unknown or duplicated family name and a non-UTF-8 field are each refused with their own code
 - All thirteen refusals are checked for a distinct code and for rendering as that code, and the hand-written list is held to the enum by an exhaustive match, so a refusal a later build adds stops the test compiling rather than being left out of it unnoticed — which is how the encoding refusal was left out
 - An assignment moved at the very same codebook version is refused, with the intact header passing as the control; a table width that is not its family's cardinality is refused in both directions

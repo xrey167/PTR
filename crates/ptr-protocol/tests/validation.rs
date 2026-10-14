@@ -11,6 +11,7 @@ fn valid() -> PodCall {
             type_id: "Input".into(),
             payload: vec![1],
         }),
+        deadline_ms: None,
     }
 }
 
@@ -30,6 +31,19 @@ fn malformed_podwire_call_is_rejected() {
         Err(ProtocolError::MissingPayload)
     );
 
+    let mut call = valid();
+    call.deadline_ms = Some(0);
+    assert_eq!(CallFrame::try_from(call), Err(ProtocolError::ZeroDeadline));
+
     let parsed = CallFrame::try_from(valid()).unwrap();
     assert_eq!(parsed.call_id, "c");
+    assert_eq!(parsed.deadline, None);
+
+    let mut call = valid();
+    call.deadline_ms = Some(1_700_000_000_000);
+    let parsed = CallFrame::try_from(call).unwrap();
+    assert_eq!(
+        parsed.deadline,
+        Some(ptr_types::Timestamp(1_700_000_000_000))
+    );
 }

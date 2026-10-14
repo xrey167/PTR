@@ -1,6 +1,8 @@
 use ptr_memory::{KnowledgeKey, KnowledgeLifecycle, KnowledgeStore};
 use ptr_pods::{ArtifactCatalog, ArtifactError, ExecutionManifest, LineageBinding};
-use ptr_types::{Digest, Generation, IdentityContext, KnowledgeObjectId, PrincipalId, Revision};
+use ptr_types::{
+    Digest, Generation, IdentityContext, KnowledgeObjectId, PrincipalId, Revision, Timestamp,
+};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -9,6 +11,61 @@ pub struct ValidatedExecutionManifest {
     pub knowledge: Vec<KnowledgeKey>,
     pub artifacts: Vec<LineageBinding>,
     pub runtime_revision: Revision,
+}
+
+impl ValidatedExecutionManifest {
+    /// Re-check, at `now`, that every bound knowledge object still exists, is not invalidated
+    /// and holds. Admission checked this once; an object can expire (or be invalidated) before
+    /// a manifest that binds it is relied on, so the point of reliance asks again.
+    pub fn ensure_knowledge_valid_at(
+        &self,
+        knowledge: &KnowledgeStore,
+        now: Timestamp,
+    ) -> Result<(), RuntimeManifestError> {
+        for key in &self.knowledge {
+            ensure_closure_valid_at(knowledge, key, now)?;
+        }
+        Ok(())
+    }
+}
+
+/// The most objects one bound object's dependency closure may hold; a larger closure is
+/// refused rather than walked.
+pub const MAX_DEPENDENCY_CLOSURE: usize = 4096;
+
+/// Check, at `now`, that `root` and everything it depends on, transitively, exists, is not
+/// invalidated and holds. An expired dependency names itself in the error, so the caller sees
+/// which object ended.
+fn ensure_closure_valid_at(
+    knowledge: &KnowledgeStore,
+    root: &KnowledgeKey,
+    now: Timestamp,
+) -> Result<(), RuntimeManifestError> {
+    let mut seen = BTreeSet::new();
+    let mut pending = vec![root.clone()];
+    while let Some(key) = pending.pop() {
+        if !seen.insert(key.clone()) {
+            continue;
+        }
+        if seen.len() > MAX_DEPENDENCY_CLOSURE {
+            return Err(RuntimeManifestError::InvalidKnowledgeDependency { key: root.clone() });
+        }
+        let Some(object) = knowledge.object_at(&key) else {
+            return Err(RuntimeManifestError::MissingKnowledgeGeneration { key });
+        };
+        if object.lifecycle == KnowledgeLifecycle::Invalidated {
+            return Err(RuntimeManifestError::RevokedKnowledgeGeneration { key });
+        }
+        if !object.is_valid_at(now) {
+            return Err(RuntimeManifestError::ExpiredKnowledgeGeneration { key, now });
+        }
+        // The fan-out is bounded before it is taken, so `pending` never outgrows the bound.
+        if seen.len() + pending.len() + object.dependencies.len() > MAX_DEPENDENCY_CLOSURE {
+            return Err(RuntimeManifestError::InvalidKnowledgeDependency { key: root.clone() });
+        }
+        pending.extend(object.dependencies.iter().cloned());
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -21,6 +78,12 @@ pub enum RuntimeManifestError {
     },
     RevokedKnowledgeGeneration {
         key: KnowledgeKey,
+    },
+    /// A bound object's validity does not hold at the instant the manifest is admitted or
+    /// resolved (half-open: it has not started, or it has ended).
+    ExpiredKnowledgeGeneration {
+        key: KnowledgeKey,
+        now: Timestamp,
     },
     UnknownKnowledgeSource {
         key: KnowledgeKey,
@@ -429,6 +492,50 @@ pub trait RuntimeExecutionManifestResolver: Send + Sync {
     fn resolve(&self, digest: &Digest) -> Result<ValidatedExecutionManifest, RuntimeManifestError>;
 }
 
+/// The check a wire host makes, on every request, that an admitted manifest still holds at the
+/// instant it is used: the instant is the host's clock, in the unit the bound knowledge objects
+/// state their validity in. Whoever attaches a manifest registry to a host must supply one, so
+/// a host cannot serve a manifest without asking whether its knowledge has expired.
+pub trait ManifestValidity: Send + Sync {
+    fn ensure_valid_at(&self, digest: &Digest, now: Timestamp) -> Result<(), RuntimeManifestError>;
+}
+
+/// [`ManifestValidity`] over the runtime's manifest registry and its knowledge store: the
+/// manifest must be admitted and not revoked, and every object it binds must still exist, not
+/// be invalidated and hold at `now`.
+#[derive(Clone)]
+pub struct KnowledgeManifestValidity {
+    registry: std::sync::Arc<std::sync::RwLock<ExecutionManifestRegistry>>,
+    knowledge: std::sync::Arc<std::sync::RwLock<KnowledgeStore>>,
+}
+
+impl KnowledgeManifestValidity {
+    pub fn new(
+        registry: std::sync::Arc<std::sync::RwLock<ExecutionManifestRegistry>>,
+        knowledge: std::sync::Arc<std::sync::RwLock<KnowledgeStore>>,
+    ) -> Self {
+        Self {
+            registry,
+            knowledge,
+        }
+    }
+}
+
+impl ManifestValidity for KnowledgeManifestValidity {
+    fn ensure_valid_at(&self, digest: &Digest, now: Timestamp) -> Result<(), RuntimeManifestError> {
+        // A poisoned lock is a failed check, never a pass.
+        let registry = self
+            .registry
+            .read()
+            .map_err(|_| RuntimeManifestError::UnknownManifestDigest(*digest))?;
+        let knowledge = self
+            .knowledge
+            .read()
+            .map_err(|_| RuntimeManifestError::UnknownManifestDigest(*digest))?;
+        registry.resolve_at(digest, &knowledge, now).map(|_| ())
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct ExecutionManifestRegistry {
     admitted: BTreeMap<Digest, ValidatedExecutionManifest>,
@@ -485,6 +592,18 @@ impl ExecutionManifestRegistry {
         })
     }
 
+    /// Resolve for use at `now`: admitted, not revoked, and every bound object still holds.
+    pub fn resolve_at(
+        &self,
+        digest: &Digest,
+        knowledge: &KnowledgeStore,
+        now: Timestamp,
+    ) -> Result<ValidatedExecutionManifest, RuntimeManifestError> {
+        let resolved = self.resolve(digest)?;
+        resolved.ensure_knowledge_valid_at(knowledge, now)?;
+        Ok(resolved)
+    }
+
     pub fn is_revoked(&self, digest: &Digest) -> bool {
         self.revoked.contains_key(digest)
     }
@@ -507,6 +626,7 @@ pub fn validate_and_build(
     knowledge: &KnowledgeStore,
     artifacts: &dyn ArtifactCatalog,
     runtime_revision: Revision,
+    now: Timestamp,
 ) -> Result<ValidatedExecutionManifest, RuntimeManifestError> {
     manifest
         .validate()
@@ -533,6 +653,9 @@ pub fn validate_and_build(
         if object.lifecycle == KnowledgeLifecycle::Invalidated {
             return Err(RuntimeManifestError::RevokedKnowledgeGeneration { key });
         }
+        if !object.is_valid_at(now) {
+            return Err(RuntimeManifestError::ExpiredKnowledgeGeneration { key, now });
+        }
         if object
             .sources
             .iter()
@@ -547,6 +670,8 @@ pub fn validate_and_build(
         }) {
             return Err(RuntimeManifestError::InvalidKnowledgeDependency { key });
         }
+        // Whatever the object depends on, transitively, must hold at `now` too.
+        ensure_closure_valid_at(knowledge, &key, now)?;
         if object.generation.0 > 1
             && object.supersedes.as_ref().is_none_or(|supersedes| {
                 supersedes.logical_id != object.id

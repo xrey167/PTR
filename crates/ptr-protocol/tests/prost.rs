@@ -26,6 +26,7 @@ fn call_fixture() -> PodCall {
             type_id: "T".into(),
             payload: vec![0, 0x80, 0xff],
         }),
+        deadline_ms: None,
     }
 }
 
@@ -45,6 +46,20 @@ fn assert_wire<M: Message + Default + PartialEq + Debug>(message: M, wire: &[u8]
 #[test]
 fn generated_podwire_roundtrips() {
     assert_roundtrip(call_fixture());
+}
+
+#[test]
+fn optional_deadline_distinguishes_absent_from_explicit_value() {
+    // deadline_ms is field 7, varint: tag 0x38. 300 encodes as 0xac 0x02.
+    for (deadline_ms, wire) in [(None, &[][..]), (Some(300), &[0x38, 0xac, 0x02][..])] {
+        assert_wire(
+            PodCall {
+                deadline_ms,
+                ..Default::default()
+            },
+            wire,
+        );
+    }
 }
 
 #[test]
@@ -121,6 +136,7 @@ fn unicode_and_binary_payloads_survive_length_boundaries() {
                 type_id: "入力".into(),
                 payload: (0..=255).cycle().take(length).collect(),
             }),
+            deadline_ms: Some(1_700_000_000_000),
         };
         assert_roundtrip(call);
     }

@@ -115,7 +115,9 @@ pub fn lifecycle_change(committed: &CommittedEvent) -> LifecycleChange {
             ..
         }
         // The projection holds no taint table; taint records stay in the ledger.
-        | LedgerEvent::KvTaintCommitted { .. } => LifecycleChange::None,
+        | LedgerEvent::KvTaintCommitted { .. }
+        // A refusal changes no lifecycle row; the projection keeps the latest per Pod.
+        | LedgerEvent::EgressRefused { .. } => LifecycleChange::None,
     }
 }
 
@@ -153,6 +155,7 @@ pub fn event_topic(event: &LedgerEvent) -> &'static str {
         LedgerEvent::KvTaintCommitted { .. } => "kv.taint_committed",
         LedgerEvent::InputInvalidated { .. } => "expert.input_invalidated",
         LedgerEvent::ExpertAuthorityChanged { .. } => "expert.authority_changed",
+        LedgerEvent::EgressRefused { .. } => "egress.refused",
     }
 }
 
@@ -239,6 +242,18 @@ pub fn event_subject(committed: &CommittedEvent) -> String {
                 ptr_state::expert_authority_kind_name(*kind)
             )
         }
+        LedgerEvent::EgressRefused {
+            source: ptr_ledger::EgressRefusalSource::Pod(source),
+            ..
+        } => format!(
+            "egress:{}/{}/{}",
+            source.address.project, source.address.namespace, source.address.pod_id
+        ),
+        // Not of the `egress:p/n/pod` form, so no Pod can share it.
+        LedgerEvent::EgressRefused {
+            source: ptr_ledger::EgressRefusalSource::Overflow,
+            ..
+        } => "egress-overflow".to_owned(),
     }
 }
 
