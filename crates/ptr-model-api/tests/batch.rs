@@ -738,6 +738,81 @@ fn the_open_continuations_are_bounded_and_an_evicted_one_fails_closed() {
     );
 }
 
+fn principal_scope(principal: &str) -> BatchKey {
+    BatchKey {
+        principal: Some(principal.into()),
+        ..key("coder")
+    }
+}
+
+#[test]
+fn one_principal_cannot_push_another_principals_continuation_out() {
+    let batcher = echo_batcher(Arc::new(OpenGate));
+    let x = principal_scope("x");
+    let y = principal_scope("y");
+    let kept = open(&batcher, "y-run", &y);
+    // 5000 continuations from X, far past both its quota and the global bound.
+    let mut x_first = None;
+    let mut x_last = None;
+    for n in 0..5000 {
+        let continuation = open(&batcher, &format!("x-{n}"), &x);
+        if n == 0 {
+            x_first = Some(continuation);
+        } else if n == 4999 {
+            x_last = Some(continuation);
+        }
+    }
+    // Y's continuation is still there and resumes.
+    assert!(batcher
+        .resume_continuation(kept, &y, observation(1, b"x"))
+        .is_ok());
+    // X's own oldest failed closed once X passed its quota; its newest still resumes.
+    assert_eq!(
+        batcher
+            .resume_continuation(x_first.unwrap(), &x, observation(1, b"x"))
+            .err(),
+        Some(ModelError::scope_mismatch())
+    );
+    assert!(batcher
+        .resume_continuation(x_last.unwrap(), &x, observation(1, b"x"))
+        .is_ok());
+}
+
+#[test]
+fn a_full_table_evicts_from_the_principal_holding_the_most() {
+    use ptr_model_api::{MAX_CONTINUATIONS_PER_PRINCIPAL, MAX_OPEN_CONTINUATIONS};
+    let batcher = echo_batcher(Arc::new(OpenGate));
+    // Every principal sits exactly at its quota and together they fill the table.
+    let principals = MAX_OPEN_CONTINUATIONS / MAX_CONTINUATIONS_PER_PRINCIPAL;
+    let mut oldest = Vec::new();
+    for p in 0..principals {
+        let scope = principal_scope(&format!("p{p}"));
+        for n in 0..MAX_CONTINUATIONS_PER_PRINCIPAL {
+            let continuation = open(&batcher, &format!("p{p}-{n}"), &scope);
+            if n == 0 {
+                oldest.push((scope.clone(), continuation));
+            }
+        }
+    }
+    // A newcomer under its own quota finds the table full: it is served, and exactly one
+    // continuation of a full principal (its oldest) goes. The newcomer is not the one displaced.
+    let newcomer = principal_scope("newcomer");
+    let kept = open(&batcher, "new", &newcomer);
+    assert!(batcher
+        .resume_continuation(kept, &newcomer, observation(1, b"x"))
+        .is_ok());
+    let evicted = oldest
+        .into_iter()
+        .map(|(scope, continuation)| {
+            batcher
+                .resume_continuation(continuation, &scope, observation(1, b"x"))
+                .is_err()
+        })
+        .filter(|failed| *failed)
+        .count();
+    assert_eq!(evicted, 1, "exactly one oldest continuation was displaced");
+}
+
 #[test]
 fn plain_inference_opens_no_continuation() {
     let batcher = echo_batcher(Arc::new(OpenGate));

@@ -168,7 +168,8 @@ pub struct ResumedAnswer {
 }
 
 /// The most continuations a batcher keeps open at once. A flood of answers that are never
-/// resumed evicts the oldest; resuming an evicted continuation fails closed.
+/// resumed evicts the oldest of the heaviest principal (see
+/// [`MAX_CONTINUATIONS_PER_PRINCIPAL`]); resuming an evicted continuation fails closed.
 pub const MAX_OPEN_CONTINUATIONS: usize = 4096;
 
 /// The whole resume context of one open continuation. The resume request is built from this
@@ -180,26 +181,74 @@ struct OpenContinuation {
     round: u32,
 }
 
+/// The most continuations one principal may hold open at once. At the quota a principal's
+/// next continuation evicts that principal's own oldest, so one principal cannot push another's
+/// out.
+pub const MAX_CONTINUATIONS_PER_PRINCIPAL: usize = 256;
+
+type PrincipalKey = Option<String>;
+
+/// Open continuations: a global bound ([`MAX_OPEN_CONTINUATIONS`]) and a per-principal quota
+/// ([`MAX_CONTINUATIONS_PER_PRINCIPAL`]), each principal with its own FIFO. When the table is
+/// full, the oldest continuation of the principal that holds the most goes; a principal under
+/// its quota is displaced only when it is itself the largest holder. Every operation is
+/// logarithmic in the number of principals (a ranking by count) and at most linear in one
+/// principal's quota.
 #[derive(Default)]
 struct Continuations {
-    order: std::collections::VecDeque<u128>,
     entries: std::collections::HashMap<u128, OpenContinuation>,
+    queues: std::collections::HashMap<PrincipalKey, std::collections::VecDeque<u128>>,
+    /// (open count, principal) for every principal with at least one open continuation.
+    ranking: std::collections::BTreeSet<(usize, PrincipalKey)>,
 }
 
 impl Continuations {
-    fn open(&mut self, id: u128, continuation: OpenContinuation) {
-        while self.order.len() >= MAX_OPEN_CONTINUATIONS {
-            if let Some(oldest) = self.order.pop_front() {
-                self.entries.remove(&oldest);
-            }
+    fn evict_oldest_of(&mut self, principal: &PrincipalKey) {
+        let Some(queue) = self.queues.get(principal) else {
+            return;
+        };
+        if let Some(oldest) = queue.front().copied() {
+            self.close(oldest);
         }
-        self.order.push_back(id);
+    }
+
+    fn open(&mut self, id: u128, continuation: OpenContinuation) {
+        let principal = continuation.key.principal.clone();
+        let held = self.queues.get(&principal).map_or(0, |queue| queue.len());
+        if held >= MAX_CONTINUATIONS_PER_PRINCIPAL {
+            self.evict_oldest_of(&principal);
+        }
+        while self.entries.len() >= MAX_OPEN_CONTINUATIONS {
+            let Some((_, heaviest)) = self.ranking.iter().next_back().cloned() else {
+                break;
+            };
+            self.evict_oldest_of(&heaviest);
+        }
+        let queue = self.queues.entry(principal.clone()).or_default();
+        let before = queue.len();
+        queue.push_back(id);
+        let after = queue.len();
+        if before > 0 {
+            self.ranking.remove(&(before, principal.clone()));
+        }
+        self.ranking.insert((after, principal));
         self.entries.insert(id, continuation);
     }
 
     fn close(&mut self, id: u128) -> Option<OpenContinuation> {
         let continuation = self.entries.remove(&id)?;
-        self.order.retain(|open| *open != id);
+        let principal = continuation.key.principal.clone();
+        if let Some(queue) = self.queues.get_mut(&principal) {
+            let before = queue.len();
+            queue.retain(|open| *open != id);
+            let after = queue.len();
+            self.ranking.remove(&(before, principal.clone()));
+            if after == 0 {
+                self.queues.remove(&principal);
+            } else {
+                self.ranking.insert((after, principal));
+            }
+        }
         Some(continuation)
     }
 }

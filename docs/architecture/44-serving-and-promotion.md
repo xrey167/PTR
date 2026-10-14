@@ -164,7 +164,7 @@ simulator training happens in PTR until `predictive` has been true on a real gen
   names an adapter is refused when the batcher was built without a gate (there is no admit-all default). A resume
   goes through an opaque `Continuation`: `infer_scoped` returns the answer with one (not `Clone`, no public constructor, an
   unguessable 128-bit id from two OS-keyed hashers over a counter, `Debug` prints nothing of it). The batcher keeps the whole
-  resume context in a table of at most `MAX_OPEN_CONTINUATIONS` (4096, oldest evicted, an evicted one fails closed), keyed by
+  resume context in a table of at most `MAX_OPEN_CONTINUATIONS` (4096) with a quota of `MAX_CONTINUATIONS_PER_PRINCIPAL` (256) per `BatchKey.principal`, keyed by
   that id: `BatchKey`, request id, semantic context and the round. `resume_continuation(continuation, key, observation)`
   consumes the handle and the entry, refuses a `key` other than the entry's (`ModelErrorKind::ScopeMismatch`, as for an unknown,
   evicted or used continuation), asks the gate about the entry's key and builds the `ModelResumeRequest` itself from the stored
@@ -172,7 +172,9 @@ simulator training happens in PTR until `predictive` has been true on a real gen
   The observation is new caller input under the continuation's scope: the gate checks exactly that scope, as for a fresh
   `infer` under it, and the batcher cannot see where the caller's bytes came from and does not need to. What it guarantees is
   that no stale state is resumed: context, round and scope come only from the table entry, which belongs to exactly one
-  scope, so a continuation from a revoked generation is refused whatever key or other continuation the caller holds. Plain
+  scope, so a continuation from a revoked generation is refused whatever key or other continuation the caller holds. A principal at its quota evicts its own oldest; a full table evicts the oldest of the principal holding the most
+  (a per-principal FIFO and a ranking by count, no scan over entries), so one principal's flood never displaces a principal
+  under its quota, and an evicted continuation fails closed. Plain
   `infer` and `infer_with` open no continuation. The unscoped
   `resume` of the trait is served only by a batcher built without a gate (which serves no adapter) and is refused when a
   gate is configured. A gate that panics has not admitted the key (refused as revoked, counted); a worker that ends for
