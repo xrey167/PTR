@@ -7,8 +7,15 @@ use std::sync::{Arc, Mutex};
 
 use crate::{TraceError, TraceEvent, TraceLevel, TraceSink};
 
+/// Hard maximum of [`MemorySink`] capacity: 16 times the default finished-span ring (4096), so a
+/// host-supplied capacity such as `usize::MAX` cannot disable eviction and grow the sink until
+/// the process runs out of memory (Invariant 8).
+pub const MAX_MEMORY_SINK_CAPACITY: usize = 65_536;
+
 /// Bounded in-memory ring of events, inspectable in tests. When full, the oldest event is
-/// evicted and counted in [`MemorySink::dropped`]. A capacity of 0 is treated as 1.
+/// evicted and counted in [`MemorySink::dropped`]. A capacity of 0 is treated as 1 and a capacity
+/// above [`MAX_MEMORY_SINK_CAPACITY`] is clamped to it ([`MemorySink::capacity`] reports the
+/// effective value).
 #[derive(Debug)]
 pub struct MemorySink {
     capacity: usize,
@@ -19,7 +26,7 @@ pub struct MemorySink {
 impl MemorySink {
     pub fn new(capacity: usize) -> Self {
         Self {
-            capacity: capacity.max(1),
+            capacity: capacity.clamp(1, MAX_MEMORY_SINK_CAPACITY),
             events: Mutex::new(VecDeque::new()),
             dropped: AtomicU64::new(0),
         }

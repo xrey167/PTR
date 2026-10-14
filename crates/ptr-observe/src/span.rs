@@ -83,6 +83,34 @@ pub struct TracerLimits {
     pub max_value_len: usize,
 }
 
+impl TracerLimits {
+    /// Hard maximum of `max_open_spans` (16 times the default).
+    pub const HARD_MAX_OPEN_SPANS: usize = 16_384;
+    /// Hard maximum of `max_finished_spans` (16 times the default).
+    pub const HARD_MAX_FINISHED_SPANS: usize = 65_536;
+    /// Hard maximum of `max_fields_per_event` (32 times the default).
+    pub const HARD_MAX_FIELDS_PER_EVENT: usize = 1_024;
+    /// Hard maximum of `max_events_per_span` (64 times the default).
+    pub const HARD_MAX_EVENTS_PER_SPAN: usize = 4_096;
+    /// Hard maximum of `max_value_len` (64 times the default).
+    pub const HARD_MAX_VALUE_LEN: usize = 65_536;
+
+    /// Returns these limits with every field capped at its `HARD_MAX_*` constant. [`Tracer::new`]
+    /// applies this, so a host config of `usize::MAX` cannot make a buffer unbounded.
+    #[must_use]
+    pub fn clamped(self) -> Self {
+        Self {
+            max_open_spans: self.max_open_spans.min(Self::HARD_MAX_OPEN_SPANS),
+            max_finished_spans: self.max_finished_spans.min(Self::HARD_MAX_FINISHED_SPANS),
+            max_fields_per_event: self
+                .max_fields_per_event
+                .min(Self::HARD_MAX_FIELDS_PER_EVENT),
+            max_events_per_span: self.max_events_per_span.min(Self::HARD_MAX_EVENTS_PER_SPAN),
+            max_value_len: self.max_value_len.min(Self::HARD_MAX_VALUE_LEN),
+        }
+    }
+}
+
 impl Default for TracerLimits {
     fn default() -> Self {
         Self {
@@ -260,7 +288,7 @@ impl Tracer {
         Self {
             inner: Arc::new(Inner {
                 clock,
-                limits: config.limits,
+                limits: config.limits.clamped(),
                 state: Mutex::new(State {
                     seed: config.id_seed,
                     counter: 0,

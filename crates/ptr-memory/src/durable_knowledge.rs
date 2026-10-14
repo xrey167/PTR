@@ -5,9 +5,10 @@
 //! store (which validates and either changes nothing or applies completely) and, only on success,
 //! appends the operation to the journal. If the append fails, the in-memory store is rebuilt from
 //! the intact journal records, so [`DurableKnowledgeStore::store`] never exposes a change whose
-//! call returned an error. A rejection that wrote nothing (record or file size bound) leaves the
-//! wrapper usable; an I/O failure poisons it because the file tail is unknown, and reopening
-//! recovers the durable state (a frame that reached the disk before the failure is part of it).
+//! call returned an error. The journal truncates a failed frame back off the file, so a rejection
+//! or an I/O failure that was rolled back leaves the wrapper usable and the operation can be
+//! retried; only when the rollback itself fails is the file tail unknown, and then the wrapper
+//! is poisoned until reopened.
 //! If the rebuild itself fails the store is emptied and stays poisoned. Read access goes through
 //! [`DurableKnowledgeStore::store`].
 //!
@@ -167,7 +168,9 @@ impl DurableKnowledgeStore {
             // The in-memory store already applied the operation; make reads agree with the
             // journal again before reporting the failure.
             self.rebuild_from_journal();
-            if matches!(error, JournalError::Io { .. } | JournalError::Poisoned) {
+            // A rolled-back append leaves the file exactly as before, so the wrapper stays
+            // usable; only a journal that could not roll back (poisoned) poisons the wrapper.
+            if self.journal.is_poisoned() {
                 self.poisoned = true;
             }
             return Err(error.into());
@@ -682,3 +685,7 @@ fn decode_op(payload: &[u8]) -> Result<Op, CodecError> {
     r.finish()?;
     Ok(op)
 }
+
+#[cfg(test)]
+#[path = "durable_knowledge_fault_tests.rs"]
+mod fault_tests;

@@ -205,6 +205,16 @@ pub struct MemoryJournal {
     len: u64,
     appended_since_open_or_rewrite: u64,
     poisoned: bool,
+    #[cfg(test)]
+    fault: FaultInjection,
+}
+
+/// Test-only fault seam: makes the next sync and/or the rollback truncate fail.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct FaultInjection {
+    pub(crate) fail_sync: bool,
+    pub(crate) fail_truncate: bool,
 }
 
 impl MemoryJournal {
@@ -306,7 +316,43 @@ impl MemoryJournal {
             len,
             appended_since_open_or_rewrite: 0,
             poisoned: false,
+            #[cfg(test)]
+            fault: FaultInjection::default(),
         })
+    }
+
+    /// True once a failed write could not be rolled back; the journal then refuses appends.
+    pub(crate) fn is_poisoned(&self) -> bool {
+        self.poisoned
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inject_fault(&mut self, fault: FaultInjection) {
+        self.fault = fault;
+    }
+
+    fn sync_appended(&self) -> io::Result<()> {
+        #[cfg(test)]
+        if self.fault.fail_sync {
+            return Err(io::Error::other("injected sync failure"));
+        }
+        self.file.sync_data()
+    }
+
+    /// Cuts the file back to `len` after a failed append, so a frame the caller was told failed
+    /// can never become visible on a later open.
+    ///
+    /// This uses a separate handle opened with plain `write(true)`: the journal's own handle is
+    /// append-only, and on Windows an append-only handle lacks FILE_WRITE_DATA and cannot be
+    /// truncated.
+    fn roll_back_to(&self, len: u64) -> io::Result<()> {
+        #[cfg(test)]
+        if self.fault.fail_truncate {
+            return Err(io::Error::other("injected truncate failure"));
+        }
+        let file = OpenOptions::new().write(true).open(&self.path)?;
+        file.set_len(len)?;
+        file.sync_all()
     }
 
     /// Path of the journal file.
@@ -329,7 +375,9 @@ impl MemoryJournal {
         scan(&bytes, self.options.max_record_bytes).map(|(records, _)| records)
     }
 
-    /// Appends one framed payload. After an I/O failure the journal is poisoned.
+    /// Appends one framed payload. If the write, flush or sync fails the file is truncated back
+    /// to its previous length, so the failed frame is never visible, and the journal stays usable.
+    /// Only when that rollback also fails is the journal poisoned.
     pub fn append(&mut self, payload: &[u8]) -> Result<(), JournalError> {
         if self.poisoned {
             return Err(JournalError::Poisoned);
@@ -346,7 +394,7 @@ impl MemoryJournal {
         }
         let result = self.file.write_all(&frame).and_then(|()| {
             if self.options.sync_on_append {
-                self.file.sync_data()
+                self.sync_appended()
             } else {
                 Ok(())
             }
@@ -359,7 +407,9 @@ impl MemoryJournal {
                 Ok(())
             }
             Err(error) => {
-                self.poisoned = true;
+                if self.roll_back_to(self.len).is_err() {
+                    self.poisoned = true;
+                }
                 Err(io_error("append", &error))
             }
         }
@@ -587,6 +637,46 @@ mod tests {
         let (_, recovery) = open(&path.0);
         assert_eq!(recovery.records, vec![b"snap".to_vec(), b"after".to_vec()]);
         assert!(!temp_path(&path.0).exists());
+    }
+
+    #[test]
+    fn sync_failure_rolls_the_frame_back_and_keeps_the_journal_usable() {
+        let path = TempPath::new("syncfail");
+        let (mut journal, _) = open(&path.0);
+        journal.append(b"one").unwrap();
+        let before = fs::read(&path.0).unwrap();
+        journal.inject_fault(FaultInjection {
+            fail_sync: true,
+            fail_truncate: false,
+        });
+        assert!(matches!(
+            journal.append(b"two"),
+            Err(JournalError::Io {
+                operation: "append",
+                ..
+            })
+        ));
+        assert_eq!(fs::read(&path.0).unwrap(), before);
+        assert!(!journal.is_poisoned());
+        journal.inject_fault(FaultInjection::default());
+        journal.append(b"two").unwrap();
+        drop(journal);
+        let (_, recovery) = open(&path.0);
+        assert_eq!(recovery.records, vec![b"one".to_vec(), b"two".to_vec()]);
+    }
+
+    #[test]
+    fn failed_rollback_poisons_the_journal() {
+        let path = TempPath::new("truncfail");
+        let (mut journal, _) = open(&path.0);
+        journal.inject_fault(FaultInjection {
+            fail_sync: true,
+            fail_truncate: true,
+        });
+        assert!(journal.append(b"x").is_err());
+        assert!(journal.is_poisoned());
+        journal.inject_fault(FaultInjection::default());
+        assert_eq!(journal.append(b"y"), Err(JournalError::Poisoned));
     }
 
     #[test]

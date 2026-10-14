@@ -16,7 +16,7 @@ use std::fs::{File, OpenOptions};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::{Redactor, Span, SpanStatus, TraceError, TraceLevel, TraceValue};
 
@@ -46,6 +46,9 @@ pub struct OtlpJsonFileExporter {
     /// Set when a failed append could not be rolled back; shared by clones, so no clone ever
     /// appends after an unknown tail.
     poisoned: Arc<AtomicBool>,
+    /// Serializes open, length measurement, append and rollback across clones, so a rollback
+    /// can never truncate to a length measured before another clone's successful append.
+    append_lock: Arc<Mutex<()>>,
     #[cfg(test)]
     faults: Arc<Faults>,
 }
@@ -58,6 +61,19 @@ struct Faults {
     partial_write: std::sync::Mutex<Option<usize>>,
     /// Make the rollback truncate fail.
     truncate: AtomicBool,
+    /// Runs once between measuring the pre-write length and appending (clone interleaving).
+    after_measure: std::sync::Mutex<Option<Hook>>,
+}
+
+/// Debug-printable boxed closure for the test seam.
+#[cfg(test)]
+struct Hook(Box<dyn FnOnce() + Send>);
+
+#[cfg(test)]
+impl std::fmt::Debug for Hook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Hook")
+    }
 }
 
 const SINK_NAME: &str = "otlp-json-file";
@@ -147,6 +163,7 @@ impl OtlpJsonFileExporter {
             path: path.into(),
             config,
             poisoned: Arc::new(AtomicBool::new(false)),
+            append_lock: Arc::new(Mutex::new(())),
             #[cfg(test)]
             faults: Arc::new(Faults::default()),
         }
@@ -233,6 +250,10 @@ impl OtlpJsonFileExporter {
             sink: SINK_NAME.to_owned(),
             message: error.to_string(),
         };
+        let _guard = self
+            .append_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if self.poisoned.load(Ordering::Acquire) {
             return Err(TraceError::ExporterPoisoned {
                 sink: SINK_NAME.to_owned(),
@@ -244,6 +265,16 @@ impl OtlpJsonFileExporter {
             .open(&self.path)
             .map_err(export_error)?;
         let good_len = file.metadata().map_err(export_error)?.len();
+        #[cfg(test)]
+        if let Some(hook) = self
+            .faults
+            .after_measure
+            .lock()
+            .ok()
+            .and_then(|mut h| h.take())
+        {
+            (hook.0)();
+        }
         if let Err(error) = self.append(&mut file, line.as_bytes()) {
             // A failed write may have left a prefix of the line; cut it off so the next export
             // is not glued onto a fragment. If the cut fails the tail is unknown: poison.
@@ -373,6 +404,40 @@ mod tests {
             tail,
             "nothing appended after the tail"
         );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_clone_rollback_never_deletes_another_clones_successful_append() {
+        let path = unit_path("interleave");
+        let a = OtlpJsonFileExporter::new(&path, OtlpFileConfig::default());
+        let b = a.clone();
+        let faults = Arc::clone(&a.faults);
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        *a.faults.after_measure.lock().expect("lock") = Some(Hook(Box::new(move || {
+            // Clone `b` exports while `a` sits between measure and write. With the append lock
+            // `b` blocks until `a` is finished, so the wait times out; without it `b` is done.
+            std::thread::spawn(move || {
+                let _ = done_tx.send(b.export(&[one_span("survivor")]));
+            });
+            let _ = done_rx.recv_timeout(std::time::Duration::from_millis(300));
+            *faults.partial_write.lock().expect("lock") = Some(25);
+        })));
+        assert!(matches!(
+            a.export(&[one_span("lost")]),
+            Err(TraceError::Export { .. })
+        ));
+        // Wait for `b` (if it was blocked) to finish before reading the file.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut bytes = std::fs::read(&path).expect("read");
+        while !std::str::from_utf8(&bytes).is_ok_and(|t| t.contains("survivor"))
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::yield_now();
+            bytes = std::fs::read(&path).unwrap_or_default();
+        }
+        assert_well_formed_lines(&bytes, 1);
+        assert!(String::from_utf8(bytes).expect("utf8").contains("survivor"));
         let _ = std::fs::remove_file(&path);
     }
 }

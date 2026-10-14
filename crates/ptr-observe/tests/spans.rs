@@ -152,3 +152,20 @@ fn child_of_finished_parent_is_typed_error() {
         }
     );
 }
+
+#[test]
+fn tracer_limits_are_clamped_to_hard_maxima() {
+    let (tracer, _) = tracer_with(TracerLimits {
+        max_open_spans: usize::MAX,
+        max_finished_spans: usize::MAX,
+        max_fields_per_event: usize::MAX,
+        max_events_per_span: usize::MAX,
+        max_value_len: usize::MAX,
+    });
+    let limits = tracer.limits();
+    assert_eq!(limits.max_open_spans, 16_384);
+    assert_eq!(limits.max_finished_spans, 65_536);
+    assert_eq!(limits.max_fields_per_event, 1_024);
+    assert_eq!(limits.max_events_per_span, 4_096);
+    assert_eq!(limits.max_value_len, 65_536);
+}

@@ -828,3 +828,7 @@ fn decode_delta(payload: &[u8]) -> Result<Delta, CodecError> {
         records,
     })
 }
+
+#[cfg(test)]
+#[path = "memory_store_fault_tests.rs"]
+mod fault_tests;

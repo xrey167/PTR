@@ -24,7 +24,7 @@ pub use plan::{
     StepOutcome, StepReport, MAX_PLAN_STEPS,
 };
 pub use redact::{RedactingSink, RedactionPolicy, Redactor, REDACTED};
-pub use sinks::{FanoutSink, MemorySink, SamplingRates, SamplingSink};
+pub use sinks::{FanoutSink, MemorySink, SamplingRates, SamplingSink, MAX_MEMORY_SINK_CAPACITY};
 pub use span::{
     Span, SpanContext, SpanError, SpanEvent, SpanGuard, SpanId, SpanStatus, TraceId, Tracer,
     TracerConfig, TracerLimits, TracerStats,

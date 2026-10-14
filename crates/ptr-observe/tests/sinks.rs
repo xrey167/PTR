@@ -68,3 +68,16 @@ fn composed_pipeline_redacts_then_samples_into_fanout() {
     assert_eq!(ring.dropped(), 2);
     assert!(!format!("{:?}", all.events()).contains("\"abc\""));
 }
+
+#[test]
+fn memory_sink_capacity_is_clamped_to_a_hard_maximum_and_evicts_there() {
+    let sink = MemorySink::new(usize::MAX);
+    assert_eq!(sink.capacity(), 65_536);
+    for i in 0..(65_536 + 3) {
+        sink.emit(&TraceEvent::new(TraceLevel::Info, format!("e{i}")))
+            .expect("emit");
+    }
+    assert_eq!(sink.len(), 65_536);
+    assert_eq!(sink.dropped(), 3);
+    assert_eq!(sink.events()[0].name, "e3");
+}
