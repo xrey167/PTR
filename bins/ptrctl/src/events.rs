@@ -10,6 +10,7 @@
 //! `max_record_bytes` is reported as corrupt.
 
 use std::fs;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 use ptr_events::{
@@ -136,6 +137,12 @@ fn is_log_file(name: &str) -> bool {
 
 /// Copy the log files of `source` into a fresh temp directory.
 fn snapshot(source: &Path) -> Result<Snapshot, String> {
+    snapshot_with(source, || ())
+}
+
+/// `snapshot`, running `between` after the sizes are counted and before any file is copied.
+/// It exists so a test can grow a file in that window, as a live writer could.
+fn snapshot_with(source: &Path, between: impl FnOnce()) -> Result<Snapshot, String> {
     let metadata = fs::metadata(source)
         .map_err(|e| format!("cannot read log directory {}: {e}", source.display()))?;
     if !metadata.is_dir() {
@@ -162,7 +169,7 @@ fn snapshot(source: &Path) -> Result<Snapshot, String> {
                 "log files exceed the {MAX_SNAPSHOT_BYTES} byte snapshot bound"
             ));
         }
-        files.push((name.to_owned(), entry.path()));
+        files.push((name.to_owned(), entry.path(), meta.len()));
     }
     if files.is_empty() {
         return Err(format!(
@@ -170,6 +177,7 @@ fn snapshot(source: &Path) -> Result<Snapshot, String> {
             source.display()
         ));
     }
+    between();
     let target = std::env::temp_dir().join(format!(
         "ptrctl-events-{}-{}",
         std::process::id(),
@@ -179,11 +187,28 @@ fn snapshot(source: &Path) -> Result<Snapshot, String> {
     ));
     fs::create_dir(&target).map_err(|e| format!("cannot create snapshot directory: {e}"))?;
     let guard = Snapshot(target);
-    for (name, path) in files {
-        fs::copy(&path, guard.0.join(&name))
+    for (name, path, counted) in files {
+        copy_counted(&path, &guard.0.join(&name), counted)
             .map_err(|e| format!("cannot copy {name} into the snapshot: {e}"))?;
     }
     Ok(guard)
+}
+
+/// Copy at most `counted` bytes of `from` (its size when the snapshot bound was checked). A
+/// file that has grown since is refused rather than truncated: a prefix cut mid-record would
+/// look like a torn tail, and an unbounded copy would exceed the snapshot bound.
+fn copy_counted(from: &Path, to: &Path, counted: u64) -> Result<(), String> {
+    let source = fs::File::open(from).map_err(|e| e.to_string())?;
+    let mut bounded = source.take(counted.saturating_add(1));
+    let mut target = fs::File::create(to).map_err(|e| e.to_string())?;
+    let copied = io::copy(&mut bounded, &mut target).map_err(|e| e.to_string())?;
+    if copied > counted {
+        return Err(format!(
+            "the file grew beyond the {counted} bytes counted (is a writer appending?); \
+             retry when the log is quiescent"
+        ));
+    }
+    Ok(())
 }
 
 fn describe(error: &BusError) -> String {
@@ -256,4 +281,42 @@ fn row(record: &BusRecord) -> String {
         record.topic.escape_debug(),
         record.payload.len()
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_file_that_grows_after_counting_is_refused_and_leaves_no_snapshot() {
+        let dir = std::env::temp_dir().join(format!("ptrctl-grow-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("dir");
+        let segment = dir.join("segment-00000000000000000000.log");
+        fs::write(&segment, b"0123456789").expect("segment");
+
+        let result = snapshot_with(&dir, || {
+            use std::io::Write;
+            let mut file = fs::OpenOptions::new()
+                .append(true)
+                .open(&segment)
+                .expect("open");
+            file.write_all(b"grown").expect("append");
+        });
+        let message = result.err().expect("growth must be refused");
+        assert!(message.contains("grew"), "{message}");
+        assert_eq!(fs::read(&segment).expect("read"), b"0123456789grown");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_unchanged_file_is_copied_exactly() {
+        let dir = std::env::temp_dir().join(format!("ptrctl-same-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("dir");
+        fs::write(dir.join(OFFSETS_FILE), b"abc").expect("offsets");
+        let copy = snapshot(&dir).expect("snapshot");
+        assert_eq!(fs::read(copy.0.join(OFFSETS_FILE)).expect("copy"), b"abc");
+        let _ = fs::remove_dir_all(&dir);
+    }
 }
