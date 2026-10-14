@@ -2214,6 +2214,15 @@ impl PtrRuntime {
             .map_err(|error| {
                 RuntimeError::PodOutputAdmission(format!("invalid output: {error:?}"))
             })?;
+        // A hypothesis is recorded unverified: its record carries no verified bit, and replay
+        // and the commit check rebuild its output digest with `verified: false`. A hypothesis
+        // marked verified would be admitted and then fail its own record (an admission no retry
+        // could complete), so it is refused here, before anything is appended.
+        if request.output.kind == PodOutputKind::Hypothesis && request.output.verified {
+            return Err(RuntimeError::PodOutputAdmission(
+                "a hypothesis output cannot be marked verified".into(),
+            ));
+        }
         if request.output.revision < request.manifest.snapshot_revision {
             return Err(RuntimeError::StaleRevision {
                 action: request.output.revision,

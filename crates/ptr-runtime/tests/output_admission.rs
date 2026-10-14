@@ -966,3 +966,25 @@ fn an_incomplete_legacy_admission_is_refused_for_the_identical_and_a_colliding_o
         )
     );
 }
+
+/// Review of #141: a hypothesis output marked verified is refused before anything is appended
+/// (its record would be rebuilt unverified and fail its digest, leaving an admission no retry
+/// could complete); an ordinary hypothesis still admits and replays.
+#[test]
+fn a_hypothesis_marked_verified_is_refused_before_any_append() {
+    let mut runtime = runtime_with_scope();
+    let events = runtime.committed_events().len();
+    let mut verified = request(PodOutputKind::Hypothesis);
+    verified.output.verified = true;
+    let refused = runtime.admit_pod_output(verified, &Pass);
+    assert!(
+        matches!(&refused, Err(ptr_runtime::RuntimeError::PodOutputAdmission(m)) if m.contains("cannot be marked verified")),
+        "{refused:?}"
+    );
+    assert_eq!(runtime.committed_events().len(), events, "nothing appended");
+    let admitted = runtime
+        .admit_pod_output(request(PodOutputKind::Hypothesis), &Pass)
+        .unwrap();
+    assert!(matches!(admitted, PodOutputAdmission::Hypothesis { .. }));
+    PtrRuntime::replay(PtrConfig::default(), runtime.committed_events()).unwrap();
+}
