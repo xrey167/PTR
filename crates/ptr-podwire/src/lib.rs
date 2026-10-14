@@ -43,10 +43,10 @@ pub use chunk::{
 };
 pub use frame::{
     decode_answer, decode_answer_v2, decode_request, decode_request_v2, encode_answer,
-    encode_answer_v2, encode_request, encode_request_v2, request_digest, FrameError,
-    PodAddressBinding, PodAdmissionBinding, PodAnswer, PodAnswerV2, PodOutcome, PodRequest,
-    PodRequestV2, RefusalCode, FORMAT_V1, FORMAT_V2, FORMAT_V3, MAX_BODY_BYTES, MAX_FIELD_BYTES,
-    MAX_FRAME_BYTES,
+    encode_answer_v2, encode_request, encode_request_v2, request_digest, unix_millis_now,
+    FrameError, PodAddressBinding, PodAdmissionBinding, PodAnswer, PodAnswerV2, PodOutcome,
+    PodRequest, PodRequestV2, RefusalCode, FORMAT_V1, FORMAT_V2, FORMAT_V3, FORMAT_V4,
+    MAX_BODY_BYTES, MAX_FIELD_BYTES, MAX_FRAME_BYTES,
 };
 
 #[cfg(feature = "podwire-backend")]

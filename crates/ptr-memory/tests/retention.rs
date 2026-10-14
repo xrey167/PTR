@@ -1,14 +1,16 @@
 use ptr_memory::{
-    compile_structured, decide, BasicKnowledgeObjectBuilder, ConflictState,
-    DeterministicEntityExtractor, DeterministicTokenizer, EntityExtractor, Freshness,
-    InMemoryKvStateRuntime, KnowledgeKey, KnowledgeLifecycle, KnowledgeObject,
-    KnowledgeObjectBuilder, KnowledgeStore, KvStateRuntime, NamespaceContext, NamespaceResolver,
-    RetentionAction, RetentionCandidate, RetentionError, RetentionModel, RetentionReason,
-    RetentionScore, RetentionState, SemanticTokenizer, StaticNamespaceResolver, TokenBudget,
+    compile_selected_at, compile_structured, compile_structured_at, decide,
+    BasicKnowledgeObjectBuilder, ConflictState, DeterministicEntityExtractor,
+    DeterministicTokenizer, EntityExtractor, Freshness, InMemoryKvStateRuntime, KnowledgeKey,
+    KnowledgeLifecycle, KnowledgeObject, KnowledgeObjectBuilder, KnowledgeStore, KvStateRuntime,
+    NamespaceContext, NamespaceResolver, RetentionAction, RetentionCandidate, RetentionError,
+    RetentionModel, RetentionReason, RetentionScore, RetentionState, SemanticTokenizer,
+    StaticNamespaceResolver, TokenBudget,
 };
 use ptr_types::{
     AdapterVersion, EntityId, EventRole, EvidenceId, Generation, KnowledgeObjectId, ModelVersion,
-    NamespaceId, PolicyVersion, Probability, ProvenanceRef, RawEventId, SessionId, Timestamp,
+    NamespaceId, PolicyVersion, Probability, ProvenanceRef, RawEventId, RetrievalKey, SessionId,
+    Timestamp,
 };
 
 fn probability(value: f32) -> Probability {
@@ -92,6 +94,7 @@ fn object(
         lifecycle,
         retrieval_keys: vec![],
         token_cost: 1,
+        validity: Default::default(),
     }
 }
 
@@ -572,4 +575,156 @@ fn successful_activation_invalidates_old_dependents_and_keeps_new_generation_lif
     store.transition(&id, KnowledgeLifecycle::Archived).unwrap();
     store.activate_generation(&id, Generation(2)).unwrap();
     assert_eq!(store.lifecycle(&id), Some(KnowledgeLifecycle::Archived));
+}
+
+#[test]
+fn an_expired_object_is_left_out_of_a_context_compiled_for_an_instant() {
+    use ptr_memory::ContextEntry;
+    use ptr_types::KnowledgeValidity;
+    let timed = |id: &str, from: Option<u64>, until: Option<u64>| {
+        let mut item = object(id, KnowledgeLifecycle::Hot, vec![]);
+        item.validity = KnowledgeValidity {
+            valid_from: from.map(Timestamp),
+            valid_until: until.map(Timestamp),
+        };
+        item
+    };
+    let objects = [
+        timed("always", None, None),
+        timed("current", Some(10), Some(20)),
+        timed("expired", Some(1), Some(10)),
+        timed("future", Some(20), None),
+    ];
+    let ids = |context: &ptr_memory::CompiledContext| -> Vec<String> {
+        context
+            .entries
+            .iter()
+            .filter_map(|entry| match entry {
+                ContextEntry::Structured(object) => Some(object.id.0.clone()),
+                ContextEntry::Verbatim(_) => None,
+            })
+            .collect()
+    };
+    let at_15 = compile_structured_at(&objects, TokenBudget(100), Timestamp(15)).unwrap();
+    assert_eq!(ids(&at_15), ["always", "current"]);
+    assert_eq!(at_15.omitted_expired, 2);
+    // Half-open: the end is outside, the start inside.
+    let at_10 = compile_structured_at(&objects, TokenBudget(100), Timestamp(10)).unwrap();
+    assert_eq!(ids(&at_10), ["always", "current"]);
+    let at_20 = compile_structured_at(&objects, TokenBudget(100), Timestamp(20)).unwrap();
+    assert_eq!(ids(&at_20), ["always", "future"]);
+    // The audit path has no time rule and omits nothing.
+    let audit = compile_structured(&objects, TokenBudget(100)).unwrap();
+    assert_eq!(audit.entries.len(), 4);
+    assert_eq!(audit.omitted_expired, 0);
+    // A dependent of an omitted object is refused, not compiled without its basis.
+    let mut dependent = object(
+        "dependent",
+        KnowledgeLifecycle::Hot,
+        vec![key("expired", 1)],
+    );
+    dependent.validity = KnowledgeValidity::ALWAYS;
+    let candidates: Vec<ptr_memory::ContextCandidate> = [objects[2].clone(), dependent]
+        .into_iter()
+        .map(|object| ptr_memory::ContextCandidate {
+            object,
+            action: ptr_memory::RetentionAction::KeepStructured,
+            verbatim: None,
+            pinned: false,
+        })
+        .collect();
+    assert_eq!(
+        compile_selected_at(&candidates, TokenBudget(100), Timestamp(15)),
+        Err(ptr_memory::ContextCompileError::MissingDependency)
+    );
+}
+
+#[test]
+fn an_objects_validity_is_half_open_and_part_of_its_digest_only_when_bounded() {
+    use ptr_types::KnowledgeValidity;
+    let unbounded = object("topic", KnowledgeLifecycle::Hot, vec![]);
+    assert!(unbounded.is_valid_at(Timestamp(0)));
+    assert!(unbounded.is_valid_at(Timestamp(u64::MAX)));
+
+    let mut bounded = unbounded.clone();
+    bounded.validity = KnowledgeValidity {
+        valid_from: Some(Timestamp(10)),
+        valid_until: Some(Timestamp(20)),
+    };
+    assert!(!bounded.is_valid_at(Timestamp(9)));
+    assert!(bounded.is_valid_at(Timestamp(10)), "the start is inside");
+    assert!(bounded.is_valid_at(Timestamp(19)));
+    assert!(!bounded.is_valid_at(Timestamp(20)), "the end is outside");
+
+    assert_ne!(
+        bounded.content_digest(),
+        unbounded.content_digest(),
+        "two objects that hold at different times are not the same content"
+    );
+    let mut shifted = bounded.clone();
+    shifted.validity.valid_until = Some(Timestamp(21));
+    assert_ne!(shifted.content_digest(), bounded.content_digest());
+    let mut unchanged = unbounded.clone();
+    unchanged.validity = KnowledgeValidity::ALWAYS;
+    assert_eq!(
+        unchanged.content_digest(),
+        unbounded.content_digest(),
+        "the same validity gives the same digest"
+    );
+}
+
+#[test]
+fn text_that_looks_like_another_field_cannot_collide_with_it() {
+    // A retrieval key holding a newline and a validity line must not hash like the same
+    // object with that validity: every field is length-prefixed, the validity is binary.
+    let mut forged = object("x", KnowledgeLifecycle::Hot, vec![]);
+    forged.retrieval_keys = vec![RetrievalKey::from("k\nvalidity=1:2")];
+    let mut honest = object("x", KnowledgeLifecycle::Hot, vec![]);
+    honest.retrieval_keys = vec![RetrievalKey::from("k")];
+    honest.validity = ptr_types::KnowledgeValidity {
+        valid_from: Some(Timestamp(1)),
+        valid_until: Some(Timestamp(2)),
+    };
+    assert_ne!(forged.content_digest(), honest.content_digest());
+    assert_ne!(forged.digest(), honest.digest());
+    // Moving a boundary between two list elements changes the digest too.
+    let mut split = object("x", KnowledgeLifecycle::Hot, vec![]);
+    split.retrieval_keys = vec![RetrievalKey::from("ab"), RetrievalKey::from("c")];
+    let mut joined = object("x", KnowledgeLifecycle::Hot, vec![]);
+    joined.retrieval_keys = vec![RetrievalKey::from("a"), RetrievalKey::from("bc")];
+    assert_ne!(split.content_digest(), joined.content_digest());
+    // An open start and a start at zero are different validities.
+    let mut open = object("x", KnowledgeLifecycle::Hot, vec![]);
+    open.validity.valid_until = Some(Timestamp(5));
+    let mut zero = open.clone();
+    zero.validity.valid_from = Some(Timestamp(0));
+    assert_ne!(open.content_digest(), zero.content_digest());
+}
+
+#[test]
+fn an_object_whose_validity_ends_no_later_than_it_starts_is_refused_at_admission() {
+    use ptr_memory::KnowledgeStoreError;
+    use ptr_types::KnowledgeValidity;
+    for (from, until) in [(20, 20), (20, 10)] {
+        let mut never = object("never", KnowledgeLifecycle::Hot, vec![]);
+        never.validity = KnowledgeValidity {
+            valid_from: Some(Timestamp(from)),
+            valid_until: Some(Timestamp(until)),
+        };
+        let expected = KnowledgeStoreError::InvalidValidity {
+            valid_from: Some(Timestamp(from)),
+            valid_until: Some(Timestamp(until)),
+        };
+        let mut store = KnowledgeStore::default();
+        assert_eq!(store.register_object(never.clone()), Err(expected.clone()));
+        assert_eq!(store.admit_object(never), Err(expected));
+        assert!(store.object(&KnowledgeObjectId::from("never")).is_none());
+    }
+    // Open-ended and bounded intervals are fine.
+    let mut fine = object("fine", KnowledgeLifecycle::Hot, vec![]);
+    fine.validity = KnowledgeValidity {
+        valid_from: Some(Timestamp(10)),
+        valid_until: None,
+    };
+    assert_eq!(KnowledgeStore::default().register_object(fine), Ok(()));
 }

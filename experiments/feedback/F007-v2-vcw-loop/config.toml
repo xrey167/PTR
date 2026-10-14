@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "F007-v2-vcw-loop"
+path = "experiments/feedback/F007-v2-vcw-loop"
+tests_dir = "tests"

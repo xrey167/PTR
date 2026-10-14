@@ -24,8 +24,8 @@ use crate::retention::{
     Relation, ToolCall, ToolResult,
 };
 use ptr_types::{
-    EntityId, EventRole, Generation, KnowledgeObjectId, NamespaceId, Probability, ProvenanceRef,
-    RawEventId, RetrievalKey, SessionId, Timestamp,
+    EntityId, EventRole, Generation, KnowledgeObjectId, KnowledgeValidity, NamespaceId,
+    Probability, ProvenanceRef, RawEventId, RetrievalKey, SessionId, Timestamp,
 };
 use std::path::Path;
 
@@ -517,6 +517,26 @@ fn write_object(w: &mut Writer, object: &KnowledgeObject) {
     w.u8(crate::knowledge::lifecycle_tag(object.lifecycle));
     write_strings(w, object.retrieval_keys.iter().map(|k| &k.0));
     w.u32(object.token_cost);
+    write_optional_time(w, object.validity.valid_from);
+    write_optional_time(w, object.validity.valid_until);
+}
+
+fn write_optional_time(w: &mut Writer, time: Option<Timestamp>) {
+    match time {
+        Some(time) => {
+            w.bool(true);
+            w.u64(time.0);
+        }
+        None => w.bool(false),
+    }
+}
+
+fn read_optional_time(r: &mut Reader<'_>) -> Result<Option<Timestamp>, CodecError> {
+    Ok(if r.bool()? {
+        Some(Timestamp(r.u64()?))
+    } else {
+        None
+    })
 }
 
 fn read_probability(r: &mut Reader<'_>) -> Result<Probability, CodecError> {
@@ -558,6 +578,10 @@ fn read_object(r: &mut Reader<'_>) -> Result<KnowledgeObject, CodecError> {
     let lifecycle = lifecycle_from(r.u8()?)?;
     let retrieval_keys = read_strings(r)?.into_iter().map(RetrievalKey).collect();
     let token_cost = r.u32()?;
+    let validity = KnowledgeValidity {
+        valid_from: read_optional_time(r)?,
+        valid_until: read_optional_time(r)?,
+    };
     Ok(KnowledgeObject {
         id,
         namespace,
@@ -575,6 +599,7 @@ fn read_object(r: &mut Reader<'_>) -> Result<KnowledgeObject, CodecError> {
         lifecycle,
         retrieval_keys,
         token_cost,
+        validity,
     })
 }
 

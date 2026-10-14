@@ -97,6 +97,13 @@ pub enum Refusal {
     PendingInstallsFull {
         pending: usize,
     },
+    /// The result's Pod id is already registered in the PodRegistry with another manifest and
+    /// the operation is not a reactivation of it: installing it after the commit would be
+    /// refused (`register_new`), so it is refused before admission instead and nothing is
+    /// committed.
+    PodIdTaken {
+        pod: PodId,
+    },
     /// The runtime's admission refused the proposal.
     Admission {
         /// The refusal was the gate report not passing.
@@ -631,6 +638,17 @@ impl StructureDriver {
         let withdraw = |vcw: &mut VcwLoop<S>| {
             vcw.withdraw_structure_request(proposal);
         };
+        // A result whose id another Pod holds could be committed but never installed: refuse it
+        // before anything reaches the ledger. `install` checks again after the commit, for a
+        // registration that races this check.
+        if let Some(specialist) = &specialist {
+            if install_collides(pods, proposal.kind(), specialist) {
+                withdraw(vcw);
+                return StructureResult::Refused(Refusal::PodIdTaken {
+                    pod: specialist.pod.clone(),
+                });
+            }
+        }
         // 2. The held-out measurement, before and after the change.
         let roster = RosterView::of(vcw);
         let removed_pods: Vec<PodId> = match proposal.request().op() {
@@ -788,7 +806,7 @@ fn finish<S: AdmissibleScorer>(
 ) -> Result<(), InstallFailure> {
     match specialist {
         Some(specialist) => {
-            install(pods, specialist)
+            install(pods, proposal.op().kind(), specialist)
                 .map_err(|error| InstallFailure::Retry(format!("install: {error}")))?;
             if !vcw.is_outstanding(proposal) {
                 return if vcw.repairers().contains_key(&specialist.pod) {
@@ -815,17 +833,30 @@ fn finish<S: AdmissibleScorer>(
     }
 }
 
-/// Register the specialist's Pod; a reactivated expert takes over its own id. A Pod already
-/// registered with this very manifest is left alone (a retry).
+/// Register the specialist's Pod. A Pod already registered with this very manifest is left
+/// alone (a retry). Only a reactivation takes over an existing entry, its own id
+/// ([`PodRegistry::replace_if_current`]); a Birth, Merge or Split result is a fresh id and goes
+/// through [`PodRegistry::register_new`], which refuses an id that is already registered
+/// (issue #141: replacing it would swap a live Pod without a lifecycle transition).
+fn install_collides(pods: &PodRegistry, kind: OpKind, specialist: &TrainedSpecialist) -> bool {
+    kind != OpKind::Reactivate
+        && pods
+            .get(&specialist.manifest.project, &specialist.pod)
+            .is_some_and(|existing| existing.manifest().digest() != specialist.manifest.digest())
+}
+
 fn install(
     pods: &mut PodRegistry,
+    kind: OpKind,
     specialist: &TrainedSpecialist,
 ) -> Result<(), PodRegistrationError> {
     let pod = specialist.executable();
     match pods.get(&specialist.manifest.project, &specialist.pod) {
         Some(existing) if existing.manifest().digest() == specialist.manifest.digest() => Ok(()),
-        Some(existing) => pods.replace_if_current(&existing, pod).map(|_| ()),
-        None => pods.register_new(pod),
+        Some(existing) if kind == OpKind::Reactivate => {
+            pods.replace_if_current(&existing, pod).map(|_| ())
+        }
+        Some(_) | None => pods.register_new(pod),
     }
 }
 

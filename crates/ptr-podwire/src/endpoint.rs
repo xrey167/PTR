@@ -8,8 +8,8 @@ use crate::access::{answer, answer_bound, PodAccessPolicy};
 use crate::frame::{
     decode_answer, decode_answer_v2, decode_request, decode_request_v2, encode_answer,
     encode_answer_v2, encode_request, encode_request_v2, request_digest, FrameError,
-    PodAdmissionBinding, PodAnswer, PodAnswerV2, PodOutcome, PodRequest, PodRequestV2, RefusalCode,
-    MAX_FRAME_BYTES,
+    PodAddressBinding, PodAdmissionBinding, PodAnswer, PodAnswerV2, PodOutcome, PodRequest,
+    PodRequestV2, RefusalCode, MAX_FRAME_BYTES,
 };
 use ptr_net::{EndpointAddr, IrohSession, IrohTransport, NodeIdentity, PeerAddress, ALPN_PODWIRE};
 use ptr_pods::ProtocolBinding;
@@ -18,7 +18,7 @@ use ptr_protocol::TypedPayload;
 use ptr_runtime::RuntimeExecutionManifestResolver;
 use ptr_types::{
     ArtifactId, Digest, Generation, MeshEndpointBinding, NodeId, PodId, ProjectId, Revision,
-    ScopeId, SessionId, StatefulRequestRecovery, UncertainRequest,
+    ScopeId, SessionId, StatefulRequestRecovery, Timestamp, UncertainRequest,
 };
 use ptr_verifier::Verifier;
 use std::collections::{BTreeMap, BTreeSet};
@@ -32,6 +32,62 @@ use std::time::Duration;
 /// what matters is that there is one. Without it a host that stopped answering
 /// holds a requester open for as long as the transport allows.
 pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// The wall clock in milliseconds since the Unix epoch, the unit a V4 deadline is
+/// written in. A deadline is absolute and crosses hosts, so it can only be as
+/// accurate as the hosts' clocks; a clock that reads before the epoch reads as
+/// zero, which expires every deadline rather than extending one.
+fn now_millis() -> Timestamp {
+    crate::frame::unix_millis_now()
+}
+
+/// How long one V2 exchange may wait: the configured timeout, shortened to the
+/// time left before the request's absolute deadline. A deadline already passed is
+/// refused before anything is sent, so nothing is left uncertain.
+fn request_budget(
+    configured: Duration,
+    address: Option<&PodAddressBinding>,
+) -> Result<(Duration, Option<Timestamp>), PodWireError> {
+    budget_at(configured, address, now_millis())
+}
+
+/// [`request_budget`] at a given clock reading.
+fn budget_at(
+    configured: Duration,
+    address: Option<&PodAddressBinding>,
+    now: Timestamp,
+) -> Result<(Duration, Option<Timestamp>), PodWireError> {
+    let Some(deadline) = address.and_then(|address| address.deadline) else {
+        return Ok((configured, None));
+    };
+    if now >= deadline {
+        return Err(PodWireError::DeadlineExceeded {
+            deadline,
+            now,
+            sent: false,
+        });
+    }
+    let remaining = Duration::from_millis(deadline.0 - now.0);
+    // Equality is deadline-bound: a wait that ends exactly at the deadline is the deadline's.
+    if remaining <= configured {
+        Ok((remaining, Some(deadline)))
+    } else {
+        Ok((configured, None))
+    }
+}
+
+/// The error for a timed-out exchange: the deadline's own when the deadline set
+/// the wait, the transport's otherwise.
+fn timeout_error(bound_by: Option<Timestamp>) -> PodWireError {
+    match bound_by {
+        Some(deadline) => PodWireError::DeadlineExceeded {
+            deadline,
+            now: now_millis(),
+            sent: true,
+        },
+        None => PodWireError::Transport("the host did not answer in time".to_owned()),
+    }
+}
 
 /// Resolves an execution-manifest digest from the authoritative runtime or
 /// catalog. The transport never treats a digest supplied by a caller as proof
@@ -52,6 +108,25 @@ impl ExecutionManifestResolver for ExecutionManifest {
     }
 }
 
+/// The validity check a runtime-backed binding carries into every request it serves. Compared
+/// by identity, which is all a binding's equality needs.
+#[derive(Clone)]
+struct ManifestValidityHandle(Arc<dyn ptr_runtime::ManifestValidity>);
+
+impl std::fmt::Debug for ManifestValidityHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ManifestValidity")
+    }
+}
+
+impl PartialEq for ManifestValidityHandle {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for ManifestValidityHandle {}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PodWireV2Binding {
     artifact_id: ArtifactId,
@@ -65,9 +140,30 @@ pub struct PodWireV2Binding {
     protocol: Option<ProtocolBinding>,
     admission: Option<PodAdmissionBinding>,
     mesh: Option<MeshEndpointBinding>,
+    /// Set by [`Self::with_runtime_execution_manifest`]: the check that the manifest the
+    /// binding was taken from the runtime for still holds, asked on every request the
+    /// binding serves whether or not the host has a manifest registry attached.
+    runtime_validity: Option<ManifestValidityHandle>,
 }
 
 impl PodWireV2Binding {
+    /// The per-request half of a runtime-backed binding: its manifest must still hold now.
+    /// A binding that did not come from the runtime asks nothing.
+    fn check_runtime_validity(&self) -> Result<(), PodWireError> {
+        let Some(validity) = &self.runtime_validity else {
+            return Ok(());
+        };
+        let digest = self
+            .execution_manifest
+            .as_ref()
+            .map(|manifest| manifest.manifest_digest)
+            .ok_or(PodWireError::V2BindingUnavailable)?;
+        validity
+            .0
+            .ensure_valid_at(&digest, now_millis())
+            .map_err(PodWireError::ManifestNoLongerValid)
+    }
+
     pub fn artifact_id(&self) -> &ArtifactId {
         &self.artifact_id
     }
@@ -137,12 +233,18 @@ impl PodWireV2Binding {
     pub fn with_runtime_execution_manifest(
         self,
         runtime: &ptr_runtime::PtrRuntime,
+        validity: Arc<dyn ptr_runtime::ManifestValidity>,
         digest: &Digest,
     ) -> Result<Self, PodWireError> {
         let validated = runtime
             .resolve_execution_manifest(digest)
             .map_err(|_| PodWireError::V2BindingUnavailable)?;
-        self.with_execution_manifest(validated.manifest)
+        validity
+            .ensure_valid_at(digest, now_millis())
+            .map_err(PodWireError::ManifestNoLongerValid)?;
+        let mut bound = self.with_execution_manifest(validated.manifest)?;
+        bound.runtime_validity = Some(ManifestValidityHandle(validity));
+        Ok(bound)
     }
 
     pub fn with_mesh(mut self, mesh: MeshEndpointBinding) -> Result<Self, PodWireError> {
@@ -152,11 +254,13 @@ impl PodWireV2Binding {
         Ok(self)
     }
 
-    fn accepts(&self, request: &PodRequestV2) -> bool {
+    fn accepts(&self, request: &PodRequestV2, now: Timestamp) -> bool {
         (match (&request.address, self.semantic_revision) {
             (None, None) => true,
             (Some(address), Some(expected_revision)) => {
                 address.validate().is_ok()
+                    && address.hop_limit > 0
+                    && address.deadline.is_none_or(|deadline| now < deadline)
                     && address.destination.semantic_revision == expected_revision
                     && address.destination.address.project == self.manifest().project
                     && address.destination.address.pod_id == self.manifest().id
@@ -195,6 +299,9 @@ impl PodWireV2Binding {
 pub enum PodWireError {
     /// The transport refused, failed, or did not answer in time.
     Transport(String),
+    /// The manifest the request names is admitted but no longer holds: a knowledge object it
+    /// binds has expired, was invalidated or is gone. The Pod was not invoked.
+    ManifestNoLongerValid(ptr_runtime::RuntimeManifestError),
     /// The frame was malformed.
     Frame(FrameError),
     /// The request named another endpoint's key.
@@ -252,6 +359,16 @@ pub enum PodWireError {
         request_id: u64,
     },
     V2BindingUnavailable,
+    /// The request's absolute deadline passed. `sent` says whether the request had been sent:
+    /// `false` means it expired before anything left (nothing ran, a retry is safe with a new
+    /// deadline), `true` means it expired while waiting for the answer, so the host may still
+    /// have run it (a session marks the request uncertain; do not retry blindly). A host that
+    /// refuses an expired request reports it with `sent: true`.
+    DeadlineExceeded {
+        deadline: Timestamp,
+        now: Timestamp,
+        sent: bool,
+    },
 }
 
 impl PodWireError {
@@ -273,6 +390,8 @@ impl PodWireError {
             Self::SessionClosed => "PTR_PODW_SESSION_CLOSED",
             Self::RequestUncertain { .. } => "PTR_PODW_REQUEST_UNCERTAIN",
             Self::V2BindingUnavailable => "PTR_PODW_V2_BINDING_UNAVAILABLE",
+            Self::DeadlineExceeded { .. } => "PTR_PODW_DEADLINE_EXCEEDED",
+            Self::ManifestNoLongerValid(_) => "PTR_PODW_MANIFEST_NO_LONGER_VALID",
         }
     }
 }
@@ -321,7 +440,15 @@ pub struct PodHost {
     policy: PodAccessPolicy,
     verifier: Box<dyn Verifier<TypedPayload> + Send + Sync>,
     transport: IrohTransport,
-    runtime_manifest_registry: Option<Arc<RwLock<ptr_runtime::ExecutionManifestRegistry>>>,
+    runtime_manifests: Option<RuntimeManifests>,
+}
+
+/// The live manifest registry a host checks requests against, and the validity check that
+/// goes with it. The two are attached together so a registry cannot be served from without
+/// the time check.
+struct RuntimeManifests {
+    registry: Arc<RwLock<ptr_runtime::ExecutionManifestRegistry>>,
+    validity: Arc<dyn ptr_runtime::ManifestValidity>,
 }
 
 impl PodHost {
@@ -343,19 +470,47 @@ impl PodHost {
             policy,
             verifier: Box::new(verifier),
             transport,
-            runtime_manifest_registry: None,
+            runtime_manifests: None,
         })
     }
 
-    /// Attach the live runtime manifest registry. The registry is shared rather
-    /// than copied so revocation is observed by already-created bindings before
-    /// their next invocation.
+    /// Attach the live runtime manifest registry together with the check that its manifests
+    /// still hold. The registry is shared rather than copied so revocation is observed by
+    /// already-created bindings before their next invocation; the validity check runs with
+    /// the host's clock (milliseconds since the epoch) on every request, after the registry
+    /// resolved the digest, and a failure refuses the request before the Pod is invoked.
     pub fn with_runtime_manifest_registry(
         mut self,
         registry: Arc<RwLock<ptr_runtime::ExecutionManifestRegistry>>,
+        validity: Arc<dyn ptr_runtime::ManifestValidity>,
     ) -> Self {
-        self.runtime_manifest_registry = Some(registry);
+        self.runtime_manifests = Some(RuntimeManifests { registry, validity });
         self
+    }
+
+    /// The runtime-manifest part of admitting a request: with a registry attached the request
+    /// must name an admitted, unrevoked manifest that is still valid now. Without one, nothing
+    /// is asked.
+    fn check_runtime_manifest(&self, request: &PodRequestV2) -> Result<(), PodWireError> {
+        let Some(manifests) = &self.runtime_manifests else {
+            return Ok(());
+        };
+        let digest = request
+            .execution_manifest
+            .ok_or(PodWireError::V2BindingUnavailable)?;
+        let current = manifests
+            .registry
+            .read()
+            .ok()
+            .and_then(|registry| registry.resolve(&digest).ok())
+            .ok_or(PodWireError::V2BindingUnavailable)?;
+        if current.manifest.manifest_digest != digest {
+            return Err(PodWireError::V2BindingUnavailable);
+        }
+        manifests
+            .validity
+            .ensure_valid_at(&digest, now_millis())
+            .map_err(PodWireError::ManifestNoLongerValid)
     }
 
     pub fn bind_v2(
@@ -382,6 +537,7 @@ impl PodHost {
             protocol: None,
             admission: None,
             mesh: None,
+            runtime_validity: None,
         })
     }
 
@@ -487,6 +643,7 @@ impl PodHost {
         placement_epoch: u64,
         fencing_token: u128,
         admission: PodAdmissionBinding,
+        validity: Arc<dyn ptr_runtime::ManifestValidity>,
         execution_manifest: &Digest,
     ) -> Result<PodWireV2Binding, PodWireError> {
         self.bind_v2_admitted(
@@ -499,7 +656,7 @@ impl PodHost {
             fencing_token,
             admission,
         )?
-        .with_runtime_execution_manifest(runtime, execution_manifest)
+        .with_runtime_execution_manifest(runtime, validity, execution_manifest)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -659,7 +816,20 @@ impl PodHost {
                             expected: self.identity().public_key,
                         }),
                     )
-                } else if !binding.accepts(&request) {
+                } else if let Some(error) = expired_deadline(&request) {
+                    (
+                        request_id,
+                        request.generation,
+                        request.revision,
+                        request.identity_digest,
+                        request.session_id.clone(),
+                        request.policy_revision,
+                        PodOutcome::Refused {
+                            code: RefusalCode::Unavailable,
+                        },
+                        Some(error),
+                    )
+                } else if !binding.accepts(&request, now_millis()) {
                     (
                         request_id,
                         request.generation,
@@ -672,30 +842,37 @@ impl PodHost {
                         },
                         Some(PodWireError::V2BindingUnavailable),
                     )
-                } else if let Some(registry) = &self.runtime_manifest_registry {
-                    let current = request
-                        .execution_manifest
-                        .and_then(|digest| registry.read().ok()?.resolve(&digest).ok());
-                    if current
-                        .as_ref()
-                        .map(|manifest| manifest.manifest.manifest_digest)
-                        != request.execution_manifest
-                    {
-                        (
-                            request_id,
-                            request.generation,
-                            request.revision,
-                            request.identity_digest,
-                            request.session_id.clone(),
-                            request.policy_revision,
-                            PodOutcome::Refused {
-                                code: RefusalCode::Unavailable,
-                            },
-                            Some(PodWireError::V2BindingUnavailable),
-                        )
-                    } else {
-                        self.answer_v2_bound_request(&peer, binding, request, request_id)
-                    }
+                } else if let Err(error) = self
+                    .check_runtime_manifest(&request)
+                    .and_then(|()| binding.check_runtime_validity())
+                {
+                    (
+                        request_id,
+                        request.generation,
+                        request.revision,
+                        request.identity_digest,
+                        request.session_id.clone(),
+                        request.policy_revision,
+                        PodOutcome::Refused {
+                            code: RefusalCode::Unavailable,
+                        },
+                        Some(error),
+                    )
+                } else if let Some(error) = expired_deadline(&request) {
+                    // The checks above take time; the deadline is asked again with a fresh
+                    // clock right before the Pod would run.
+                    (
+                        request_id,
+                        request.generation,
+                        request.revision,
+                        request.identity_digest,
+                        request.session_id.clone(),
+                        request.policy_revision,
+                        PodOutcome::Refused {
+                            code: RefusalCode::Unavailable,
+                        },
+                        Some(error),
+                    )
                 } else {
                     self.answer_v2_bound_request(&peer, binding, request, request_id)
                 }
@@ -879,7 +1056,20 @@ impl PodHost {
                             expected: self.identity().public_key,
                         }),
                     )
-                } else if !binding.accepts(&request) {
+                } else if let Some(error) = expired_deadline(&request) {
+                    (
+                        request_id,
+                        request.generation,
+                        request.revision,
+                        request.identity_digest,
+                        request.session_id.clone(),
+                        request.policy_revision,
+                        PodOutcome::Refused {
+                            code: RefusalCode::Unavailable,
+                        },
+                        Some(error),
+                    )
+                } else if !binding.accepts(&request, now_millis()) {
                     (
                         request_id,
                         request.generation,
@@ -892,30 +1082,37 @@ impl PodHost {
                         },
                         Some(PodWireError::V2BindingUnavailable),
                     )
-                } else if let Some(registry) = &self.runtime_manifest_registry {
-                    let current = request
-                        .execution_manifest
-                        .and_then(|digest| registry.read().ok()?.resolve(&digest).ok());
-                    if current
-                        .as_ref()
-                        .map(|manifest| manifest.manifest.manifest_digest)
-                        != request.execution_manifest
-                    {
-                        (
-                            request_id,
-                            request.generation,
-                            request.revision,
-                            request.identity_digest,
-                            request.session_id.clone(),
-                            request.policy_revision,
-                            PodOutcome::Refused {
-                                code: RefusalCode::Unavailable,
-                            },
-                            Some(PodWireError::V2BindingUnavailable),
-                        )
-                    } else {
-                        self.answer_v2_bound_request(&peer, binding, request, request_id)
-                    }
+                } else if let Err(error) = self
+                    .check_runtime_manifest(&request)
+                    .and_then(|()| binding.check_runtime_validity())
+                {
+                    (
+                        request_id,
+                        request.generation,
+                        request.revision,
+                        request.identity_digest,
+                        request.session_id.clone(),
+                        request.policy_revision,
+                        PodOutcome::Refused {
+                            code: RefusalCode::Unavailable,
+                        },
+                        Some(error),
+                    )
+                } else if let Some(error) = expired_deadline(&request) {
+                    // The checks above take time; the deadline is asked again with a fresh
+                    // clock right before the Pod would run.
+                    (
+                        request_id,
+                        request.generation,
+                        request.revision,
+                        request.identity_digest,
+                        request.session_id.clone(),
+                        request.policy_revision,
+                        PodOutcome::Refused {
+                            code: RefusalCode::Unavailable,
+                        },
+                        Some(error),
+                    )
                 } else {
                     self.answer_v2_bound_request(&peer, binding, request, request_id)
                 }
@@ -1147,26 +1344,28 @@ impl PodSession {
             .cloned()
         {
             if cached_digest == digest {
+                // A replay is still a call: past its deadline it is refused as the first
+                // send would be, nothing having left.
+                request_budget(self.request_timeout, request.address.as_ref())?;
                 return Ok(answer);
             }
             return Err(PodWireError::DuplicateRequest {
                 request_id: request.request_id,
             });
         }
+        let (budget, bound_by) = request_budget(self.request_timeout, request.address.as_ref())?;
         let _reservation = self.reserve(&self.v2_inflight, request.request_id)?;
-        let response = tokio::time::timeout(
-            self.request_timeout,
-            self.transport.request(&frame, MAX_FRAME_BYTES),
-        )
-        .await
-        .map_err(|_| {
-            self.mark_uncertain_v2(request.request_id);
-            PodWireError::Transport("the host did not answer in time".to_owned())
-        })?
-        .map_err(|error| {
-            self.mark_uncertain_v2(request.request_id);
-            session_error(error)
-        })?;
+        let response =
+            tokio::time::timeout(budget, self.transport.request(&frame, MAX_FRAME_BYTES))
+                .await
+                .map_err(|_| {
+                    self.mark_uncertain_v2(request.request_id);
+                    timeout_error(bound_by)
+                })?
+                .map_err(|error| {
+                    self.mark_uncertain_v2(request.request_id);
+                    session_error(error)
+                })?;
         let answered = decode_answer_v2(&response).map_err(|error| {
             self.mark_uncertain_v2(request.request_id);
             PodWireError::Frame(error)
@@ -1305,6 +1504,19 @@ fn validate_answer(
         return Err(PodWireError::UnboundAnswer);
     }
     Ok(answered.clone())
+}
+
+/// The refusal for a request whose absolute deadline has already passed on this
+/// host. It crosses the wire as `Unavailable`: the peer learns nothing a clock
+/// would not tell it, and the host's operator sees the real reason.
+fn expired_deadline(request: &PodRequestV2) -> Option<PodWireError> {
+    let deadline = request.address.as_ref()?.deadline?;
+    let now = now_millis();
+    (now >= deadline).then_some(PodWireError::DeadlineExceeded {
+        deadline,
+        now,
+        sent: true,
+    })
 }
 
 fn validate_answer_v2(
@@ -1491,57 +1703,72 @@ impl PodClient {
         let authenticated = host.id.to_string();
         let frame = encode_request_v2(request)?;
         let digest = request_digest(&frame);
+        let (budget, bound_by) = request_budget(self.request_timeout, request.address.as_ref())?;
         let response = tokio::time::timeout(
-            self.request_timeout,
+            budget,
             self.transport
                 .request(host, ALPN_PODWIRE, &frame, MAX_FRAME_BYTES),
         )
         .await
-        .map_err(|_| PodWireError::Transport("the host did not answer in time".to_owned()))?
+        .map_err(|_| timeout_error(bound_by))?
         .map_err(PodWireError::Transport)?;
         let answered = decode_answer_v2(&response)?;
-        if answered.responder != authenticated {
-            return Err(PodWireError::ForgedAnswer {
-                authenticated,
-                claimed: answered.responder,
-            });
-        }
-        if answered.request_id != request.request_id {
-            return Err(PodWireError::WrongRequest {
-                expected: request.request_id,
-                answered: answered.request_id,
-            });
-        }
-        if answered.generation != request.generation {
-            return Err(PodWireError::WrongGeneration {
-                expected: request.generation,
-                answered: answered.generation,
-            });
-        }
-        if answered.revision != request.revision {
-            return Err(PodWireError::WrongRevision {
-                expected: request.revision,
-                answered: answered.revision,
-            });
-        }
-        if answered.placement_epoch != request.placement_epoch
-            || answered.fencing_token != request.fencing_token
-        {
-            return Err(PodWireError::StateBindingMismatch {
-                expected_epoch: request.placement_epoch,
-                answered_epoch: answered.placement_epoch,
-                expected_token: request.fencing_token,
-                answered_token: answered.fencing_token,
-            });
-        }
-        if answered.request_digest != digest {
-            return Err(PodWireError::UnboundAnswer);
-        }
+        validate_answer_v2(&answered, request, digest, &authenticated)?;
         Ok(answered)
     }
 
     /// Close the endpoint.
     pub async fn close(&self) {
         self.transport.close().await;
+    }
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::*;
+
+    fn bound_to(deadline: u64) -> PodAddressBinding {
+        PodAddressBinding {
+            source: None,
+            destination: ptr_types::PodRevisionAddress {
+                address: ptr_types::PodAddress::new("p".into(), "n".into(), "pod".into()).unwrap(),
+                semantic_revision: [1; 32],
+                generation: Generation(1),
+            },
+            trace_id: "budget".into(),
+            hop_limit: 4,
+            visited: Vec::new(),
+            protocol: None,
+            mesh: None,
+            deadline: Some(Timestamp(deadline)),
+            origin_ts: Some(Timestamp(1)),
+        }
+    }
+
+    #[test]
+    fn a_wait_that_ends_exactly_at_the_deadline_is_the_deadlines_own() {
+        let configured = Duration::from_millis(500);
+        let binding = bound_to(10_500);
+        // Remaining equals the configured timeout: the deadline binds the wait.
+        let (budget, bound_by) = budget_at(configured, Some(&binding), Timestamp(10_000)).unwrap();
+        assert_eq!((budget, bound_by), (configured, Some(Timestamp(10_500))));
+        assert!(matches!(
+            timeout_error(bound_by),
+            PodWireError::DeadlineExceeded { sent: true, .. }
+        ));
+        // More time left than configured: the transport timeout binds.
+        let (budget, bound_by) = budget_at(configured, Some(&binding), Timestamp(9_999)).unwrap();
+        assert_eq!((budget, bound_by), (configured, None));
+        // Less time left: the deadline binds.
+        let (budget, bound_by) = budget_at(configured, Some(&binding), Timestamp(10_001)).unwrap();
+        assert_eq!(
+            (budget, bound_by),
+            (Duration::from_millis(499), Some(Timestamp(10_500)))
+        );
+        // At or after the deadline nothing is sent.
+        assert!(matches!(
+            budget_at(configured, Some(&binding), Timestamp(10_500)),
+            Err(PodWireError::DeadlineExceeded { sent: false, .. })
+        ));
     }
 }

@@ -187,6 +187,8 @@ fn request(
             visited: Vec::new(),
             protocol: None,
             mesh: None,
+            deadline: None,
+            origin_ts: None,
         }),
         execution_manifest: Some(
             execution_manifest(manifest, generation, revision).manifest_digest,

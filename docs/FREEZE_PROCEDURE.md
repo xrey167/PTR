@@ -78,7 +78,7 @@ Secrets (DSNs, tokens) go into a file the generated script sources quietly (`env
    (1 is a recorded product finding, 2 a harness stop). Each seed is committed on its own. **Aggregate (step 10).**
 10. **Finish** (below), after the aggregate, as three commits.
 
-GPU index on the two-card desktop (RTX 3090 x2): a spec with `gpu = 0` or `gpu = 1` makes the generated script export
+GPU index on the owner's single-card PCs (inventory of 2026-10-13: one RTX 3090 PC, one RTX 4090 PC): every card is index 0, so a GPU spec sets `gpu = 0`; `gpu = 1` existed only for the superseded two-card desktop. A spec with `gpu = <index>` makes the generated script export
 `CUDA_VISIBLE_DEVICES=<index>` and prefix every log line with `[ID gpu=N]`. Without `gpu` nothing is exported (CPU experiments). The export
 reaches the script's own cargo, pilot and mutation steps, but not the seed runs: they go through `scripts/run_experiment.py run`, whose command
 environment allows only `PATH`, `HOME`, `TMPDIR`, `TEMP`, `TMP`, `LANG`, `LC_ALL`, `LC_CTYPE`, `CARGO_HOME`, `RUSTUP_HOME` and the declared `PTR_*`

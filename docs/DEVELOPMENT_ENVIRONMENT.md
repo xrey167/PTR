@@ -78,7 +78,7 @@ no claim, so there is nothing to contradict and nothing is reported.
 ## Existing environments
 
 - Dev Container: `.devcontainer/`
-- GPU desktop (Ubuntu 24.04, two RTX 3090; the runbook was written for one RTX 4090): [`docs/DESKTOP_SETUP.md`](DESKTOP_SETUP.md), `make desktop-setup`, `make gpu-doctor`
+- GPU desktops (Ubuntu 24.04, two PCs with one card each, an RTX 3090 and an RTX 4090; the runbook was written for one RTX 4090): [`docs/DESKTOP_SETUP.md`](DESKTOP_SETUP.md), `make desktop-setup`, `make gpu-doctor`
 - VS Code extension hints: rust-analyzer + TOML support
 - Emacs optional profile: `tooling/emacs/`
 

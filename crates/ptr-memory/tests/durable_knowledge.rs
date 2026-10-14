@@ -5,7 +5,7 @@ use ptr_memory::{
     DurableKnowledgeError, DurableKnowledgeStore, DurableOptions, JournalError, KnowledgeLifecycle,
     KnowledgeStore, KnowledgeStoreError,
 };
-use ptr_types::{Generation, KnowledgeObjectId};
+use ptr_types::{Generation, KnowledgeObjectId, KnowledgeValidity, Timestamp};
 use std::fs;
 
 const LIFECYCLES: [KnowledgeLifecycle; 6] = [
@@ -353,4 +353,40 @@ fn failed_automatic_compaction_does_not_fail_a_journaled_operation() {
     drop(durable);
     let reopened = DurableKnowledgeStore::open(&file.0, options).unwrap();
     assert_eq!(reopened.state_digest(), digest_after);
+}
+
+#[test]
+fn bounded_validity_survives_reopen_and_compaction() {
+    let file = TempJournal::new("dk-validity");
+    let validity = KnowledgeValidity {
+        valid_from: Some(Timestamp(10)),
+        valid_until: Some(Timestamp(20)),
+    };
+    let open_ended = KnowledgeValidity {
+        valid_from: None,
+        valid_until: Some(Timestamp(5)),
+    };
+    let mut durable = DurableKnowledgeStore::open(&file.0, quiet()).unwrap();
+    let mut bounded = knowledge_object("bounded", 1, &[], vec![]);
+    bounded.validity = validity;
+    let mut until_only = knowledge_object("until-only", 1, &[], vec![]);
+    until_only.validity = open_ended;
+    durable.register_object(bounded).unwrap();
+    durable.register_object(until_only).unwrap();
+    let digest = durable.state_digest();
+    drop(durable);
+
+    let mut reopened = DurableKnowledgeStore::open(&file.0, quiet()).unwrap();
+    let id = KnowledgeObjectId::from("bounded");
+    assert_eq!(reopened.store().object(&id).unwrap().validity, validity);
+    let id = KnowledgeObjectId::from("until-only");
+    assert_eq!(reopened.store().object(&id).unwrap().validity, open_ended);
+    assert_eq!(reopened.state_digest(), digest);
+
+    reopened.compact().unwrap();
+    drop(reopened);
+    let compacted = DurableKnowledgeStore::open(&file.0, quiet()).unwrap();
+    let id = KnowledgeObjectId::from("bounded");
+    assert_eq!(compacted.store().object(&id).unwrap().validity, validity);
+    assert_eq!(compacted.state_digest(), digest);
 }

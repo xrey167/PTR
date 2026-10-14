@@ -6,8 +6,8 @@ use ptr_memory::{
     MemoryRecordId, NewMemoryRecord, RawEvent, Support, SupportKind,
 };
 use ptr_types::{
-    EntityId, EventRole, Generation, KnowledgeObjectId, NamespaceId, Probability, RawEventId,
-    Revision, SessionId, Timestamp,
+    EntityId, EventRole, Generation, KnowledgeObjectId, KnowledgeValidity, NamespaceId,
+    Probability, RawEventId, Revision, SessionId, Timestamp,
 };
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -72,6 +72,7 @@ pub fn knowledge_object(
         lifecycle: KnowledgeLifecycle::Hot,
         retrieval_keys: vec![],
         token_cost: 7,
+        validity: KnowledgeValidity::ALWAYS,
     }
 }
 

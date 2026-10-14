@@ -3,7 +3,8 @@
 //! returns search candidates, never evidence.
 
 use ptr_search::{
-    check_rank_fusion, weighted_rank_fusion, FusedHit, FusionError, SearchHit, WeightedList,
+    check_rank_fusion, weighted_rank_fusion, FusedHit, FusionError, SearchAttributes, SearchFilter,
+    SearchHit, WeightedList,
 };
 use ptr_types::{CapsuleId, Generation, ProjectId};
 use tokio_postgres::IsolationLevel;
@@ -48,6 +49,9 @@ pub struct SearchDocument {
     pub content_digest: [u8; 32],
     pub body: String,
     pub embedding: Option<(Identifier, Vec<f32>)>,
+    /// Who may see the document, when it holds and what it states. The default is a
+    /// project-wide document that always holds.
+    pub attributes: SearchAttributes,
 }
 
 /// One hybrid query. Either or both retrieval modes may be present.
@@ -66,6 +70,10 @@ pub struct HybridQuery {
     /// The `k` of reciprocal rank fusion, finite and nonnegative; 60 is the
     /// customary default.
     pub rank_constant: f32,
+    /// Who is asking, when the answer must hold and which metadata it must carry. Applied
+    /// inside each mode's scan, before its `limit`. A filter that names nobody sees
+    /// project-wide documents only, of `project`: [`PgSubstrate::search`] needs a project.
+    pub filter: SearchFilter,
 }
 
 /// What one hybrid query returned, all from one snapshot.
@@ -181,7 +189,28 @@ impl PgSubstrate {
         let capsule = document.capsule.0.as_str();
         check_text("search_document.capsule", capsule)?;
         check_text("search_document.body", &document.body)?;
+        document
+            .attributes
+            .validate()
+            .map_err(|error| PgError::InvalidSearchFilter {
+                field: "search_document.attributes",
+                error,
+            })?;
         let generation = to_i64(document.generation.0, "generation")?;
+        let principals: Vec<String> = document.attributes.principals.iter().cloned().collect();
+        let tags: Vec<String> = document.attributes.tags.iter().cloned().collect();
+        let valid_from = document
+            .attributes
+            .validity
+            .valid_from
+            .map(|from| to_i64(from.0, "search_document.valid_from"))
+            .transpose()?;
+        let valid_until = document
+            .attributes
+            .validity
+            .valid_until
+            .map(|until| to_i64(until.0, "search_document.valid_until"))
+            .transpose()?;
         let not_live = || PgError::NotLive {
             target: capsule.to_owned(),
             generation: document.generation.0,
@@ -243,13 +272,21 @@ impl PgSubstrate {
                 &format!(
                     "INSERT INTO {derived}.search_document \
                      (capsule, generation, project, content_digest, body, space, embedding, \
-                      indexed_at_commit) \
-                     VALUES ($1, $2, $3, $4, $5, $7, {embedding_sql}, $8) \
+                      indexed_at_commit, principals, valid_from, valid_until, semantic_role, \
+                      predicate, tags) \
+                     VALUES ($1, $2, $3, $4, $5, $7, {embedding_sql}, $8, $9, $10, $11, $12, \
+                             $13, $14) \
                      ON CONFLICT (capsule, generation) DO UPDATE \
                      SET body = EXCLUDED.body, \
                          space = EXCLUDED.space, embedding = EXCLUDED.embedding, \
                          indexed_at_commit = EXCLUDED.indexed_at_commit, \
-                         project = EXCLUDED.project \
+                         project = EXCLUDED.project, \
+                         principals = EXCLUDED.principals, \
+                         valid_from = EXCLUDED.valid_from, \
+                         valid_until = EXCLUDED.valid_until, \
+                         semantic_role = EXCLUDED.semantic_role, \
+                         predicate = EXCLUDED.predicate, \
+                         tags = EXCLUDED.tags \
                      WHERE {derived}.search_document.content_digest = EXCLUDED.content_digest"
                 ),
                 &[
@@ -261,6 +298,12 @@ impl PgSubstrate {
                     &vector,
                     &space,
                     &watermark,
+                    &principals,
+                    &valid_from,
+                    &valid_until,
+                    &document.attributes.semantic_role,
+                    &document.attributes.predicate,
+                    &tags,
                 ],
             )
             .await
@@ -284,9 +327,12 @@ impl PgSubstrate {
     /// using one as evidence requires observing it against the lifecycle
     /// authority.
     ///
-    /// Each mode applies the lifecycle rule and the project filter before its
-    /// `limit`, so a stale or revoked cache row never takes the place of a
-    /// live document. The lexical list is exact. The vector list is read from
+    /// Each mode applies the lifecycle rule, the project filter and the query's
+    /// [`SearchFilter`] (access list, half-open validity, role, predicate, tags) before
+    /// its `limit`, so a stale, revoked, expired or foreign cache row never takes the
+    /// place of a visible document. The filter's conditions sit in the scan's own
+    /// `WHERE`, not after it: in the vector mode that is the inner, limited query, so the
+    /// iterative scan keeps reading until `limit` rows pass them. The lexical list is exact. The vector list is read from
     /// the space's HNSW index with an iterative strict-order scan and
     /// `hnsw.ef_search` set to the limit, at least 40 and at most 1,000: it
     /// holds approximate nearest neighbours, not necessarily the nearest, and
@@ -303,6 +349,36 @@ impl PgSubstrate {
     /// `query.vector_weight`, or `query.weights` for weights whose total
     /// could fuse to an infinite score.
     pub async fn search(&mut self, query: &HybridQuery) -> Result<SearchResults, PgError> {
+        self.search_checked(query, false).await
+    }
+
+    /// The one search across every project, for an audit or an administrator: the query must
+    /// carry the audit filter ([`SearchFilter::audit_without_time`] shape: no time rule) and
+    /// names no project. [`Self::search`] refuses a query without a project, because a
+    /// document with an empty access list is visible to its whole project and must not become
+    /// visible to the askers of other projects.
+    ///
+    /// # Errors
+    /// As [`Self::search`], and [`ptr_search::FilterError::AuditFilterRequired`] when the
+    /// filter carries a time rule.
+    pub async fn search_all_projects_for_audit(
+        &mut self,
+        query: &HybridQuery,
+    ) -> Result<SearchResults, PgError> {
+        if query.filter.now.is_some() || query.project.is_some() {
+            return Err(PgError::InvalidSearchFilter {
+                field: "query.filter",
+                error: ptr_search::FilterError::AuditFilterRequired,
+            });
+        }
+        self.search_checked(query, true).await
+    }
+
+    async fn search_checked(
+        &mut self,
+        query: &HybridQuery,
+        all_projects: bool,
+    ) -> Result<SearchResults, PgError> {
         if query.limit == 0 {
             return Err(PgError::OutOfRange {
                 field: "query.limit",
@@ -328,10 +404,31 @@ impl PgSubstrate {
         if let Some(project) = &query.project {
             check_text("query.project", &project.0)?;
         }
+        query
+            .filter
+            .validate()
+            .map_err(|error| PgError::InvalidSearchFilter {
+                field: "query.filter",
+                error,
+            })?;
+        if query.project.is_none() && !all_projects {
+            return Err(PgError::InvalidSearchFilter {
+                field: "query.project",
+                error: ptr_search::FilterError::ProjectRequired,
+            });
+        }
         let schemas = self.schemas.clone();
         let (projection, derived) = (schemas.projection.as_str(), schemas.derived.as_str());
         let project = query.project.as_ref().map(|project| project.0.clone());
         let limit = i64::from(query.limit);
+        let audience: Vec<String> = query.filter.audience().into_iter().collect();
+        let now = query
+            .filter
+            .now
+            .map(|now| to_i64(now.0, "query.filter.now"))
+            .transpose()?;
+        let tags_any: Vec<String> = query.filter.tags_any.iter().cloned().collect();
+        let (role, predicate) = (&query.filter.semantic_role, &query.filter.predicate);
 
         let transaction = self
             .client
@@ -359,6 +456,18 @@ impl PgSubstrate {
                              WHERE t.subject = d.capsule AND t.generation = d.generation)"
         );
 
+        // The eligibility predicate over a document `d`, the same for both modes and the same
+        // as `SearchFilter::admits`: an empty access list is project-wide, otherwise the
+        // asker's audience must share a member; validity is half-open (`valid_from <= now <
+        // valid_until`, NULL open) and judged only when the filter carries a `now`; role and
+        // predicate are equalities; tags need one in common. The parameters are `$4..$8`.
+        let eligible = "(cardinality(d.principals) = 0 OR d.principals && $4::text[]) \
+             AND ($5::bigint IS NULL OR ((d.valid_from IS NULL OR d.valid_from <= $5::bigint) \
+                  AND (d.valid_until IS NULL OR $5::bigint < d.valid_until))) \
+             AND ($6::text IS NULL OR d.semantic_role = $6::text) \
+             AND ($7::text IS NULL OR d.predicate = $7::text) \
+             AND (cardinality($8::text[]) = 0 OR d.tags && $8::text[])";
+
         let mut lexical = Vec::new();
         if let Some(text) = &query.text {
             let rows = transaction
@@ -369,9 +478,12 @@ impl PgSubstrate {
                          CROSS JOIN plainto_tsquery('simple'::regconfig, $1) q \
                          WHERE {live} \
                            AND d.lexeme @@ q AND ($2::text IS NULL OR d.project = $2) \
+                           AND {eligible} \
                          ORDER BY score DESC, d.capsule, d.generation LIMIT $3"
                     ),
-                    &[text, &project, &limit],
+                    &[
+                        text, &project, &limit, &audience, &now, role, predicate, &tags_any,
+                    ],
                 )
                 .await
                 .map_err(database)?;
@@ -420,13 +532,16 @@ impl PgSubstrate {
                              FROM {derived}.search_document d \
                              WHERE d.space = '{id}' AND ($2::text IS NULL OR d.project = $2) \
                                AND {live} \
+                               AND {eligible} \
                              ORDER BY d.embedding::halfvec({dims}) \
                                           <=> $1::real[]::halfvec({dims}) \
                              LIMIT $3 \
                          ) v \
                          ORDER BY v.distance, v.capsule, v.generation"
                     ),
-                    &[embedding, &project, &limit],
+                    &[
+                        embedding, &project, &limit, &audience, &now, role, predicate, &tags_any,
+                    ],
                 )
                 .await
                 .map_err(database)?;

@@ -6,6 +6,82 @@ use std::fmt;
 
 const SCHEME: &str = "ptr://";
 
+/// Why a Pod's outbound connection or publication was refused before anything left the
+/// host. The codes are pinned data: they are written into the ledger.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum EgressRefusalReason {
+    /// The destination host is not in the link's egress policy.
+    HostNotAllowed,
+    /// The destination port is not in the link's egress policy.
+    PortNotAllowed,
+    /// The topic matches no filter in the link's egress policy.
+    TopicNotAllowed,
+    /// The topic is empty, over its bound, carries a wildcard, or has a control
+    /// character: a publication names a concrete topic, never a filter.
+    InvalidTopic,
+    /// The Pod lease used up its frame budget for the current window.
+    RateLimited,
+    /// The link's policy lists topics, so a publication must name one, and this one did not.
+    TopicRequired,
+    /// The link's policy lists topics (or its protocol is MQTT) but the executor cannot tie a
+    /// declared topic to the bytes it sends: it does not read the topic from the frame, so a
+    /// Pod could declare an allowed topic and publish another. Refused rather than trusted.
+    TopicUnverifiable,
+}
+
+impl EgressRefusalReason {
+    /// Every reason, so a test can hold the code table to account.
+    pub const ALL: [Self; 7] = [
+        Self::HostNotAllowed,
+        Self::PortNotAllowed,
+        Self::TopicNotAllowed,
+        Self::InvalidTopic,
+        Self::RateLimited,
+        Self::TopicRequired,
+        Self::TopicUnverifiable,
+    ];
+
+    /// The pinned wire and ledger code.
+    pub fn code(self) -> u8 {
+        match self {
+            Self::HostNotAllowed => 0,
+            Self::PortNotAllowed => 1,
+            Self::TopicNotAllowed => 2,
+            Self::InvalidTopic => 3,
+            Self::RateLimited => 4,
+            Self::TopicRequired => 5,
+            Self::TopicUnverifiable => 6,
+        }
+    }
+
+    /// A stable lowercase name, for a materialized value or a log line.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::HostNotAllowed => "host-not-allowed",
+            Self::PortNotAllowed => "port-not-allowed",
+            Self::TopicNotAllowed => "topic-not-allowed",
+            Self::InvalidTopic => "invalid-topic",
+            Self::RateLimited => "rate-limited",
+            Self::TopicRequired => "topic-required",
+            Self::TopicUnverifiable => "topic-unverifiable",
+        }
+    }
+
+    /// The reason a code names, or `None` for a code this build has no meaning for.
+    pub fn from_code(code: u8) -> Option<Self> {
+        match code {
+            0 => Some(Self::HostNotAllowed),
+            1 => Some(Self::PortNotAllowed),
+            2 => Some(Self::TopicNotAllowed),
+            3 => Some(Self::InvalidTopic),
+            4 => Some(Self::RateLimited),
+            5 => Some(Self::TopicRequired),
+            6 => Some(Self::TopicUnverifiable),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct PodAddress {
     pub project: ProjectId,
@@ -202,6 +278,10 @@ pub struct RouteConstraints {
     pub zone: Option<ZoneId>,
     pub required_vram_bytes: Option<u64>,
     pub min_epoch: Option<u64>,
+    /// The caller's absolute deadline in milliseconds since the Unix epoch. A resolved route
+    /// carries it unchanged; `None` means the caller set none, the route has none, and only
+    /// the transport timeout applies. Zero is not a deadline.
+    pub deadline: Option<super::Timestamp>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -215,15 +295,29 @@ pub struct PodRoute {
     pub output_type: TypeId,
     pub trace_id: TraceId,
     pub request_id: RequestId,
-    pub deadline: super::Timestamp,
+    /// Absolute deadline, milliseconds since the Unix epoch; `None` when the caller set none.
+    pub deadline: Option<super::Timestamp>,
     pub hop_limit: u16,
     pub visited: Vec<PodAddress>,
     pub placement_epoch: u64,
     pub fencing_token: u128,
 }
 
+impl RouteConstraints {
+    /// Refuse constraints no route can satisfy: a deadline of zero.
+    pub fn validate(&self) -> Result<(), ResolveError> {
+        if self.deadline == Some(super::Timestamp(0)) {
+            return Err(ResolveError::InvalidDeadline);
+        }
+        Ok(())
+    }
+}
+
 impl PodRoute {
     pub fn validate(&self) -> Result<(), ResolveError> {
+        if self.deadline == Some(super::Timestamp(0)) {
+            return Err(ResolveError::InvalidDeadline);
+        }
         self.destination.validate()?;
         if self.hop_limit == 0 {
             return Err(ResolveError::HopLimitExceeded);
@@ -281,6 +375,7 @@ pub struct PodHeader {
     pub placement_epoch: u64,
     pub fencing_token: u128,
     pub trace_id: TraceId,
+    /// Absolute deadline, milliseconds since the Unix epoch.
     pub deadline: super::Timestamp,
     pub hop_limit: u16,
 }
@@ -343,8 +438,12 @@ impl PodHeader {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ResolveError {
     InvalidScheme,
-    InvalidAddress { field: &'static str },
-    MissingBinding { field: &'static str },
+    InvalidAddress {
+        field: &'static str,
+    },
+    MissingBinding {
+        field: &'static str,
+    },
     InvalidProtocolVersion,
     HopLimitExceeded,
     RouteCycle,
@@ -353,7 +452,12 @@ pub enum ResolveError {
     ConflictingEndpoint,
     ScopeMismatch,
     NotFound,
-    ConstraintMismatch { field: &'static str },
+    ConstraintMismatch {
+        field: &'static str,
+    },
+    /// A deadline of zero: the epoch itself, already past. Absence (`None`) is the way to say
+    /// there is none.
+    InvalidDeadline,
 }
 
 impl fmt::Display for ResolveError {
@@ -503,7 +607,7 @@ mod tests {
             output_type: "output".into(),
             trace_id: "trace".into(),
             request_id: "request".into(),
-            deadline: super::super::Timestamp(10),
+            deadline: Some(super::super::Timestamp(10)),
             hop_limit: 0,
             visited: Vec::new(),
             placement_epoch: 1,

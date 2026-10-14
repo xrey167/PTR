@@ -10,10 +10,11 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-14  
-**Code footprint:** 7 Rust source files · 3693 nonblank source lines · 3 integration-test files · 72 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 7 Rust source files · 3703 nonblank source lines · 3 integration-test files · 73 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
+- PodCall.deadline_ms (proto field 7, optional) converted to CallFrame.deadline, zero refused (ProtocolError::ZeroDeadline)
 - PodWire v1 semantic version constant
 - Prost-generated network schemas compiled with vendored protoc
 - TypedPayload, CallFrame and CALL/RET/ERR/EVT/REVOKE domain frames
@@ -60,6 +61,7 @@
 
 ### Current automated checks
 
+- tests/prost.rs pins the deadline_ms wire bytes; tests/validation.rs: zero deadline refused, absent and explicit values converted
 - prost roundtrip and malformed PodCall validation tests
 - negotiation table, control codec truncation and seeded random-input tests, session state machine and idempotency unit tests, tests/control_session.rs loopback end-to-end
 - a compile-fail doctest that starts compiling, and therefore fails, if session_id is ever restored to PodCall

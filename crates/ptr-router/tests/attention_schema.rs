@@ -1218,8 +1218,10 @@ fn the_whole_control_path_uses_only_exactly_rounded_operations() {
     }
     let hex: String = schema.digest().iter().map(|b| format!("{b:02x}")).collect();
     assert_eq!(picks, "cbbcbbacabababaacaaabbacacaacbbacaabacbbabbbabbcbbaacaaabcacaaacbbbaaccccabbabbaaaacbbbaabaabaaabbaa");
+    // Digest layout v3 (issue #141: the generation table's last-seen epochs and evictions);
+    // the picks above are unchanged from v2.
     assert_eq!(
         hex,
-        "039c9ecc253aa60adc67b8d51245b9f47831d80c5c4bfaaa35d83e741b5f54b1"
+        "1676fba406718c9d2d85ec48160f16011879818ded8f49ad026151540d4b5ac2"
     );
 }

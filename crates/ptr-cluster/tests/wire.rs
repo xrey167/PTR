@@ -484,6 +484,17 @@ impl<'a> ptr_verifier::NamedVerifier<ptr_runtime::SemanticChange<'a>> for Accept
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_ptrcs004_snapshot_travels_as_the_payload_and_restores_on_the_far_side() {
+    snapshot_travels_and_restores(false).await;
+}
+
+/// A history holding a scope is exported as PTRCS010 (execution section PTREX003, issue #141);
+/// it travels the same way and the far side restores the scope with its recovery obligation.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_ptrcs010_snapshot_with_a_scope_travels_and_restores_on_the_far_side() {
+    snapshot_travels_and_restores(true).await;
+}
+
+async fn snapshot_travels_and_restores(with_scope: bool) {
     // "Reusing the compacted snapshot rather than inventing a second artifact" is required,
     // so the payload here is a real compacted snapshot exported by a real runtime,
     // and the far side restores a runtime from the bytes that arrived.
@@ -497,7 +508,7 @@ async fn a_ptrcs004_snapshot_travels_as_the_payload_and_restores_on_the_far_side
     use ptr_runtime::PtrRuntime;
     use ptr_semdb::SemanticDelta;
 
-    let temp = Temp::new("ptrcs004");
+    let temp = Temp::new(if with_scope { "ptrcs010" } else { "ptrcs004" });
     const THREE: [u64; 3] = [1, 2, 3];
 
     // The application state the snapshot describes.
@@ -519,12 +530,30 @@ async fn a_ptrcs004_snapshot_travels_as_the_payload_and_restores_on_the_far_side
     runtime
         .apply_verified_semantic_delta(revision, delta, &"test-operator".into())
         .unwrap();
+    let scope = ptr_types::ScopeId::from("travelling-scope");
+    if with_scope {
+        runtime
+            .create_scope(
+                ptr_runtime::ExecutionScope {
+                    id: scope.clone(),
+                    parent: None,
+                    session: ptr_types::SessionId::from("session"),
+                    project: ptr_types::ProjectId::from("project"),
+                    created_at: ptr_types::Timestamp(1),
+                    deadline: None,
+                    state: ptr_runtime::ScopeState::Created,
+                    cancellation_requested: false,
+                },
+                ptr_types::ScopeLeaseBinding::default(),
+            )
+            .unwrap();
+    }
     let exported = runtime.export_compacted_snapshot().unwrap();
     let payload = exported.bytes().to_vec();
     let anchor = exported.anchor();
     assert_eq!(
         &payload[..8],
-        b"PTRCS006",
+        if with_scope { b"PTRCS010" } else { b"PTRCS006" },
         "the payload is the artifact itself"
     );
 
@@ -640,6 +669,12 @@ async fn a_ptrcs004_snapshot_travels_as_the_payload_and_restores_on_the_far_side
         Some(&ptr_semdb::SemanticValue::from("carried by raft")),
         "the state the snapshot described is the state that came back"
     );
+    if with_scope {
+        assert!(
+            restored.scopes().recovery_required(&scope),
+            "the scope came back with its recovery obligation"
+        );
+    }
 
     third.abort();
     server.abort();

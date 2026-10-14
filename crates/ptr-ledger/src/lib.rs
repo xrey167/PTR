@@ -13,10 +13,11 @@ pub use file::{FileLedger, LegacyLog, RecoverableLog};
 pub use retention::{retains, ErasureAudit, OutOfReach, Retainer};
 
 use ptr_types::{
-    CapabilityId, CapsuleId, CommitIndex, Effect, FencingToken, Generation, MeshEndpointBinding,
-    MeshRouteKind, MeshTunnelEventKind, MeshTunnelLifecycleEvent, PeerId, PodId, ProjectId,
-    RequestId, Revision, ScopeId, ScopeLeaseBinding, ScopeLifecycleEvent, ScopeLifecycleKind,
-    SessionId, Timestamp, TraceId, TypeId, VerificationLevel,
+    CapabilityId, CapsuleId, CommitIndex, Effect, EgressRefusalReason, FencingToken, Generation,
+    MeshEndpointBinding, MeshRouteKind, MeshTunnelEventKind, MeshTunnelLifecycleEvent, NamespaceId,
+    PeerId, PodAddress, PodId, PodRevisionAddress, ProjectId, RequestId, Revision, ScopeId,
+    ScopeLeaseBinding, ScopeLifecycleEvent, ScopeLifecycleKind, SessionId, Timestamp, TraceId,
+    TypeId, VerificationLevel,
 };
 use std::collections::BTreeSet;
 use std::io;
@@ -337,6 +338,38 @@ pub enum LedgerEvent {
         fence_count: u32,
         fence_digest: [u8; 32],
     },
+    /// A Pod's outbound connection or publication was refused by its egress policy or its
+    /// rate limit before anything left the host (tag 37). The record names the trace, the Pod
+    /// revision that tried, the redacted `target` (`*`, a hashed `host:` or a hashed `topic:`, never a payload)
+    /// and the reason, so the refusal is part of the replayable history rather than a log line.
+    ///
+    /// This crate checks only the shape: a non-empty trace, a valid source address and a
+    /// bounded target without control characters or whitespace. Whether the refusal was
+    /// warranted is the runtime's to say; the record is written by the runtime's egress path.
+    EgressRefused {
+        trace_id: TraceId,
+        source: EgressRefusalSource,
+        target: String,
+        /// How many refusals of this source, target and reason the record stands for: the
+        /// runtime coalesces a window's identical refusals into one event. At least one.
+        count: u32,
+        /// Whether the runtime had to stop counting: the true number of refusals is at least
+        /// `count`, which is then `u32::MAX`. Only ever set together with `u32::MAX`.
+        saturated: bool,
+        reason: EgressRefusalReason,
+    },
+}
+
+/// Who an [`LedgerEvent::EgressRefused`] counts refusals for. The overflow is a variant of its
+/// own, not a made-up Pod address, so no real Pod can collide with it (in the codec, the
+/// replay or the materialized state). Codec tag byte: Pod 0, Overflow 1.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum EgressRefusalSource {
+    /// Refusals of one Pod revision.
+    Pod(PodRevisionAddress),
+    /// Refusals of Pods the runtime could no longer track individually while the ledger was
+    /// refusing appends, folded per reason. Its target is always `*`.
+    Overflow,
 }
 
 /// Which authority an [`LedgerEvent::ExpertAuthorityChanged`] moves. The codes are pinned data:
@@ -412,6 +445,9 @@ impl ExpertAuthorityClass {
 
 /// The longest identity an [`LedgerEvent::InputInvalidated`] names, in bytes.
 pub const MAX_INPUT_IDENTITY_BYTES: usize = 256;
+
+/// The longest target an [`LedgerEvent::EgressRefused`] names, in bytes.
+pub const MAX_EGRESS_TARGET_BYTES: usize = 256;
 
 /// How an [`LedgerEvent::InputInvalidated`] ends the life of its input. The codes are pinned
 /// data: Revoked 0, Superseded 1.
@@ -1329,6 +1365,32 @@ fn encode_event(event: &LedgerEvent) -> Vec<u8> {
             put_u64(&mut out, revision.0);
             out.extend_from_slice(event_digest);
         }
+        LedgerEvent::EgressRefused {
+            trace_id,
+            source,
+            target,
+            count,
+            saturated,
+            reason,
+        } => {
+            out.push(37);
+            put_string(&mut out, &trace_id.0);
+            match source {
+                EgressRefusalSource::Pod(source) => {
+                    out.push(0);
+                    put_string(&mut out, &source.address.project.0);
+                    put_string(&mut out, &source.address.namespace.0);
+                    put_string(&mut out, &source.address.pod_id.0);
+                    out.extend_from_slice(&source.semantic_revision);
+                    put_u64(&mut out, source.generation.0);
+                }
+                EgressRefusalSource::Overflow => out.push(1),
+            }
+            put_string(&mut out, target);
+            put_u32(&mut out, *count);
+            out.push(u8::from(*saturated));
+            out.push(reason.code());
+        }
     }
     out
 }
@@ -1759,6 +1821,61 @@ fn decode_event(payload: &[u8]) -> io::Result<LedgerEvent> {
             check_expert_authority_changed(&event)?;
             event
         }
+        37 => {
+            let trace_id = TraceId(cursor.string()?);
+            let source = match cursor.u8()? {
+                0 => {
+                    let address = PodAddress {
+                        project: ProjectId(cursor.string()?),
+                        namespace: NamespaceId(cursor.string()?),
+                        pod_id: PodId(cursor.string()?),
+                    };
+                    let semantic_revision = cursor.digest()?;
+                    let generation = Generation(cursor.u64()?);
+                    EgressRefusalSource::Pod(PodRevisionAddress {
+                        address,
+                        semantic_revision,
+                        generation,
+                    })
+                }
+                1 => EgressRefusalSource::Overflow,
+                other => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("unknown egress refusal source tag {other}"),
+                    ))
+                }
+            };
+            let target = cursor.string()?;
+            let count = cursor.u32()?;
+            let saturated = match cursor.u8()? {
+                0 => false,
+                1 => true,
+                other => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("unknown egress refusal saturation flag {other}"),
+                    ))
+                }
+            };
+            let reason_code = cursor.u8()?;
+            let reason = EgressRefusalReason::from_code(reason_code).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("unknown egress refusal reason code {reason_code}"),
+                )
+            })?;
+            let event = LedgerEvent::EgressRefused {
+                trace_id,
+                source,
+                target,
+                count,
+                saturated,
+                reason,
+            };
+            check_egress_refused(&event)?;
+            event
+        }
         other => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -1888,6 +2005,7 @@ pub(crate) fn check_origin_bounds(event: &LedgerEvent) -> Result<(), io::Error> 
         LedgerEvent::KvTaintCommitted { .. } => check_kv_taint(event)?,
         LedgerEvent::InputInvalidated { .. } => check_input_invalidated(event)?,
         LedgerEvent::ExpertAuthorityChanged { .. } => check_expert_authority_changed(event)?,
+        LedgerEvent::EgressRefused { .. } => check_egress_refused(event)?,
         LedgerEvent::MeshTunnelLifecycle(MeshTunnelLifecycleEvent {
             endpoint: Some(endpoint),
             ..
@@ -1895,6 +2013,68 @@ pub(crate) fn check_origin_bounds(event: &LedgerEvent) -> Result<(), io::Error> 
             .validate()
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?,
         _ => {}
+    }
+    Ok(())
+}
+
+/// The one shape a recorded refusal target may have, so a hostname, topic or credential can
+/// never ride in it (Invariant 13): `*` (the overflow bucket), `host:<16 lower-case hex>:<len>:<port>`
+/// or `topic:<16 lower-case hex>:<len>`.
+fn egress_target_is_redacted(target: &str) -> bool {
+    fn hex16(part: &str) -> bool {
+        part.len() == 16
+            && part
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    }
+    fn number<T: std::str::FromStr>(part: &str) -> bool {
+        !part.is_empty()
+            && part.bytes().all(|b| b.is_ascii_digit())
+            && (part == "0" || !part.starts_with('0'))
+            && part.parse::<T>().is_ok()
+    }
+    if target == "*" {
+        return true;
+    }
+    let parts: Vec<&str> = target.split(':').collect();
+    match parts.as_slice() {
+        ["host", digest, len, port] => hex16(digest) && number::<u32>(len) && number::<u16>(port),
+        ["topic", digest, len] => hex16(digest) && number::<u32>(len),
+        _ => false,
+    }
+}
+
+/// An egress refusal names a non-empty, bounded trace, a positive count, a valid source
+/// revision address and a redacted target (see [`egress_target_is_redacted`]). The decoder and
+/// the append paths both call this.
+fn check_egress_refused(event: &LedgerEvent) -> Result<(), io::Error> {
+    let LedgerEvent::EgressRefused {
+        trace_id,
+        source,
+        target,
+        count,
+        saturated,
+        ..
+    } = event
+    else {
+        return Ok(());
+    };
+    let target_ok = egress_target_is_redacted(target);
+    if trace_id.0.is_empty()
+        || trace_id.0.len() > MAX_EGRESS_TARGET_BYTES
+        || *count == 0
+        // Saturation means "at least u32::MAX": nothing else is a saturated count.
+        || (*saturated && *count != u32::MAX)
+        // `*` stands for several traces, so one refusal cannot carry it.
+        || (trace_id.0 == "*" && *count < 2)
+        || !target_ok
+        || match source {
+            EgressRefusalSource::Pod(source) => source.validate().is_err(),
+            // The overflow stands for no particular destination.
+            EgressRefusalSource::Overflow => target != "*",
+        }
+    {
+        return Err(integrity::invalid("PTR_LEDGER_EGRESS_REFUSED"));
     }
     Ok(())
 }
@@ -3101,6 +3281,264 @@ mod effect_record_tests {
             *fence_count = u32::MAX;
         }
         assert_eq!(decode_event(&encode_event(&event)).unwrap(), event);
+    }
+
+    fn egress_refused_event(reason: EgressRefusalReason) -> LedgerEvent {
+        LedgerEvent::EgressRefused {
+            trace_id: TraceId("trace-1".into()),
+            source: EgressRefusalSource::Pod(PodRevisionAddress {
+                address: PodAddress {
+                    project: ProjectId("p".into()),
+                    namespace: NamespaceId("ns".into()),
+                    pod_id: PodId("pod".into()),
+                },
+                semantic_revision: [7; 32],
+                generation: Generation(3),
+            }),
+            target: "host:0123456789abcdef:14:1883".into(),
+            count: 3,
+            saturated: false,
+            reason,
+        }
+    }
+
+    #[test]
+    fn egress_refusal_round_trips_under_tag_37_and_the_codes_are_pinned() {
+        let pinned = [
+            (EgressRefusalReason::HostNotAllowed, 0u8),
+            (EgressRefusalReason::PortNotAllowed, 1),
+            (EgressRefusalReason::TopicNotAllowed, 2),
+            (EgressRefusalReason::InvalidTopic, 3),
+            (EgressRefusalReason::RateLimited, 4),
+            (EgressRefusalReason::TopicRequired, 5),
+            (EgressRefusalReason::TopicUnverifiable, 6),
+        ];
+        assert_eq!(pinned.len(), EgressRefusalReason::ALL.len());
+        for (reason, code) in pinned {
+            assert_eq!(reason.code(), code);
+            assert_eq!(EgressRefusalReason::from_code(code), Some(reason));
+            let event = egress_refused_event(reason);
+            check_encodable(&event).unwrap();
+            let encoded = encode_event(&event);
+            assert_eq!(encoded[0], 37);
+            assert_eq!(*encoded.last().unwrap(), code, "the reason code is last");
+            assert_eq!(
+                encoded[encoded.len() - 2],
+                0,
+                "the saturation flag precedes it"
+            );
+            assert_eq!(decode_event(&encoded).unwrap(), event);
+            for len in 0..encoded.len() {
+                assert!(decode_event(&encoded[..len]).is_err(), "prefix {len}");
+            }
+            let mut padded = encoded.clone();
+            padded.push(0);
+            assert!(decode_event(&padded).is_err());
+        }
+        assert_eq!(EgressRefusalReason::from_code(7), None);
+        let mut unknown = encode_event(&egress_refused_event(EgressRefusalReason::RateLimited));
+        *unknown.last_mut().unwrap() = 7;
+        assert!(decode_event(&unknown).is_err());
+    }
+
+    #[test]
+    fn a_saturated_egress_count_round_trips_and_an_unknown_flag_is_refused() {
+        let mut event = egress_refused_event(EgressRefusalReason::RateLimited);
+        if let LedgerEvent::EgressRefused {
+            count, saturated, ..
+        } = &mut event
+        {
+            *count = u32::MAX;
+            *saturated = true;
+        }
+        check_encodable(&event).unwrap();
+        let encoded = encode_event(&event);
+        assert_eq!(decode_event(&encoded).unwrap(), event);
+        let mut unknown = encoded.clone();
+        let flag_at = unknown.len() - 2;
+        assert_eq!(unknown[flag_at], 1);
+        unknown[flag_at] = 2;
+        assert!(decode_event(&unknown).is_err());
+        // The flag with any other count is not a canonical form, even if the bytes decode.
+        let mut small = encoded;
+        let count_at = small.len() - 2 - 4;
+        small[count_at..count_at + 4].copy_from_slice(&7u32.to_le_bytes());
+        assert!(decode_event(&small).is_err());
+    }
+
+    #[test]
+    fn tag_33_belongs_to_another_decision_and_decodes_as_unknown() {
+        let mut encoded = encode_event(&egress_refused_event(EgressRefusalReason::RateLimited));
+        assert_eq!(encoded[0], 37);
+        encoded[0] = 33;
+        let error = decode_event(&encoded).unwrap_err();
+        assert!(error.to_string().contains("unknown ledger event tag 33"));
+    }
+
+    #[test]
+    fn the_many_traces_marker_needs_a_count_of_at_least_two() {
+        for (count, accepted) in [(1u32, false), (2, true), (u32::MAX, true)] {
+            let mut event = egress_refused_event(EgressRefusalReason::RateLimited);
+            if let LedgerEvent::EgressRefused {
+                trace_id, count: c, ..
+            } = &mut event
+            {
+                *trace_id = TraceId("*".into());
+                *c = count;
+            }
+            assert_eq!(check_encodable(&event).is_ok(), accepted, "count {count}");
+            assert_eq!(decode_event(&encode_event(&event)).is_ok(), accepted);
+        }
+    }
+
+    #[test]
+    fn egress_refusal_overflow_source_round_trips_with_the_star_target_only() {
+        let mut event = egress_refused_event(EgressRefusalReason::RateLimited);
+        if let LedgerEvent::EgressRefused { source, target, .. } = &mut event {
+            *source = EgressRefusalSource::Overflow;
+            *target = "*".to_owned();
+        }
+        check_encodable(&event).unwrap();
+        let encoded = encode_event(&event);
+        assert_eq!(encoded[0], 37);
+        assert_eq!(decode_event(&encoded).unwrap(), event);
+        for len in 0..encoded.len() {
+            assert!(decode_event(&encoded[..len]).is_err(), "prefix {len}");
+        }
+        // The pod and overflow encodings differ in the tag byte and nothing else is shared.
+        let pod = encode_event(&egress_refused_event(EgressRefusalReason::RateLimited));
+        assert_ne!(encoded, pod);
+        // An unknown source tag is refused by the decoder.
+        let mut unknown = encoded.clone();
+        let tag_at = 1 + 4 + "trace-1".len();
+        assert_eq!(unknown[tag_at], 1);
+        unknown[tag_at] = 2;
+        assert!(decode_event(&unknown).is_err());
+    }
+
+    #[test]
+    fn egress_refusal_target_must_be_a_redacted_shape() {
+        let accepted = [
+            "*",
+            "host:0123456789abcdef:14:1883",
+            "host:0123456789abcdef:0:0",
+            "topic:0123456789abcdef:24",
+        ];
+        let refused = [
+            "broker.example:1883",
+            "127.0.0.1:1883",
+            "tokens/s3cr3t",
+            "host:0123456789abcdef",
+            "host:0123456789ABCDEF:1:1",
+            "host:0123456789abcde:1:1",
+            "host:0123456789abcdef:1:65536",
+            "host:0123456789abcdef:01:1",
+            "host:0123456789abcdef:1:1:1",
+            "topic:0123456789abcdef",
+            "topic:0123456789abcdef:x",
+            "topic:s3cr3t:24",
+            "**",
+        ];
+        for target in accepted.iter().chain(refused.iter()) {
+            let mut event = egress_refused_event(EgressRefusalReason::HostNotAllowed);
+            if let LedgerEvent::EgressRefused { target: t, .. } = &mut event {
+                *t = (*target).to_owned();
+            }
+            assert_eq!(
+                check_encodable(&event).is_ok(),
+                accepted.contains(target),
+                "{target}"
+            );
+        }
+    }
+
+    #[test]
+    fn egress_refusal_refuses_every_non_canonical_form() {
+        let with = |edit: &dyn Fn(&mut LedgerEvent)| {
+            let mut event = egress_refused_event(EgressRefusalReason::HostNotAllowed);
+            edit(&mut event);
+            event
+        };
+        let long = "x".repeat(MAX_EGRESS_TARGET_BYTES + 1);
+        let bad = [
+            with(&|e| {
+                if let LedgerEvent::EgressRefused { target, .. } = e {
+                    target.clear();
+                }
+            }),
+            with(&|e| {
+                if let LedgerEvent::EgressRefused { target, .. } = e {
+                    *target = long.clone();
+                }
+            }),
+            with(&|e| {
+                if let LedgerEvent::EgressRefused { target, .. } = e {
+                    *target = "host: 80".to_owned();
+                }
+            }),
+            with(&|e| {
+                if let LedgerEvent::EgressRefused { target, .. } = e {
+                    *target = "a\nb".to_owned();
+                }
+            }),
+            with(&|e| {
+                if let LedgerEvent::EgressRefused { trace_id, .. } = e {
+                    trace_id.0.clear();
+                }
+            }),
+            with(&|e| {
+                if let LedgerEvent::EgressRefused { trace_id, .. } = e {
+                    trace_id.0 = "t".repeat(MAX_EGRESS_TARGET_BYTES + 1);
+                }
+            }),
+            with(&|e| {
+                if let LedgerEvent::EgressRefused { count, .. } = e {
+                    *count = 0;
+                }
+            }),
+            // A saturated count is u32::MAX and nothing else.
+            with(&|e| {
+                if let LedgerEvent::EgressRefused { saturated, .. } = e {
+                    *saturated = true;
+                }
+            }),
+            with(&|e| {
+                if let LedgerEvent::EgressRefused {
+                    source: EgressRefusalSource::Pod(source),
+                    ..
+                } = e
+                {
+                    source.semantic_revision = [0; 32];
+                }
+            }),
+            with(&|e| {
+                if let LedgerEvent::EgressRefused {
+                    source: EgressRefusalSource::Pod(source),
+                    ..
+                } = e
+                {
+                    source.address.pod_id = PodId("bad pod".into());
+                }
+            }),
+            // The overflow names no destination: only `*`.
+            with(&|e| {
+                if let LedgerEvent::EgressRefused { source, .. } = e {
+                    *source = EgressRefusalSource::Overflow;
+                }
+            }),
+        ];
+        for event in bad {
+            assert!(check_encodable(&event).is_err(), "{event:?}");
+            // The decoder refuses the same forms, so a log that holds one cannot be read back.
+            assert!(decode_event(&encode_event(&event)).is_err(), "{event:?}");
+        }
+        let overflow = with(&|e| {
+            if let LedgerEvent::EgressRefused { target, .. } = e {
+                *target = "*".to_owned();
+            }
+        });
+        check_encodable(&overflow).unwrap();
+        assert_eq!(decode_event(&encode_event(&overflow)).unwrap(), overflow);
     }
 
     #[test]

@@ -160,6 +160,10 @@ pub struct NativeProtocolRequest {
     pub input: TypedPayload,
     pub request_id: ptr_types::RequestId,
     pub endpoint: NetworkEndpoint,
+    /// The concrete topic this request publishes to, when its protocol has topics. It must
+    /// match a filter in the link's [`EgressPolicy::topics`]; `None` for a protocol without
+    /// topics, which the host and port checks alone govern.
+    pub topic: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -186,6 +190,13 @@ pub enum ProtocolError {
     Transport(String),
     InvalidEndpoint,
     FrameTooLarge,
+    /// The link's egress policy or the lease's rate limit refused the request before anything
+    /// was sent. `target` is the redacted `host:` or `topic:` digest and never a payload; the runtime
+    /// commits it as a ledger event so the refusal is part of the replayable history.
+    EgressRefused {
+        target: String,
+        reason: ptr_types::EgressRefusalReason,
+    },
 }
 
 pub trait NativeProtocolExecutor: Send + Sync {
@@ -211,9 +222,14 @@ impl EgressPolicy {
         {
             return Err(PodLinkError::InvalidEgressPolicy);
         }
+        self.validate_topic_filters()?;
         Ok(())
     }
 }
+
+/// The longest trace a link may carry, in bytes: the bound the ledger puts on the trace of a
+/// recorded egress refusal, so every refusal of a valid link can be recorded.
+pub const MAX_TRACE_ID_BYTES: usize = 256;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PodLink {
@@ -227,6 +243,9 @@ pub struct PodLink {
     pub protocol: ProtocolBinding,
     pub capability: CapabilityId,
     pub acl: Vec<PrincipalId>,
+    /// Absolute deadline in milliseconds since the Unix epoch. A link always carries one:
+    /// [`PodLink::validate`] refuses a link whose deadline is not after `now`, and `now` is in
+    /// the same unit.
     pub deadline: Timestamp,
     pub hop_limit: u16,
     pub visited: Vec<PodAddress>,
@@ -248,7 +267,15 @@ impl PodLink {
         self.target
             .validate()
             .map_err(|_| PodLinkError::InvalidAddress)?;
-        if self.trace_id.is_empty() || self.hop_limit == 0 || self.deadline.0 <= now.0 {
+        // `*` is the trace of a recorded refusal that stands for several traces (the runtime's
+        // coalescing marker); a link carrying it would have its single refusal rejected.
+        if self.trace_id.is_empty()
+            || self.trace_id.len() > MAX_TRACE_ID_BYTES
+            || self.trace_id == "*"
+        {
+            return Err(PodLinkError::InvalidTrace);
+        }
+        if self.hop_limit == 0 || self.deadline.0 <= now.0 {
             return Err(PodLinkError::DeadlineOrHopLimit);
         }
         if self.source.project != self.target.address.project
@@ -323,6 +350,8 @@ pub enum PodLinkError {
     AccessDenied,
     MissingAttestation,
     DeadlineOrHopLimit,
+    /// The trace is empty or longer than [`MAX_TRACE_ID_BYTES`].
+    InvalidTrace,
     CycleDetected,
     InvalidEgressPolicy,
 }

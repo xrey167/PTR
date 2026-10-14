@@ -615,6 +615,57 @@ fn an_unroutable_code_is_born_through_admission_and_the_next_requests_are_repair
     assert_eq!(world.structural_commits(), 1);
 }
 
+/// Review of #141 (round 5): a Birth whose result id is already taken by an unrelated Pod in
+/// the PodRegistry is refused before admission, with nothing appended to the ledger and no
+/// install left pending (it would otherwise be committed and never installable).
+#[test]
+fn a_birth_colliding_with_a_registered_pod_is_refused_before_admission() {
+    // The id the policy picks for the born Pod, from an identical world.
+    let born = {
+        let mut probe = World::new(newcode_opts(trainer(0.95)));
+        probe.serve("before", 24);
+        only_admitted_birth(&probe.l3()).pod.clone()
+    };
+    let mut world = World::new(newcode_opts(trainer(0.95)));
+    let intruder = SimulatedTrainer::new(project(), DefectDoc::clean_type(), 4_242, 0.5)
+        .train(&TrainingRequest {
+            kind: OpKind::Birth,
+            pod: born.clone(),
+            codes: BTreeSet::from([code("other")]),
+            sources: Vec::new(),
+        })
+        .unwrap();
+    world.pods.register_new(intruder.executable()).unwrap();
+    world.serve("before", 24);
+    let commits = world.rt.committed_events().len();
+    let report = world.l3();
+    assert_eq!(report.outcomes.len(), 1, "{report:?}");
+    assert!(
+        matches!(
+            &report.outcomes[0].result,
+            StructureResult::Refused(Refusal::PodIdTaken { pod }) if pod == &born
+        ),
+        "{report:?}"
+    );
+    assert_eq!(
+        world.rt.committed_events().len(),
+        commits,
+        "nothing appended"
+    );
+    assert_eq!(world.structural_commits(), 0);
+    assert!(world.driver.pending_installs().is_empty());
+    assert_eq!(
+        world
+            .pods
+            .get(&project(), &born)
+            .unwrap()
+            .manifest()
+            .digest(),
+        intruder.manifest.digest(),
+        "the registered Pod is untouched"
+    );
+}
+
 // --- (c) a failing gate report commits nothing ---------------------------------------------
 
 #[test]

@@ -1,6 +1,7 @@
 pub mod admission;
 pub mod compacted;
 pub mod directory;
+pub mod egress;
 pub mod execution;
 pub mod expert;
 pub mod identity;
@@ -72,9 +73,10 @@ pub use kv_secondary::{
     SecondaryStats, DEFAULT_WINDOW_TOKENS, SECONDARY_SECTION_MAX_BYTES,
 };
 pub use manifest::{
-    validate_and_build, validate_authority, ExecutionManifestRegistry, ManifestAuthorityRegistry,
-    ManifestBindingAuthority, RuntimeExecutionManifestResolver, RuntimeManifestError,
-    ValidatedExecutionManifest,
+    validate_and_build, validate_authority, ExecutionManifestRegistry, KnowledgeManifestValidity,
+    ManifestAuthorityRegistry, ManifestBindingAuthority, ManifestValidity,
+    RuntimeExecutionManifestResolver, RuntimeManifestError, ValidatedExecutionManifest,
+    MAX_DEPENDENCY_CLOSURE,
 };
 pub use merge::{
     ChangeOrigin, HoldReason, MergeAuthority, MergeHold, MergeOutcome, MergePreview, MergeReceipt,
@@ -100,7 +102,7 @@ pub use sandbox::{
 };
 pub use scopes::{
     CleanupError, ExecutionScope, ScopeCleanupCoordinator, ScopeError, ScopeEvent, ScopeEventKind,
-    ScopeRegistry, ScopeState,
+    ScopeRegistry, ScopeState, MAX_SCOPES,
 };
 pub use split_stage::{
     admit_frame, prefix_key, revalidate_chain, AdmittedFrame, ChainFault, RuntimeStageLiveness,
@@ -599,6 +601,40 @@ pub enum RuntimeError {
     LegacySemanticRecord {
         index: CommitIndex,
     },
+    /// Committing this record would take the execution section of a compacted snapshot past
+    /// its bounds ([`compacted::MAX_SECTION_BYTES`] bytes, or more than the section's item bound
+    /// in one of its lists). The section holds the unsettled attempts (each reserving room for
+    /// its settlement), the settled keys and the scope block, and nothing removes a settled key
+    /// or a scope, so it is held to one budget at every commit that grows it. Nothing was
+    /// committed; the snapshot this runtime exports stays within the section.
+    ExecutionSectionFull {
+        /// The bytes the section would take.
+        bytes: usize,
+        /// The longest of its lists, in items.
+        items: usize,
+    },
+    /// The execution section of this runtime's committed history (a history replayed, opened
+    /// or restored from a log written before the execution-section budget) is larger than a
+    /// compacted snapshot carries, so no snapshot can be exported; see
+    /// [`PtrRuntime::execution_section_overflow`](crate::PtrRuntime::execution_section_overflow).
+    /// The log stays authoritative and complete; nothing was written.
+    CompactionBlocked {
+        /// The bytes the section would take.
+        bytes: usize,
+        /// The longest of its lists, in items.
+        items: usize,
+    },
+    /// The ledger holds an admission of this request and Pod recorded under the version-1
+    /// output digest (before issue #141), its follow-up (hypothesis or promotion) is missing,
+    /// and the retry's output has that same version-1 digest. Version 1 is not injective, so
+    /// the retry cannot be proven to be the admitted output and the follow-up is not completed
+    /// from it: an operator has to recover the admission. Nothing was appended.
+    LegacyAdmissionIncomplete {
+        /// The request id of the admission.
+        request_id: RequestId,
+        /// The Pod the admission was recorded for.
+        pod_id: ptr_types::PodId,
+    },
     ModelResumeLimit {
         max_rounds: usize,
     },
@@ -752,6 +788,7 @@ pub struct PtrRuntime {
     attestors: expert::ExpertAttestorRegistry,
     policy_authority_ready: bool,
     revoked_sessions: BTreeSet<ptr_types::SessionId>,
+    egress_refusals: egress::EgressRefusalWindows,
     hypotheses: BTreeMap<String, PodHypothesis>,
     tier_journal: TierJournalProjection,
     experts: expert::ExpertRegistryProjection,
@@ -846,6 +883,7 @@ impl PtrRuntime {
             attestors: expert::ExpertAttestorRegistry::default(),
             policy_authority_ready: false,
             revoked_sessions: BTreeSet::new(),
+            egress_refusals: egress::EgressRefusalWindows::default(),
             hypotheses: BTreeMap::new(),
             tier_journal: TierJournalProjection::default(),
             experts: expert::ExpertRegistryProjection::default(),
@@ -979,9 +1017,10 @@ impl PtrRuntime {
         manifest: ptr_pods::ExecutionManifest,
         knowledge: &ptr_memory::KnowledgeStore,
         artifacts: &dyn ptr_pods::ArtifactCatalog,
+        now: Timestamp,
     ) -> Result<manifest::ValidatedExecutionManifest, manifest::RuntimeManifestError> {
         let validated =
-            manifest::validate_and_build(manifest, knowledge, artifacts, self.revision())?;
+            manifest::validate_and_build(manifest, knowledge, artifacts, self.revision(), now)?;
         let manifest_bytes = validated
             .manifest
             .encode_canonical()
@@ -1017,9 +1056,10 @@ impl PtrRuntime {
         knowledge: &ptr_memory::KnowledgeStore,
         artifacts: &dyn ptr_pods::ArtifactCatalog,
         authority: &A,
+        now: Timestamp,
     ) -> Result<manifest::ValidatedExecutionManifest, manifest::RuntimeManifestError> {
         let validated =
-            manifest::validate_and_build(manifest, knowledge, artifacts, self.revision())?;
+            manifest::validate_and_build(manifest, knowledge, artifacts, self.revision(), now)?;
         manifest::validate_authority(&validated.manifest, authority)?;
         let manifest_bytes = validated
             .manifest
@@ -1054,6 +1094,21 @@ impl PtrRuntime {
             .read()
             .expect("manifest registry lock poisoned")
             .resolve(digest)
+    }
+
+    /// Resolve an admitted manifest for use at `now`: the digest must be admitted and not
+    /// revoked, and every knowledge object it binds must still exist, not be invalidated and
+    /// hold at `now`. [`Self::resolve_execution_manifest`] is the lookup without that check,
+    /// for callers that only inspect the record.
+    pub fn resolve_execution_manifest_at(
+        &self,
+        digest: &ptr_types::Digest,
+        knowledge: &ptr_memory::KnowledgeStore,
+        now: Timestamp,
+    ) -> Result<manifest::ValidatedExecutionManifest, manifest::RuntimeManifestError> {
+        let resolved = self.resolve_execution_manifest(digest)?;
+        resolved.ensure_knowledge_valid_at(knowledge, now)?;
+        Ok(resolved)
     }
 
     pub fn execution_manifest_registry(&self) -> Arc<RwLock<ExecutionManifestRegistry>> {
@@ -1202,7 +1257,9 @@ impl PtrRuntime {
             .expect("manifest authority lock poisoned")
             .clone();
         authority.validate_protected_snapshot(manifest.snapshot_revision, live_digest)?;
-        self.admit_execution_manifest_with_authority(manifest, knowledge, artifacts, &authority)
+        self.admit_execution_manifest_with_authority(
+            manifest, knowledge, artifacts, &authority, now,
+        )
     }
 
     pub fn activate_policy_bundle(
@@ -1803,6 +1860,17 @@ impl PtrRuntime {
             return Err(RuntimeError::ExecutionFenced);
         }
         validate_new_record(&event)?;
+        // A new scope must still fit a compacted snapshot (invariant 8). Only new records are
+        // held to it; replay accepts a history written before the bound.
+        if let LedgerEvent::ScopeLifecycle(scope_event) = &event {
+            self.scopes
+                .check_capacity(scope_event)
+                .map_err(RuntimeError::Scope)?;
+        }
+        // One budget for the whole execution section of a compacted snapshot (invariant 8): a
+        // new attempt (with room for its settlement) or a new scope is refused before it is
+        // committed if the section would no longer fit.
+        self.check_execution_section_growth(&event)?;
         self.validate_lifecycle_event(&event)?;
         let semantic = self.prepare_semantic_event(None, &event)?;
         self.append_prepared(event, semantic)
@@ -2146,6 +2214,15 @@ impl PtrRuntime {
             .map_err(|error| {
                 RuntimeError::PodOutputAdmission(format!("invalid output: {error:?}"))
             })?;
+        // A hypothesis is recorded unverified: its record carries no verified bit, and replay
+        // and the commit check rebuild its output digest with `verified: false`. A hypothesis
+        // marked verified would be admitted and then fail its own record (an admission no retry
+        // could complete), so it is refused here, before anything is appended.
+        if request.output.kind == PodOutputKind::Hypothesis && request.output.verified {
+            return Err(RuntimeError::PodOutputAdmission(
+                "a hypothesis output cannot be marked verified".into(),
+            ));
+        }
         if request.output.revision < request.manifest.snapshot_revision {
             return Err(RuntimeError::StaleRevision {
                 action: request.output.revision,
@@ -2155,6 +2232,7 @@ impl PtrRuntime {
         // Approximate-KV taint is decided before the verifier runs: a tainted output of a
         // promoting or acting kind must not even be judged, and nothing is appended.
         let output_digest = request.output.digest();
+        let legacy_digest = request.output.legacy_v1_digest();
         let bindings: Vec<&ptr_pods::LineageBinding> = request
             .manifest
             .knowledge
@@ -2216,6 +2294,56 @@ impl PtrRuntime {
             None
         };
 
+        // An admission recorded before version 2 under this output's version-1 digest (issue
+        // #141). Version 1 is not injective, so only its recorded result is returned, when its
+        // follow-up is in the ledger, and a missing follow-up is refused, never completed from
+        // a version-1 match. Both are decided before anything is appended (the taint record
+        // below included): the answer is pure and the refusal leaves the ledger as it was.
+        if legacy_digest != output_digest {
+            for (position, committed) in self.committed_events().iter().enumerate() {
+                let LedgerEvent::PodOutputAdmitted {
+                    request_id,
+                    session_id,
+                    scope_id,
+                    pod_id,
+                    output_digest: existing_digest,
+                    output_kind,
+                    revision,
+                    ..
+                } = &committed.event
+                else {
+                    continue;
+                };
+                if request_id != &request.request_id
+                    || pod_id != &request.pod_id
+                    || existing_digest != &legacy_digest
+                {
+                    continue;
+                }
+                if scope_id != &request.scope_id || session_id != &request.session_id {
+                    return Err(RuntimeError::PodOutputAdmission(
+                        "request id was admitted for a different scope or session".into(),
+                    ));
+                }
+                if self.admission_followup_committed(
+                    *output_kind,
+                    &request,
+                    &legacy_digest,
+                    position,
+                ) {
+                    return self.admission_result_from_code(
+                        *output_kind,
+                        *revision,
+                        &request,
+                        legacy_digest,
+                    );
+                }
+                return Err(RuntimeError::LegacyAdmissionIncomplete {
+                    request_id: request.request_id.clone(),
+                    pod_id: request.pod_id.clone(),
+                });
+            }
+        }
         // Taint first: the registry record precedes the admission, the candidate and the
         // hypothesis record, so a crash in between leaves a stray taint record (which only
         // refuses more), never an untainted candidate. It also precedes the retry lookup below,
@@ -2648,6 +2776,18 @@ impl PtrRuntime {
         self.append_checked(event, None)
     }
 
+    /// Append a runtime-written record that is not an effect settlement (the egress refusal
+    /// flush): unlike [`Self::commit_settlement`] it respects the execution fence, so an
+    /// unsettled effect or an uncertain last append holds it back, and it skips the admission
+    /// check of [`Self::commit`] because the runtime itself is the writer.
+    pub(crate) fn commit_gated(&mut self, event: LedgerEvent) -> Result<CommitIndex, RuntimeError> {
+        if self.execution.is_fenced() {
+            return Err(RuntimeError::ExecutionFenced);
+        }
+        self.validate_lifecycle_event(&event)?;
+        self.append_prepared(event, None)
+    }
+
     fn append_prepared(
         &mut self,
         event: LedgerEvent,
@@ -2932,10 +3072,8 @@ impl PtrRuntime {
                 manifest_digest,
                 artifact_digest,
                 generation,
-                revision,
                 output_type,
                 output_digest,
-                payload,
                 provenance,
                 dependencies,
                 confidence_bits,
@@ -2962,27 +3100,13 @@ impl PtrRuntime {
                         "invalid Pod hypothesis event".into(),
                     ));
                 }
-                let output = ptr_pods::PodOutput {
-                    kind: PodOutputKind::Hypothesis,
-                    payload: TypedPayload {
-                        type_id: output_type.clone(),
-                        bytes: payload.clone(),
-                    },
-                    generation: *generation,
-                    manifest_digest: *manifest_digest,
-                    artifact_digest: *artifact_digest,
-                    provenance: provenance
-                        .iter()
-                        .map(|(source, note)| ProvenanceRef {
-                            source: EvidenceId(source.clone()),
-                            note: note.clone(),
-                        })
-                        .collect(),
-                    dependencies: dependencies.clone(),
-                    revision: *revision,
-                    verified: false,
-                };
-                if output.digest() != *output_digest {
+                let output = hypothesis_output(event).expect("a hypothesis event");
+                // Admission records the version-2 digest. A record committed before version 2
+                // (issue #141) carries the version-1 digest, which replay still accepts: the
+                // two versions are domain-separated, so a stored digest equals at most one. A
+                // new record must carry version 2 (`validate_new_record`).
+                if output.digest() != *output_digest && output.legacy_v1_digest() != *output_digest
+                {
                     return Err(RuntimeError::PodOutputAdmission(
                         "hypothesis output digest mismatch".into(),
                     ));
@@ -3090,6 +3214,9 @@ impl PtrRuntime {
             LedgerEvent::ExpertAuthorityChanged { .. } => {
                 self.validate_authority_changed_event(event)
             }
+            // A refusal confers nothing and loads nothing; its shape is the codec's to hold.
+            LedgerEvent::EgressRefused { .. } => ptr_ledger::check_encodable(event)
+                .map_err(|error| RuntimeError::Ledger(error.to_string())),
         }
     }
 
@@ -3219,6 +3346,9 @@ impl PtrRuntime {
             LedgerEvent::ExpertAuthorityChanged { .. } => {
                 self.apply_authority_changed_event(&committed.event)?;
             }
+            // Audit only: the refusal changes no runtime state. It stays in the ledger and in
+            // the `ptr-state` projection.
+            LedgerEvent::EgressRefused { .. } => {}
             LedgerEvent::TierBackendLifecycle { .. }
             | LedgerEvent::TierObjectCommitted { .. }
             | LedgerEvent::TierReplicaLifecycle { .. } => {
@@ -3380,6 +3510,13 @@ impl PtrRuntime {
         Ok(())
     }
 
+    /// Test hook: leave the execution state as a commit whose outcome is unknown does, so the
+    /// next append is refused.
+    #[cfg(test)]
+    pub(crate) fn mark_commit_uncertain_for_test(&mut self) {
+        self.execution.begin_commit();
+    }
+
     fn emit(&mut self, event: RuntimeEvent) {
         // Invariant 8: the in-process event log is bounded. When it is full the older half is
         // dropped (amortized O(1) per event); sequences keep counting, so a reader sees the
@@ -3424,7 +3561,56 @@ impl PtrRuntime {
 /// ([`LedgerEvent::ExpertAuthorityChanged`]): only `change_expert_authority` may. A taint
 /// record ([`LedgerEvent::KvTaintCommitted`]) is refused the same way: only the runtime's taint
 /// path may write one.
+/// The Pod output a `PodHypothesisCommitted` record describes, for checking its output digest.
+fn hypothesis_output(event: &LedgerEvent) -> Option<ptr_pods::PodOutput> {
+    let LedgerEvent::PodHypothesisCommitted {
+        manifest_digest,
+        artifact_digest,
+        generation,
+        revision,
+        output_type,
+        payload,
+        provenance,
+        dependencies,
+        ..
+    } = event
+    else {
+        return None;
+    };
+    Some(ptr_pods::PodOutput {
+        kind: PodOutputKind::Hypothesis,
+        payload: TypedPayload {
+            type_id: output_type.clone(),
+            bytes: payload.clone(),
+        },
+        generation: *generation,
+        manifest_digest: *manifest_digest,
+        artifact_digest: *artifact_digest,
+        provenance: provenance
+            .iter()
+            .map(|(source, note)| ProvenanceRef {
+                source: EvidenceId(source.clone()),
+                note: note.clone(),
+            })
+            .collect(),
+        dependencies: dependencies.clone(),
+        revision: *revision,
+        verified: false,
+    })
+}
+
 fn validate_new_record(event: &LedgerEvent) -> Result<(), RuntimeError> {
+    // A new hypothesis record carries the version-2 output digest only; the version-1 digest
+    // (ambiguous, issue #141) is accepted for records already in a log, on replay and restore.
+    if let (LedgerEvent::PodHypothesisCommitted { output_digest, .. }, Some(output)) =
+        (event, hypothesis_output(event))
+    {
+        if output.digest() != *output_digest {
+            return Err(RuntimeError::PodOutputAdmission(
+                "hypothesis output digest mismatch".into(),
+            ));
+        }
+    }
     if matches!(
         event,
         LedgerEvent::ExpertStructuralCommitted { .. }
@@ -3432,6 +3618,7 @@ fn validate_new_record(event: &LedgerEvent) -> Result<(), RuntimeError> {
             | LedgerEvent::InputInvalidated { .. }
             | LedgerEvent::ExpertAuthorityChanged { .. }
             | LedgerEvent::KvTaintCommitted { .. }
+            | LedgerEvent::EgressRefused { .. }
     ) {
         return Err(RuntimeError::StructuralRecordOutsideAdmissionPath);
     }

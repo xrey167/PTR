@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-14  
-**Code footprint:** 18 Rust source files · 9230 nonblank source lines · 14 integration-test files · 209 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 18 Rust source files · 9542 nonblank source lines · 14 integration-test files · 212 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -44,6 +44,8 @@
 - Fallback and degradation (src/degradation.rs): FallbackPlanner turns a recipe plus a caller-supplied AvailabilityView (trait; StaticAvailability table that fails closed through its default state) into per-stage fallback chains ordered by DegradationLevel (Full, ReducedContext with half budgets and a reduced model context, SymbolicOnly where model and pure Pod stages become a symbolic check and retrieval is omitted) and a Resolution that is either the least degraded valid recipe or Escalate. The verifier stage has no degraded form and is never dropped: an unavailable verifier, or an effectful Pod stage with no usable backend, escalates; an exhaustive 2 x 3^5 outage sweep checks every resolved recipe is valid, ends in Verify and keeps a requested effect only when its Pod is not down
 - Routing telemetry (src/telemetry.rs): RoutingTelemetry trait, RoutingRecord (decision id, nonce, key id, propensity, chosen option, constraints outcome; it has no field for the sampling key or the keyed draw), a bounded in-memory MemorySink that refuses and counts records beyond its capacity, and an append-only JsonLinesSink with a hand-written JSON encoder (escaping, one line per record) and a byte bound that counts the existing file. Tests check the exact line shape and that neither the raw key bytes nor their hex appear in the output (Invariant 13)
 - CheckedCandidate (src/candidate.rs): an opaque token with no public constructor, obtainable only through CheckedCandidate::route (CheckedRouter) or route_with (route_checked with explicit key and nonce), which the recipe planner requires for a Pod call; existing wrappers such as PodRouter::select are unchanged and still return unchecked routes, so the type system forces the new planning path, not old callers, through the check
+- AttentionSchema generation table (issue #141): bounded at 1024 Pods with least-recently-seen eviction instead of refusing every Pod past the cap; an evicted Pod's statistics are dropped with it (its generation change could no longer be noticed), a tracked Pod's last-seen epoch is refreshed on every observe and settle, and the schema digest (layout ptr-router/attention-schema/v3) covers the last-seen epochs and the eviction count (unit test in src/attention_schema.rs; the pinned digest of tests/attention_schema.rs moved with the layout, the pinned picks did not)
+- AttentionSchema after an eviction (review of issue #141): from the first eviction of the generation table on, no statistic exists for a Pod the table does not track: the first eviction (and every later one) purges the moving-average and per-Pod entries of untracked Pods, including support members that were never chosen, observe neither creates nor updates (it removes) an untracked entry, and a Pod that becomes tracked again starts empty; under the cap nothing changes (the pinned digest and picks of tests/attention_schema.rs are unchanged; unit tests a_support_only_pod_loses_its_statistics_at_the_first_eviction and the_evicted_pod_gathers_no_statistics_and_returns_empty check ema and per-Pod keys within the tracked Pods after any eviction)
 
 ### Missing for the target architecture
 
