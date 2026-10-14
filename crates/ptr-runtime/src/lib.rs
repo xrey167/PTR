@@ -1,4 +1,5 @@
 pub mod admission;
+mod carrier_select;
 pub mod compacted;
 pub mod directory;
 pub mod egress;
@@ -19,6 +20,7 @@ pub mod manifest;
 pub mod memory;
 pub mod merge;
 pub mod migration;
+mod moved_tensor;
 pub mod neural;
 pub mod persistence;
 pub mod placement;
@@ -38,6 +40,11 @@ pub mod vcw;
 pub mod vcw_host;
 
 pub use admission::{AdmissionError, AdmissionGrant, IdentityAdmissionController};
+pub use carrier_select::{
+    select_carrier, Calibration, CarrierRefusal, CarrierSelection, CarrierTable, CarrierTableError,
+    EndpointCapabilities, EndpointConfinement, HostProcess, PayloadOwnership, PeerProbe,
+    SelectionReason, TensorLocation, MAX_DEVICES_PER_NODE,
+};
 pub use directory::{InMemoryPodDirectory, PodDirectory};
 pub use handle_admission::{
     revalidate_operation, AdmittedHandle, ConsumeRequest, ConsumedHandle, HandleAdmissionRequest,
@@ -98,6 +105,7 @@ pub use merge::{
     SemanticChange, SemanticGrant, SemanticGrantInfo, SemanticRefusal, SemanticVerdict,
 };
 pub use migration::{KvMigrationController, MigrationError, MigrationRecord, MigrationState};
+pub use moved_tensor::{MovedTensor, TensorMoveRefused};
 pub use placement::{
     DeviceHealth, DeviceRecord, FencedStateLease, FencingToken, NodeHealth, NodeRecord, Placement,
     PlacementEpoch, PlacementError, PodPlacementController, ProjectPlacementRequest,

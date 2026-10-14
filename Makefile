@@ -2,7 +2,7 @@
 	desktop-setup gpu-doctor smoke-gpu olmoe-sft-smoke release-package \
 	ci-local ci-quality ci-rust-stable ci-rust-msrv ci-python-training ci-repository-invariants \
 	ci-lifecycle-failpoints ci-ledger-raft-engine ci-ledger-raft-rs ci-state-turso ci-state-postgres \
-	ci-network-iroh ci-cluster-wire ci-execution-wire ci-pod-wire ci-fabric-shm ci-pod-worker ci-storage-tiers ci-feature-gates
+	ci-network-iroh ci-cluster-wire ci-execution-wire ci-pod-wire ci-fabric-shm ci-fabric-cuda-check ci-pod-worker ci-storage-tiers ci-feature-gates
 
 # `model/burn-a0` is its own workspace, excluded from the root one, so every
 # `--workspace` target below reaches none of it. That is why `fmt` names it
@@ -182,7 +182,7 @@ tree:
 # burn-a0 workflow, which runs only when A0 or what it depends on changes.
 ci-local: ci-quality ci-rust-stable ci-rust-msrv ci-python-training ci-repository-invariants \
 	ci-lifecycle-failpoints ci-ledger-raft-engine ci-ledger-raft-rs ci-state-turso ci-state-postgres \
-	ci-network-iroh ci-cluster-wire ci-execution-wire ci-pod-wire ci-fabric-shm ci-pod-worker ci-storage-tiers ci-feature-gates
+	ci-network-iroh ci-cluster-wire ci-execution-wire ci-pod-wire ci-fabric-shm ci-fabric-cuda-check ci-pod-worker ci-storage-tiers ci-feature-gates
 
 ci-quality:
 	cargo +stable fmt --all -- --check
@@ -305,6 +305,15 @@ ci-fabric-shm:
 	rustup toolchain install 1.99.0 --profile minimal
 	cargo +1.99.0 test -p ptr-fabric --features shm-backend --locked
 	cargo +1.99.0 test -p ptr-fabric --features worker-channel,worker-confine --locked
+
+ci-fabric-cuda-check:
+	cargo +stable build -p ptr-fabric --features cuda-ipc --locked
+	cargo +stable clippy -p ptr-fabric --features cuda-ipc --all-targets --locked -- -D warnings
+	cargo +stable test -p ptr-fabric --features cuda-ipc --locked
+	cargo +stable clippy -p ptr-fabric --features cuda-ipc,worker-channel --all-targets --locked -- -D warnings
+	cargo +stable test -p ptr-fabric --features cuda-ipc,worker-channel --locked
+	rustup toolchain install 1.99.0 --profile minimal
+	cargo +1.99.0 test -p ptr-fabric --features cuda-ipc --locked
 
 ci-pod-worker:
 	cargo +stable clippy -p ptr-fabric --features worker-supervisor --all-targets --locked -- -D warnings

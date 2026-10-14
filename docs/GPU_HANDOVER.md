@@ -856,3 +856,139 @@ on (old cached KV is never reused), and pinned checkpoint digests need successor
 
 **Framing.** Doc-38 indicators are functional properties; no run here claims or tests
 consciousness, and `MODEL_WELFARE.md` applies.
+
+
+## 12. Pod data plane: carrier checks on the owner's PCs
+
+Added 2026-10-15 with stage S2 of [`architecture/42-pod-data-plane.md`](architecture/42-pod-data-plane.md)
+(section 2 "Carriers", section 0a "The owner's hardware"). Everything in this section is
+**planned, not run**. It says what to run on each PC once the GPU tests exist, what to write
+down, and where it goes. It changes no hardware profile (`hardware/*.toml` stay as they are).
+
+**What S2 is today.** `ptr-runtime` has the carrier table and `select_carrier` (module
+`carrier_select`), tested on the CPU with simulated devices (`tests/carrier_select.rs`,
+`tests/data_plane_s2.rs`). They decide from a **probe record the caller supplies**; nothing
+probes a GPU yet, and no loader reads a file into `CarrierTable::record_probe`. Each PC has one
+card, so a card pair does not exist on this hardware (doc 42 section 0a): the `DevicePeer` and
+cross-card `PinnedHost` rows stay simulated until a host has two cards. What *is* checkable on
+each PC alone: the same-card `CudaIpc` row between two processes, and the host-to-card
+`PinnedHost` hop.
+
+**Built, never run on a card, stated plainly.** `crates/ptr-fabric` has the feature `cuda-ipc`
+(cudarc with dynamic loading, Linux only) and eight `#[ignore]` GPU tests. `tests/cuda_ipc.rs`
+(needs `cuda-ipc`) holds `a_vmm_export_round_trips_in_one_process`,
+`a_wrong_digest_or_a_forwarded_record_is_refused`, `the_consumer_sees_only_zeros_beyond_the_tensor`,
+`every_export_is_a_fresh_allocation_and_a_filled_one_cannot_be_refilled`,
+`the_peer_matrix_matches_the_driver` and `a_sealed_host_shm_region_registers_and_unregisters`;
+`tests/cuda_ipc_process.rs` (`required-features = ["cuda-ipc", "worker-channel"]`) holds
+`an_export_crosses_a_process_boundary_and_verifies` and
+`a_forwarded_record_is_refused_in_the_other_process`. None of them has run on a GPU: CI and the
+development host have no card. The legacy `cuIpc*` form is not built (only the VMM export over a
+POSIX descriptor). The LAN test (12.4) is not built: E011 (carrier calibration) and E013 (two-host
+split) are `planned` and have no harness; record it as `not built`, never as a failed check.
+
+### 12.1 Order, on each PC separately
+
+Run 12.2 to 12.3 on the **RTX 3090 PC**, then again on the **RTX 4090 PC**, with that PC's own
+checkout. A result from one PC says nothing about the other: the cards are two generations
+(Ampere, Ada), "a second data point, not a pair" (doc 42 section 0a). Do not copy a result file
+between the PCs.
+
+### 12.2 RTX 3090 PC (`hardware/rtx3090.toml`)
+
+```bash
+cd ~/PTR                       # the checkout of this PC; git rev-parse HEAD goes into the record
+git status --short             # must be clean; a dirty tree is recorded as git_dirty=true
+mkdir -p ~/ptr-carrier/rtx3090
+
+# 1. What the driver says about the card (always possible, needs no PTR code)
+nvidia-smi --query-gpu=index,name,driver_version,memory.total,pci.bus_id,compute_cap \
+  --format=csv | tee ~/ptr-carrier/rtx3090/nvidia-smi.csv
+nvidia-smi topo -m             | tee ~/ptr-carrier/rtx3090/topo.txt       # one card: a 1x1 matrix
+nvcc --version                 | tee ~/ptr-carrier/rtx3090/nvcc.txt       # if the toolkit is installed
+
+# 2. The eight ignored GPU tests of ptr-fabric (see above)
+export CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0
+cargo +1.99.0 test -p ptr-fabric --features cuda-ipc,worker-channel --locked -- --ignored --nocapture \
+  2>&1 | tee ~/ptr-carrier/rtx3090/ptr-fabric-ignored.txt
+```
+
+Write down, from the output of the eight ignored tests (pass or fail per test name, and what they
+print): the driver version and devices the probe reports, the VMM export and import between two
+processes on the same card (`an_export_crosses_a_process_boundary_and_verifies`, the same-GPU
+`CudaIpc` row), the padding check, the pinned registration of a sealed `HostShm` region (the
+`PinnedHost` hop), and the **peer matrix**: for one card it is empty
+(no ordered pair), and the record says `devices = 1, pairs = []`. Whether CUDA IPC works at all
+under the PC's operating system is not claimed here (**unverified**; if the PC runs Windows, the
+record must say what the probe returned instead of expecting success).
+
+Expected outputs, to be checked against what actually prints: the `nvidia-smi` table names
+`NVIDIA GeForce RTX 3090` with about 24 GiB (record the printed MiB value); `topo -m` shows a single `GPU0` row; the ignored
+tests either pass or fail with a CUDA error code that goes into the record verbatim. An output that
+differs (another card name, two cards, a different memory size) means this is not the machine the
+profile describes: stop and report; do not edit `hardware/rtx3090.toml`.
+
+### 12.3 RTX 4090 PC (`hardware/rtx4090.toml`)
+
+The same commands, with the directory `~/ptr-carrier/rtx4090` and the expectation
+`NVIDIA GeForce RTX 4090` with about 24 GiB (record the printed MiB value). Doc 42 section 2 records the author's belief that PCIe peer access is
+not offered on an RTX 4090 pair; that is **unverified** and there is no pair here to verify it. A
+host with two cards runs, in addition and only then:
+
+```bash
+nvidia-smi topo -p2p r         # read capability matrix (OK / NS per ordered pair)
+nvidia-smi topo -p2p w         # write capability matrix
+```
+
+and records the matrix per **ordered** pair, because `CarrierTable` stores one row per ordered
+pair (`cuda:0 -> cuda:1` and `cuda:1 -> cuda:0` are separate rows and the reverse is never inferred).
+
+### 12.4 LAN test between both PCs (placeholder for E013, not built)
+
+Doc 42 section 6 reserves E011's LAN cell (`Remote` over the LAN, descriptive) and E013 (the
+two-host split of E008) for the owner's two PCs. **Neither harness exists**, so there is nothing
+to run. When they do, the preconditions are: both PCs on one LAN, each with its own checkout at the
+same commit, each running its own `ptrd` under its own node identity with a `ScaleOut` link between
+them (the experiment is `invalid` if the placement records show one node identity), and the 3090
+PC as the stage-0 host. This section is to be replaced by the exact commands of the experiment's
+`PREREGISTRATION.md` when it exists; do not run a hand-made substitute and report it as E013.
+E008 part B (loopback) remains E013's baseline and is never two-host evidence.
+
+### 12.5 How the results flow back into the records
+
+1. Per PC, one JSON file with the facts that `CarrierTable` consumes and the provenance that makes
+   them checkable. The shape below is **proposed** (no code reads it yet); the head fixes the
+   path and the schema in the package that adds the loader, before the first run:
+
+   ```json
+   {
+     "schema": "ptr.carrier-probe.v0-proposed",
+     "pc": "rtx3090",
+     "hardware_profile": "hardware/rtx3090.toml",
+     "git_sha": "<git rev-parse HEAD>",
+     "git_dirty": false,
+     "driver": "<nvidia-smi driver_version>",
+     "cuda_runtime": "<as the probe prints it>",
+     "devices": [{"device_id": "cuda:0", "name": "<nvidia-smi name>", "memory_mib": 0}],
+     "pairs": [],
+     "same_gpu_cuda_ipc": {"result": "ok|error|not_built", "detail": "<verbatim>"},
+     "pinned_host_hop": {"result": "ok|error|not_built", "detail": "<verbatim>"},
+     "measured_at": "<UTC time of the run>"
+   }
+   ```
+
+   `pairs` holds, per ordered pair, `{"from": "cuda:0", "to": "cuda:1", "peer": "unprobed|no_peer|peer",
+   "device_peer_ns_per_mib": null, "pinned_host_ns_per_mib": null}`. A `Calibration` (both costs
+   non-zero) exists only for a pair with measured costs from E011; a pair without it is recorded
+   as `peer` with null costs, and the selection keeps `PinnedHost` for it.
+2. Commit the JSON files and the raw `nvidia-smi` / `cargo test` text files next to them
+   (`rtx3090-...`, `rtx4090-...`), not the `training/runs/` tree and not logs with tokens. The
+   write-up follows section 6 and the `ptr-results` skill: what ran, command, git sha,
+   `git_dirty`, hardware, driver, versions, the numbers, the evidence class (a probe is *pipeline
+   evidence only*, not an E011 result), and `not built` stated as such.
+3. Hand the files back as in section 6 (bundle or GitLab). Nothing is edited in
+   `hardware/*.toml`, in `experiments/` or in a frozen record by hand.
+4. A node that registers uses the probe: the registration path records each ordered pair with
+   `CarrierTable::record_probe` (`NoPeer`, or `Peer { calibrated }` only with an E011 calibration
+   for that pair). Until a calibration exists the table selects `PinnedHost` for every card pair,
+   which is the doc 42 default.
