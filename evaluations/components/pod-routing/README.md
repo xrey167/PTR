@@ -6,4 +6,4 @@ How a request is matched to one of the registry's candidate pods. The registry s
 
 Candidates: the constant default, description-vector cosine, the learned Dragonfly address, and the Symlink-LoRA idea (design only). The routing claim for the learned address is experiment R015 (arms `learned`, `cosine_only`, `constant_score`; metrics `routing_accuracy`, `abstain_rate`, `false_route_rate`).
 
-Design: [40 — Pod linking](../../../docs/architecture/40-pod-linking.md); decision: [ADR-0023](../../../research/decisions/ADR-0023-learned-pod-addresses-advisory.md).
+Design: [43 — Pod linking](../../../docs/architecture/43-pod-linking.md); decision: [ADR-0023](../../../research/decisions/ADR-0023-learned-pod-addresses-advisory.md).

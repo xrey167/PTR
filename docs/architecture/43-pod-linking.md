@@ -1,4 +1,4 @@
-# 40 — Pod linking: stable identity, committed head, advisory learned address
+# 43 — Pod linking: stable identity, committed head, advisory learned address
 
 Status: **identity, head resolver and the learned-address loader are implemented; the routing
 claim is not shown.** Experiment R015 has a harness and no frozen result. The Symlink-LoRA idea is

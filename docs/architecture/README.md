@@ -112,8 +112,15 @@ document states exists in code with tests; limits the document names still apply
 | [37 Pod-MoE](37-pod-moe.md) | design, slices implemented | Expert authority (R011) and attestation (R013) in `ptr-runtime`; training programme planned. |
 | [38 Consciousness indicators](38-consciousness-indicators.md) | design | Functional indicators only; C001 NOT_SHOWN, C004 COMPLETED, C007 and C008 FALSIFIED (CPU toys). Welfare rules: [MODEL_WELFARE](../MODEL_WELFARE.md). |
 | [39 VCW-MoE](39-vcw-moe.md) | design, loop implemented | `VcwLoop`, finding router, workspace, server path and `make vcw-demo` run with simulated (or `qwen-cpu`) experts; F007 COMPLETED as a mechanism check; no model-backed experiment yet. |
-| [40 Pod linking](40-pod-linking.md) | partially implemented | Value-free pod identity and cluster key, ledger-committed head (tag 38), advisory activation-gated learned addresses with abstention, revocation per pod; R015 has a harness and no frozen result; Symlink-LoRA is design only (ADR-0023). |
-| [41 Crate layering](41-crate-layering.md) | implemented | `scripts/check_crate_layering.py` in CI. There is no document 40. |
+| [41 Crate layering](41-crate-layering.md) | implemented | `scripts/check_crate_layering.py` in CI. |
+| [43 Pod linking](43-pod-linking.md) | partially implemented | Value-free pod identity and cluster key, ledger-committed head (tag 38), advisory activation-gated learned addresses with abstention, revocation per pod; R015 has a harness and no frozen result; Symlink-LoRA is design only (ADR-0023). |
+
+### Pod placement and data plane
+
+| Doc | Status | Notes |
+|---|---|---|
+| [40 Pod racks and trays](40-pod-rack.md) | design | The NVL72 composition pattern (scale-up domain, tray as the unit of placement and fencing, a host authority per tray, typed interconnect classes) applied to Pod placement; proposed types, work order and mechanism experiments; nothing implemented. |
+| [42 Pod data plane](42-pod-data-plane.md) | design | A fenced zero-copy fabric (tensor handles admitted like frames, a closed carrier set) in five stages: one host several processes, several GPUs, RAM offload, NVMe offload, several hosts; experiment ids E009 to E013 reserved; nothing implemented. |
 
 ## Related
 

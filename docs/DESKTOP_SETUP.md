@@ -1,22 +1,30 @@
-# Desktop setup: Ubuntu 24.04 with two RTX 3090 (originally written for one RTX 4090)
+# Desktop setup: Ubuntu 24.04 on two single-GPU PCs (one RTX 3090, one RTX 4090)
 
 **Summary.** This runbook sets up a freshly installed desktop (Ubuntu 24.04 LTS, native, not
 WSL2) for PTR experiments with Claude Code. It was written for one NVIDIA RTX 4090 (24 GB); the
-owner's machine has two RTX 3090 (24 GiB each), and section 10 lists what changes. Order: install
-Ubuntu (Secure Boot: confirm the MOK key at reboot; at least 200 GB free), install the driver
-`nvidia-driver-580-open` and check it with `nvidia-smi`, install `git` and clone the repository,
-`make desktop-setup`, then `make gpu-doctor`, the Hugging Face login and the OLMoE download (about
-14 GB, pinned revision hash), then `make smoke-gpu`, `make olmoe-sft-smoke` and finally M011.
-Start Claude Code in the repository directory; the skill `experiment-run` runs and monitors runs
-in the background. The smoke runs are **pipeline evidence, not research evidence**: without the
-experiment's falsification criteria, seeds and baselines no research result is claimed.
+owner has two PCs with one 24 GB card each, an RTX 3090 and an RTX 4090, and the paragraph below
+says what applies to which. Order: install Ubuntu (Secure Boot: confirm the MOK key at reboot; at
+least 200 GB free), install the driver `nvidia-driver-580-open` and check it with `nvidia-smi`,
+install `git` and clone the repository, `make desktop-setup`, then `make gpu-doctor`, the Hugging
+Face login and the OLMoE download (about 14 GB, pinned revision hash), then `make smoke-gpu`,
+`make olmoe-sft-smoke` and finally M011 (3090 PC only). Start Claude Code in the repository
+directory; the skill `experiment-run` runs and monitors runs in the background. The smoke runs
+are **pipeline evidence, not research evidence**: without the experiment's falsification
+criteria, seeds and baselines no research result is claimed.
 
 Target: a fresh Ubuntu 24.04 LTS desktop (native, not WSL2) with one NVIDIA RTX 4090
 (24 GiB, Ada, sm_89). The hardware profile is `hardware/rtx4090.toml`. Nothing here
 claims a research result: the smoke runs are pipeline evidence only (see step 7).
 
-**The owner's machine is two RTX 3090, not one 4090.** The text below says 4090 where it was
-written for the reference card; section 10 states what changes for two RTX 3090 (24 GiB each).
+**The owner has two PCs with one card each: an RTX 3090 (`hardware/rtx3090.toml`) and an RTX
+4090 (`hardware/rtx4090.toml`).** Follow the setup and smoke steps (sections 1 to 6, 8 and 9, and items 1 and 2 of section 7) on
+each PC with that PC's profile. M011 (section 7, item 3) declares `hardware/rtx3090.toml`
+(`experiments/model/M011-routed-peft/experiment.toml`), so it runs **only on the 3090 PC**. The text
+below says 4090 where it was written for the reference card. The Makefile selects the config
+set with `GPU_PROFILE`, whose default is `rtx3090`: on the 3090 PC run the targets as written,
+and on the 4090 PC pass `GPU_PROFILE=rtx4090` to every GPU target (for example
+`make smoke-gpu GPU_PROFILE=rtx4090`), so the run uses the 4090 configs and records
+`hardware/rtx4090.toml`. Section 10 also keeps the notes for the superseded two-3090 machine.
 
 Everything below was written and unit-tested on a machine without a GPU. The commands that
 need the GPU (driver install, `make smoke-gpu`, `make olmoe-sft-smoke`) have not been run
@@ -143,13 +151,16 @@ Runs refuse a dirty tracked worktree (`--execute`), so commit or stash tracked c
 first. Always `make gpu-doctor` before a run.
 
 1. **`make smoke-gpu`**: the WP8 tiny-random OLMoE smoke on the GPU
-   (`SMOKE_GPU_CONFIG ?= training/configs/stage-moe-smoke-gpu.toml`). Minutes. It checks the
+   (`stage-moe-smoke-gpu-rtx3090.toml` by default, `stage-moe-smoke-gpu.toml` with
+   `GPU_PROFILE=rtx4090` on the 4090 PC). Minutes. It checks the
    pipeline (SFT, GSPO and SAPO, routing metrics, `ptr_py` gates) runs on CUDA.
 2. **`make olmoe-sft-smoke`**: real OLMoE-1B-7B, SFT only, LoRA, bf16, gradient
    checkpointing, one 24 GB GPU
-   (`OLMOE_SFT_CONFIG ?= training/configs/stage-moe-olmoe-sft-smoke.toml`). Override either
+   (`stage-moe-olmoe-sft-smoke-rtx3090.toml` by default, without the suffix under
+   `GPU_PROFILE=rtx4090`). Override either
    variable on the command line: `make smoke-gpu SMOKE_GPU_CONFIG=path.toml`.
-3. **M011**: experiment M011 is registered as *planned*. Its entrypoint is set only when
+3. **M011** (3090 PC only: its manifest declares `hardware/rtx3090.toml`, and `GPU_PROFILE`
+   cannot change that): experiment M011 is registered as *planned*. Its entrypoint is set only when
    its run is prepared, so do not look for a `make` target: ask Claude Code (step 8) to prepare
    the run per the experiment's manifest. Before it, `python3 scripts/run_experiment.py validate`
    and `python3 scripts/check_research_gates.py` must pass. Never edit a prepared experiment
@@ -241,7 +252,12 @@ GitHub (`origin`) is the primary remote; GitLab is the alternative. For the GitL
 
 ## 10. Two RTX 3090 instead of one RTX 4090
 
-The owner's desktop has two RTX 3090 (Ampere, sm_86, 24 GiB each). Profiles:
+> **Superseded inventory (2026-10-13).** The owner now has two PCs with one card each, an RTX
+> 3090 (`hardware/rtx3090.toml`) and an RTX 4090 (`hardware/rtx4090.toml`). Steps 1 to 9 apply
+> to each PC as written, with that PC's profile. This section stays for a two-3090 machine and
+> for R003, which declares `hardware/dual-rtx3090.toml`; no owner machine matches it today.
+
+The two-3090 desktop had two RTX 3090 (Ampere, sm_86, 24 GiB each). Profiles:
 `hardware/dual-rtx3090.toml` ("2x NVIDIA GeForce RTX 3090, 24 GiB each, 48 GiB combined, PCIe-only
 (no NVLink bridge)") for the machine and `hardware/rtx3090.toml` (one card, 24 GiB; fp32, fp16,
 bf16, int8, no fp8) for single-card runs. NVLink is not assumed. Steps 1 to 9 apply unchanged

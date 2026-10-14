@@ -1,6 +1,6 @@
 ---
 name: experiment-run
-description: Run and monitor a PTR GPU experiment or smoke run on the local Ubuntu desktop with two RTX 3090 (hardware/dual-rtx3090.toml) (make smoke-gpu, make olmoe-sft-smoke, M011 and later), then report the results with honest evidence labels. Use when asked to start, watch, compare or write up a training or experiment run.
+description: Run and monitor a PTR GPU experiment or smoke run on the owner's local GPU PCs, one RTX 3090 and one RTX 4090 (hardware/rtx3090.toml, hardware/rtx4090.toml) (make smoke-gpu, make olmoe-sft-smoke, M011 and later), then report the results with honest evidence labels. Use when asked to start, watch, compare or write up a training or experiment run.
 ---
 
 # Run and monitor an experiment
@@ -34,7 +34,8 @@ repository rules are in `CLAUDE.md`.
    echo $! > "${LOG%.log}.pid"
    ```
    `<target>` is `smoke-gpu` or `olmoe-sft-smoke` (or the experiment's own entrypoint once its
-   run is prepared). Use the Bash tool's `run_in_background` when available and say where the
+   run is prepared). On the RTX 4090 PC append `GPU_PROFILE=rtx4090` (the Makefile default is
+   `rtx3090`), so the run uses the 4090 configs and records `hardware/rtx4090.toml`. Use the Bash tool's `run_in_background` when available and say where the
    log is.
 4. **Monitor.** Poll, do not busy-wait: `tail -n 30 "$LOG"` and
    `nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv`

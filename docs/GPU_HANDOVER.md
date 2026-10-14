@@ -1,8 +1,15 @@
 # GPU handover: running the GPU-phase work on the local GPU desktop (originally written for one RTX 4090)
 
 Written 2026-10-08 for the PTR owner's Ubuntu 24.04 desktop, originally assuming one NVIDIA RTX 4090
-(24 GiB). The machine is two RTX 3090 (24 GiB each); read "4090" below as the reference card of the
-original text (section 5 and `DESKTOP_SETUP.md` section 10 state what changes).
+(24 GiB). The owner's machines are now (inventory of 2026-10-13) two PCs with one card each, an RTX
+3090 (`hardware/rtx3090.toml`) and an RTX 4090 (`hardware/rtx4090.toml`). Run the setup and smoke
+steps on each PC with that PC's profile. Every experiment runs on **exactly one** host, the one whose
+profile its manifest declares: `hardware/rtx3090.toml` on the 3090 PC, `hardware/rtx4090.toml` on the
+4090 PC; an experiment whose declared profile matches neither PC (for example `dual-rtx3090`) is not
+run until matching hardware exists or a successor declares a single-card profile.
+`run_experiment.py` records the declared profile but does not enforce it, so this assignment is
+checked by hand before every confirmatory seed, and a seed is never rerun on the other PC. Earlier notes below that speak of one machine with two RTX 3090 describe the superseded
+inventory.
 It is a plan, not a result. It was assembled from repository files on a machine without a
 GPU, nothing in it has run on a GPU, and no experiment mentioned here has evidence yet.
 
@@ -54,8 +61,8 @@ Work top to bottom. Each item has a check; do not continue past a failed one.
 2. **Secure Boot.** `mokutil --sb-state`. With Secure Boot on, enrol the MOK key at the first
    reboot after the driver install, or disable Secure Boot (DESKTOP_SETUP step 1).
 3. **Driver.** `sudo apt install -y nvidia-driver-580-open`, reboot. Check: `nvidia-smi` shows
-   driver 580.x and two lines "NVIDIA GeForce RTX 3090", about 24 GiB each (the original single-4090
-   text expected one RTX 4090, 24564 MiB; DESKTOP_SETUP step 2). No system CUDA
+   driver 580.x and one card, about 24 GiB: "NVIDIA GeForce RTX 3090" on the 3090 PC, "NVIDIA
+   GeForce RTX 4090" (24564 MiB) on the 4090 PC (DESKTOP_SETUP step 2). No system CUDA
    toolkit is needed: the locked CUDA 13 torch wheels bring their own runtime. The experiment
    manifests of M016 and E006 pin driver `580.65.06` and CUDA 13.0 exactly
    (`software_stack`, `max_software_stack_mismatches = 0`). Which 580.x patch version apt
@@ -547,8 +554,13 @@ E002 and R003 are not unblocked. Nothing here can start before that decision (OD
 Not in the plan: M006 (needs a trained diffusion-style model, no GPU profile named) and R002
 (needs a trained tool-calling model; `benchmarks/ood-pods` holds no data).
 
-## 5. Hardware profile question (RESOLVED: two RTX 3090, keep `rtx3090.toml`): M010 to M015 name the RTX 3090, the original text assumed a 4090
+## 5. Hardware profile question (RESOLVED: keep `rtx3090.toml` and run on the 3090 PC): M010 to M015 name the RTX 3090, the original text assumed a 4090
 
+> **Inventory update (owner, 2026-10-13, later than the note below).** The owner has two PCs with
+> one card each: an RTX 3090 (`hardware/rtx3090.toml`) and an RTX 4090 (`hardware/rtx4090.toml`).
+> Single-card runs use the profile of the PC they run on; R003, which declares
+> `hardware/dual-rtx3090.toml`, has no matching owner machine and needs its own decision.
+>
 > **Resolved (owner fact, later than this text).** The owner's desktop has two RTX 3090 (24 GiB
 > each), not a 4090. OD-1 therefore resolves in favour of option A: the `hardware/rtx3090.toml`
 > profile the M010 to M015 and E006 manifests already name is the right one, and
@@ -680,7 +692,7 @@ placeholder.
 
 | ID | Applies to | Key or item | Kind | Options | Recommendation |
 |---|---|---|---|---|---|
-| OD-1 | M010, M011, M012, M013, M014, M015, E006 (also M016, R003) | `hardware_profile` in `experiment.toml`; E006 `gpu_compute_capability = "8.6"`; M016 `rtx5090` | gap | keep 3090 as declared class / switch to `rtx4090` before freezing (section 5) | resolved: the machine has two RTX 3090, keep `rtx3090.toml` (section 5, note at its head); the recommendation to switch to `rtx4090` no longer applies |
+| OD-1 | M010, M011, M012, M013, M014, M015, E006 (also M016, R003) | `hardware_profile` in `experiment.toml`; E006 `gpu_compute_capability = "8.6"`; M016 `rtx5090` | gap | keep 3090 as declared class / switch to `rtx4090` before freezing (section 5) | resolved: keep `rtx3090.toml` and run these experiments on the 3090 PC (owner inventory of 2026-10-13: two single-card PCs, 3090 and 4090; section 5, note at its head); the recommendation to switch to `rtx4090` no longer applies |
 | OD-2 | M006, M010 to M016, R002, R003, R008, E001 to E004, E006 | listing in `experiments/preregistration.toml` | gap | list before the first prepared record / leave unlisted (no freeze protection, per `CLAUDE.md`) | list, with the required keys of each, so the freeze gate covers them |
 | OD-3 | every GPU experiment | interpreter and environment of a frozen entrypoint (a listed run refuses git-ignored files such as `training/.venv`, and passes no `PYTHONPATH`) | gap | environment outside the checkout and a clean worktree / a wrapper in the repository / run unlisted | settle with the first entrypoint (M011) and reuse it **Decided 2026-10-13 (pinning part):** GPU pinning of frozen seed runs (OD-3, decided 2026-10-13, no runner change): a GPU experiment's manifest declares `PTR_CUDA_DEVICE` in `command_environment` before its freeze (the runner passes declared `PTR_*` variables through, `scripts/run_experiment.py`), its entrypoint wrapper sets `CUDA_VISIBLE_DEVICES=$PTR_CUDA_DEVICE` and prints the index into its result JSON (the run record names the declared variable, never its value), and the freeze script's `gpu` field exports both variables. An experiment frozen without that declaration runs on card 0, one at a time. |
 | OD-4 | M015 | teacher `Qwen/Qwen3-30B-A3B` does not fit 24 GiB (bf16 about 60 GB, estimate) | gap | pin a quantized or offloaded teacher / sample the teacher on other hardware and pin its output digest / choose a smaller teacher (successor manifest) / defer M015 | defer M015; if wanted, pin the teacher's precision and sampling location in the manifest before the freeze |
@@ -690,7 +702,7 @@ placeholder.
 | OD-8 | R004 | placeholders `public_regression_gate_permille`, `backward_transfer_min_permille`; also backbone, domain sequence, public suite, compute budget | placeholder + gap | pin values and name an OLMoE or other backbone | name the backbone first (it fixes what a gate value means), then pin both |
 | OD-9 | R003, E001, E002, E003, E004, E005 | pinned open backbone (ADR-0021, "separate later decision"); ADR-0015 coding backbone; `model.toml` fields; strong_rag revisions (`dense.revision`, `reranker.revision`, `answer.generator`, `answer.revision`) | gap | choose backbone and revisions / keep deferring | keep deferring until steps 4 to 13 have run |
 | OD-10 | E005 | `token_budget`, `full_context_baseline`, `agent_memory_baselines`, `baseline_strong_rag_sha256` | placeholder | pin each | after OD-9 |
-| OD-11 | R003 | declared `dual-rtx3090` profile (2 x 24 GiB) matches the two cards of this machine; the blocker is the missing backbone and multi-GPU trainer (original wording: vs a single 4090) | gap | change the profile in a successor / defer | defer with OD-9 |
+| OD-11 | R003 | declared `dual-rtx3090` profile (2 x 24 GiB) matches **no** owner machine since the inventory of 2026-10-13 (two PCs with one card each); the earlier blocker, the missing backbone and multi-GPU trainer, also remains (original wording: vs a single 4090) | gap | external matching hardware / a successor with a single-card profile / defer | defer with OD-9 |
 | OD-12 | M016 | start only after R006 is completed (R006 itself is CPU and needs its own preregistration and 5 seeds) | gap | complete R006 first / change M016's design | resolved: R006 is completed (`r006-prereg`, verdict COMPLETED) |
 
 Placeholders found in the GPU-phase manifests: only R004 (two keys) and E005 (four keys) hold

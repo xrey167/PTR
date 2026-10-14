@@ -2,7 +2,7 @@
 
 Pure Python (no torch). A pod's address is a vector `z` and a bias over a frozen text encoder; the
 Rust side (`ptr-router` `learned.rs`) loads only activated ones. See
-`docs/architecture/40-pod-linking.md` and ADR-0023.
+`docs/architecture/43-pod-linking.md` and ADR-0023.
 """
 
 from .encoder import Encoder, HashedBagOfWordsEncoder, SentenceTransformerEncoder, normalized

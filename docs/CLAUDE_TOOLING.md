@@ -37,7 +37,7 @@ Invoke by asking for the task, or explicitly as `/ptr-dev:<name>`.
 | `ptr-gitlab` | work with the GitLab remote (the alternative; GitHub, `origin`, is the primary remote): publish with `scripts/publish_remote.py` (dry run first), draft MRs and pipeline status with `glab`, low-automation rules; background in `docs/HOSTING.md` |
 | `ptr-offline-sync` | move the repository between machines with git bundles (create, split, join, verify, apply), bash and PowerShell |
 | `ptr-status` | produce a short Done / In progress / Blocked / Next report |
-| `experiment-run` | run and monitor a GPU smoke run or experiment on the Ubuntu desktop with two RTX 3090 (`hardware/dual-rtx3090.toml`) (`docs/DESKTOP_SETUP.md`) |
+| `experiment-run` | run and monitor a GPU smoke run or experiment on the owner's GPU PCs, one RTX 3090 and one RTX 4090 (`hardware/rtx3090.toml`, `hardware/rtx4090.toml`) (`docs/DESKTOP_SETUP.md`) |
 
 `ptr-offline-sync` ships a helper, `.claude/plugins/ptr-dev/skills/ptr-offline-sync/scripts/ptr_bundle.py` (Python 3.11, stdlib only):
 

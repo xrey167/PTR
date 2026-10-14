@@ -14,7 +14,7 @@ Sources: component count from [docs/components/STATUS.md](docs/components/STATUS
 
 ## Research integration
 
-Plan and per-package status: [docs/RESEARCH_INTEGRATION_PLAN_20261013.md](docs/RESEARCH_INTEGRATION_PLAN_20261013.md). WP1 pod linking (identity, ledger-committed head, advisory learned addresses): in review, implemented at library level ([doc 40](docs/architecture/40-pod-linking.md)); experiment R015 has a harness and no frozen result. WP2 to WP5: planned.
+Plan and per-package status: [docs/RESEARCH_INTEGRATION_PLAN_20261013.md](docs/RESEARCH_INTEGRATION_PLAN_20261013.md). WP1 pod linking (identity, ledger-committed head, advisory learned addresses): in review, implemented at library level ([doc 43](docs/architecture/43-pod-linking.md)); experiment R015 has a harness and no frozen result. WP2 to WP5: planned.
 
 ## Implemented and validated
 
@@ -177,7 +177,7 @@ F007, C004, C007, C008, E007, L002, R013 and Q003-v3 are no longer in progress: 
 - M002-v5 is superseded and the other planned architecture experiments are not positive evidence; L001 is superseded by the completed L001-v2 and its two executed scoped crash/recovery slices are historical v1-format evidence; experiments in progress with no outcome yet are listed under "In progress" in the executed-evidence section
 - external component candidates mostly lack comparative benchmark evidence
 - strong RAG/GraphRAG/editable-memory and matched plain-model comparative runs are not yet executed
-- GPU phase (Ubuntu desktop with two RTX 3090, `hardware/dual-rtx3090.toml`): ordered run plan, per-experiment gaps and open owner decisions are in [docs/GPU_HANDOVER.md](docs/GPU_HANDOVER.md); nothing in it has run on a GPU
+- GPU phase (two Ubuntu PCs with one card each, `hardware/rtx3090.toml` and `hardware/rtx4090.toml`; the two-3090 desktop of `hardware/dual-rtx3090.toml` is superseded): ordered run plan, per-experiment gaps and open owner decisions are in [docs/GPU_HANDOVER.md](docs/GPU_HANDOVER.md); nothing in it has run on a GPU
 - GitHub main-branch ruleset/repository-admin settings still require manual completion; recommendations are documented in `docs/GITHUB_SETTINGS.md`
 - the TypeScript SDK and Axum server now share `/health` and `/v1/requests` (the server also mounts `/v1/vcw/tasks` and `/v1/vcw/traces/{id}` when a VCW service is installed; the SDK does not call them); streaming, auth/session policy and a real configured model backend remain open
 
