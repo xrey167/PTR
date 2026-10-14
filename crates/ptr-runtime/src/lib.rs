@@ -679,6 +679,22 @@ pub enum RuntimeError {
     InvalidEffectKey {
         key: String,
     },
+    /// The target or the operation of an attempt being committed is empty or longer than
+    /// [`execution::MAX_ATTEMPT_FIELD_BYTES`]: a compacted snapshot carries each as a string of 1
+    /// to that many bytes, so while such an attempt were unsettled no snapshot could be exported
+    /// (issue #153). Nothing was committed. Replay accepts a record a log already holds.
+    InvalidEffectAttemptField {
+        /// Which field is out of bounds.
+        field: execution::EffectAttemptField,
+        /// Its length in bytes.
+        bytes: usize,
+    },
+    /// An effect settlement or reconciliation ([`LedgerEvent::EffectSettled`],
+    /// [`LedgerEvent::EffectReconciled`]) was handed to the public `commit`. Only the execution
+    /// path writes one (a settlement after dispatch, `settle_detached`, `reconcile`), which keeps
+    /// a retained response within the compacted snapshot's execution-section budget (issue
+    /// #153). Nothing was committed.
+    SettlementOutsideExecutionPath,
     /// A second attempt under a key whose first attempt is still unsettled. Two
     /// live attempts would make the key meaningless, and a settlement could not
     /// say which of them it ends.
@@ -1863,6 +1879,15 @@ impl PtrRuntime {
     pub fn commit(&mut self, event: LedgerEvent) -> Result<CommitIndex, RuntimeError> {
         // Validate before the first durable byte: rejected transitions must never
         // poison committed history or become authoritative on a later restart.
+        // A settlement is refused by name before the fence check: it is the one record kind
+        // that is written while the runtime is fenced, and only by the execution path, which
+        // holds its retained response to the execution-section budget (issue #153).
+        if matches!(
+            event,
+            LedgerEvent::EffectSettled { .. } | LedgerEvent::EffectReconciled { .. }
+        ) {
+            return Err(RuntimeError::SettlementOutsideExecutionPath);
+        }
         if self.execution.is_fenced() {
             return Err(RuntimeError::ExecutionFenced);
         }
@@ -2304,8 +2329,13 @@ impl PtrRuntime {
         // An admission recorded before version 2 under this output's version-1 digest (issue
         // #141). Version 1 is not injective, so only its recorded result is returned, when its
         // follow-up is in the ledger, and a missing follow-up is refused, never completed from
-        // a version-1 match. Both are decided before anything is appended (the taint record
-        // below included): the answer is pure and the refusal leaves the ledger as it was.
+        // a version-1 match. A hypothesis follow-up records the whole output, so it is compared
+        // exactly, and one that records another output is a reused request id. Each refusal is
+        // decided before anything is appended and leaves the ledger as it was. A retry that is
+        // answered is taint-contained like a version-2 retry (issue #153): its taint is recorded
+        // for the recorded output (by its version-1 digest, which names its candidate key or
+        // branch id) and for this output, before the recorded result is returned.
+        let mut legacy_answer = None;
         if legacy_digest != output_digest {
             for (position, committed) in self.committed_events().iter().enumerate() {
                 let LedgerEvent::PodOutputAdmitted {
@@ -2332,24 +2362,38 @@ impl PtrRuntime {
                         "request id was admitted for a different scope or session".into(),
                     ));
                 }
-                if self.admission_followup_committed(
+                if *output_kind == 2
+                    && self.hypothesis_followup_differs(&request, &legacy_digest, position)
+                {
+                    return Err(RuntimeError::PodOutputAdmission(
+                        "request id was reused with a different output".into(),
+                    ));
+                }
+                if !self.admission_followup_committed(
                     *output_kind,
                     &request,
                     &legacy_digest,
                     position,
                 ) {
-                    return self.admission_result_from_code(
-                        *output_kind,
-                        *revision,
-                        &request,
-                        legacy_digest,
-                    );
+                    return Err(RuntimeError::LegacyAdmissionIncomplete {
+                        request_id: request.request_id.clone(),
+                        pod_id: request.pod_id.clone(),
+                    });
                 }
-                return Err(RuntimeError::LegacyAdmissionIncomplete {
-                    request_id: request.request_id.clone(),
-                    pod_id: request.pod_id.clone(),
-                });
+                legacy_answer = Some((*output_kind, *revision));
+                break;
             }
+        }
+        if let Some((output_kind, revision)) = legacy_answer {
+            if let ptr_model_api::KvReuseTaint::Approximate { report_digest } = kv_taint {
+                self.record_legacy_pod_output_taint(
+                    &legacy_digest,
+                    &output_digest,
+                    &request.output.payload.bytes,
+                    report_digest,
+                )?;
+            }
+            return self.admission_result_from_code(output_kind, revision, &request, legacy_digest);
         }
         // Taint first: the registry record precedes the admission, the candidate and the
         // hypothesis record, so a crash in between leaves a stray taint record (which only
@@ -2592,6 +2636,11 @@ impl PtrRuntime {
                         && session_id == &request.session_id
                         && scope_id == &request.scope_id
                         && branch_id == &pod_branch_id(&request.request_id, &request.pod_id, digest)
+                        // The record holds the whole output, so it is compared exactly (by the
+                        // injective version-2 digest of what it records), not only by the
+                        // digest it carries, which may be the non-injective version 1.
+                        && hypothesis_output(&committed.event)
+                            .is_some_and(|recorded| recorded.digest() == request.output.digest())
                 }
                 (
                     LedgerEvent::SemanticDeltaCommitted {
@@ -2644,6 +2693,43 @@ impl PtrRuntime {
                             &semantic::pod_output_key(&request.request_id, &request.pod_id),
                             &request.output.payload,
                         )
+                }
+                _ => false,
+            })
+    }
+
+    /// Whether a hypothesis record written after the admission at `admitted_at` for this
+    /// request, Pod, session, scope and `output_digest` (its branch id included) records an
+    /// output other than the request's: the same request id reused for another output that
+    /// shares the recorded digest (only possible under the non-injective version-1 digest).
+    fn hypothesis_followup_differs(
+        &self,
+        request: &PodOutputAdmissionRequest,
+        output_digest: &ptr_types::Digest,
+        admitted_at: usize,
+    ) -> bool {
+        let wanted = request.output.digest();
+        self.committed_events()
+            .iter()
+            .skip(admitted_at + 1)
+            .any(|committed| match &committed.event {
+                LedgerEvent::PodHypothesisCommitted {
+                    request_id,
+                    session_id,
+                    scope_id,
+                    branch_id,
+                    pod_id,
+                    output_digest: digest,
+                    ..
+                } => {
+                    request_id == &request.request_id
+                        && pod_id == &request.pod_id
+                        && digest == output_digest
+                        && session_id == &request.session_id
+                        && scope_id == &request.scope_id
+                        && branch_id == &pod_branch_id(&request.request_id, &request.pod_id, digest)
+                        && hypothesis_output(&committed.event)
+                            .is_none_or(|recorded| recorded.digest() != wanted)
                 }
                 _ => false,
             })
@@ -2780,6 +2866,10 @@ impl PtrRuntime {
             return Err(RuntimeError::ExecutionFenced);
         }
         self.validate_lifecycle_event(&event)?;
+        // The execution path drops a response that would not fit (`record_settlement`), so this
+        // holds for every settlement it writes; it is checked here so that no settlement, by
+        // any writer, can take the section past its budget.
+        self.check_execution_section_growth(&event)?;
         self.append_checked(event, None)
     }
 
@@ -3635,6 +3725,22 @@ fn validate_new_record(event: &LedgerEvent) -> Result<(), RuntimeError> {
     if let LedgerEvent::EffectAttempted { key: Some(key), .. } = event {
         if !execution::valid_key(key) {
             return Err(RuntimeError::InvalidEffectKey { key: key.clone() });
+        }
+    }
+    if let LedgerEvent::EffectAttempted {
+        target, operation, ..
+    } = event
+    {
+        for (field, value) in [
+            (execution::EffectAttemptField::Target, target),
+            (execution::EffectAttemptField::Operation, operation),
+        ] {
+            if !execution::valid_attempt_field(value) {
+                return Err(RuntimeError::InvalidEffectAttemptField {
+                    field,
+                    bytes: value.len(),
+                });
+            }
         }
     }
     Ok(())
