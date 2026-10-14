@@ -16,16 +16,18 @@
 //! Nothing here installs KV from a wire either: an [`AdmittedFrame`] holds activations and
 //! positions and the cache stores what the caller computed from them.
 
+use crate::placement::PlacementScope;
 use crate::{PodPlacementController, PtrRuntime};
 use ptr_model_api::KvReuseMode;
 use ptr_protocol::activation::{
     chain_bytes, frame_digest, ActivationFrame, ChainElement, UpstreamChain,
 };
-use ptr_types::{Generation, Validity};
+use ptr_types::{Generation, ProjectId, Validity};
 use sha2::{Digest as _, Sha256};
 use std::collections::BTreeMap;
 
 const KEY_DOMAIN: &[u8] = b"ptr.split.downstream-key.v1\0";
+const PROJECT_KEY_DOMAIN: &[u8] = b"ptr.split.downstream-key.project\0";
 
 /// What the downstream stage asks about the upstream chain, at use.
 pub trait StageLiveness {
@@ -34,8 +36,22 @@ pub trait StageLiveness {
     fn validity(&self, target: &str, generation: Generation) -> Option<Validity>;
     /// The digest committed for `target` at `generation` (`None`: unknown).
     fn manifest_digest(&self, target: &str, generation: Generation) -> Option<[u8; 32]>;
-    /// The placement (fence) epoch the stage `stage` holds now (`None`: not placed).
+    /// The placement (fence) epoch the stage `stage` holds now in the **legacy single-project
+    /// namespace** (`None`: not placed). Kept unchanged for single-project callers and for
+    /// completed experiments; a caller that serves a project asks
+    /// [`Self::placement_epoch_in`].
     fn placement_epoch(&self, stage: &str) -> Option<u64>;
+    /// The placement (fence) epoch the stage `stage` holds now **for `project`** (`None`: not
+    /// placed for that project). `PodRegistry` allows one `PodId` in two projects, so a stage
+    /// name alone does not identify a placement.
+    ///
+    /// The default answers `None`: an implementor that does not know projects fails closed
+    /// (every project-scoped frame or handle is refused as stale) instead of answering with
+    /// another project's epoch. An implementor that holds placements per project overrides it.
+    fn placement_epoch_in(&self, project: &ProjectId, stage: &str) -> Option<u64> {
+        let _ = (project, stage);
+        None
+    }
     /// The fence epoch the expert `expert` is serving under now (`None`: not serving).
     fn fence_epoch(&self, expert: &str) -> Option<u64>;
 }
@@ -63,6 +79,13 @@ impl StageLiveness for RuntimeStageLiveness<'_> {
     fn placement_epoch(&self, stage: &str) -> Option<u64> {
         self.placement
             .placement(&ptr_types::PodId::from(stage))
+            .ok()
+            .map(|placement| placement.epoch.0)
+    }
+
+    fn placement_epoch_in(&self, project: &ProjectId, stage: &str) -> Option<u64> {
+        self.placement
+            .placement_in(project, &ptr_types::PodId::from(stage))
             .ok()
             .map(|placement| placement.epoch.0)
     }
@@ -103,7 +126,7 @@ pub enum ChainFault {
 
 /// Why `entry` is not usable now, if it is not.
 fn entry_fault<V>(entry: &Entry<V>, live: &dyn StageLiveness) -> Option<ChainFault> {
-    revalidate_chain(&entry.chain, entry.placement_epoch, live)
+    revalidate_chain_scoped(&entry.scope, &entry.chain, entry.placement_epoch, live)
         .and_then(|()| revalidate_own(&entry.own, live))
         .err()
 }
@@ -141,13 +164,45 @@ fn revalidate_element(element: &ChainElement, live: &dyn StageLiveness) -> Resul
 /// Revalidate every element of `chain` and the placement epoch against `live`: the stage
 /// (identity, generation, manifest digest), the base model, every adapter and every expert
 /// (generation, digest and fence epoch).
+///
+/// The placement epoch is read in the **legacy single-project namespace**
+/// ([`StageLiveness::placement_epoch`]); use [`revalidate_chain_in`] to check it for a project.
 pub fn revalidate_chain(
     chain: &UpstreamChain,
     placement_epoch: u64,
     live: &dyn StageLiveness,
 ) -> Result<(), ChainFault> {
+    revalidate_chain_scoped(&PlacementScope::Legacy, chain, placement_epoch, live)
+}
+
+/// [`revalidate_chain`] with the placement epoch read for `project`
+/// ([`StageLiveness::placement_epoch_in`]): a stage of the same name placed for another
+/// project, at whatever epoch, is not this chain's stage.
+pub fn revalidate_chain_in(
+    project: &ProjectId,
+    chain: &UpstreamChain,
+    placement_epoch: u64,
+    live: &dyn StageLiveness,
+) -> Result<(), ChainFault> {
+    revalidate_chain_scoped(
+        &PlacementScope::Project(project.clone()),
+        chain,
+        placement_epoch,
+        live,
+    )
+}
+
+fn revalidate_chain_scoped(
+    scope: &PlacementScope,
+    chain: &UpstreamChain,
+    placement_epoch: u64,
+    live: &dyn StageLiveness,
+) -> Result<(), ChainFault> {
     revalidate_element(&chain.stage, live)?;
-    let current = live.placement_epoch(&chain.stage.identity);
+    let current = match scope {
+        PlacementScope::Legacy => live.placement_epoch(&chain.stage.identity),
+        PlacementScope::Project(project) => live.placement_epoch_in(project, &chain.stage.identity),
+    };
     if current != Some(placement_epoch) {
         return Err(ChainFault::StalePlacement {
             recorded: placement_epoch,
@@ -176,6 +231,7 @@ pub fn revalidate_chain(
 /// positions to compute from, and nothing a cache could take for KV.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AdmittedFrame {
+    scope: PlacementScope,
     frame_digest: [u8; 32],
     chain: UpstreamChain,
     placement_epoch: u64,
@@ -186,6 +242,12 @@ pub struct AdmittedFrame {
 }
 
 impl AdmittedFrame {
+    /// The project the frame was admitted for (`None`: admitted through the legacy
+    /// single-project [`admit_frame`]).
+    pub fn project(&self) -> Option<&ProjectId> {
+        self.scope.project()
+    }
+
     pub fn frame_digest(&self) -> &[u8; 32] {
         &self.frame_digest
     }
@@ -213,9 +275,10 @@ impl AdmittedFrame {
     /// Revalidate the frame's chain and placement epoch against `live` now. Admission checks
     /// once; a caller that computes from the frame (a prefill has no use ticket, unlike a cache
     /// hit) calls this before it releases the computed output, so a revocation between
-    /// admission and release is caught.
+    /// admission and release is caught. The placement is read in the namespace the frame was
+    /// admitted in (its project, or the legacy namespace).
     pub fn revalidate(&self, live: &dyn StageLiveness) -> Result<(), ChainFault> {
-        revalidate_chain(&self.chain, self.placement_epoch, live)
+        revalidate_chain_scoped(&self.scope, &self.chain, self.placement_epoch, live)
     }
 
     /// `rows x width` activations, row-major.
@@ -230,7 +293,38 @@ impl AdmittedFrame {
 /// upstream stage ran under, as the caller knows it, and an Approximate upstream is refused
 /// with [`ChainFault::NotExact`] because the frame cannot carry a taint. The activations
 /// must be finite.
+///
+/// The placement epoch is read in the **legacy single-project namespace**; a caller that serves
+/// a project uses [`admit_frame_in`].
 pub fn admit_frame(
+    frame: &ActivationFrame,
+    upstream_mode: KvReuseMode,
+    live: &dyn StageLiveness,
+) -> Result<AdmittedFrame, ChainFault> {
+    admit_frame_scoped(PlacementScope::Legacy, frame, upstream_mode, live)
+}
+
+/// [`admit_frame`] for `project`: the placement epoch is read for that project
+/// ([`StageLiveness::placement_epoch_in`]), so a frame whose stage name and epoch match
+/// another project's placement is refused with [`ChainFault::StalePlacement`]. The frame
+/// stays bound to the project: [`AdmittedFrame::revalidate`], the cache key and every use of
+/// a cache entry derived from it check the same project's placement.
+pub fn admit_frame_in(
+    project: &ProjectId,
+    frame: &ActivationFrame,
+    upstream_mode: KvReuseMode,
+    live: &dyn StageLiveness,
+) -> Result<AdmittedFrame, ChainFault> {
+    admit_frame_scoped(
+        PlacementScope::Project(project.clone()),
+        frame,
+        upstream_mode,
+        live,
+    )
+}
+
+fn admit_frame_scoped(
+    scope: PlacementScope,
     frame: &ActivationFrame,
     upstream_mode: KvReuseMode,
     live: &dyn StageLiveness,
@@ -240,12 +334,13 @@ pub fn admit_frame(
             mode: upstream_mode,
         });
     }
-    revalidate_chain(&frame.upstream_chain, frame.placement_epoch, live)?;
+    revalidate_chain_scoped(&scope, &frame.upstream_chain, frame.placement_epoch, live)?;
     let activations = frame.tensor_f32();
     if let Some(index) = activations.iter().position(|value| !value.is_finite()) {
         return Err(ChainFault::NonFinite { index });
     }
     Ok(AdmittedFrame {
+        scope,
         frame_digest: frame_digest(&frame.to_bytes()),
         chain: frame.upstream_chain.clone(),
         placement_epoch: frame.placement_epoch,
@@ -259,10 +354,17 @@ pub fn admit_frame(
 /// The key of the downstream entry derived from `frames`, in order, by the downstream stage
 /// described by `own`: it includes the digest of every frame (a frame's digest covers its
 /// chain and placement epoch) and the downstream stage's own chain, so two downstream
-/// generations never share a key.
+/// generations never share a key. Frames admitted for a project also bind the project into
+/// the key, so the same frame admitted for two projects never shares an entry; the key of a
+/// legacy-admitted frame is unchanged.
 pub fn prefix_key(frames: &[&AdmittedFrame], own: &UpstreamChain) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(KEY_DOMAIN);
+    if let Some(project) = frames.first().and_then(|frame| frame.project()) {
+        hasher.update(PROJECT_KEY_DOMAIN);
+        hasher.update((project.0.len() as u64).to_le_bytes());
+        hasher.update(project.0.as_bytes());
+    }
     let own = chain_bytes(own);
     hasher.update((own.len() as u64).to_le_bytes());
     hasher.update(&own);
@@ -278,8 +380,8 @@ pub fn prefix_key(frames: &[&AdmittedFrame], own: &UpstreamChain) -> [u8; 32] {
 pub enum StoreError {
     /// No frames: an entry derives from at least one.
     NoFrames,
-    /// The frames do not share one upstream chain and placement epoch, so no single chain
-    /// can be recorded for what was computed from them.
+    /// The frames do not share one upstream chain, placement epoch and project, so no single
+    /// chain can be recorded for what was computed from them.
     ChainMismatch,
     /// The cache holds its maximum of entries.
     Full,
@@ -307,6 +409,8 @@ pub struct UseTicket {
 }
 
 struct Entry<V> {
+    /// The namespace the placement epoch is read in (the project the frames were admitted for).
+    scope: PlacementScope,
     /// The downstream stage's own stage, base model, adapters and experts.
     own: UpstreamChain,
     chain: UpstreamChain,
@@ -377,6 +481,10 @@ impl<V> SplitStageCache<V> {
         }) {
             return Err(StoreError::ChainMismatch);
         }
+        // One entry is revalidated in one project's placement namespace.
+        if frames.iter().any(|frame| frame.scope != first.scope) {
+            return Err(StoreError::ChainMismatch);
+        }
         let key = prefix_key(frames, own);
         if !self.entries.contains_key(&key) && self.entries.len() >= self.capacity {
             self.evict_dead(live);
@@ -387,6 +495,7 @@ impl<V> SplitStageCache<V> {
         self.entries.insert(
             key,
             Entry {
+                scope: first.scope.clone(),
                 own: own.clone(),
                 chain: first.chain.clone(),
                 placement_epoch: first.placement_epoch,

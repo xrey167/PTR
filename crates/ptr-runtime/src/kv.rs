@@ -77,6 +77,7 @@ impl RuntimeKvAuthority {
             KvUseTicket {
                 request: ticket.request.clone(),
                 lease: FencedStateLease {
+                    scope: ticket.lease.scope.clone(),
                     pod_id: ticket.lease.pod_id().clone(),
                     state_id: ticket.lease.state_id().clone(),
                     node_id: ticket.lease.node_id().clone(),

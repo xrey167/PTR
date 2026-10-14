@@ -188,10 +188,12 @@ fn budget_is_charged_with_the_page_rounded_footprint() {
     let tier = backend(4);
     let page = tier.page_size();
     assert_eq!(tier.budget_bytes(), 4 * page);
-    assert_eq!(tier.footprint_for(0), page);
-    assert_eq!(tier.footprint_for(1), page);
-    assert_eq!(tier.footprint_for(page), page);
-    assert_eq!(tier.footprint_for(page + 1), 2 * page);
+    assert_eq!(tier.footprint_for(0), Some(page));
+    assert_eq!(tier.footprint_for(1), Some(page));
+    assert_eq!(tier.footprint_for(page), Some(page));
+    assert_eq!(tier.footprint_for(page + 1), Some(2 * page));
+    // The last partial page of the address space does not round up into a wrapped value.
+    assert_eq!(tier.footprint_for(usize::MAX), None);
 
     let one = vec![7u8];
     block_on_tier(tier.put_chunk(chunk(&one), one.clone())).unwrap();

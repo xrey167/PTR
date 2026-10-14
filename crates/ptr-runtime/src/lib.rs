@@ -31,6 +31,8 @@ pub mod split_stage;
 pub mod stepped;
 pub mod tensor_kv;
 pub mod tier;
+pub mod tier_grant;
+pub mod tier_prefetch;
 pub mod vcw;
 pub mod vcw_host;
 
@@ -92,7 +94,7 @@ pub use merge::{
 pub use migration::{KvMigrationController, MigrationError, MigrationRecord, MigrationState};
 pub use placement::{
     DeviceHealth, DeviceRecord, FencedStateLease, FencingToken, NodeHealth, NodeRecord, Placement,
-    PlacementEpoch, PlacementError, PodPlacementController,
+    PlacementEpoch, PlacementError, PodPlacementController, ProjectPlacementRequest,
 };
 #[cfg(feature = "oidc-http")]
 pub use policy::ReqwestPolicyBundleLoader;
@@ -112,8 +114,9 @@ pub use scopes::{
     ScopeRegistry, ScopeState, MAX_SCOPES,
 };
 pub use split_stage::{
-    admit_frame, prefix_key, revalidate_chain, AdmittedFrame, ChainFault, RuntimeStageLiveness,
-    SplitStageCache, StageLiveness, StoreError, UseFault, UseTicket, OPEN_USES_PER_ENTRY,
+    admit_frame, admit_frame_in, prefix_key, revalidate_chain, revalidate_chain_in, AdmittedFrame,
+    ChainFault, RuntimeStageLiveness, SplitStageCache, StageLiveness, StoreError, UseFault,
+    UseTicket, OPEN_USES_PER_ENTRY,
 };
 pub use stepped::{CancelPolicy, CancelledRun, RunStep, StepResources, SteppedRun};
 pub use tensor_kv::{
@@ -127,6 +130,15 @@ pub use tier::{
     ResidencyRecord, TierJournalProjection, TierPin, TierPlacementPolicy, TierPlan,
     TierPlanningContext, TierPolicyError, TierProjectionError, TierReplica,
     TierResidencyController, TierRuntimeError, TierTransferAuthorization, TierTransferReceipt,
+};
+pub use tier_grant::{
+    ManualTierClock, SystemTierClock, TierClock, TierGrant, TierGrantLimits, TOMBSTONE_ENTRY_BYTES,
+};
+pub use tier_prefetch::{
+    plan_prefetch, EligibleTargets, PlannedPrefetch, PodEligibilityGate, PrefetchDrop,
+    PrefetchDropReason, PrefetchEligibility, PrefetchIndexError, PrefetchObjectIndex, PrefetchPlan,
+    PrefetchPlanError, PrefetchPlanRequest, PrefetchSignal, PrefetchSignalError,
+    PrefetchSignalSource, PrefetchTarget, MAX_PREFETCH_INDEX_ENTRIES, MAX_PREFETCH_TARGETS,
 };
 
 /// A complete, runtime-bound request to admit one typed output produced by a
