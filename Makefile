@@ -2,7 +2,7 @@
 	desktop-setup gpu-doctor smoke-gpu olmoe-sft-smoke release-package \
 	ci-local ci-quality ci-rust-stable ci-rust-msrv ci-python-training ci-repository-invariants \
 	ci-lifecycle-failpoints ci-ledger-raft-engine ci-ledger-raft-rs ci-state-turso ci-state-postgres \
-	ci-network-iroh ci-cluster-wire ci-execution-wire ci-pod-wire ci-storage-tiers ci-feature-gates
+	ci-network-iroh ci-cluster-wire ci-execution-wire ci-pod-wire ci-fabric-shm ci-storage-tiers ci-feature-gates
 
 # `model/burn-a0` is its own workspace, excluded from the root one, so every
 # `--workspace` target below reaches none of it. That is why `fmt` names it
@@ -182,7 +182,7 @@ tree:
 # burn-a0 workflow, which runs only when A0 or what it depends on changes.
 ci-local: ci-quality ci-rust-stable ci-rust-msrv ci-python-training ci-repository-invariants \
 	ci-lifecycle-failpoints ci-ledger-raft-engine ci-ledger-raft-rs ci-state-turso ci-state-postgres \
-	ci-network-iroh ci-cluster-wire ci-execution-wire ci-pod-wire ci-storage-tiers ci-feature-gates
+	ci-network-iroh ci-cluster-wire ci-execution-wire ci-pod-wire ci-fabric-shm ci-storage-tiers ci-feature-gates
 
 ci-quality:
 	cargo +stable fmt --all -- --check
@@ -297,10 +297,17 @@ ci-pod-wire:
 	rustup toolchain install 1.99.0 --profile minimal
 	cargo +1.99.0 test -p ptr-podwire --features podwire-backend --locked
 
+ci-fabric-shm:
+	cargo +stable test -p ptr-fabric --features shm-backend --locked
+	cargo +stable clippy -p ptr-fabric --features shm-backend --all-targets --locked -- -D warnings
+	rustup toolchain install 1.99.0 --profile minimal
+	cargo +1.99.0 test -p ptr-fabric --features shm-backend --locked
+
 ci-storage-tiers:
 	cargo +stable test -p ptr-storage --features tier-opendal-fs --test opendal_tier --locked
 	cargo +stable check -p ptr-storage --features tier-opendal-fs,tier-opendal-s3 --locked
-	cargo +stable clippy -p ptr-storage --all-targets --features tier-opendal-fs,tier-opendal-s3 --locked -- -D warnings
+	cargo +stable test -p ptr-storage --features tier-pinned,tier-direct-io --locked
+	cargo +stable clippy -p ptr-storage --all-targets --features tier-opendal-fs,tier-opendal-s3,tier-pinned,tier-direct-io --locked -- -D warnings
 
 # Feature gates no other job compiles. `candle-cuda` (ptr-pods / ptr-runtime) is
 # deliberately excluded: it needs the CUDA toolkit, so nothing here compiles it.

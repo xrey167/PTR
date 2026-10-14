@@ -2,14 +2,14 @@
 
 ## Current overview
 
-PTR's root workspace is 33 library crates and four binaries, placed in eight ranked layers by
+PTR's root workspace is 34 library crates and four binaries, placed in eight ranked layers by
 [`research/catalogs/crate-layers.toml`](../../research/catalogs/crate-layers.toml) and checked in CI
 ([41](41-crate-layering.md)):
 
 | Rank | Layer | Crates |
 |---:|---|---|
 | 0 | kernel | `ptr-types` |
-| 1 | foundation | `ptr-analytics`, `ptr-config`, `ptr-core`, `ptr-events`, `ptr-exec`, `ptr-ingress`, `ptr-inspect`, `ptr-ledger`, `ptr-lineage`, `ptr-memory`, `ptr-model-api`, `ptr-observe`, `ptr-protocol`, `ptr-security`, `ptr-semdb`, `ptr-storage` |
+| 1 | foundation | `ptr-analytics`, `ptr-config`, `ptr-core`, `ptr-events`, `ptr-exec`, `ptr-fabric`, `ptr-ingress`, `ptr-inspect`, `ptr-ledger`, `ptr-lineage`, `ptr-memory`, `ptr-model-api`, `ptr-observe`, `ptr-protocol`, `ptr-security`, `ptr-semdb`, `ptr-storage` |
 | 2 | domain | `ptr-labeling`, `ptr-net`, `ptr-search`, `ptr-verifier` |
 | 3 | composition | `ptr-branch`, `ptr-cluster`, `ptr-fastmem`, `ptr-feedback`, `ptr-pods` |
 | 4 | projection | `ptr-router`, `ptr-state`, `ptr-worker` |

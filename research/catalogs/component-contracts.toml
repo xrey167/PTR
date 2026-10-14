@@ -162,6 +162,13 @@ backend_slots = ["network-transport", "pod-environment"]
 open_decisions = ["whether the Pod access policy and the execution admission policy share one durability story before either is journaled", "whether an answer should be signed, which is the receipt question in a second place", "whether a peer identity should be unforgeable at the type level, which needs a ptr-runtime dependency on ptr-net", "who owns the accept loop", "backpressure toward a peer that asks faster than the host answers", "whether a requester should be able to discover a Pod's protocol version rather than only be refused for guessing it wrong", "which discovery mechanism turns an id into an address, and whose answer to believe"]
 
 [[component]]
+id = "ptr-fabric"
+ports = ["export_bytes", "import_bytes", "ShmExport", "ShmMapping"]
+type_families = ["pod-contract", "storage-object"]
+backend_slots = ["pod-environment"]
+open_decisions = ["how the sealed descriptor is passed to the consumer and bound to the handle nonce", "which carrier a handle uses for which size and placement", "whether a mapping may cross threads"]
+
+[[component]]
 id = "ptr-events"
 ports = ["EventBus", "EventProducer", "EventConsumer"]
 type_families = ["events-observability", "ledger-consensus"]

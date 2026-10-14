@@ -89,9 +89,40 @@ def stale_audit_exceptions(root: Path) -> list[str]:
         name, version = exception["package"]
         packages = (tomllib.loads(lock.read_text(encoding="utf-8")).get("package", [])
                     if lock.is_file() else [])
-        if not any(p.get("name") == name and p.get("version") == version for p in packages):
+        versions = sorted(p.get("version") for p in packages if p.get("name") == name)
+        if version not in versions:
             stale.append(f"{manifest}: {name} {version} is no longer locked")
+        elif versions != [version]:
+            # cargo-audit's --ignore is by advisory ID for the whole lockfile, so a second
+            # locked version of the package would be silenced too.
+            stale.append(f"{manifest}: {name} is also locked at {versions}; "
+                         f"--ignore would cover more than {version}")
     return stale
+
+
+def reachable_audit_exceptions(root: Path, run=subprocess.run) -> list[str]:
+    """Exceptions whose package the workspace can build for some target or feature.
+
+    `cargo tree -i <name>@<version>` over every target, every feature and every
+    edge kind prints nothing when no path leads to the package. Depending on the
+    Cargo version, a package that is locked but outside the resolved graph is
+    reported either that way (exit 0, "nothing to print") or as an unmatched
+    package ID (exit 101, "did not match any packages"); both mean unreachable.
+    Any printed path, or any other failure, means the exception no longer holds.
+    """
+    reachable = []
+    for manifest, exception in sorted(AUDIT_EXCEPTIONS.items()):
+        name, version = exception["package"]
+        command = ["cargo", "+stable", "tree", "--manifest-path", str(root / manifest),
+                   "--locked", "--target", "all", "--all-features",
+                   "-e", "normal,build,dev", "-i", f"{name}@{version}"]
+        result = run(command, cwd=root, capture_output=True, **TEXT_OUTPUT)
+        unmatched = (result.returncode == 101 and not result.stdout.strip()
+                     and "did not match any packages" in result.stderr)
+        if not unmatched and (result.returncode != 0 or result.stdout.strip()):
+            reachable.append(f"{manifest}: {name} {version} is reachable or the graph "
+                             f"check failed (exit {result.returncode})")
+    return reachable
 
 
 def workspace_name(relative: Path) -> str:
@@ -111,6 +142,9 @@ def scan(kind: str, output: Path, root: Path = ROOT) -> int:
         stale = stale_audit_exceptions(root)
         if stale:
             raise ValueError(f"stale audit exceptions, remove them: {stale}")
+        reachable = reachable_audit_exceptions(root)
+        if reachable:
+            raise ValueError(f"audit exceptions no longer hold: {reachable}")
     for relative in workspaces(root):
         name = workspace_name(relative)
         manifest = root / relative
