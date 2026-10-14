@@ -275,23 +275,19 @@ impl Verifier<PromotionClaim> for PromotionVerifier {
         }
 
         let mut findings = Vec::new();
-        let contradictions: Vec<&str> = claim
-            .deterministic_findings
-            .iter()
-            .filter(|f| f.hard)
-            .map(|f| f.code.as_str())
-            .collect();
-        if !contradictions.is_empty() {
-            let named: Vec<&str> = contradictions
-                .iter()
-                .copied()
+        // Count without collecting and name a bounded prefix with bounded codes: the findings
+        // are caller-supplied, and every hard one still forces Fail (invariant 11).
+        let hard = || claim.deterministic_findings.iter().filter(|f| f.hard);
+        let contradictions = hard().count();
+        if contradictions > 0 {
+            let named: Vec<&str> = hard()
                 .take(MAX_NAMED_CONTRADICTIONS)
+                .map(|f| prefix(&f.code, MAX_FIELD_BYTES))
                 .collect();
             findings.push(finding(
                 "promotion.contradicted",
                 format!(
-                    "{} deterministic finding(s) contradict promotion to {target}: {}",
-                    contradictions.len(),
+                    "{contradictions} deterministic finding(s) contradict promotion to {target}: {}",
                     named.join(", ")
                 ),
             ));
@@ -375,6 +371,15 @@ impl NamedVerifier<PromotionClaim> for PromotionVerifier {
     fn name(&self) -> &'static str {
         "promotion"
     }
+}
+
+/// The longest prefix of `text` of at most `max` bytes that ends on a char boundary.
+fn prefix(text: &str, max: usize) -> &str {
+    let mut end = text.len().min(max);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
 }
 
 #[cfg(test)]
@@ -574,6 +579,39 @@ mod tests {
         // Soft findings alone do not contradict.
         c.deterministic_findings.remove(0);
         assert_eq!(verifier(1).verify(&c).status, VerificationStatus::Pass);
+    }
+
+    #[test]
+    fn many_or_huge_contradicting_findings_still_fail_with_a_bounded_message() {
+        let mut c = claim(
+            PromotionTarget::Verified,
+            vec![evidence("e1", EvidenceOrigin::Ledger, "ledger", true)],
+        );
+        c.deterministic_findings = (0..10_000)
+            .map(|i| Finding {
+                code: if i == 0 {
+                    "x".repeat(1 << 20)
+                } else {
+                    format!("code.{i}")
+                },
+                message: String::new(),
+                hard: true,
+            })
+            .collect();
+        let report = verifier(1).verify(&c);
+        assert_eq!(report.status, VerificationStatus::Fail);
+        assert_eq!(codes(&report), ["promotion.contradicted"]);
+        let message = &report.findings[0].message;
+        assert!(
+            message.starts_with("10000 deterministic finding(s)"),
+            "{message}"
+        );
+        // At most MAX_NAMED_CONTRADICTIONS codes, each cut to MAX_FIELD_BYTES.
+        assert!(
+            message.len() <= 256 + MAX_NAMED_CONTRADICTIONS * (MAX_FIELD_BYTES + 8),
+            "message is {} bytes",
+            message.len()
+        );
     }
 
     #[test]
