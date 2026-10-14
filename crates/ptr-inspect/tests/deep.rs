@@ -12,19 +12,9 @@ fn deep(leaf: InspectNode) -> InspectNode {
     node
 }
 
-/// Tear a tree down iteratively: dropping a 100_000-deep tree recursively would overflow.
+/// Dropping a 100_000-deep tree recursively would overflow; `InspectNode` tears down iteratively.
 fn dismantle(node: InspectNode) {
-    let mut pending = vec![node];
-    while let Some(node) = pending.pop() {
-        if let InspectNode::List(items) = node {
-            pending.extend(items);
-        } else if let InspectNode::Map(entries) = node {
-            for (key, value) in entries {
-                pending.push(key);
-                pending.push(value);
-            }
-        }
-    }
+    drop(node);
 }
 
 fn on_small_stack(f: impl FnOnce() + Send + 'static) {

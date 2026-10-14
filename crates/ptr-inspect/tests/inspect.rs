@@ -327,7 +327,7 @@ fn tree_compact_and_json_renderings_are_stable() {
 }
 
 fn fingerprint_of(bytes: &[u8]) -> String {
-    match InspectNode::bytes(bytes) {
+    match &InspectNode::bytes(bytes) {
         InspectNode::Bytes(preview) => format!("fnv1a64:{:016x}", preview.fingerprint()),
         other => panic!("not bytes: {other:?}"),
     }

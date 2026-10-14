@@ -10,12 +10,15 @@ use crate::render::key_label;
 /// within the stack.
 pub const HARD_MAX_DEPTH: usize = 512;
 
+/// Most nodes `walk` visits whatever the caller asks for.
+pub const HARD_MAX_NODES: usize = 1 << 24;
+
 /// Bounds on one traversal.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct WalkLimits {
     /// Deepest allowed nesting; the root is depth 0. Clamped to [`HARD_MAX_DEPTH`].
     pub max_depth: usize,
-    /// Most nodes visited, counting the root and containers.
+    /// Most nodes visited, counting the root and containers. Clamped to [`HARD_MAX_NODES`].
     pub max_nodes: usize,
 }
 
@@ -79,7 +82,7 @@ pub fn walk(
 ) -> Result<usize, WalkError> {
     let mut state = State {
         max_depth: limits.max_depth.min(HARD_MAX_DEPTH),
-        max_nodes: limits.max_nodes,
+        max_nodes: limits.max_nodes.min(HARD_MAX_NODES),
         visited: 0,
         path: InspectPath::root(),
     };

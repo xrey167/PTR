@@ -1,5 +1,7 @@
 //! The generic inspection tree and the trait that produces it.
 
+use std::cmp::Ordering;
+
 use crate::render;
 
 /// Longest byte prefix a [`BytesPreview`] keeps.
@@ -38,6 +40,42 @@ pub enum InspectNode {
     Redacted,
     /// A redacted value that still says what kind of value was withheld.
     RedactedWith(RedactionHint),
+}
+
+/// Iterative teardown: children are moved onto a heap stack and dropped one at a time, so a tree
+/// nested hundreds of thousands of levels deep cannot overflow the call stack when dropped.
+impl Drop for InspectNode {
+    fn drop(&mut self) {
+        let mut stack: Vec<InspectNode> = Vec::new();
+        take_children(self, &mut stack);
+        while let Some(mut node) = stack.pop() {
+            take_children(&mut node, &mut stack);
+        }
+    }
+}
+
+fn take_children(node: &mut InspectNode, stack: &mut Vec<InspectNode>) {
+    match node {
+        InspectNode::Struct { fields, .. } | InspectNode::Enum { fields, .. } => {
+            stack.extend(std::mem::take(fields).into_iter().map(|(_, v)| v));
+        }
+        InspectNode::List(items) => stack.append(items),
+        InspectNode::Map(entries) => {
+            for (k, v) in std::mem::take(entries) {
+                stack.push(k);
+                stack.push(v);
+            }
+        }
+        InspectNode::Null
+        | InspectNode::Bool(_)
+        | InspectNode::Number(_)
+        | InspectNode::Int(_)
+        | InspectNode::UInt(_)
+        | InspectNode::Text(_)
+        | InspectNode::Bytes(_)
+        | InspectNode::Redacted
+        | InspectNode::RedactedWith(_) => {}
+    }
 }
 
 /// `PartialEq` of `InspectNode` is written with an explicit stack instead of derived recursion,
@@ -123,6 +161,116 @@ pub(crate) fn structural_eq(a: &InspectNode, b: &InspectNode, nan_equal: bool) -
         }
     }
     true
+}
+
+/// Iterative total order over trees: compares the pre-order token streams (variant rank, then
+/// scalar contents and arity), floats by `f64::total_cmp`. Unlike a rendering it never truncates,
+/// so trees of any depth are distinguished, and an explicit heap stack avoids call-stack overflow.
+pub(crate) fn cmp_nodes(a: &InspectNode, b: &InspectNode) -> Ordering {
+    fn rank(n: &InspectNode) -> u8 {
+        match n {
+            InspectNode::Null => 0,
+            InspectNode::Bool(_) => 1,
+            InspectNode::Number(_) => 2,
+            InspectNode::Int(_) => 3,
+            InspectNode::UInt(_) => 4,
+            InspectNode::Text(_) => 5,
+            InspectNode::Bytes(_) => 6,
+            InspectNode::Struct { .. } => 7,
+            InspectNode::List(_) => 8,
+            InspectNode::Map(_) => 9,
+            InspectNode::Enum { .. } => 10,
+            InspectNode::Redacted => 11,
+            InspectNode::RedactedWith(_) => 12,
+        }
+    }
+    fn class_rank(c: Option<LengthClass>) -> u8 {
+        match c {
+            None => 0,
+            Some(LengthClass::Empty) => 1,
+            Some(LengthClass::Short) => 2,
+            Some(LengthClass::Medium) => 3,
+            Some(LengthClass::Long) => 4,
+        }
+    }
+    fn fields_order<'a>(
+        x: &'a [(String, InspectNode)],
+        y: &'a [(String, InspectNode)],
+        stack: &mut Vec<(&'a InspectNode, &'a InspectNode)>,
+    ) -> Ordering {
+        let mut ord = x.len().cmp(&y.len());
+        if ord == Ordering::Equal {
+            ord = x.iter().map(|f| &f.0).cmp(y.iter().map(|f| &f.0));
+        }
+        if ord == Ordering::Equal {
+            stack.extend(x.iter().zip(y).rev().map(|((_, v1), (_, v2))| (v1, v2)));
+        }
+        ord
+    }
+    let mut stack = vec![(a, b)];
+    while let Some((x, y)) = stack.pop() {
+        let ord = rank(x).cmp(&rank(y)).then_with(|| match (x, y) {
+            (InspectNode::Bool(p), InspectNode::Bool(q)) => p.cmp(q),
+            (InspectNode::Number(p), InspectNode::Number(q)) => p.total_cmp(q),
+            (InspectNode::Int(p), InspectNode::Int(q)) => p.cmp(q),
+            (InspectNode::UInt(p), InspectNode::UInt(q)) => p.cmp(q),
+            (InspectNode::Text(p), InspectNode::Text(q)) => p.cmp(q),
+            (InspectNode::Bytes(p), InspectNode::Bytes(q)) => {
+                (p.len, p.fingerprint, &p.head).cmp(&(q.len, q.fingerprint, &q.head))
+            }
+            (InspectNode::RedactedWith(p), InspectNode::RedactedWith(q)) => p
+                .type_name
+                .cmp(q.type_name)
+                .then(class_rank(p.length_class).cmp(&class_rank(q.length_class))),
+            (
+                InspectNode::Struct {
+                    name: n1,
+                    fields: f1,
+                },
+                InspectNode::Struct {
+                    name: n2,
+                    fields: f2,
+                },
+            ) => n1.cmp(n2).then_with(|| fields_order(f1, f2, &mut stack)),
+            (
+                InspectNode::Enum {
+                    name: n1,
+                    variant: v1,
+                    fields: f1,
+                },
+                InspectNode::Enum {
+                    name: n2,
+                    variant: v2,
+                    fields: f2,
+                },
+            ) => n1
+                .cmp(n2)
+                .then_with(|| v1.cmp(v2))
+                .then_with(|| fields_order(f1, f2, &mut stack)),
+            (InspectNode::List(p), InspectNode::List(q)) => {
+                let ord = p.len().cmp(&q.len());
+                if ord == Ordering::Equal {
+                    stack.extend(p.iter().zip(q).rev());
+                }
+                ord
+            }
+            (InspectNode::Map(p), InspectNode::Map(q)) => {
+                let ord = p.len().cmp(&q.len());
+                if ord == Ordering::Equal {
+                    for ((k1, v1), (k2, v2)) in p.iter().zip(q).rev() {
+                        stack.push((v1, v2));
+                        stack.push((k1, k2));
+                    }
+                }
+                ord
+            }
+            _ => Ordering::Equal,
+        });
+        if ord != Ordering::Equal {
+            return ord;
+        }
+    }
+    Ordering::Equal
 }
 
 /// Length, fingerprint and a bounded prefix of a byte string.
@@ -273,10 +421,15 @@ impl InspectNode {
 
     /// A map node whose entries are sorted by the rendered key, so unordered sources
     /// (for example a `HashMap`) produce a deterministic tree. Keys whose bounded labels are equal
-    /// (for example long strings sharing a prefix) are ordered by their full JSON rendering.
+    /// (for example long strings sharing a prefix, or keys differing only below the render depth)
+    /// are ordered by an untruncated iterative structural comparison.
     pub fn map_sorted(mut entries: Vec<(InspectNode, InspectNode)>) -> Self {
-        entries.sort_by_cached_key(|(k, _)| (render::key_label(k), render::render_json(k)));
-        Self::Map(entries)
+        let mut keyed: Vec<(String, (InspectNode, InspectNode))> = entries
+            .drain(..)
+            .map(|entry| (render::key_label(&entry.0), entry))
+            .collect();
+        keyed.sort_by(|(la, (a, _)), (lb, (b, _))| la.cmp(lb).then_with(|| cmp_nodes(a, b)));
+        Self::Map(keyed.into_iter().map(|(_, entry)| entry).collect())
     }
 
     /// Whether this node is a redaction marker of either kind.
@@ -396,6 +549,61 @@ mod tests {
         assert_eq!(LengthClass::from_len(255), LengthClass::Medium);
         assert_eq!(LengthClass::from_len(256), LengthClass::Long);
         assert_eq!(LengthClass::Short.label(), "1-15");
+    }
+
+    fn deep_key(leaf: i128) -> InspectNode {
+        let mut node = InspectNode::Int(leaf);
+        for _ in 0..200 {
+            node = InspectNode::List(vec![node]);
+        }
+        node
+    }
+
+    #[test]
+    fn map_sorted_orders_keys_that_differ_only_below_the_render_depth() {
+        let run = |first: i128, second: i128| {
+            std::thread::Builder::new()
+                .stack_size(256 * 1024)
+                .spawn(move || {
+                    let node = InspectNode::map_sorted(vec![
+                        (deep_key(first), InspectNode::Int(first)),
+                        (deep_key(second), InspectNode::Int(second)),
+                    ]);
+                    let InspectNode::Map(entries) = &node else {
+                        return Vec::new();
+                    };
+                    let order: Vec<InspectNode> = entries.iter().map(|(_, v)| v.clone()).collect();
+                    order
+                })
+                .unwrap()
+                .join()
+                .unwrap()
+        };
+        let forward = run(1, 2);
+        assert_eq!(forward, vec![InspectNode::Int(1), InspectNode::Int(2)]);
+        assert_eq!(run(2, 1), forward);
+    }
+
+    #[test]
+    fn cmp_nodes_is_a_total_order_over_variants_and_contents() {
+        use std::cmp::Ordering::{Equal, Greater, Less};
+        assert_eq!(cmp_nodes(&InspectNode::Null, &InspectNode::Null), Equal);
+        assert_eq!(
+            cmp_nodes(&InspectNode::Null, &InspectNode::Bool(false)),
+            Less
+        );
+        assert_eq!(
+            cmp_nodes(&InspectNode::Int(2), &InspectNode::Int(1)),
+            Greater
+        );
+        let nan = InspectNode::Number(f64::NAN);
+        assert_eq!(cmp_nodes(&nan, &nan), Equal);
+        assert_eq!(cmp_nodes(&deep_key(1), &deep_key(1)), Equal);
+        assert_eq!(cmp_nodes(&deep_key(1), &deep_key(2)), Less);
+        let short = InspectNode::List(vec![InspectNode::Int(1)]);
+        let long = InspectNode::List(vec![InspectNode::Int(1), InspectNode::Int(0)]);
+        assert_eq!(cmp_nodes(&short, &long), Less);
+        assert_eq!(cmp_nodes(&long, &short), Greater);
     }
 
     #[test]
