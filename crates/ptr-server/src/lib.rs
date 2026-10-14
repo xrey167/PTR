@@ -414,6 +414,15 @@ impl ServerState {
             .map_or(0, |tracing| tracing.export_errors())
     }
 
+    /// True once a failed trace write could not be rolled back (the export file may end in a
+    /// partial line); the writer then stops and later batches count in `trace_export_errors`.
+    pub fn trace_export_poisoned(&self) -> bool {
+        self.options
+            .tracing
+            .as_ref()
+            .is_some_and(|tracing| tracing.is_poisoned())
+    }
+
     /// Serve the verifier-closed path (`POST /v1/vcw/tasks`) from this state. The service's
     /// Pods are made live in the runtime and its scope is created, under the runtime's lock.
     /// Without this call the route does not exist.

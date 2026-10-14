@@ -267,15 +267,17 @@ pub fn train_router_head(
         });
     }
     let data = synthetic_examples(model, options.examples, options.data_seed)?;
-    let (_, initial_accuracy) = mean_loss_and_accuracy(&model.router, &data)?;
+    // Train a copy and install it only on success: an error leaves `model` untouched.
+    let mut head = model.router.clone();
+    let (_, initial_accuracy) = mean_loss_and_accuracy(&head, &data)?;
     let mut losses = Vec::with_capacity(options.epochs);
     let inv = 1.0 / data.len() as f32;
     for _ in 0..options.epochs {
-        let mut gw = Matrix::zeros(model.router.w.rows(), model.router.w.cols())?;
-        let mut gb = Matrix::zeros(1, model.router.b.cols())?;
+        let mut gw = Matrix::zeros(head.w.rows(), head.w.cols())?;
+        let mut gb = Matrix::zeros(1, head.b.cols())?;
         let mut total = 0.0_f32;
         for ex in &data {
-            let g = router_gradient(&model.router, &ex.features, ex.target)?;
+            let g = router_gradient(&head, &ex.features, ex.target)?;
             total += g.loss;
             for (a, b) in gw.as_mut_slice().iter_mut().zip(g.d_weight.as_slice()) {
                 *a += b;
@@ -286,17 +288,29 @@ pub fn train_router_head(
         }
         losses.push(total * inv);
         let step = options.learning_rate * inv;
-        for (w, g) in model.router.w.as_mut_slice().iter_mut().zip(gw.as_slice()) {
+        for (w, g) in head.w.as_mut_slice().iter_mut().zip(gw.as_slice()) {
             *w -= step * g;
         }
-        for (b, g) in model.router.b.as_mut_slice().iter_mut().zip(gb.as_slice()) {
+        for (b, g) in head.b.as_mut_slice().iter_mut().zip(gb.as_slice()) {
             *b -= step * g;
         }
+        let finite = head
+            .w
+            .as_slice()
+            .iter()
+            .chain(head.b.as_slice())
+            .all(|v| v.is_finite());
+        if !finite {
+            return Err(CoreError::NonFinite {
+                what: "head parameters",
+            });
+        }
     }
-    let (final_loss, final_accuracy) = mean_loss_and_accuracy(&model.router, &data)?;
+    let (final_loss, final_accuracy) = mean_loss_and_accuracy(&head, &data)?;
     if !final_loss.is_finite() {
         return Err(CoreError::NonFinite { what: "loss" });
     }
+    model.router = head;
     Ok(ToyRouterReport {
         losses,
         final_loss,
@@ -515,6 +529,27 @@ mod tests {
             train_router_head(&mut b, &o).unwrap()
         );
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn diverging_training_leaves_the_model_untouched() {
+        for learning_rate in [f32::MAX, 1.0e38] {
+            let mut m = model();
+            let before = m.clone();
+            let options = ToyRouterOptions {
+                learning_rate,
+                ..ToyRouterOptions::default()
+            };
+            let err = train_router_head(&mut m, &options).unwrap_err();
+            assert!(
+                matches!(err, CoreError::NonFinite { .. }),
+                "{learning_rate}: {err:?}"
+            );
+            let bits = |x: &Matrix| x.as_slice().iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+            assert_eq!(bits(&m.router.w), bits(&before.router.w), "{learning_rate}");
+            assert_eq!(bits(&m.router.b), bits(&before.router.b), "{learning_rate}");
+            assert_eq!(m, before);
+        }
     }
 
     #[test]

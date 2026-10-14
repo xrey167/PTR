@@ -2,9 +2,9 @@
 //!
 //! [`ProcessCommandVerifier`] runs a candidate command as a child process and maps how it ended
 //! to a verdict. It is a PROTOTYPE of process isolation, not a sandbox: there are no namespaces,
-//! no seccomp, no cgroup, no network or filesystem confinement and no process-group kill, so a
-//! allowlisted program can still read what the OS user can read and a grandchild it spawns can
-//! outlive the timeout. What it does enforce, with `std::process` only:
+//! no seccomp, no cgroup, no network or filesystem confinement and no process-group kill (`std`
+//! cannot signal a group and this crate has no `libc`), so an allowlisted program can still read
+//! what the OS user can read and a grandchild it spawns can outlive the timeout. What it does enforce, with `std::process` only:
 //!
 //! * the executable must be an absolute path that is in the caller's allowlist, compared as the
 //!   exact path (no `PATH` search, no shell: the argument vector goes to the program as given).
@@ -19,7 +19,12 @@
 //!   the child never blocks on a full pipe, and the capture is marked truncated;
 //! * a wall-clock timeout is enforced by polling `try_wait`; on expiry the child is killed and
 //!   reaped (`wait`) before the call returns;
-//! * argument count, argument size and the number of allowlisted executables are bounded.
+//! * argument count, argument size and the number of allowlisted executables are bounded;
+//! * blocked capture threads are bounded process-wide. A grandchild that inherits the pipes and
+//!   outlives the command keeps its two reader threads blocked until it exits or closes them.
+//!   Each such abandoned thread counts against [`MAX_STUCK_CAPTURE_THREADS`]; while the bound is
+//!   reached a run starts with its output discarded (`/dev/null`, no thread) and is marked
+//!   `output_truncated`. The count falls again as the grandchildren end.
 //!
 //! The exit status maps as follows: exit 0 is `Pass`; an exit code in the configured fail codes
 //! (default `[1]`) is `Fail` (`process.exit_nonzero`); a timeout is `Fail` (`process.timeout`);
@@ -34,8 +39,8 @@
 use std::io::Read;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicU64, AtomicU8, AtomicUsize, Ordering};
+use std::sync::{mpsc, Arc, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use ptr_types::{Probability, VerificationLevel};
@@ -55,6 +60,9 @@ pub const MAX_TIMEOUT: Duration = Duration::from_secs(60);
 pub const MAX_CAPTURE_BYTES: usize = 1 << 20;
 /// How long to wait for a reader thread after the child is gone (a grandchild may hold the pipe).
 const DRAIN_GRACE: Duration = Duration::from_millis(500);
+/// Most capture threads that may stay blocked on a pipe a grandchild still holds, process-wide.
+/// At the bound, further runs discard their output instead of starting more readers.
+pub const MAX_STUCK_CAPTURE_THREADS: usize = 16;
 /// Interval of the `try_wait` poll.
 const POLL: Duration = Duration::from_millis(5);
 
@@ -242,7 +250,8 @@ pub struct ProcessRun {
     pub stdout: Vec<u8>,
     /// Up to `max_capture_bytes` of stderr.
     pub stderr: Vec<u8>,
-    /// Output beyond the limit was discarded, or a stream could not be drained in time.
+    /// Output beyond the limit was discarded, a stream could not be drained in time, or the
+    /// stuck-capture-thread bound was reached and the output was not captured at all.
     pub output_truncated: bool,
     pub elapsed: Duration,
     /// The child's process id, if it was started. It is reaped when the run returns.
@@ -293,12 +302,50 @@ impl Drop for ScratchDir {
     }
 }
 
-type Capture = mpsc::Receiver<(Vec<u8>, bool)>;
+/// Counts capture threads that were abandoned (drain timeout) while still blocked on a pipe.
+#[derive(Debug)]
+struct StuckBudget {
+    stuck: AtomicUsize,
+    max: usize,
+}
+
+impl StuckBudget {
+    fn global() -> Arc<Self> {
+        static GLOBAL: OnceLock<Arc<StuckBudget>> = OnceLock::new();
+        Arc::clone(GLOBAL.get_or_init(|| {
+            Arc::new(StuckBudget {
+                stuck: AtomicUsize::new(0),
+                max: MAX_STUCK_CAPTURE_THREADS,
+            })
+        }))
+    }
+
+    fn has_room(&self) -> bool {
+        self.stuck.load(Ordering::Acquire) < self.max
+    }
+}
+
+const READING: u8 = 0;
+const ABANDONED: u8 = 1;
+const FINISHED: u8 = 2;
+
+struct Capture {
+    rx: mpsc::Receiver<(Vec<u8>, bool)>,
+    state: Arc<AtomicU8>,
+    budget: Arc<StuckBudget>,
+}
 
 /// Reads `stream` to the end on a thread, keeping at most `limit` bytes.
-fn capture<R: Read + Send + 'static>(stream: Option<R>, limit: usize) -> Option<Capture> {
+fn capture<R: Read + Send + 'static>(
+    stream: Option<R>,
+    limit: usize,
+    budget: &Arc<StuckBudget>,
+) -> Option<Capture> {
     let mut stream = stream?;
     let (tx, rx) = mpsc::channel();
+    let state = Arc::new(AtomicU8::new(READING));
+    let thread_state = Arc::clone(&state);
+    let thread_budget = Arc::clone(budget);
     let spawned = std::thread::Builder::new()
         .name("ptr-verifier-capture".into())
         .spawn(move || {
@@ -316,15 +363,40 @@ fn capture<R: Read + Send + 'static>(stream: Option<R>, limit: usize) -> Option<
                 }
             }
             let _ = tx.send((kept, truncated));
+            if thread_state.swap(FINISHED, Ordering::AcqRel) == ABANDONED {
+                thread_budget.stuck.fetch_sub(1, Ordering::AcqRel);
+            }
         });
-    spawned.ok().map(|_| rx)
+    spawned.ok().map(|_| Capture {
+        rx,
+        state,
+        budget: Arc::clone(budget),
+    })
 }
 
-fn collect(capture: Option<Capture>) -> (Vec<u8>, bool) {
-    match capture.map(|rx| rx.recv_timeout(DRAIN_GRACE)) {
-        Some(Ok(result)) => result,
-        // No reader, or it did not finish: the output is incomplete.
-        Some(Err(_)) | None => (Vec::new(), true),
+fn collect(capture: Option<Capture>, deadline: Instant) -> (Vec<u8>, bool) {
+    let Some(capture) = capture else {
+        // No reader: the output is incomplete.
+        return (Vec::new(), true);
+    };
+    match capture
+        .rx
+        .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+    {
+        Ok(result) => result,
+        Err(_) => {
+            // Count first, then hand over: if the thread finishes in between it sees ABANDONED
+            // only after the increment, so the count never underflows.
+            capture.budget.stuck.fetch_add(1, Ordering::AcqRel);
+            if capture
+                .state
+                .compare_exchange(READING, ABANDONED, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+            {
+                capture.budget.stuck.fetch_sub(1, Ordering::AcqRel);
+            }
+            (Vec::new(), true)
+        }
     }
 }
 
@@ -370,6 +442,14 @@ impl ProcessCommandVerifier {
 
     /// Runs `request` and returns what was observed. A refused request starts nothing.
     pub fn run(&self, request: &CommandRequest) -> Result<ProcessRun, ProcessRejection> {
+        self.run_with(request, &StuckBudget::global())
+    }
+
+    fn run_with(
+        &self,
+        request: &CommandRequest,
+        budget: &Arc<StuckBudget>,
+    ) -> Result<ProcessRun, ProcessRejection> {
         self.check(request)?;
         let started = Instant::now();
         let finish = |exit, pid, stdout, stderr, output_truncated| ProcessRun {
@@ -393,14 +473,23 @@ impl ProcessCommandVerifier {
             }
         };
         let limits = self.config.limits;
+        // At the stuck-thread bound no reader is started: the output goes to /dev/null.
+        let capturing = budget.has_room();
+        let sink = || {
+            if capturing {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            }
+        };
         let mut child = match Command::new(&request.argv[0])
             .args(&request.argv[1..])
             .env_clear()
             .envs(self.config.env.iter().map(|(k, v)| (k, v)))
             .current_dir(&scratch.path)
             .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stdout(sink())
+            .stderr(sink())
             .spawn()
         {
             Ok(child) => child,
@@ -415,8 +504,8 @@ impl ProcessCommandVerifier {
             }
         };
         let pid = child.id();
-        let stdout = capture(child.stdout.take(), limits.max_capture_bytes);
-        let stderr = capture(child.stderr.take(), limits.max_capture_bytes);
+        let stdout = capture(child.stdout.take(), limits.max_capture_bytes, budget);
+        let stderr = capture(child.stderr.take(), limits.max_capture_bytes, budget);
         let deadline = started + limits.timeout;
         let exit = loop {
             match child.try_wait() {
@@ -439,8 +528,10 @@ impl ProcessCommandVerifier {
                 }
             }
         };
-        let (out, out_truncated) = collect(stdout);
-        let (err, err_truncated) = collect(stderr);
+        // One grace period for both streams, so a stuck pair costs 500 ms, not one second.
+        let drain_deadline = Instant::now() + DRAIN_GRACE;
+        let (out, out_truncated) = collect(stdout, drain_deadline);
+        let (err, err_truncated) = collect(stderr, drain_deadline);
         drop(scratch);
         Ok(finish(
             exit,
@@ -657,6 +748,37 @@ mod tests {
         assert_eq!(report.status, VerificationStatus::Fail);
         assert_eq!(report.findings[0].code, "process.timeout");
         assert!(report.findings[0].hard);
+    }
+
+    #[test]
+    fn a_pipe_holding_grandchild_leaks_a_bounded_number_of_capture_threads() {
+        let Some(v) = verifier(&["sh", "echo"], 2000) else {
+            return;
+        };
+        let budget = Arc::new(StuckBudget {
+            stuck: AtomicUsize::new(0),
+            max: 2,
+        });
+        let holder = argv("sh", &["-c", "sleep 3 & exit 0"]);
+        let run = v.run_with(&holder, &budget).unwrap();
+        assert_eq!(run.exit, ProcessExit::Code(0));
+        assert!(run.output_truncated);
+        assert_eq!(budget.stuck.load(Ordering::Acquire), 2);
+        // At the bound the next run starts no reader: it returns at once with flagged output.
+        let skipped = v.run_with(&holder, &budget).unwrap();
+        assert_eq!(skipped.exit, ProcessExit::Code(0));
+        assert!(skipped.output_truncated);
+        assert!(skipped.elapsed < DRAIN_GRACE, "{:?}", skipped.elapsed);
+        assert_eq!(budget.stuck.load(Ordering::Acquire), 2);
+        // A budget with room still captures normally and counts nothing.
+        let roomy = Arc::new(StuckBudget {
+            stuck: AtomicUsize::new(0),
+            max: 2,
+        });
+        let echoed = v.run_with(&argv("echo", &["hi"]), &roomy).unwrap();
+        assert_eq!(echoed.stdout, b"hi\n");
+        assert!(!echoed.output_truncated);
+        assert_eq!(roomy.stuck.load(Ordering::Acquire), 0);
     }
 
     #[test]

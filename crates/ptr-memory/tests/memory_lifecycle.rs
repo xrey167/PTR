@@ -731,3 +731,115 @@ fn reopening_with_stricter_field_limits_is_rejected_per_violation() {
     }
     assert_eq!(open(&file).len(), 2);
 }
+
+/// root(A) <- B (authoritative, then flagged by revoking A). Returns the store ready for the
+/// "derive from a flagged record" scenarios.
+fn store_with_flagged_b(file: &TempJournal) -> DurableMemoryStore {
+    let mut store = open(file);
+    store.advance_committed_revision(Revision(1)).unwrap();
+    store
+        .insert(new_record(
+            "a",
+            MemoryClass::Semantic,
+            vec![observation("a", 1)],
+        ))
+        .unwrap();
+    store
+        .transition(&rid("a"), RecordState::Authoritative)
+        .unwrap();
+    let mut b = derived_record("b", MemoryClass::Semantic, &["a"]);
+    b.supports = vec![observation("b", 1)];
+    store.insert(b).unwrap();
+    store.revoke(&rid("a")).unwrap();
+    assert_eq!(state(&store, "b"), RecordState::NeedsRevalidation);
+    store
+}
+
+#[test]
+fn record_derived_from_a_flagged_record_inherits_the_revoked_ancestry() {
+    let file = TempJournal::new("ms-inherit-insert");
+    let mut store = store_with_flagged_b(&file);
+    let mut c = derived_record("c", MemoryClass::Semantic, &["b"]);
+    c.supports = vec![observation("c", 1)]; // committed support: only ancestry can block
+    store.insert(c).unwrap();
+    assert_eq!(state(&store, "c"), RecordState::NeedsRevalidation);
+    assert_eq!(
+        store.get(&rid("c")).unwrap().revoked_ancestors,
+        vec![rid("a")]
+    );
+    assert_eq!(
+        store.transition(&rid("c"), RecordState::Authoritative),
+        Err(MemoryStoreError::RevokedAncestor {
+            id: rid("c"),
+            ancestor: rid("a")
+        })
+    );
+    // The marker survives reopen and the gate still holds.
+    drop(store);
+    let mut store = open(&file);
+    assert_eq!(
+        store.get(&rid("c")).unwrap().revoked_ancestors,
+        vec![rid("a")]
+    );
+    assert_eq!(
+        store.transition(&rid("c"), RecordState::Authoritative),
+        Err(MemoryStoreError::RevokedAncestor {
+            id: rid("c"),
+            ancestor: rid("a")
+        })
+    );
+}
+
+#[test]
+fn adding_a_derivation_from_a_flagged_record_flags_the_record_and_its_dependents() {
+    let file = TempJournal::new("ms-inherit-edge");
+    let mut store = store_with_flagged_b(&file);
+    for (id, parents) in [("c", &[][..]), ("d", &["c"][..])] {
+        let mut r = derived_record(id, MemoryClass::Semantic, parents);
+        r.supports = vec![observation(id, 1)];
+        store.insert(r).unwrap();
+    }
+    store
+        .transition(&rid("c"), RecordState::Authoritative)
+        .unwrap();
+    store
+        .transition(&rid("d"), RecordState::Authoritative)
+        .unwrap();
+    store.add_derivation(&rid("c"), &rid("b")).unwrap();
+    for id in ["c", "d"] {
+        assert_eq!(state(&store, id), RecordState::NeedsRevalidation, "{id}");
+        assert_eq!(
+            store.get(&rid(id)).unwrap().revoked_ancestors,
+            vec![rid("a")],
+            "{id}"
+        );
+        assert!(matches!(
+            store.transition(&rid(id), RecordState::Authoritative),
+            Err(MemoryStoreError::RevokedAncestor { .. })
+        ));
+    }
+    drop(store);
+    let store = open(&file);
+    assert_eq!(state(&store, "d"), RecordState::NeedsRevalidation);
+}
+
+#[test]
+fn promotion_cannot_make_a_record_with_revoked_ancestry_authoritative() {
+    use ptr_memory::{ConsolidationPolicy, PromotionContext};
+    let file = TempJournal::new("ms-inherit-promote");
+    let mut store = store_with_flagged_b(&file);
+    let mut e = derived_record("e", MemoryClass::Episodic, &["b"]);
+    e.supports = vec![observation("s1", 1), observation("s2", 1)];
+    store.insert(e).unwrap();
+    let policy = ConsolidationPolicy {
+        min_independent_sources: 2,
+        episodic_ttl: 10,
+    };
+    let outcome = store.promote(&rid("e"), &policy, &PromotionContext::default());
+    assert!(
+        matches!(outcome, Err(MemoryStoreError::RevokedAncestor { .. })),
+        "{outcome:?}"
+    );
+    assert_ne!(state(&store, "e"), RecordState::Authoritative);
+    assert_eq!(store.get(&rid("e")).unwrap().class, MemoryClass::Episodic);
+}

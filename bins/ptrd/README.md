@@ -10,7 +10,8 @@ Both are off by default; without them `ptrd` behaves exactly as before. Invalid 
 startup error (exit code 2), never a panic.
 
 - `--trace-file PATH` appends one OTLP/JSON-shaped span line per request to `PATH` (created if
-  missing). The export is redacted: it never contains the request text. It is a plain file
+  missing). The export is redacted: it never contains the request text, and client request ids
+  appear only as `sha256:<16 hex>` digests. It is a plain file
   writer, not an OpenTelemetry collector client. Every traced route is written, including
   `GET /health`, so health probes add lines too.
 - `--trace-max-bytes N` caps the trace file (default 8 MiB, must be non-zero, requires

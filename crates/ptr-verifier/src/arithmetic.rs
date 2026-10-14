@@ -355,22 +355,39 @@ fn parse_candidate(text: &str) -> Result<Rational, CandidateError> {
 /// Verifies a claimed result against one arithmetic task. See the module documentation.
 #[derive(Clone, Debug)]
 pub struct ArithmeticVerifier {
+    /// At most [`MAX_TASK_BYTES`] bytes: a longer task is never retained whole.
     task: String,
+    task_len: usize,
     expected: Result<Rational, TaskError>,
 }
 
 impl ArithmeticVerifier {
     /// A verifier for `task`. The task is evaluated once, here; an undecidable task is reported
     /// as `Unknown` by every [`verify`](Verifier::verify).
+    ///
+    /// A task longer than [`MAX_TASK_BYTES`] is `Unknown` (`Oversize`) and only its first
+    /// [`MAX_TASK_BYTES`] bytes (cut on a character boundary) are kept, so an untrusted
+    /// multi-megabyte task costs no more memory than the bound.
     pub fn new(task: &str) -> Self {
+        let mut keep = task.len().min(MAX_TASK_BYTES);
+        while !task.is_char_boundary(keep) {
+            keep -= 1;
+        }
         Self {
-            task: task.to_owned(),
+            task: task[..keep].to_owned(),
+            task_len: task.len(),
             expected: evaluate_task(task),
         }
     }
 
+    /// The task as given, or its first [`MAX_TASK_BYTES`] bytes when it was longer.
     pub fn task(&self) -> &str {
         &self.task
+    }
+
+    /// The byte length of the task as given (it may exceed what [`task`](Self::task) returns).
+    pub fn task_len(&self) -> usize {
+        self.task_len
     }
 }
 
@@ -791,5 +808,31 @@ mod tests {
         }
         assert_eq!(NamedVerifier::<String>::name(&verifier), "arithmetic");
         assert_eq!(verifier.task(), "3 * (4 + 5) / 7");
+    }
+
+    #[test]
+    fn an_oversize_task_is_not_retained_whole_and_stays_oversize() {
+        let task = "1+".repeat(2 * 1024 * 1024);
+        let verifier = ArithmeticVerifier::new(&task);
+        assert!(
+            verifier.task().len() <= MAX_TASK_BYTES,
+            "{}",
+            verifier.task().len()
+        );
+        assert_eq!(verifier.task_len(), task.len());
+        assert!(format!("{verifier:?}").len() < 4 * MAX_TASK_BYTES);
+        let report = verifier.verify(&"2".to_owned());
+        assert_eq!(report.status, VerificationStatus::Unknown);
+        assert_eq!(codes(&report), ["arith.task"]);
+        assert!(report.findings[0].message.contains("longer than"));
+    }
+
+    #[test]
+    fn the_retained_prefix_of_an_oversize_task_cuts_on_a_char_boundary() {
+        let task = "\u{e9}".repeat(MAX_TASK_BYTES);
+        let verifier = ArithmeticVerifier::new(&task);
+        assert!(verifier.task().len() <= MAX_TASK_BYTES);
+        assert!(task.starts_with(verifier.task()));
+        assert_eq!(verifier.task_len(), task.len());
     }
 }

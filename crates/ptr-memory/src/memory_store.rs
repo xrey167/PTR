@@ -352,16 +352,19 @@ impl DurableMemoryStore {
             });
         }
         let mut derived_from: Vec<MemoryRecordId> = Vec::with_capacity(new.derived_from.len());
+        let mut revoked_ancestors: Vec<MemoryRecordId> = Vec::new();
         for parent in new.derived_from {
             if parent == new.id {
                 return Err(MemoryStoreError::SelfDerivation(new.id));
             }
-            if self.require(&parent)?.state == RecordState::Revoked {
+            let parent_record = self.require(&parent)?;
+            if parent_record.state == RecordState::Revoked {
                 return Err(MemoryStoreError::RevokedAncestor {
                     id: new.id,
                     ancestor: parent,
                 });
             }
+            merge_markers(&mut revoked_ancestors, &parent_record.revoked_ancestors);
             if !derived_from.contains(&parent) {
                 derived_from.push(parent);
             }
@@ -372,10 +375,15 @@ impl DurableMemoryStore {
             body: new.body,
             sensitive: new.sensitive,
             pinned: new.pinned,
-            state: RecordState::Provisional,
+            // A record derived from a flagged record is flagged itself (same rule as `revoke`).
+            state: if revoked_ancestors.is_empty() {
+                RecordState::Provisional
+            } else {
+                RecordState::NeedsRevalidation
+            },
             supports: new.supports,
             derived_from,
-            revoked_ancestors: Vec::new(),
+            revoked_ancestors,
             created_at: self.clock + 1,
             updated_at: self.clock + 1,
         };
@@ -410,12 +418,14 @@ impl DurableMemoryStore {
             return Err(MemoryStoreError::SelfDerivation(id.clone()));
         }
         let mut record = self.require_mutable(id)?;
-        if self.require(from)?.state == RecordState::Revoked {
+        let parent = self.require(from)?;
+        if parent.state == RecordState::Revoked {
             return Err(MemoryStoreError::RevokedAncestor {
                 id: id.clone(),
                 ancestor: from.clone(),
             });
         }
+        let markers = parent.revoked_ancestors.clone();
         if record.derived_from.contains(from) {
             return Ok(());
         }
@@ -425,7 +435,24 @@ impl DurableMemoryStore {
             ));
         }
         record.derived_from.push(from.clone());
-        self.commit(vec![record], self.horizon)
+        if markers.is_empty() {
+            return self.commit(vec![record], self.horizon);
+        }
+        // The new edge brings revoked ancestry: the record and everything derived from it
+        // inherit the markers and need revalidation, exactly as if the ancestor were revoked now.
+        let dependents = self.dependents_closure(id)?;
+        let mut changed = Vec::new();
+        flag_inheriting(&mut record, &markers);
+        changed.push(record);
+        for dependent in &dependents {
+            let mut next = self.require(dependent)?.clone();
+            let before = next.clone();
+            flag_inheriting(&mut next, &markers);
+            if next != before {
+                changed.push(next);
+            }
+        }
+        self.commit(changed, self.horizon)
     }
 
     /// Declares that all revisions up to and including `revision` are committed. Only
@@ -700,6 +727,29 @@ struct Delta {
     horizon: Revision,
     clock: u64,
     records: Vec<MemoryRecord>,
+}
+
+/// Adds `extra` to `into`, keeping it sorted and free of duplicates.
+fn merge_markers(into: &mut Vec<MemoryRecordId>, extra: &[MemoryRecordId]) {
+    for marker in extra {
+        if !into.contains(marker) {
+            into.push(marker.clone());
+        }
+    }
+    into.sort();
+}
+
+/// Records inherited revoked ancestors on a live record and flags it for revalidation.
+/// `Retired` and `Revoked` records are terminal and keep their state.
+fn flag_inheriting(record: &mut MemoryRecord, markers: &[MemoryRecordId]) {
+    match record.state {
+        RecordState::Provisional | RecordState::Authoritative => {
+            record.state = RecordState::NeedsRevalidation;
+        }
+        RecordState::NeedsRevalidation => {}
+        RecordState::Retired | RecordState::Revoked => return,
+    }
+    merge_markers(&mut record.revoked_ancestors, markers);
 }
 
 fn encode_delta(horizon: Revision, clock: u64, records: &[MemoryRecord]) -> Vec<u8> {

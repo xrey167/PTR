@@ -251,7 +251,15 @@ async fn tracing_exports_the_fields_and_never_a_secret_from_body_or_headers() {
             .clone()
     };
     let ok = span(1);
-    assert_eq!(attribute(&ok, "ptr.request_id")["stringValue"], "ok-1");
+    // Every client id is hashed, even a short plain one.
+    let ok_id = attribute(&ok, "ptr.request_id")["stringValue"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(
+        ok_id.starts_with("sha256:") && !ok_id.contains("ok-1"),
+        "{ok_id}"
+    );
     assert_eq!(attribute(&ok, "http.route")["stringValue"], "/v1/requests");
     assert_eq!(attribute(&ok, "http.status")["intValue"], "200");
     assert_eq!(attribute(&ok, "ptr.outcome")["stringValue"], "ok");
@@ -271,6 +279,45 @@ async fn tracing_exports_the_fields_and_never_a_secret_from_body_or_headers() {
         .as_str()
         .unwrap()
         .starts_with("sha256:"));
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn a_short_client_request_id_never_reaches_the_file_but_stays_correlatable() {
+    let path = temp_file("idhash");
+    let app = router_from_state(state_with(ServerOptions {
+        request_tracing: Some(RequestTracingOptions::new(&path)),
+        ..ServerOptions::default()
+    }));
+    // Short, alphanumeric and low entropy: a credential the redactor cannot recognise.
+    for id in ["hunter2", "hunter2", "other-id"] {
+        let (status, _) = call(&app, &format!(r#"{{"id":"{id}","text":"hello"}}"#)).await;
+        assert_eq!(status, StatusCode::OK);
+    }
+    let exported = std::fs::read_to_string(&path).unwrap();
+    assert!(!exported.contains("hunter2"), "raw id leaked: {exported}");
+    assert!(!exported.contains("other-id"), "raw id leaked: {exported}");
+    let ids: Vec<String> = exported
+        .lines()
+        .map(|line| {
+            let line: Value = serde_json::from_str(line).unwrap();
+            line["resourceSpans"][0]["scopeSpans"][0]["spans"][0]["attributes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|a| a["key"] == "ptr.request_id")
+                .unwrap()["value"]["stringValue"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        })
+        .collect();
+    assert_eq!(ids.len(), 3);
+    assert!(ids
+        .iter()
+        .all(|id| id.starts_with("sha256:") && id.len() == 7 + 16));
+    assert_eq!(ids[0], ids[1], "the same id maps to the same digest");
+    assert_ne!(ids[0], ids[2]);
     let _ = std::fs::remove_file(path);
 }
 
