@@ -1,0 +1,34 @@
+[package]
+name = "ptr-fabric"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[features]
+default = []
+# The HostShm carrier: a dedicated sealed memfd per export. Linux only; on every other target
+# the feature compiles to nothing, so enabling it never breaks a Windows or macOS build.
+shm-backend = ["dep:rustix"]
+
+[dependencies]
+# The handle, its locators and the digest rule the carriers check against.
+ptr-protocol = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Already in the lockfile (through other crates); a direct dependency on the same version adds
+# no package. `fs` for memfd_create and the seals, `mm` for mmap and munmap, `param` for the
+# page size. Linux only, so `shm-backend` builds nothing and pulls nothing on other targets.
+rustix = { version = "=1.1.5", optional = true, default-features = false, features = ["std", "fs", "mm", "param"] }
+
+[dev-dependencies]
+ptr-types = { workspace = true }
+
+[[test]]
+name = "bytes_carrier"
+path = "tests/bytes_carrier.rs"
+
+[[test]]
+name = "host_shm"
+path = "tests/host_shm.rs"
+required-features = ["shm-backend"]

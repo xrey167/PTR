@@ -9,8 +9,8 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-10-03  
-**Code footprint:** 4 Rust source files · 1565 nonblank source lines · 5 integration-test files · 19 test markers (`#[test]`, `#[tokio::test]`)
+**Last reviewed:** 2026-10-14  
+**Code footprint:** 6 Rust source files · 2009 nonblank source lines · 7 integration-test files · 39 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -20,6 +20,8 @@
 - Typed multi-tier manifests with canonical chunk and root digests
 - Immutable CPU and atomic filesystem tier backends with verify-on-read
 - Optional OpenDAL memory, filesystem and S3-capable adapter; put_chunk over an existing object that fails its own content address overwrites it with the verified bytes (repair) instead of returning ImmutableConflict, which is kept only for a valid object with different bytes
+- PinnedHostTierBackend (feature tier-pinned, Linux only): a TierBackend over per-chunk anonymous mappings locked with mlock under a fixed byte budget charged with the page-rounded footprint; an over-budget put returns BudgetExceeded and an mlock refusal returns MemoryLock, both storing and charging nothing; same digest, validation and verify-on-read semantics as CpuTierBackend
+- FileTierBackend direct read path (feature tier-direct-io, Linux only): FileTierBackend::with_options(FileTierOptions { read: FileReadMode::Direct }) reads chunk files with O_DIRECT into 4096-byte aligned buffers, falls back to a buffered read per call when the filesystem refuses O_DIRECT, and counts both in FileReadStats; writes, chunk digests, AEAD and the on-disk format are unchanged and FileTierBackend::new stays buffered
 - AEAD-bound durable KV chunks with authenticated cross-generation anchors
 - Crash-safe protected-state replacement with unique writer temp files
 - ProtectedStateStore trait with InMemoryProtectedStateStore and FileProtectedStateStore: seal encrypts a payload with AES-256-GCM-SIV under a key from a KeyProvider, with the domain, logical id, generation, revision, key id and plaintext digest as associated data and a nonce derived from them, and returns a ProtectedHandle carrying the ciphertext and anchor digests; open and verify check the ciphertext digest, anchor, plaintext digest and key
@@ -33,6 +35,8 @@
 - Policy-gated private/secret artifact access
 - Production S3 integration and chaos tests
 - GPU-resident page allocator and remote transfer engine
+- Windows unbuffered I/O for the direct read path and a Windows/non-Linux pinned tier
+- Residency plan, eviction and spill from the pinned tier (budget exhaustion is a hard refusal today)
 
 ### Next milestones
 
@@ -55,6 +59,8 @@
 ### Current automated checks
 
 - ptr-storage tier, protected-tier and OpenDAL contract tests, including put_chunk_repairs_a_corrupt_replica_at_the_same_key
+- tests/pinned_tier.rs (feature tier-pinned): roundtrip, idempotent re-put, forged bytes refused with the stored object untouched, page-rounded budget charging, over-budget refusal, budget release and 200 put/delete cycles without leak, verify report, and the typed MemoryLock refusal (observed when the process lacks CAP_IPC_LOCK; a privileged local run prints a NOTE, and under CI (CI set) an unexercised refusal or a too-low RLIMIT_MEMLOCK fails the test instead of skipping)
+- tests/direct_io_tier.rs (feature tier-direct-io): direct and buffered reads agree for lengths 0, 1, 4095, 4096, 4097, 8192 and 12345, corrupt, truncated and extended files are CorruptChunk, unknown chunk, counters satisfy direct + fallback == reads, and the path taken on the target directory and on /dev/shm is recorded; a unit test in src/tier.rs drives the fallback branch deterministically through an injected refused read (counted as fallback, bytes read buffered) and shows a real I/O error is returned, not masked as a fallback; src/direct_io.rs tests that only EINVAL counts as a refusal
 - tests/protected.rs: seal/open/verify round trip with an idempotent re-seal, rollback and forged-anchor rejection, revoked-key refusal, and a FileProtectedStateStore reopened twice with the sealed state still readable and extendable by a later generation
 - workspace fmt/check/test/clippy
 

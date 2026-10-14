@@ -192,6 +192,14 @@ function_groups = ["encode/decode a request", "encode/decode an answer", "decide
 notes = ["a requester dials only a PeerAddress the deployment's book produced, so a bare address does not satisfy the signature", "the project is policy, not payload: a request frame has no project field, because resolution inside a project is the only thing standing between a request and a Pod's data", "a request names no sender and no session either, so who is asking is the authenticated connection's answer", "one refusal code covers out of scope, not registered and registered in another project, so a cross-project Pod is indistinguishable from one that does not exist", "admission and scope are decided before the registry is touched, so an unadmitted requester cannot probe for Pods", "two outcomes rather than the execution wire's four, and no replay window and no at-most-once key, because nothing reachable here has an effect that could half-apply", "the host holds no runtime and no ledger, so writing nothing to the host's history is a property of the type", "no background loop, timer or retry policy: the caller drives serve and request", "the whole composition is feature-gated so iroh stays out of every other build"]
 
 [[crate]]
+id = "ptr-fabric"
+current_shape = "mostly-flat"
+modules = ["bytes", "shm", "error"]
+public_groups = ["export_bytes/import_bytes", "ShmExport/ShmExpectation/ShmMapping", "FabricError/Seal"]
+function_groups = ["export a tensor as a locator", "import and verify a tensor", "seal a memfd", "map a sealed memfd read-only and verify it"]
+notes = ["the digest is verified after mapping and before any byte is handed out", "the host shared-memory carrier is Linux only and feature-gated, so the default build is the same on every platform", "the only unsafe code is mmap, munmap and the slice over the mapping", "no descriptor passing and no worker process: the carriers are the data-plane half that needs neither"]
+
+[[crate]]
 id = "ptr-events"
 current_shape = "flat"
 modules = ["event", "envelope", "topic", "bus", "consumer", "offset", "retention", "adapters"]

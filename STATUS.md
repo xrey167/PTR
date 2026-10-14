@@ -4,7 +4,7 @@ PTR is a **compiling architecture/research prototype**, not yet a complete model
 
 ## Summary of the evidence state (final docs pass, 2026-10-11)
 
-Sources: component count from [docs/components/STATUS.md](docs/components/STATUS.md) (33 components); registry status from `experiments/registry.toml` on this branch (108 entries: 27 `completed`, 2 `failed`, 31 `prepared`, 35 `planned`, 13 `superseded`); verdicts from each experiment's `results/run.json`. A registry status is not a verdict: C001 and M008 keep `prepared` although they have a verdict, and several `completed` M-series records are INCONCLUSIVE.
+Sources: component count from [docs/components/STATUS.md](docs/components/STATUS.md) (34 components); registry status from `experiments/registry.toml` on this branch (108 entries: 27 `completed`, 2 `failed`, 31 `prepared`, 35 `planned`, 13 `superseded`); verdicts from each experiment's `results/run.json`. A registry status is not a verdict: C001 and M008 keep `prepared` although they have a verdict, and several `completed` M-series records are INCONCLUSIVE.
 
 - **Completed (verdict COMPLETED, `results/run.json`):** E007 split-pod-kv, L002 raft-recovery, R013 deferred-self-modification-authority and Q003-v3 postgres-hybrid (lifecycle guarantees and dense recall; its lexical half returns nothing on natural-language queries, a product finding) (registry `completed`; scope and limits in their lines below), F007 vcw-loop (simulated experts, mechanism check), C004 recurrent-integration (counter toy, extrapolation only), and the earlier S001, S002, R001, Q002, L001-v2, F001, F002, F003, R005 (stale), R006, R007, R009, R010, R011, R012. L003 and L004 carry the verdict `hard-pass` and S003's `run.json` has no `verdict` key (completed per its STATUS line). Details in the lines below.
 - **Falsified:** C007 metacognitive-self-model-cpu and C008 attention-schema-routing-cpu (registry `failed`, verdict FALSIFIED); M008 fast-weight-memory (FALSIFIED on four valid seeds, seed 17 interrupted, registry `prepared`, `results/OUTCOME.md`).
@@ -14,7 +14,7 @@ Sources: component count from [docs/components/STATUS.md](docs/components/STATUS
 
 ## Implemented and validated
 
-- 33 Rust workspace crates plus four binaries (`ptr-bench`, `ptr-worker`, `ptrctl`, `ptrd`), including typed file/environment/CLI configuration and a central `ptr-runtime` orchestrator; [docs/components/STATUS.md](docs/components/STATUS.md) is the generated inventory and the authority for the count (33 components: 1 foundation, 21 prototype, 1 research-scaffold, 10 scaffold, as generated on this branch; `crates/` holds exactly those 33 `ptr-*` crates, the four binaries are not components)
+- 34 Rust workspace crates plus four binaries (`ptr-bench`, `ptr-worker`, `ptrctl`, `ptrd`), including typed file/environment/CLI configuration and a central `ptr-runtime` orchestrator; [docs/components/STATUS.md](docs/components/STATUS.md) is the generated inventory and the authority for the count (34 components: 1 foundation, 22 prototype, 1 research-scaffold, 10 scaffold, as generated on this branch; `crates/` holds exactly those 34 `ptr-*` crates, the four binaries are not components)
 - foundational domain types, semantic revision/snapshot prototype and dependency invalidation
 - bounded-mailbox/isolate contracts and Pod lease typestate
 - typed model → semantic Pod registry → Pod → verifier → SemDB observation loop for Pure/Read cognitive Pods

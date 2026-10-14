@@ -23,7 +23,7 @@ training pipeline for routed MoE fine-tuning, and a preregistered experiment pro
 
 | Area | Contents |
 |---|---|
-| [`crates/`](crates/) | 33 library crates (`ptr-*`), each with `component.toml`, `config.toml`, README with diagram, `tests/` |
+| [`crates/`](crates/) | 34 library crates (`ptr-*`), each with `component.toml`, `config.toml`, README with diagram, `tests/` |
 | [`bins/`](bins/README.md) | `ptrd` (daemon), `ptrctl` (CLI), `ptr-bench` (experiment harnesses), `ptr-worker` (scaffold) |
 | [`bindings/ptr-py`](bindings/ptr-py/README.md) | PyO3 module `ptr_py`: governance checks and read-only VCW components for Python (own workspace) |
 | [`model/`](model/README.md) | `model/burn-a0` (trainable Burn model, own workspace), model modification specs |
@@ -35,8 +35,8 @@ training pipeline for routed MoE fine-tuning, and a preregistered experiment pro
 | `proto/`, `sdk/`, `docs-site/`, `fuzz/`, `release/`, `hardware/`, `datasets/`, `benchmarks/` | wire schemas, TypeScript SDK contract, static landing page, protocol fuzzing, release/SBOM config, hardware profiles, dataset registry, benchmark suites |
 | [`vendor/`](docs/VENDOR_PATCH_POLICY.md) | patched upstream crates (raft, raft-engine, burn backends, …), integrity-checked |
 
-Generated inventory: [`docs/components/STATUS.md`](docs/components/STATUS.md) (33 components:
-1 `foundation`, 21 `prototype`, 1 `research-scaffold`, 10 `scaffold`; 271 Rust source files,
+Generated inventory: [`docs/components/STATUS.md`](docs/components/STATUS.md) (34 components:
+1 `foundation`, 22 `prototype`, 1 `research-scaffold`, 10 `scaffold`; 271 Rust source files,
 135,703 nonblank source lines, 3,155 test markers).
 
 ## Architecture
@@ -76,7 +76,7 @@ flowchart TB
   subgraph L1["foundation"]
     semdb["ptr-semdb"]; ledger["ptr-ledger"]; modelapi["ptr-model-api"]; security["ptr-security"]
     protocol["ptr-protocol"]; storage["ptr-storage"]; memory["ptr-memory"]; lineage["ptr-lineage"]
-    core["ptr-core"]; exec["ptr-exec"]; events["ptr-events"]; config["ptr-config"]
+    core["ptr-core"]; exec["ptr-exec"]; events["ptr-events"]; config["ptr-config"]; fabric["ptr-fabric"]
     analytics["ptr-analytics"]; ingress["ptr-ingress"]; inspect["ptr-inspect"]; observe["ptr-observe"]
   end
   subgraph L0["kernel"]
@@ -102,6 +102,7 @@ flowchart TB
   verifier --> semdb
   search --> memory
   net --> protocol
+  fabric --> protocol
   labeling --> analytics
   L1 -->|"all but ptr-config, ptr-analytics"| types
 ```
@@ -230,6 +231,7 @@ Maturity is `component.toml`'s; features are the crate's own Cargo features (all
 | [ptr-server](crates/ptr-server/README.md) | Axum HTTP API: `/health`, `/v1/requests`, optional `/v1/vcw/*` | `prototype` | `qwen-cpu` |
 | [ptr-execwire](crates/ptr-execwire/README.md) | One execution request and receipt over `ptr-exec/1` | `prototype` | `execwire-backend` |
 | [ptr-podwire](crates/ptr-podwire/README.md) | One Pod invocation and answer over `ptr-podwire/1`, project from host policy; split-Pod frames (E007) | `prototype` | `podwire-backend` |
+| [ptr-fabric](crates/ptr-fabric/README.md) | Data-plane carriers: inline `Bytes` and a sealed-memfd `HostShm` (Linux), digest verified before use; no descriptor passing yet | `prototype` | `shm-backend` |
 
 Binaries (no `component.toml`): `ptrd` (feature `qwen-cpu`), `ptrctl`, `ptr-bench`
 (`postgres-experiments`, `ledger-experiments`, `turso-oracle`) and `ptr-worker`, which only prints

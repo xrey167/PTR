@@ -365,6 +365,14 @@ pub enum TierError {
     CorruptChunk,
     Io(String),
     Backend(String),
+    /// A put would exceed the fixed byte budget of a bounded tier; nothing was stored.
+    BudgetExceeded {
+        requested: u64,
+        available: u64,
+    },
+    /// The operating system refused to page-lock host memory (for example `RLIMIT_MEMLOCK`);
+    /// nothing was stored and nothing was charged.
+    MemoryLock(String),
 }
 
 pub trait TierBackend: Send + Sync {
@@ -482,9 +490,44 @@ impl TierBackend for CpuTierBackend {
     }
 }
 
+/// How `FileTierBackend` reads chunk files back.
+#[cfg(all(feature = "tier-direct-io", target_os = "linux"))]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum FileReadMode {
+    /// Ordinary buffered reads through the page cache (the default).
+    #[default]
+    Buffered,
+    /// `O_DIRECT` reads into aligned buffers; falls back to buffered reads per call when the
+    /// filesystem refuses direct I/O.
+    Direct,
+}
+
+/// Options for `FileTierBackend::with_options`.
+#[cfg(all(feature = "tier-direct-io", target_os = "linux"))]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct FileTierOptions {
+    pub read: FileReadMode,
+}
+
+/// Which read path served the reads of a direct-read `FileTierBackend`.
+#[cfg(all(feature = "tier-direct-io", target_os = "linux"))]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct FileReadStats {
+    /// Reads served through `O_DIRECT`.
+    pub direct: u64,
+    /// Reads that asked for `O_DIRECT`, were refused by the filesystem and ran buffered.
+    pub fallback: u64,
+}
+
 pub struct FileTierBackend {
     id: TierBackendId,
     root: PathBuf,
+    #[cfg(all(feature = "tier-direct-io", target_os = "linux"))]
+    read_mode: FileReadMode,
+    #[cfg(all(feature = "tier-direct-io", target_os = "linux"))]
+    direct_reads: AtomicU64,
+    #[cfg(all(feature = "tier-direct-io", target_os = "linux"))]
+    fallback_reads: AtomicU64,
 }
 
 impl FileTierBackend {
@@ -494,7 +537,69 @@ impl FileTierBackend {
         }
         let root = root.as_ref().to_owned();
         fs::create_dir_all(root.join("chunks")).map_err(io_error)?;
-        Ok(Self { id, root })
+        Ok(Self {
+            id,
+            root,
+            #[cfg(all(feature = "tier-direct-io", target_os = "linux"))]
+            read_mode: FileReadMode::Buffered,
+            #[cfg(all(feature = "tier-direct-io", target_os = "linux"))]
+            direct_reads: AtomicU64::new(0),
+            #[cfg(all(feature = "tier-direct-io", target_os = "linux"))]
+            fallback_reads: AtomicU64::new(0),
+        })
+    }
+
+    /// Like `new`, with an explicit read mode. Writes, object identity and validation are the
+    /// same in every mode.
+    #[cfg(all(feature = "tier-direct-io", target_os = "linux"))]
+    pub fn with_options(
+        id: TierBackendId,
+        root: impl AsRef<Path>,
+        options: FileTierOptions,
+    ) -> Result<Self, TierError> {
+        let mut backend = Self::new(id, root)?;
+        backend.read_mode = options.read;
+        Ok(backend)
+    }
+
+    /// Counters of the direct read path; they stay zero in `FileReadMode::Buffered`.
+    #[cfg(all(feature = "tier-direct-io", target_os = "linux"))]
+    pub fn read_stats(&self) -> FileReadStats {
+        FileReadStats {
+            direct: self.direct_reads.load(Ordering::Relaxed),
+            fallback: self.fallback_reads.load(Ordering::Relaxed),
+        }
+    }
+
+    fn read_chunk_file(&self, chunk: &ChunkDescriptor) -> Result<Vec<u8>, TierError> {
+        let path = self.chunk_path(chunk);
+        #[cfg(all(feature = "tier-direct-io", target_os = "linux"))]
+        if self.read_mode == FileReadMode::Direct {
+            return self
+                .read_direct_with(&path, crate::direct_io::read_direct)
+                .map_err(file_read_error);
+        }
+        fs::read(path).map_err(file_read_error)
+    }
+
+    /// The direct read with its buffered fallback; `read` is injectable so tests can drive the
+    /// fallback branch on a filesystem that accepts `O_DIRECT`.
+    #[cfg(all(feature = "tier-direct-io", target_os = "linux"))]
+    fn read_direct_with(
+        &self,
+        path: &Path,
+        read: impl FnOnce(&Path) -> std::io::Result<crate::direct_io::DirectRead>,
+    ) -> std::io::Result<Vec<u8>> {
+        match read(path)? {
+            crate::direct_io::DirectRead::Direct(bytes) => {
+                self.direct_reads.fetch_add(1, Ordering::Relaxed);
+                Ok(bytes)
+            }
+            crate::direct_io::DirectRead::Refused => {
+                self.fallback_reads.fetch_add(1, Ordering::Relaxed);
+                fs::read(path)
+            }
+        }
     }
 
     pub fn chunk_path(&self, chunk: &ChunkDescriptor) -> PathBuf {
@@ -590,13 +695,7 @@ impl TierBackend for FileTierBackend {
 
     fn get_chunk<'a>(&'a self, chunk: &'a ChunkDescriptor) -> TierFuture<'a, Vec<u8>> {
         Box::pin(async move {
-            let bytes = fs::read(self.chunk_path(chunk)).map_err(|error| {
-                if error.kind() == std::io::ErrorKind::NotFound {
-                    TierError::UnknownChunk
-                } else {
-                    io_error(error)
-                }
-            })?;
+            let bytes = self.read_chunk_file(chunk)?;
             chunk
                 .validate_bytes(&bytes)
                 .map_err(|_| TierError::CorruptChunk)?;
@@ -609,13 +708,7 @@ impl TierBackend for FileTierBackend {
         chunk: &'a ChunkDescriptor,
     ) -> TierFuture<'a, TierIntegrityReport> {
         Box::pin(async move {
-            let bytes = fs::read(self.chunk_path(chunk)).map_err(|error| {
-                if error.kind() == std::io::ErrorKind::NotFound {
-                    TierError::UnknownChunk
-                } else {
-                    io_error(error)
-                }
-            })?;
+            let bytes = self.read_chunk_file(chunk)?;
             Ok(TierIntegrityReport {
                 digest: digest(&bytes),
                 length: bytes.len() as u64,
@@ -656,6 +749,14 @@ pub fn digest(bytes: &[u8]) -> Digest {
 
 fn hex(value: &Digest) -> String {
     value.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn file_read_error(error: std::io::Error) -> TierError {
+    if error.kind() == std::io::ErrorKind::NotFound {
+        TierError::UnknownChunk
+    } else {
+        io_error(error)
+    }
 }
 
 fn io_error(error: std::io::Error) -> TierError {
@@ -717,5 +818,49 @@ impl<'a> TierCursor<'a> {
 
     fn finished(&self) -> bool {
         self.at == self.bytes.len()
+    }
+}
+
+#[cfg(all(test, feature = "tier-direct-io", target_os = "linux"))]
+mod direct_fallback_tests {
+    use super::*;
+
+    #[test]
+    fn a_refused_direct_read_falls_back_to_a_buffered_read_and_is_counted() {
+        let root = std::env::temp_dir().join(format!(
+            "ptr-storage-fallback-{}-{}",
+            std::process::id(),
+            NEXT_TEMP_FILE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let tier = FileTierBackend::with_options(
+            TierBackendId::from("direct"),
+            &root,
+            FileTierOptions {
+                read: FileReadMode::Direct,
+            },
+        )
+        .unwrap();
+        let bytes = vec![7u8; 4097];
+        let chunk = ChunkDescriptor::for_bytes(0, 0, &bytes);
+        tier.put_sync(&chunk, &bytes).unwrap();
+        let path = tier.chunk_path(&chunk);
+        let read = tier
+            .read_direct_with(&path, |_| Ok(crate::direct_io::DirectRead::Refused))
+            .unwrap();
+        assert_eq!(read, bytes);
+        assert_eq!(
+            tier.read_stats(),
+            FileReadStats {
+                direct: 0,
+                fallback: 1
+            }
+        );
+        // A real error is returned, not masked as a fallback.
+        let error = tier
+            .read_direct_with(&path, |_| Err(std::io::Error::from_raw_os_error(5)))
+            .unwrap_err();
+        assert_eq!(error.raw_os_error(), Some(5));
+        assert_eq!(tier.read_stats().fallback, 1);
+        let _ = fs::remove_dir_all(&root);
     }
 }

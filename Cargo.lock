@@ -4556,6 +4556,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ptr-fabric"
+version = "0.1.0"
+dependencies = [
+ "ptr-protocol",
+ "ptr-types",
+ "rustix 1.1.5",
+]
+
+[[package]]
 name = "ptr-fastmem"
 version = "0.1.0"
 dependencies = [
@@ -4830,6 +4839,7 @@ dependencies = [
  "aes-gcm-siv",
  "opendal",
  "ptr-types",
+ "rustix 1.1.5",
  "sha2 0.11.0",
  "tokio",
  "windows-sys 0.61.2",
