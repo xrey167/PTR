@@ -74,8 +74,10 @@ dependencies under that key below the promoted generation, and `AdapterRevoked` 
 generation; both cancel pinned forks and retire the entries, scoped to the adapter kind so no other kind or other
 adapter key is touched. `ImprovementCycleRecorded` invalidates nothing. The reference KV backend's own liveness follows the same events: an adapter-kind
 dependency in the lifecycle namespace is live only at the exact promoted generation, and a host that serves promoted adapters
-calls `require_promoted_adapters` once, after which that holds for every adapter-kind dependency whatever its identity (the
-default, standalone mode keeps ledger-free adapters live unless revoked; the R009 harness runs in it).
+calls `require_promoted_adapters` once, after which that holds for every adapter-kind dependency whatever its identity; the
+backend arms itself the same way on the first `AdapterPromoted` or `AdapterRevoked` it applies, so a host fed adapter lifecycle
+events is fail-closed without the call. A backend that never sees such an event stays standalone and keeps ledger-free adapters
+live unless revoked (the frozen R009 harness and the reference tests run in it).
 
 **Limits.**
 

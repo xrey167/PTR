@@ -19,6 +19,10 @@ fn scope() -> ReferenceKvScope {
     }
 }
 
+fn backend_fresh() -> ReferenceKvReuseBackend {
+    backend()
+}
+
 fn backend() -> ReferenceKvReuseBackend {
     ReferenceKvReuseBackend::new(ReferenceKvLimits::default(), scope()).unwrap()
 }
@@ -190,6 +194,54 @@ fn a_host_that_requires_promoted_adapters_refuses_an_adapter_outside_the_namespa
         backend.infer_scoped_bound(
             &scope(),
             &fresh,
+            None,
+            &StackBinding::with_adapter(outside())
+        ),
+        Err(ReferenceKvError::Binding(BindingError::NotLive { .. }))
+    ));
+}
+
+#[test]
+fn the_first_adapter_lifecycle_event_arms_the_rule_for_every_adapter_identity() {
+    let backend = backend();
+    let outside = || {
+        Qwen2Adapter::seeded(
+            backend.stack_config(),
+            &Qwen2AdapterSpec::pinned("foo:bar", 1, Qwen2AdapterKind::Qkv, 2),
+            20240607,
+        )
+        .unwrap()
+    };
+    // No adapter event yet: standalone mode, the adapter outside the namespace serves.
+    let before = request(&backend);
+    assert!(backend
+        .infer_scoped_bound(
+            &scope(),
+            &before,
+            None,
+            &StackBinding::with_adapter(outside())
+        )
+        .is_ok());
+    // One AdapterPromoted for another key arms the rule, with no explicit opt-in.
+    backend.apply_committed_event(&promoted(1)).unwrap();
+    let after = request(&backend);
+    assert!(matches!(
+        backend.infer_scoped_bound(
+            &scope(),
+            &after,
+            None,
+            &StackBinding::with_adapter(outside())
+        ),
+        Err(ReferenceKvError::Binding(BindingError::NotLive { .. }))
+    ));
+    // A revocation arms it as well.
+    let other = backend_fresh();
+    other.apply_committed_event(&revoked(1)).unwrap();
+    let probe = request(&other);
+    assert!(matches!(
+        other.infer_scoped_bound(
+            &scope(),
+            &probe,
             None,
             &StackBinding::with_adapter(outside())
         ),

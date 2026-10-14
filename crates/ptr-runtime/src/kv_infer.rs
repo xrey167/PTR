@@ -556,8 +556,9 @@ pub(crate) struct RevokedInputs {
     /// The one generation each promoted adapter key serves: an adapter dependency is live only
     /// at exactly this generation, not at any generation above the floor.
     adapter_current: BTreeMap<String, Generation>,
-    /// Set once by `require_promoted_adapters`: every adapter-kind dependency, whatever its
-    /// identity, is then live only at the generation a committed promotion named.
+    /// Set once, by `require_promoted_adapters` or by the first adapter lifecycle event this
+    /// backend applies: every adapter-kind dependency, whatever its identity, is then live only
+    /// at the generation a committed promotion named. Never cleared.
     strict_adapters: bool,
     /// Expert identities with a committed fence epoch: an expert dependency recorded below it
     /// (or with none) is not live.
@@ -630,6 +631,9 @@ impl RevokedInputs {
                 generation,
                 ..
             } => {
+                // Fed adapter lifecycle events from a ledger, the backend is ledger-anchored
+                // from here on (see `strict_adapters`).
+                self.strict_adapters = true;
                 self.revoked
                     .insert((crate::adapter::adapter_key(project, adapter), *generation));
             }
@@ -639,6 +643,7 @@ impl RevokedInputs {
                 generation,
                 ..
             } => {
+                self.strict_adapters = true;
                 let key = crate::adapter::adapter_key(project, adapter);
                 self.raise_floor(key.clone(), *generation);
                 let current = self.adapter_current.entry(key).or_insert(*generation);
@@ -708,10 +713,11 @@ impl RevokedInputs {
     /// Adapter-kind dependencies fail closed. In the lifecycle namespace (`ptr-adapter:`) one is
     /// live only when a committed promotion named its key and the generation is exactly that
     /// one; a key no promotion named is not live at any generation. After
-    /// [`ReferenceKvReuseBackend::require_promoted_adapters`] that holds for every adapter-kind
-    /// dependency whatever its identity. Without it, an adapter outside the namespace is a
-    /// standalone adapter (the reference backend's own, ledger-free mode) and is live unless
-    /// revoked. The decision is by dependency kind, never by the shape of the identity alone.
+    /// [`ReferenceKvReuseBackend::require_promoted_adapters`], or once the backend has applied
+    /// its first `AdapterPromoted` or `AdapterRevoked`, that holds for every adapter-kind
+    /// dependency whatever its identity. A backend that never saw such an event is a
+    /// standalone one (the reference backend's own, ledger-free mode): an adapter outside the
+    /// namespace is live unless revoked. The decision is by dependency kind, never by the shape of the identity alone.
     fn adapter_is_current(&self, dependency: &KvDependency) -> bool {
         if dependency.kind != KvDependencyKind::Adapter {
             return true;
@@ -1246,9 +1252,12 @@ impl ReferenceKvReuseBackend {
     /// Switch to ledger-anchored adapters, once and for good: from now on an adapter binding is
     /// live only if a committed `AdapterPromoted` (applied through
     /// [`Self::apply_committed_event`]) named its key and generation exactly, whatever its
-    /// identity. A host that serves promoted adapters calls this at construction. The default
-    /// stays the standalone mode in which an adapter outside the lifecycle namespace is live
-    /// unless revoked (the R009 harness and the reference tests run in it).
+    /// identity. A host that serves promoted adapters can call this at construction; the
+    /// backend also arms itself on the first `AdapterPromoted` or `AdapterRevoked` it applies,
+    /// so a host fed adapter lifecycle events is fail-closed without it. A backend that never
+    /// sees such an event stays in the standalone mode in which an adapter outside the
+    /// lifecycle namespace is live unless revoked (the R009 harness and the reference tests
+    /// run in it).
     ///
     /// # Errors
     /// [`ReferenceKvError::Poisoned`].
