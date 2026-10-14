@@ -345,8 +345,8 @@ pub enum HandleRejection {
 ///
 /// A notice releases this table's admission budget for the handle's bytes. For a carrier that is
 /// not shared with another process (`InProcess`, `Bytes`, `NvmeFile`, `Remote`) the notice comes
-/// with [`ReclaimReason::Consumed`], on producer replacement or removal, or at the deadline plus
-/// the skew. For [`ReclaimReason::Expired`] and [`ReclaimReason::Abandoned`] the consumer has not
+/// from [`HandleTable::finish`] (with [`ReclaimReason::Consumed`]), on producer replacement or
+/// removal, or at the deadline plus the skew. For [`ReclaimReason::Expired`] and [`ReclaimReason::Abandoned`] the consumer has not
 /// confirmed that it is done, so the driver must first terminate and reap the consumer worker
 /// before the producer frees the buffer.
 ///
@@ -540,6 +540,8 @@ impl AdmittedHandle {
 #[derive(Eq, PartialEq)]
 pub struct ConsumedHandle {
     table: u64,
+    /// The ticket of the use; a later use of the same nonce has another one.
+    ticket: u64,
     handle: TensorHandle,
     principal: String,
     /// Captured at admission; `revalidate_operation` hands them to the authority again.
@@ -623,8 +625,14 @@ pub fn revalidate_operation(
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SlotState {
-    Open { ticket: u64 },
-    Consumed,
+    Open {
+        ticket: u64,
+    },
+    /// Consumed under `ticket`: only the [`ConsumedHandle`] of that use may finish it, never a
+    /// stale one of an earlier use of the same nonce.
+    Consumed {
+        ticket: u64,
+    },
     Abandoned,
 }
 
@@ -731,9 +739,9 @@ impl HandleTable {
     /// Registering another key or stage identity under the **same** session is refused with
     /// [`RegistrationRefused::SessionNotRenewed`] and changes nothing: an already consumed
     /// handle captured that session, and only a new session fences it at
-    /// [`revalidate_operation`]. Registering under another session (a respawned producer,
-    /// whatever its key and stage) abandons the
-    /// principal's open handles: they can no longer be consumed, their nonces stay tombstoned
+    /// [`revalidate_operation`]; a supervisor that re-keys a producer must therefore draw a new
+    /// session, inactive (unregistered) producers included. Registering under another session
+    /// (a respawned producer, whatever its key and stage) abandons the principal's open handles: they can no longer be consumed, their nonces stay tombstoned
     /// until their deadline plus the skew, and the buffers they claimed on a carrier that is not
     /// shared are returned once, with [`ReclaimReason::ProducerReplaced`], which frees their
     /// bytes from the budget. A shared buffer is not returned here: it stays charged until
@@ -862,7 +870,7 @@ impl HandleTable {
         if let Some(slot) = producer.slots.get(&handle.handle_nonce) {
             return Err(match slot.state {
                 SlotState::Open { .. } => HandleRejection::DuplicateOpen,
-                SlotState::Consumed => HandleRejection::Replayed,
+                SlotState::Consumed { .. } => HandleRejection::Replayed,
                 SlotState::Abandoned => HandleRejection::Abandoned,
             });
         }
@@ -952,7 +960,7 @@ impl HandleTable {
         match slot.state {
             SlotState::Open { ticket } if ticket == admitted.ticket => Ok(slot),
             SlotState::Open { .. } => Err(HandleRejection::UnknownTicket),
-            SlotState::Consumed => Err(HandleRejection::Replayed),
+            SlotState::Consumed { .. } => Err(HandleRejection::Replayed),
             SlotState::Abandoned => Err(HandleRejection::Abandoned),
         }
     }
@@ -1007,10 +1015,13 @@ impl HandleTable {
         }
         // The claim stays: the consumer is using the buffer now. It is released by `finish`
         // (not shared), by `release_after_teardown` (shared) or by `expire`.
-        slot.state = SlotState::Consumed;
+        slot.state = SlotState::Consumed {
+            ticket: admitted.ticket,
+        };
         self.open_total = self.open_total.saturating_sub(1);
         Ok(ConsumedHandle {
             table: self.id,
+            ticket: admitted.ticket,
             handle: admitted.handle,
             principal: admitted.principal,
             project: admitted.project,
@@ -1024,8 +1035,9 @@ impl HandleTable {
     /// released now and the notice returned, once, with [`ReclaimReason::Consumed`]; the driver
     /// delivers it to the producer. A shared carrier returns `None` and stays charged until
     /// [`Self::release_after_teardown`] (doc 42 rule 3b): `Consumed` comes from a worker that
-    /// may keep its mapping. `None` also when [`Self::expire`] reported the handle already. A
-    /// handle of another table is refused as [`HandleRejection::UnknownTicket`].
+    /// may keep its mapping. `None` also when [`Self::expire`] reported the handle already, or
+    /// when the nonce was used again since (a stale handle never releases a later use's claim).
+    /// A handle of another table is refused as [`HandleRejection::UnknownTicket`].
     pub fn finish(
         &mut self,
         consumed: ConsumedHandle,
@@ -1041,7 +1053,10 @@ impl HandleTable {
         else {
             return Ok(None);
         };
-        if slot.state != SlotState::Consumed
+        if slot.state
+            != (SlotState::Consumed {
+                ticket: consumed.ticket,
+            })
             || slot
                 .claim
                 .as_ref()
@@ -1113,7 +1128,7 @@ impl HandleTable {
                         ReclaimReason::Expired
                     }
                     SlotState::Abandoned => ReclaimReason::Abandoned,
-                    SlotState::Consumed => ReclaimReason::Consumed,
+                    SlotState::Consumed { .. } => ReclaimReason::Consumed,
                 };
                 notices.extend(
                     slot.claim
@@ -1475,7 +1490,7 @@ mod tests {
         }
     }
 
-    /// A handle on a carrier that is not shared (`NvmeFile`): released on `Consumed`, on
+    /// A handle on a carrier that is not shared (`NvmeFile`): released by `finish`, on
     /// producer replacement and at the deadline plus the skew.
     fn signed(nonce: u64, deadline_ms: u64) -> TensorHandle {
         let mut handle = TensorHandle {
@@ -3094,5 +3109,24 @@ mod tests {
         let notices = table.expire(600);
         assert_eq!(notices.len(), 1);
         assert_eq!(notices[0].handle_nonce, 1);
+    }
+
+    #[test]
+    fn a_stale_consumed_handle_never_finishes_a_later_use_of_the_same_nonce() {
+        let live = live();
+        let mut table = table();
+        let first = admit(&mut table, &live, 10, &signed(1, 500)).expect("admitted");
+        let stale = consume(&mut table, &live, 20, first).expect("consumed");
+        // Unfinished, it is reported at the deadline plus the skew and its slot is dropped.
+        assert_eq!(table.expire(600).len(), 1);
+        // The producer uses the nonce again under a later deadline.
+        let again = admit(&mut table, &live, 601, &signed(1, 1_000)).expect("admitted");
+        let current = consume(&mut table, &live, 602, again).expect("consumed");
+        assert_eq!(table.inflight_bytes(PRINCIPAL), Some(16));
+        // The stale handle releases nothing of the current use.
+        assert_eq!(table.finish(stale), Ok(None));
+        assert_eq!(table.inflight_bytes(PRINCIPAL), Some(16));
+        assert!(table.finish(current).expect("this table").is_some());
+        assert_eq!(table.inflight_bytes(PRINCIPAL), Some(0));
     }
 }

@@ -261,7 +261,7 @@ fn table() -> HandleTable {
     table
 }
 
-/// A handle on a carrier that is not shared (`NvmeFile`): released on `Consumed`, on producer
+/// A handle on a carrier that is not shared (`NvmeFile`): released by `finish`, on producer
 /// replacement and at the deadline plus the skew.
 fn handle(world: &World, nonce: u64, deadline_ms: u64) -> TensorHandle {
     let mut handle = TensorHandle {
