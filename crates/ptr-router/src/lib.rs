@@ -77,6 +77,7 @@ pub use self_model::{
 };
 pub use telemetry::{
     JsonLinesSink, MemorySink, RoutingRecord, RoutingTelemetry, TelemetryError, MAX_FIELD_BYTES,
+    MAX_MEMORY_SINK_RECORDS,
 };
 pub use verifier_roles::{finding_codes_for_role, RepairRoleAssignments};
 

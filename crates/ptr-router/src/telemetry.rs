@@ -15,6 +15,9 @@ use std::sync::Mutex;
 
 /// Longest decision id or chosen-option text a record accepts, in bytes.
 pub const MAX_FIELD_BYTES: usize = 256;
+/// Hard ceiling on [`MemorySink`] capacity: a larger requested capacity (for example
+/// `usize::MAX`) is clamped to this, so the sink stays bounded.
+pub const MAX_MEMORY_SINK_RECORDS: usize = 65_536;
 
 /// One routing decision as telemetry.
 #[derive(Clone, Debug, PartialEq)]
@@ -179,11 +182,17 @@ struct MemoryState {
 }
 
 impl MemorySink {
+    /// A sink that keeps at most `capacity` records, clamped to [`MAX_MEMORY_SINK_RECORDS`].
     pub fn new(capacity: usize) -> Self {
         Self {
-            capacity,
+            capacity: capacity.min(MAX_MEMORY_SINK_RECORDS),
             state: Mutex::new(MemoryState::default()),
         }
+    }
+
+    /// Records this sink keeps before it rejects with [`TelemetryError::Full`].
+    pub fn capacity(&self) -> usize {
+        self.capacity
     }
 
     pub fn records(&self) -> Vec<RoutingRecord> {

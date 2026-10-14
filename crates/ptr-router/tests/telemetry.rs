@@ -214,3 +214,14 @@ fn sinks_are_usable_as_trait_objects() {
         sink.record(&record("r")).unwrap();
     }
 }
+
+#[test]
+fn an_oversized_memory_sink_capacity_is_clamped_to_the_hard_maximum() {
+    assert_eq!(
+        MemorySink::new(usize::MAX).capacity(),
+        ptr_router::MAX_MEMORY_SINK_RECORDS
+    );
+    assert_eq!(MemorySink::new(2).capacity(), 2);
+    // Zero stays zero: such a sink rejects every record.
+    assert_eq!(MemorySink::new(0).capacity(), 0);
+}
