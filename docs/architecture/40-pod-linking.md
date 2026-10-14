@@ -41,7 +41,7 @@ predicate change moves both.
 
 ## Head resolver (`ptr-ledger`, `ptr-state`, `ptr-runtime`)
 
-`LedgerEvent::PodHeadAdvanced { identity, old, new }` (tag 32) is a compare-and-swap record:
+`LedgerEvent::PodHeadAdvanced { identity, old, new }` (tag 38) is a compare-and-swap record:
 
 - `new` must be a valid revision address; with an `old` its generation must rise strictly (the
   ledger codec refuses anything else on append and on decode);
@@ -61,7 +61,7 @@ A pod generation is the lifecycle target `pod:<project>/<namespace>/<pod>` (`pod
 flowchart LR
     D["PodIdentityDescriptor"] -->|identity| I["PodIdentity"]
     D -->|cluster_key| C["ClusterKey"]
-    W["advance_pod_head (expected, new)"] -->|CAS, tag 32| L[("Ledger")]
+    W["advance_pod_head (expected, new)"] -->|CAS, tag 38| L[("Ledger")]
     L -->|pod-head: entry| S["materialized state"]
     S --> H["pod_head(identity)"]
     H --> R["PodDirectory::resolve"]

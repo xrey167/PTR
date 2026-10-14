@@ -338,7 +338,7 @@ pub enum LedgerEvent {
         fence_count: u32,
         fence_digest: [u8; 32],
     },
-    /// The head of a stable pod identity moves (tag 32). `identity` is the value-free
+    /// The head of a stable pod identity moves (tag 38). `identity` is the value-free
     /// [`PodIdentity`]; `old` is the head the writer observed (`None` for the first head) and
     /// `new` the revision that becomes the head. The record is a compare-and-swap: the runtime
     /// refuses it unless the committed head still equals `old`, and unless `new.generation` is
@@ -1343,7 +1343,7 @@ fn encode_event(event: &LedgerEvent) -> Vec<u8> {
             out.extend_from_slice(event_digest);
         }
         LedgerEvent::PodHeadAdvanced { identity, old, new } => {
-            out.push(32);
+            out.push(38);
             put_string(&mut out, &identity.0);
             match old {
                 None => out.push(0),
@@ -1784,7 +1784,7 @@ fn decode_event(payload: &[u8]) -> io::Result<LedgerEvent> {
             check_expert_authority_changed(&event)?;
             event
         }
-        32 => {
+        38 => {
             let identity = PodIdentity(cursor.string()?);
             let old = match cursor.u8()? {
                 0 => None,
@@ -3331,11 +3331,11 @@ mod effect_record_tests {
     }
 
     #[test]
-    fn pod_head_advance_round_trips_under_tag_32_with_and_without_an_old_head() {
+    fn pod_head_advance_round_trips_under_tag_38_with_and_without_an_old_head() {
         for event in [head_event(None, 1), head_event(Some(1), 2)] {
             check_encodable(&event).unwrap();
             let encoded = encode_event(&event);
-            assert_eq!(encoded[0], 32);
+            assert_eq!(encoded[0], 38);
             assert_eq!(decode_event(&encoded).unwrap(), event);
             for len in 0..encoded.len() {
                 assert!(decode_event(&encoded[..len]).is_err(), "prefix {len}");
@@ -3376,6 +3376,21 @@ mod effect_record_tests {
             );
             assert!(decode_event(&encode_event(&event)).is_err(), "{event:?}");
         }
+    }
+
+    #[test]
+    fn tag_32_is_not_a_pod_head_record() {
+        // Tags 32 to 36 are reserved by ADR-0022; a pod head move is tag 38. A record that
+        // carries the old tag must fail as unknown rather than decode as something else. This
+        // test is replaced by the codec test of PeerAdmitted when that record lands.
+        let mut encoded = encode_event(&head_event(None, 1));
+        assert_eq!(encoded[0], 38);
+        encoded[0] = 32;
+        let error = decode_event(&encoded).unwrap_err();
+        assert!(
+            error.to_string().contains("unknown ledger event tag 32"),
+            "{error}"
+        );
     }
 
     #[test]

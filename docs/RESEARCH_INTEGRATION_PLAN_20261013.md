@@ -12,20 +12,20 @@ Decisions: all five priorities as a roadmap; training in `training/` (Python), i
 
 | WP | Topic | Branch | Status | Resources |
 |---|---|---|---|---|
-| 1 | Pod linking: identity, head resolver, Dragonfly addresses | `claude/wp1-pod-linking` | in review | ledger tag 32 `PodHeadAdvanced`; [doc 40](architecture/40-pod-linking.md); [ADR-0023](../research/decisions/ADR-0023-learned-pod-addresses-advisory.md); experiment R015 (R002 design note); evaluation `pod-routing` |
+| 1 | Pod linking: identity, head resolver, Dragonfly addresses | `claude/wp1-pod-linking` | in review | ledger tag 38 `PodHeadAdvanced`; [doc 40](architecture/40-pod-linking.md); [ADR-0023](../research/decisions/ADR-0023-learned-pod-addresses-advisory.md); experiment R015 (R002 design note); evaluation `pod-routing` |
 | 2 | Reflex, failover and honest counters | `claude/wp2-reflex-failover` | planned | metrics in R015; section in doc 40 |
-| 3 | Retrieval filters, wire deadline, egress refusals | `claude/wp3-retrieval-filters-wire-deadline` | planned | ledger tag 33; doc 33 extended; ADR-0024 |
+| 3 | Retrieval filters, wire deadline, egress refusals | `claude/wp3-retrieval-filters-wire-deadline` | planned | ledger tag 37; doc 33 extended; ADR-0024 |
 | 4 | Training integrity and executable layering | `claude/wp4-training-integrity-layering` | planned | doc 41 |
-| 5 | Serving and promotion: batcher, adapter events, self-improvement contract | `claude/wp5-serving-promotion` | planned | ledger tags 34, 35, 36; doc 42; ADR-0025; experiments E009, R004, F008 |
+| 5 | Serving and promotion: batcher, adapter events, self-improvement contract | `claude/wp5-serving-promotion` | planned | ledger tags 39, 40, 41; doc 42; ADR-0025; experiments E009, R004, F008 |
 
 Order of work: WP1, then WP2 and WP3 (which depend on WP1), WP4 and WP5 largely independent. Merge order: WP4, WP3, WP1, WP2, WP5. New match arms for ledger events are appended at the end of each existing match so parallel branches merge with few conflicts.
 
-The numbers above are the ones reserved after the first draft of the plan met `main`: tags 27 to 31, documents 36 to 39, ADR-0021 and the experiment ids R004 and R005 were already in use, and ADR-0022 is taken by the open PR #133.
+The numbers above are the ones reserved after the first draft of the plan met `main`: tags 27 to 31 (and 32 to 36, reserved by ADR-0022), documents 36 to 39, ADR-0021 and the experiment ids R004 and R005 were already in use, and ADR-0022 is taken by the open PR #133.
 
 ## WP1 — what landed
 
 - `PodIdentityDescriptor`, `ClusterKey`, and `PodSemanticManifest::{identity_descriptor, cluster_key}` with the identity check in `validate` (`ptr-types`, `ptr-pods`).
-- `LedgerEvent::PodHeadAdvanced` (tag 32), its `pod-head:` projection, `PtrRuntime::{pod_head, pod_heads, advance_pod_head}` and `PodDirectory::resolve_head` (`ptr-ledger`, `ptr-state`, `ptr-pg`, `ptr-runtime`).
+- `LedgerEvent::PodHeadAdvanced` (tag 38), its `pod-head:` projection, `PtrRuntime::{pod_head, pod_heads, advance_pod_head}` and `PodDirectory::resolve_head` (`ptr-ledger`, `ptr-state`, `ptr-pg`, `ptr-runtime`).
 - `LearnedPodRouter`, `RepresentationStore`, `PodRepresentation` with its artifact loader, `RouteError::{Abstained, NoRepresentation, InactiveRepresentation, InvalidRepresentation}` (`ptr-router`).
 - Per-pod neural-state admission of representations, `PodSampler::features`, `EmbeddingSampler` (`ptr-runtime`).
 - `training/src/ptr_training/dragonfly`: encoder interface and a deterministic stand-in, trainer, activation gate, exporter, shared fixture, R015 training step.
