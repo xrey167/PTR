@@ -15,7 +15,7 @@
 //!   group whose oldest request arrived first goes first, whatever its key.
 
 use crate::batch::{BatchKey, BatchPolicy, CancelFlag};
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
 /// One queued request, with the payload the caller wants back.
 #[derive(Debug)]
@@ -128,29 +128,31 @@ impl<J> BatchQueue<J> {
         }
         self.entries = kept;
 
-        // One pass per distinct key, in order of each key's oldest request.
-        let mut keys: Vec<&BatchKey> = Vec::new();
+        // One pass over the queue builds a group per distinct key, in order of each key's oldest
+        // request; the cost is linear in the queue however many distinct keys it holds.
+        let mut groups: Vec<(&BatchKey, usize, u64)> = Vec::new();
+        let mut index_of: HashMap<&BatchKey, usize> = HashMap::new();
         for entry in &self.entries {
-            if !keys.contains(&&entry.key) {
-                keys.push(&entry.key);
+            let index = *index_of.entry(&entry.key).or_insert_with(|| {
+                groups.push((&entry.key, 0, u64::MAX));
+                groups.len() - 1
+            });
+            let group = &mut groups[index];
+            group.1 += 1;
+            group.2 = group
+                .2
+                .min(entry.arrived.saturating_add(self.policy.max_wait_millis));
+            if let Some(deadline) = entry.deadline {
+                group.2 = group
+                    .2
+                    .min(deadline.saturating_sub(self.policy.deadline_margin_millis));
             }
         }
         let mut chosen: Option<BatchKey> = None;
         let mut wake_at: Option<u64> = None;
-        for key in keys {
-            let mut count = 0usize;
-            let mut dispatch_at = u64::MAX;
-            for entry in self.entries.iter().filter(|entry| &entry.key == key) {
-                count += 1;
-                let waited_out = entry.arrived.saturating_add(self.policy.max_wait_millis);
-                dispatch_at = dispatch_at.min(waited_out);
-                if let Some(deadline) = entry.deadline {
-                    dispatch_at = dispatch_at
-                        .min(deadline.saturating_sub(self.policy.deadline_margin_millis));
-                }
-            }
+        for (key, count, dispatch_at) in groups {
             if count >= self.policy.max_batch || dispatch_at <= now {
-                // Keys are visited oldest first, so the first ready one is the one to serve.
+                // Groups are visited oldest first, so the first ready one is the one to serve.
                 chosen = Some(key.clone());
                 break;
             }
@@ -218,6 +220,26 @@ mod tests {
 
     fn ids(batch: &[Entry<u32>]) -> Vec<u32> {
         batch.iter().map(|entry| entry.payload).collect()
+    }
+
+    #[test]
+    fn a_queue_of_many_distinct_keys_is_scanned_in_linear_time() {
+        let capacity = 60_000;
+        let mut queue = BatchQueue::new(policy(8, 1_000, capacity));
+        for n in 0..capacity {
+            queue
+                .push(key(&format!("adapter-{n}")), None, None, n as u32, 0)
+                .unwrap();
+        }
+        let started = std::time::Instant::now();
+        // Nothing is ready yet (one request per key, waiting), then everything has waited out.
+        assert!(queue.take_ready(1).batch.is_none());
+        assert!(queue.take_ready(1_000).batch.is_some());
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "two scans of {capacity} distinct keys took {:?}",
+            started.elapsed()
+        );
     }
 
     #[test]

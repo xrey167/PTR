@@ -264,11 +264,12 @@ class CategoricalAndPrecisionTests(unittest.TestCase):
             pool.add_generation(
                 f"g{order}", order=order, decisions={"x": order}, outcome=exact(correct)
             )
-        report = backtest(pool, error_bound=0.05, min_within_bound=2, min_within_fraction=0.5)
+        report = backtest(pool, error_bound=0.05, min_within_bound=1, min_within_fraction=0.5)
         row = next(r for r in report.per_generation if r["generation"] == "g2")
         self.assertEqual(row["abs_error"]["typed"], 0.05, "the report rounds to six places")
         self.assertFalse(row["within_bound"], "the decision does not")
-        self.assertEqual(report.within_bound, 1)
+        # g1 loses both its edges when held out; g2 is the one predicted generation.
+        self.assertEqual((report.predicted, report.within_bound), (1, 0))
         self.assertFalse(report.predictive)
 
     def test_an_alternating_categorical_history_anchors_its_intercept_and_predicts(self):
@@ -307,3 +308,39 @@ class CategoricalAndPrecisionTests(unittest.TestCase):
         simulator = ReplaySimulator(pool)
         for family in simulator.simulate({"x": 1e308}).values():
             self.assertTrue(family.rate is None or 0.0 <= family.rate <= 1.0)
+
+
+class RankingNeighbourhoodAndRangeTests(unittest.TestCase):
+    def test_the_ranking_uses_the_exact_score_and_only_the_report_rounds(self):
+        pool = linear_pool()
+        simulator = ReplaySimulator(pool)
+        report = backtest(pool, error_bound=0.05, **RULE)
+        # Both scores round to 0.3 at six places; the exact ones differ.
+        winner = choose_winner(simulator, report, [{"x": 1.0000036}, {"x": 1.000004}])
+        self.assertEqual(winner["decisions"], {"x": 1.000004})
+        self.assertEqual(winner["score_reported"], round(winner["score"], 6))
+        self.assertGreater(winner["score"], simulator.rank([{"x": 1.0000036}])[0]["score"])
+
+    def test_a_held_out_generation_takes_its_edges_with_it(self):
+        pool = HistoryPool()
+        for order in range(3):
+            pool.add_generation(
+                f"g{order}", order=order, decisions={"x": order}, outcome=outcome(200 + 100 * order)
+            )
+        report = backtest(pool, error_bound=0.5, min_within_bound=1, min_within_fraction=0.1)
+        row = next(r for r in report.per_generation if r["generation"] == "g1")
+        # Without g1 the only pair left is g0 -> g2, which is not a transition of the history:
+        # x is not identified, and g1 is not predicted from an edge that spans it.
+        self.assertFalse(row["predicted"])
+        self.assertTrue(row["not_identified"])
+        self.assertEqual(ReplaySimulator(pool, exclude="g1").responses, {})
+
+    def test_a_decision_that_appears_later_has_level_zero_inside_its_observed_range(self):
+        pool = HistoryPool()
+        pool.add_generation("g0", order=0, decisions={}, outcome=outcome(200))
+        pool.add_generation("g1", order=1, decisions={"x": 1}, outcome=outcome(300))
+        pool.add_generation("g2", order=2, decisions={"x": 2}, outcome=outcome(400))
+        simulator = ReplaySimulator(pool)
+        self.assertEqual(simulator.limits["x"], (0.0, 2.0))
+        self.assertEqual(simulator.extrapolation({"x": 0}), [])
+        self.assertNotEqual(simulator.extrapolation({"x": 3}), [])

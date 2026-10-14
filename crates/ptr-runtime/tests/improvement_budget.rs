@@ -420,3 +420,72 @@ fn a_ticket_within_the_retention_is_still_recorded() {
         .record_improvement_cycle(ticket, ImprovementCycleOutcome::Completed)
         .is_ok());
 }
+
+#[test]
+fn recording_with_an_unreadable_clock_is_refused_and_the_admission_stays_counted() {
+    let (mut runtime, clock) = runtime(1, 10);
+    let ticket = runtime
+        .begin_improvement_cycle(begin("alpha"))
+        .expect("admitted");
+    clock.set(u64::MAX);
+    let before = runtime.committed_events().len();
+    assert_eq!(
+        runtime.record_improvement_cycle(ticket, ImprovementCycleOutcome::Completed),
+        Err(RuntimeError::Adapter(AdapterError::ClockUnavailable))
+    );
+    assert_eq!(runtime.committed_events().len(), before);
+    assert_eq!(
+        runtime.improvement_cycles_used(&ProjectId::from("alpha"), 10),
+        1
+    );
+}
+
+#[test]
+fn one_projects_expired_admissions_do_not_keep_another_project_out() {
+    use ptr_runtime::adapter::{MAX_TRACKED_CYCLE_PROJECTS, OPEN_CYCLE_RETENTION_DAYS};
+    let (mut runtime, clock) = runtime(5_000, 1);
+    let mut held = Vec::new();
+    for _ in 0..MAX_TRACKED_CYCLE_PROJECTS {
+        held.push(
+            runtime
+                .begin_improvement_cycle(begin("alpha"))
+                .expect("within the bound"),
+        );
+    }
+    // The table is full while the admissions are live.
+    assert!(matches!(
+        runtime.begin_improvement_cycle(begin("beta")),
+        Err(RuntimeError::Adapter(
+            AdapterError::TooManyCycleProjects { .. }
+        ))
+    ));
+    // Once they have expired, they are swept before the bound is looked at.
+    clock.set(1 + OPEN_CYCLE_RETENTION_DAYS + 1);
+    assert!(runtime.begin_improvement_cycle(begin("beta")).is_ok());
+}
+
+#[test]
+fn a_cycle_recorded_out_of_day_order_is_counted_on_its_own_day_live_and_on_replay() {
+    let (mut runtime, clock) = runtime(2, 10);
+    let on_day_10 = runtime
+        .begin_improvement_cycle(begin("alpha"))
+        .expect("day 10");
+    clock.set(11);
+    let on_day_11 = runtime
+        .begin_improvement_cycle(begin("alpha"))
+        .expect("day 11");
+    runtime
+        .record_improvement_cycle(on_day_11, ImprovementCycleOutcome::Completed)
+        .expect("records day 11 first");
+    runtime
+        .record_improvement_cycle(on_day_10, ImprovementCycleOutcome::Completed)
+        .expect("then day 10");
+    let alpha = ProjectId::from("alpha");
+    assert_eq!(runtime.improvement_cycles_used(&alpha, 10), 1);
+    assert_eq!(runtime.improvement_cycles_used(&alpha, 11), 1);
+
+    let history = runtime.committed_events().to_vec();
+    let replayed = PtrRuntime::replay(PtrConfig::default(), &history).expect("replays");
+    assert_eq!(replayed.improvement_cycles_used(&alpha, 10), 1);
+    assert_eq!(replayed.improvement_cycles_used(&alpha, 11), 1);
+}

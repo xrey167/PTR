@@ -246,3 +246,65 @@ fn resume_does_not_fail_over_unless_the_replicas_are_declared_interchangeable() 
     .expect("router");
     assert_eq!(label(still.infer(&request("r0")).expect("served")), "b");
 }
+
+/// A replica whose every call panics.
+struct PanickingReplica {
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+impl InferenceBackend for PanickingReplica {
+    fn name(&self) -> &'static str {
+        "panicking"
+    }
+
+    fn infer(&self, _request: &ptr_model_api::ModelRequest) -> Result<Vec<ModelEvent>, ModelError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        panic!("replica panics on purpose");
+    }
+}
+
+impl ResumableInferenceBackend for PanickingReplica {
+    fn resume(
+        &self,
+        _request: &ptr_model_api::ModelResumeRequest,
+    ) -> Result<Vec<ModelEvent>, ModelError> {
+        panic!("replica panics on purpose");
+    }
+}
+
+#[test]
+fn a_panicking_replica_is_a_failed_replica_that_fails_over_and_is_counted() {
+    let panicking = Arc::new(PanickingReplica {
+        calls: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let router = ReplicaRouter::new(
+        vec![
+            Arc::clone(&panicking) as Arc<dyn ResumableInferenceBackend>,
+            healthy("b") as Arc<dyn ResumableInferenceBackend>,
+        ],
+        policy(1),
+    )
+    .expect("router");
+    assert_eq!(label(router.infer(&request("r0")).expect("served")), "b");
+    assert_eq!(panicking.calls.load(Ordering::SeqCst), 1);
+    let stats = router.stats();
+    assert_eq!(
+        stats[0],
+        ReplicaStats {
+            attempts: 1,
+            failures: 1,
+            failovers: 0
+        }
+    );
+    assert_eq!(stats[1].failovers, 1);
+    // With no replica to fail over to, the caller gets a typed error and not an unwind.
+    let alone = ReplicaRouter::new(
+        vec![panicking as Arc<dyn ResumableInferenceBackend>],
+        policy(0),
+    )
+    .expect("router");
+    assert_eq!(
+        alone.resume(&resume_request("r1")),
+        Err(ModelError::backend_failure())
+    );
+}

@@ -17,7 +17,7 @@ pub struct SplitLock {
 
 impl SplitLock {
     /// A lock over the digest an evaluator computed for its frozen splits.
-    pub fn from_digest(sha256: [u8; 32]) -> Self {
+    pub(crate) fn from_digest(sha256: [u8; 32]) -> Self {
         Self { sha256 }
     }
 

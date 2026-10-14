@@ -21,6 +21,7 @@ use crate::{
     ResumableInferenceBackend,
 };
 use std::fmt;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -180,7 +181,11 @@ impl ReplicaRouter {
             if step > 0 {
                 replica.counters.failovers.fetch_add(1, Ordering::Relaxed);
             }
-            match call(replica.backend.as_ref()) {
+            // A replica that panics is a failed replica, not a failed caller: the panic becomes a
+            // backend failure, which fails over and is counted like any other.
+            let outcome = catch_unwind(AssertUnwindSafe(|| call(replica.backend.as_ref())))
+                .unwrap_or_else(|_| Err(ModelError::backend_failure()));
+            match outcome {
                 Ok(value) => return Ok(value),
                 Err(error) => {
                     replica.counters.failures.fetch_add(1, Ordering::Relaxed);

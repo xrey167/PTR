@@ -245,6 +245,7 @@ class ReplaySimulator:
 
     def __init__(self, pool: HistoryPool, *, exclude: str | None = None) -> None:
         self.pool = pool
+        self.exclude = exclude
         self.generations = [g for g in pool.generations if g.name != exclude]
         if not self.generations:
             raise HistoryError("nothing left in the pool after exclusion")
@@ -259,7 +260,12 @@ class ReplaySimulator:
         # Decisions whose step or slope is not a finite number (a step of 5e-324 overflows the
         # slope): they are not identified, and no NaN or infinity reaches a prediction.
         self.nonfinite: set[str] = set()
-        for prev, curr in zip(self.generations, self.generations[1:]):
+        # Transitions are the pool's own neighbours. A held-out generation takes its two edges
+        # with it: the pair on either side of it is not a transition of the history.
+        everything = self.pool.generations
+        for prev, curr in zip(everything, everything[1:]):
+            if self.exclude in (prev.name, curr.name):
+                continue
             names = set(prev.levels) | set(curr.levels)
             moved = sorted(
                 n for n in names if curr.levels.get(n, 0.0) != prev.levels.get(n, 0.0)
@@ -293,9 +299,14 @@ class ReplaySimulator:
         return responses, ambiguous
 
     def _limits(self) -> dict[str, tuple[float, float]]:
+        # A decision a generation does not name is at level 0 there, so a decision that appears
+        # only later still has 0 inside its observed range.
+        names: set[str] = set()
+        for generation in self.generations:
+            names |= set(generation.levels)
         limits: dict[str, tuple[float, float]] = {}
         for generation in self.generations:
-            for name in set(limits) | set(generation.levels):
+            for name in names:
                 level = generation.levels.get(name, 0.0)
                 low, high = limits.get(name, (level, level))
                 limits[name] = (min(low, level), max(high, level))
@@ -350,14 +361,17 @@ class ReplaySimulator:
         for decisions in policies:
             prediction = self.simulate(decisions)
             identified = all(p.identified for p in prediction.values())
+            score = (
+                sum(p.rate for p in prediction.values() if p.rate is not None)
+                if identified
+                else None
+            )
             ranked.append(
                 {
                     "decisions": dict(decisions),
-                    "score": (
-                        round(sum(p.rate for p in prediction.values() if p.rate is not None), 6)
-                        if identified
-                        else None
-                    ),
+                    # The exact score decides the order; the rounded one is for the report.
+                    "score": score,
+                    "score_reported": None if score is None else round(score, 6),
                     "identified": identified,
                     "extrapolation": self.extrapolation(decisions),
                 }

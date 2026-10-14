@@ -61,6 +61,8 @@ pub enum AdapterError {
     GateNotPassed,
     /// The weights handed to the promotion are empty.
     EmptyArtifact,
+    /// The frozen split manifest handed to the promotion is empty.
+    EmptySplitManifest,
     /// The SHA-256 of the weights is not the digest the gate report was bound to.
     ArtifactDigestMismatch {
         expected: [u8; 32],
@@ -114,8 +116,9 @@ pub enum AdapterError {
 pub struct PromoteAdapter<'a> {
     pub project: ProjectId,
     pub proposal: PromotionProposal,
-    /// The frozen evaluation splits the caller says the gate was measured on.
-    pub frozen_splits: SplitLock,
+    /// The canonical bytes of the frozen split manifest the gate was measured on. The runtime
+    /// hashes them itself, as it does the weights; a digest the caller computed is not accepted.
+    pub frozen_split_manifest: &'a [u8],
     pub generation: Generation,
     pub artifact: &'a [u8],
 }
@@ -212,13 +215,6 @@ pub struct BeginImprovementCycle {
     pub policy_digest: [u8; 32],
 }
 
-/// The latest cycle day of a project and the cycles committed for it.
-#[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct CycleDay {
-    day: u64,
-    recorded: u64,
-}
-
 /// How many days an admitted cycle may stay unrecorded before its admission expires and the
 /// ticket can no longer be recorded.
 pub const OPEN_CYCLE_RETENTION_DAYS: u64 = 7;
@@ -232,7 +228,10 @@ pub(crate) struct AdapterProjection {
     instance: u64,
     next_serial: u64,
     promoted: BTreeMap<String, PromotedAdapter>,
-    cycle_days: BTreeMap<String, CycleDay>,
+    /// Cycles committed per project and day, kept for the days that can still be asked about
+    /// (the retention window below the project's high-water day), so a cycle recorded out of
+    /// day order is counted on its own day, live and on replay alike.
+    cycle_days: BTreeMap<String, BTreeMap<u64, u64>>,
     /// Admitted and not yet recorded cycles: serial -> (project, day). Memory only.
     open: BTreeMap<u64, (String, u64)>,
     /// The latest day a project has a cycle admitted or recorded for. A cycle is refused on any
@@ -263,8 +262,9 @@ impl AdapterProjection {
         let recorded = self
             .cycle_days
             .get(project)
-            .filter(|latest| latest.day == day)
-            .map_or(0, |latest| latest.recorded);
+            .and_then(|days| days.get(&day))
+            .copied()
+            .unwrap_or(0);
         let open = self
             .open
             .values()
@@ -311,7 +311,7 @@ impl PtrRuntime {
         let PromoteAdapter {
             project,
             proposal,
-            frozen_splits,
+            frozen_split_manifest,
             generation,
             artifact,
         } = request;
@@ -343,6 +343,10 @@ impl PtrRuntime {
             }
             .into());
         }
+        if frozen_split_manifest.is_empty() {
+            return Err(AdapterError::EmptySplitManifest.into());
+        }
+        let frozen_splits = SplitLock::of_manifest(frozen_split_manifest);
         if frozen_splits != proposal.split_lock() {
             return Err(AdapterError::SplitLockMismatch {
                 expected: proposal.split_lock().sha256(),
@@ -495,11 +499,12 @@ impl PtrRuntime {
         budget
             .check_budget(day, self.adapters.used(&project.0, day))
             .map_err(AdapterError::BudgetExhausted)?;
-        // Admissions of this project that stayed unrecorded for longer than the retention expire
-        // (they stay counted for the days they belong to, but can no longer be recorded).
-        self.adapters.open.retain(|_, (open_project, open_day)| {
-            open_project != &project.0 || open_day.saturating_add(OPEN_CYCLE_RETENTION_DAYS) >= day
-        });
+        // Admissions of any project that stayed unrecorded for longer than the retention expire
+        // (they can no longer be recorded), swept before the global bound is looked at so one
+        // project's expired admissions never keep another project out.
+        self.adapters
+            .open
+            .retain(|_, (_, open_day)| open_day.saturating_add(OPEN_CYCLE_RETENTION_DAYS) >= day);
         // The open table is bounded like the recorded one, and before it grows.
         if self.adapters.open.len() >= MAX_TRACKED_CYCLE_PROJECTS {
             return Err(AdapterError::TooManyCycleProjects {
@@ -550,16 +555,16 @@ impl PtrRuntime {
                 });
         // An admission left open longer than the retention is expired: judged against the
         // runtime clock here, not only when a later admission happens to sweep the table.
-        let expired = self
-            .adapters
-            .clock
-            .as_ref()
-            .and_then(|clock| clock.today())
-            .is_some_and(|today| day.saturating_add(OPEN_CYCLE_RETENTION_DAYS) < today);
-        if expired {
-            self.adapters.open.remove(&serial);
+        if !admitted {
+            return Err(AdapterError::TicketNotAdmitted.into());
         }
-        if !admitted || expired {
+        // A clock that cannot be read cannot vouch for the admission: refused, and the
+        // admission stays counted.
+        let Some(today) = self.adapters.clock.as_ref().and_then(|clock| clock.today()) else {
+            return Err(AdapterError::ClockUnavailable.into());
+        };
+        if day.saturating_add(OPEN_CYCLE_RETENTION_DAYS) < today {
+            self.adapters.open.remove(&serial);
             return Err(AdapterError::TicketNotAdmitted.into());
         }
         let index = self.commit_gated(LedgerEvent::ImprovementCycleRecorded {
@@ -689,19 +694,17 @@ impl PtrRuntime {
                     .entry(project.0.clone())
                     .or_insert(0);
                 *high_water = (*high_water).max(*day);
-                let latest = self
+                let high_water = *high_water;
+                let days = self
                     .adapters
                     .cycle_days
                     .entry(project.0.clone())
                     .or_default();
-                if *day > latest.day {
-                    *latest = CycleDay {
-                        day: *day,
-                        recorded: 1,
-                    };
-                } else if *day == latest.day {
-                    latest.recorded = latest.recorded.saturating_add(1);
+                if day.saturating_add(OPEN_CYCLE_RETENTION_DAYS) >= high_water {
+                    let count = days.entry(*day).or_insert(0);
+                    *count = count.saturating_add(1);
                 }
+                days.retain(|kept, _| kept.saturating_add(OPEN_CYCLE_RETENTION_DAYS) >= high_water);
             }
             _ => {}
         }

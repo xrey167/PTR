@@ -23,7 +23,7 @@ fn request<'a>(name: &str, generation: u64, weights: &'a [u8]) -> PromoteAdapter
     PromoteAdapter {
         project: project("alpha"),
         proposal: proposal(name),
-        frozen_splits: SplitLock::of_manifest(SPLITS),
+        frozen_split_manifest: SPLITS,
         generation: Generation(generation),
         artifact: weights,
     }
@@ -94,7 +94,7 @@ fn weights_that_do_not_hash_to_the_bound_digest_are_refused_and_append_nothing()
 fn frozen_splits_other_than_the_gates_are_refused() {
     let mut runtime = runtime();
     let mut other = request("coder", 1, WEIGHTS);
-    other.frozen_splits = SplitLock::of_manifest(b"another split manifest");
+    other.frozen_split_manifest = b"another split manifest";
     assert_eq!(
         runtime.promote_adapter(other),
         Err(RuntimeError::Adapter(AdapterError::SplitLockMismatch {
@@ -245,7 +245,7 @@ fn the_lifecycle_key_cannot_be_forged_through_a_name_with_a_slash() {
     let forged = PromoteAdapter {
         project: project("alpha/coder"),
         proposal: proposal_for("alpha/coder", "coder", WEIGHTS, Some(0.7)).expect("proposal"),
-        frozen_splits: SplitLock::of_manifest(SPLITS),
+        frozen_split_manifest: SPLITS,
         generation: Generation(1),
         artifact: WEIGHTS,
     };
@@ -391,4 +391,27 @@ fn a_ledger_that_already_holds_a_capsule_in_the_adapter_namespace_still_replays(
         Err(RuntimeError::ReservedTargetNamespace { .. })
     ));
     assert_eq!(runtime.committed_events().len(), 1);
+}
+
+#[test]
+fn a_missing_split_manifest_is_refused_and_a_digest_cannot_stand_in_for_it() {
+    let mut runtime = runtime();
+    let mut empty = request("coder", 1, WEIGHTS);
+    empty.frozen_split_manifest = b"";
+    assert_eq!(
+        runtime.promote_adapter(empty),
+        Err(RuntimeError::Adapter(AdapterError::EmptySplitManifest))
+    );
+    // The bytes are hashed by the runtime; the digest of the right manifest, passed as if it
+    // were the manifest, is just other bytes.
+    let digest_as_bytes = SplitLock::of_manifest(SPLITS).sha256();
+    let mut wrong = request("coder", 1, WEIGHTS);
+    wrong.frozen_split_manifest = &digest_as_bytes;
+    assert!(matches!(
+        runtime.promote_adapter(wrong),
+        Err(RuntimeError::Adapter(
+            AdapterError::SplitLockMismatch { .. }
+        ))
+    ));
+    assert!(runtime.committed_events().is_empty());
 }

@@ -53,8 +53,9 @@ report bound to another adapter, weights digest or base model than the record's 
 
 **Digest recomputed.** `promote_adapter` hashes the weights it is handed and compares with the digest the report was
 bound to (`ArtifactDigestMismatch`, nothing appended). The lineage still records the trainer's digest without reading
-it, and says so; the check is the runtime's. The split lock is compared the same way: the frozen split manifest
-digest must be the report's `eval_manifest_digest` (`SplitLockMismatch`).
+it, and says so; the check is the runtime's. The split lock is checked the same way: the runtime takes the canonical bytes of the frozen split manifest, hashes
+them itself and compares with the report's `eval_manifest_digest` (`SplitLockMismatch`, `EmptySplitManifest`); a digest
+computed by the caller is not accepted.
 
 **Serving state is derived.** Promotion sets the live generation of the key and the binding (base, weights digest,
 report digest); revocation adds a tombstone. A generation must advance, and a revoked generation is never promoted
@@ -95,7 +96,10 @@ A self-improvement cycle proposes a change to the system's own adaptation and me
   `day` upwards is impossible, and a history from the future refuses cycles until the clock passes it. A replayed
   runtime rebuilds the same counts and high-water days from the ledger. At most 1024 projects and 1024 open
   admissions are tracked, on replay as in live admission. A ticket names the runtime that admitted it and its open
-  admission: another runtime's ticket, an expired one (7 days, judged against the clock at record time) or a used one is refused and commits nothing. An
+  admission: another runtime's ticket, an expired one (7 days, judged against the clock at record time; an unreadable
+  clock refuses the record) or a used one is refused and commits nothing. Expired admissions of every project are swept
+  before the global bound is checked, and recorded cycles are counted per project and day for the retention window, so
+  a cycle recorded out of day order is counted on its own day, live and on replay. An
   admitted-but-unrecorded cycle is adapter state: it blocks a compacted snapshot like a promotion does.
 
 **Limit.** An admitted cycle whose process crashes before it is recorded is not counted after the restart. The budget
