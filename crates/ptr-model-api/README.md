@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-14  
-**Code footprint:** 10 Rust source files · 2559 nonblank source lines · 8 integration-test files · 79 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 10 Rust source files · 2660 nonblank source lines · 8 integration-test files · 82 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -31,7 +31,7 @@
 - InferenceStreamAdapter wraps any existing InferenceBackend as a StreamingBackend (infer still returns its whole Vec at open time; the Token text is then cut into Text chunks lazily, one per pull, so chunk memory is one chunk and stop checks run between chunks; the concatenation equals the non-streamed text) and ReferenceByteStreamingBackend streams one Token per byte through ByteTokenizer; both are deterministic plumbing, not models
 - Capability negotiation: BackendCapabilities (max context, streaming, resumable, KvReuseSupport, tokenizer identity, max batch, DType list), CapabilityRequirements (from_request estimates context as raw-text byte length; from_segmented uses the exact token count and tokenizer) and negotiate(), which returns every RejectionReason per rejected backend and picks among the survivors by dtype fidelity, then larger context, then larger batch, then smaller backend id, independent of offer order; empty offers and duplicate ids are typed errors
 - TaintedPage and TaintedCatalogEntry carry KvReuseTaint plus per-part lineage and payload digests for cached pages; TaintedPage::join (taint join plus part-set union, bounded at 1024 parts) is commutative, associative and idempotent, and require_exact refuses tainted content with PageTaintError::Tainted naming the pages. Metadata only: no K/V bytes, no ActivationFrame fields
-- CheckpointHandle: sealed, versioned (v1), SHA-256 digest-bound state with a byte encoding; verify checks version, then backend id, then digest, with typed CheckpointError variants (the digest is unkeyed integrity, not authentication). CheckpointableBackend (provided methods only) is implemented for ReferenceEchoBackend and ScenarioBackend by exporting the ModelResumeRequest continuation state; resume_from_checkpoint requires the supplied context revision to equal the recorded one
+- CheckpointHandle: sealed, versioned (v1), SHA-256 digest-bound state with a byte encoding; verify checks version, then backend id, then digest, with typed CheckpointError variants (the digest is unkeyed integrity, not authentication). CheckpointableBackend (provided methods only) is implemented for ReferenceEchoBackend and ScenarioBackend by exporting the ModelResumeRequest continuation state; resume_from_checkpoint requires the supplied context revision to equal the recorded one; export_checkpoint preflights the encoded length with checked arithmetic and returns StateTooLarge before allocating the state
 
 ### Missing for the target architecture
 

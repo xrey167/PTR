@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-14  
-**Code footprint:** 8 Rust source files · 2381 nonblank source lines · 4 integration-test files · 57 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 8 Rust source files · 2388 nonblank source lines · 4 integration-test files · 58 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -21,7 +21,7 @@
 - Inspectable impls for bool, all integers, floats, char, str/String, (), Option, Result, Vec, slices, arrays, BTreeMap/HashMap/BTreeSet/HashSet (hash collections sorted by rendered key), tuples up to 4, references, Box, Rc and Arc
 - Inspectable impls for ptr-types revisions, generations, timestamps, string identifiers, Probability, SemanticRole, EpistemicState and the other fieldless semantic enums, ConfidenceTarget/Estimate, ProvenanceRef, TypedValue, Epistemic and ActionIr
 - Client-controlled identifiers (SessionId, RequestId, TraceId, InvitationId, RetrievalKey) and ProvenanceRef.note inspect as a deterministic FNV-1a 64 digest label such as session:fnv1a64:<16 hex>, never verbatim (a digest, not a cryptographic one: it hides high-entropy credentials, not enumerable values); system-assigned ids stay readable
-- InspectNode equality is an iterative explicit-stack comparison with derived PartialEq semantics, and diff takes owned copies of at most MAX_DIFF_DEPTH nested levels (deeper subtrees become an opaque note) with iterative map-key comparison, so diff of attacker-deep trees cannot overflow the stack (Clone, Debug and Drop of a deep tree stay recursive); the tree and single-line renderers clamp RenderOptions::max_depth to MAX_RENDER_DEPTH = 64, so max_depth = usize::MAX cannot recurse through an attacker-deep tree; map_sorted breaks ties between keys with equal truncated labels by their full JSON rendering
+- InspectNode equality is an iterative explicit-stack comparison with derived PartialEq semantics, and diff takes owned copies of at most MAX_DIFF_DEPTH nested levels (deeper subtrees become an opaque note) with iterative map-key comparison, so diff of attacker-deep trees cannot overflow the stack (Clone, Debug and Drop of a deep tree stay recursive); the tree and single-line renderers clamp RenderOptions::max_depth to MAX_RENDER_DEPTH = 64, so max_depth = usize::MAX cannot recurse through an attacker-deep tree; map_sorted breaks ties between keys with equal truncated labels by their full JSON rendering; the HashSet impl breaks equal-label ties the same way (test: tests/deep.rs hash_set_inspection_is_deterministic_for_items_sharing_a_truncated_label)
 - inspect_struct! declarative macro listing the fields of a user struct
 - Structural diff of two trees by struct field name, map key (label buckets with exact structural key comparison, so distinct keys sharing a truncated label stay distinct) and list index (index-wise, no LCS) reporting Added, Removed, Changed and TypeChanged; two redaction markers compare equal and a redacted-versus-plaintext mismatch is reported with both sides redacted
 - Private<T> (redaction marker with type name and optional size class) and RawEvidence<T> (length and FNV-1a 64 fingerprint, truncated preview only under PreviewPolicy::Allow, capped at 256 bytes), both with non-leaking Debug
