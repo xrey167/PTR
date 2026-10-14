@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-14  
-**Code footprint:** 5 Rust source files · 2716 nonblank source lines · 5 integration-test files · 77 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 5 Rust source files · 2782 nonblank source lines · 5 integration-test files · 79 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -36,6 +36,7 @@
 - RuntimeEvent::VcwPolicyChanged { scope, sequence, action, from, to, evidence } records that a host promoted or rolled back the routing policy of a verifier-closed loop (policy digests, the digest of the off-policy evidence a promotion rested on); emitted by ptr-runtime (PtrRuntime::record_vcw_policy_event). Observability of a host action, in memory, not a ledger event and no authority; not an audit record (lost on restart, not replayed, no gate record checked against it) until a ledger event exists
 - InMemoryBus and BusConfig clamp the record capacity to 1..=MAX_BUS_RECORD_CAPACITY (1 << 20), so a host passing usize::MAX still gets a bounded queue; FileEventLog never reads offset u64::MAX (open returns CorruptionKind::BadEncoding for a record at that offset instead of overflowing) and publish refuses with BusError::Full before writing the offset that would lead to it
 - Review fixes: FileEventLog syncs the rollback truncation through the same write handle and poisons the writer if the truncation or its sync fails (crash durability itself is only tested through the injected-failure seam); a directory fsync failure (segment creation, offsets rename, segment deletion) is returned as BusError::Io on Unix instead of discarded (a no-op on Windows, where std cannot open a directory), and a segment whose creation could not be made durable is removed again; FileLogConfig::max_unacked_records above MAX_FILE_LOG_UNACKED_RECORDS and RetentionPolicy max_records/max_bytes above MAX_RETENTION_RECORDS/MAX_RETENTION_BYTES are refused with PolicyViolation::LimitTooLarge by FileEventLog::open and InMemoryBus::try_with_config (RetentionPolicy::validate) and clamped by the infallible InMemoryBus::with_config
+- Limit sweep: FileLogConfig::segment_max_bytes above MAX_SEGMENT_BYTES (1 GiB) is refused by FileEventLog::open with PolicyViolation::LimitTooLarge, because a segment that never rolls would defeat whole-segment retention; BusConfig::max_record_bytes (above MAX_BUS_RECORD_BYTES, 1 GiB) and capacity_bytes (above MAX_RETENTION_BYTES) are refused by InMemoryBus::try_with_config and clamped by InMemoryBus::with_config
 
 ### Missing for the target architecture
 

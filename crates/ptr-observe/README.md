@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-14  
-**Code footprint:** 14 Rust source files · 2629 nonblank source lines · 11 integration-test files · 70 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 14 Rust source files · 2645 nonblank source lines · 11 integration-test files · 71 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -35,6 +35,7 @@
 - OtlpJsonFileExporter serializes open, length measurement, append and rollback across clones with a shared lock, so one clone's rollback cannot truncate away another clone's successful append
 - PlanRecord plus deterministic plan-vs-execution correlator over spans tagged ptr.plan_step reporting Executed/Skipped/OutOfOrder/Failed/Unplanned per step with a summary
 - Tracer::active_tree: open-span tree snapshot with ages relative to the clock, text rendering and stuck-span detection (std-only stand-in for async-backtrace, covers only instrumented spans); StuckSpan paths are capped at 16 names and 4096 ancestor-name bytes with an explicit path_truncated flag, so the stuck report stays linear in open spans
+- Limit sweep: Redactor ignores a RedactionPolicy::min_secret_len above MAX_MIN_SECRET_LEN (256), so an unbounded threshold cannot switch off the high-entropy value heuristic; every other limit (tracer limits, memory sink capacity, plan steps) already had a hard maximum
 
 ### Missing for the target architecture
 
