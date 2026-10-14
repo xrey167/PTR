@@ -39,7 +39,7 @@ pub use directory::{InMemoryPodDirectory, PodDirectory};
 pub use handle_admission::{
     revalidate_operation, AdmittedHandle, ConsumeRequest, ConsumedHandle, HandleAdmissionRequest,
     HandlePolicy, HandlePolicyViolation, HandleRejection, HandleSource, HandleTable,
-    OperationCheck, OperationFault, OperationLiveness, ReclaimNotice, ReclaimReason,
+    OperationCheck, OperationFault, OperationLiveness, ReclaimNotice, ReclaimReason, WorkerSession,
 };
 #[cfg(feature = "oidc-http")]
 pub use identity::ReqwestJwksRefresher;

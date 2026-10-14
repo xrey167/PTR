@@ -11,7 +11,7 @@ use ptr_runtime::{
     AdmittedHandle, ChainFault, ConsumeRequest, ConsumedHandle, DeviceHealth, DeviceRecord,
     HandleAdmissionRequest, HandlePolicy, HandleRejection, HandleSource, HandleTable, NodeHealth,
     NodeRecord, OperationCheck, OperationFault, OperationLiveness, PodPlacementController,
-    PtrRuntime, ReclaimReason, RuntimeStageLiveness,
+    PtrRuntime, ReclaimReason, RuntimeStageLiveness, WorkerSession,
 };
 use ptr_types::{
     ArtifactId, CapsuleId, DeviceId, Generation, NodeId, PodId, ProjectId, Timestamp, TypeId,
@@ -29,15 +29,43 @@ struct Operations {
     expected: RefCell<BTreeMap<u64, (UpstreamChain, Vec<TypeId>)>>,
     /// Operations recorded as Approximate or tainted.
     inexact: RefCell<Vec<u64>>,
+    /// The project, consumer session and producer session each operation is bound to.
+    bound: RefCell<BTreeMap<u64, (ProjectId, WorkerSession, WorkerSession)>>,
+    /// The absolute deadline of each operation, minted by the authority when it started.
+    deadline: RefCell<BTreeMap<u64, u64>>,
+    /// Every check the authority was asked, in order: project, both sessions, handle deadline.
+    asked: RefCell<Vec<(ProjectId, WorkerSession, WorkerSession, u64)>>,
 }
 
 impl OperationLiveness for Operations {
     fn operation_admits(&self, check: OperationCheck<'_>) -> Result<(), OperationFault> {
         let operation = check.parent_operation_id;
+        self.asked.borrow_mut().push((
+            check.project.clone(),
+            check.consumer_session,
+            check.producer_session,
+            check.signed_absolute_deadline_ms,
+        ));
         let inputs = self.inputs.borrow();
         let read = inputs
             .get(&operation)
             .ok_or(OperationFault::UnknownOperation { operation })?;
+        if let Some(deadline) = self.deadline.borrow().get(&operation) {
+            if check.signed_absolute_deadline_ms > *deadline {
+                return Err(OperationFault::DeadlineBeyondOperation { operation });
+            }
+        }
+        if let Some((project, consumer, producer)) = self.bound.borrow().get(&operation) {
+            if project != check.project {
+                return Err(OperationFault::WrongProject { operation });
+            }
+            if *consumer != check.consumer_session {
+                return Err(OperationFault::ConsumerSessionMismatch { operation });
+            }
+            if *producer != check.producer_session {
+                return Err(OperationFault::ProducerSessionMismatch { operation });
+            }
+        }
         if self.inexact.borrow().contains(&operation) {
             return Err(OperationFault::NotExact { operation });
         }
@@ -67,6 +95,9 @@ impl Operations {
     /// The authority's record of `operation`: the inputs it read, the chain it expects and the
     /// payload types it accepts.
     fn know(&self, operation: u64, inputs: &[&str], chain: UpstreamChain, accepted: &[&str]) {
+        self.bound
+            .borrow_mut()
+            .insert(operation, (project(), CONSUMER_SESSION, PRODUCER_SESSION));
         self.inputs
             .borrow_mut()
             .insert(operation, inputs.iter().map(|i| (*i).to_owned()).collect());
@@ -90,6 +121,12 @@ const PRINCIPAL: &str = "producer";
 const CONSUMER: &str = "down";
 const OPERATION: u64 = 31;
 const PAYLOAD: &str = "ptr.split.activation.v1";
+const CONSUMER_SESSION: WorkerSession = WorkerSession(11);
+const PRODUCER_SESSION: WorkerSession = WorkerSession(22);
+
+fn project() -> ProjectId {
+    ProjectId::from("p")
+}
 
 fn digest(name: &str, generation: u64) -> [u8; 32] {
     let mut out = [0u8; 32];
@@ -212,7 +249,12 @@ fn policy() -> HandlePolicy {
 
 fn table() -> HandleTable {
     let mut table = HandleTable::new(policy(), CONSUMER).expect("a valid policy");
-    let released = table.register_producer(PRINCIPAL, signer().verifying_key(), "stage");
+    let released = table.register_producer(
+        PRINCIPAL,
+        signer().verifying_key(),
+        "stage",
+        PRODUCER_SESSION,
+    );
     assert!(released.is_empty());
     table
 }
@@ -257,6 +299,8 @@ fn admit(
         now_ms,
         principal: PRINCIPAL,
         expected_operation: OPERATION,
+        project: &project(),
+        consumer_session: CONSUMER_SESSION,
         operations: &AllLive,
         handle: HandleSource::Encoded(&encoded),
         live: &live(world),
@@ -395,7 +439,7 @@ fn registering_the_producer_under_another_key_abandons_its_open_handles() {
     let mut table = table();
     let open = admit(&mut table, &world, 10, &handle(&world, 1, 500)).expect("admitted");
     let replacement = SigningKey::from_bytes(&[0xD4; 32]).verifying_key();
-    let released = table.register_producer(PRINCIPAL, replacement, "stage");
+    let released = table.register_producer(PRINCIPAL, replacement, "stage", PRODUCER_SESSION);
     assert_eq!(released.len(), 1);
     assert_eq!(released[0].reason, ReclaimReason::ProducerReplaced);
     assert_eq!(table.open_handles(), 0);
@@ -447,7 +491,12 @@ fn the_byte_budget_saturates_and_is_released_by_consume_abandon_and_expiry() {
         CONSUMER,
     )
     .expect("policy");
-    let _ = table.register_producer(PRINCIPAL, signer().verifying_key(), "stage");
+    let _ = table.register_producer(
+        PRINCIPAL,
+        signer().verifying_key(),
+        "stage",
+        PRODUCER_SESSION,
+    );
     let a = admit(&mut table, &world, 10, &handle(&world, 1, 500)).expect("budget");
     let b = admit(&mut table, &world, 10, &handle(&world, 2, 500)).expect("budget");
     let _c = admit(&mut table, &world, 10, &handle(&world, 3, 500)).expect("budget");
@@ -507,6 +556,8 @@ fn the_same_handle_under_another_operation_is_refused_and_leaves_no_state() {
         now_ms: 10,
         principal: PRINCIPAL,
         expected_operation: OPERATION + 1,
+        project: &project(),
+        consumer_session: CONSUMER_SESSION,
         operations: &AllLive,
         handle: HandleSource::Encoded(&encoded),
         live: &live(&world),
@@ -529,7 +580,12 @@ fn the_same_handle_under_another_operation_is_refused_and_leaves_no_state() {
 fn a_handle_addressed_to_another_stage_is_refused() {
     let world = world();
     let mut table = HandleTable::new(policy(), "someone-else").expect("policy");
-    let _ = table.register_producer(PRINCIPAL, signer().verifying_key(), "stage");
+    let _ = table.register_producer(
+        PRINCIPAL,
+        signer().verifying_key(),
+        "stage",
+        PRODUCER_SESSION,
+    );
     assert_eq!(
         admit(&mut table, &world, 10, &handle(&world, 1, 500)).unwrap_err(),
         HandleRejection::WrongConsumer {
@@ -568,6 +624,8 @@ fn an_operation_whose_input_is_revoked_after_admission_never_releases_the_locato
             now_ms: 10,
             principal: PRINCIPAL,
             expected_operation: OPERATION,
+            project: &project(),
+            consumer_session: CONSUMER_SESSION,
             operations: &operations,
             handle: HandleSource::Encoded(&encoded),
             live: &live(&world),
@@ -603,6 +661,8 @@ fn an_unknown_operation_is_refused_at_admission_with_no_state_recorded() {
         now_ms: 10,
         principal: PRINCIPAL,
         expected_operation: OPERATION,
+        project: &project(),
+        consumer_session: CONSUMER_SESSION,
         operations: &Operations::default(),
         handle: HandleSource::Encoded(&encoded),
         live: &live(&world),
@@ -655,6 +715,8 @@ fn a_different_chain_or_payload_type_under_a_known_operation_is_refused_and_reco
             now_ms: 10,
             principal: PRINCIPAL,
             expected_operation: OPERATION,
+            project: &project(),
+            consumer_session: CONSUMER_SESSION,
             operations: &operations,
             handle: HandleSource::Encoded(&encoded),
             live: &live(&world),
@@ -685,6 +747,8 @@ fn an_approximate_operation_is_refused_at_admission_with_no_state_and_at_consume
             now_ms: 10,
             principal: PRINCIPAL,
             expected_operation: OPERATION,
+            project: &project(),
+            consumer_session: CONSUMER_SESSION,
             operations,
             handle: HandleSource::Encoded(&encoded),
             live: &live(&world),
@@ -711,5 +775,270 @@ fn an_approximate_operation_is_refused_at_admission_with_no_state_and_at_consume
         HandleRejection::Operation(OperationFault::NotExact {
             operation: OPERATION
         })
+    );
+}
+
+/// A known operation of the standard chain, bound to the standard project and sessions.
+fn known_operations(world: &World) -> Operations {
+    let operations = Operations::default();
+    let expected = handle(world, 1, 500).upstream_chain;
+    operations.know(OPERATION, &["semdb/doc"], expected, &[PAYLOAD]);
+    operations
+}
+
+fn admit_with(
+    table: &mut HandleTable,
+    world: &World,
+    operations: &Operations,
+    project: &ProjectId,
+    consumer_session: WorkerSession,
+    sent: &TensorHandle,
+) -> Result<AdmittedHandle, HandleRejection> {
+    let encoded = sent.encode().expect("encodes");
+    table.admit(HandleAdmissionRequest {
+        now_ms: 10,
+        principal: PRINCIPAL,
+        expected_operation: OPERATION,
+        project,
+        consumer_session,
+        operations,
+        handle: HandleSource::Encoded(&encoded),
+        live: &live(world),
+    })
+}
+
+#[test]
+fn a_handle_of_an_operation_of_another_project_is_refused_with_no_state_recorded() {
+    let world = world();
+    let mut table = table();
+    let operations = known_operations(&world);
+    let result = admit_with(
+        &mut table,
+        &world,
+        &operations,
+        &ProjectId::from("other"),
+        CONSUMER_SESSION,
+        &handle(&world, 1, 500),
+    );
+    assert_eq!(
+        result.unwrap_err(),
+        HandleRejection::Operation(OperationFault::WrongProject {
+            operation: OPERATION
+        })
+    );
+    assert_eq!(table.slots_held(PRINCIPAL), Some(0));
+    assert_eq!(table.inflight_bytes(PRINCIPAL), Some(0));
+    assert_eq!(table.open_handles(), 0);
+}
+
+#[test]
+fn a_stale_consumer_session_is_refused_at_admission_and_a_change_before_consume_at_consume() {
+    let world = world();
+    let mut table = table();
+    let operations = known_operations(&world);
+    let stale = admit_with(
+        &mut table,
+        &world,
+        &operations,
+        &project(),
+        WorkerSession(99),
+        &handle(&world, 1, 500),
+    );
+    assert_eq!(
+        stale.unwrap_err(),
+        HandleRejection::Operation(OperationFault::ConsumerSessionMismatch {
+            operation: OPERATION
+        })
+    );
+    assert_eq!(table.slots_held(PRINCIPAL), Some(0));
+
+    let admitted = admit_with(
+        &mut table,
+        &world,
+        &operations,
+        &project(),
+        CONSUMER_SESSION,
+        &handle(&world, 2, 500),
+    )
+    .expect("admitted");
+    // The consumer worker is respawned: the authority's record names the new session.
+    operations
+        .bound
+        .borrow_mut()
+        .insert(OPERATION, (project(), WorkerSession(12), PRODUCER_SESSION));
+    let result = table.consume(ConsumeRequest {
+        now_ms: 20,
+        admitted,
+        live: &live(&world),
+        operations: &operations,
+    });
+    assert_eq!(
+        result.unwrap_err(),
+        HandleRejection::Operation(OperationFault::ConsumerSessionMismatch {
+            operation: OPERATION
+        })
+    );
+    assert_eq!(table.open_handles(), 0);
+}
+
+#[test]
+fn a_producer_registered_under_a_new_session_abandons_its_handles_and_the_old_session_is_refused() {
+    let world = world();
+    let mut table = table();
+    let operations = known_operations(&world);
+    let open = admit_with(
+        &mut table,
+        &world,
+        &operations,
+        &project(),
+        CONSUMER_SESSION,
+        &handle(&world, 1, 500),
+    )
+    .expect("admitted");
+    // The same key and stage under a new session is a respawned producer.
+    let released = table.register_producer(
+        PRINCIPAL,
+        signer().verifying_key(),
+        "stage",
+        WorkerSession(23),
+    );
+    assert_eq!(released.len(), 1);
+    assert_eq!(released[0].reason, ReclaimReason::ProducerReplaced);
+    assert_eq!(released[0].handle_nonce, 1);
+    assert_eq!(table.open_handles(), 0);
+    assert_eq!(
+        consume(&mut table, &world, 20, open).unwrap_err(),
+        HandleRejection::Abandoned
+    );
+    // Registering the same session again changes nothing.
+    assert!(table
+        .register_producer(
+            PRINCIPAL,
+            signer().verifying_key(),
+            "stage",
+            WorkerSession(23)
+        )
+        .is_empty());
+    // The authority still records the old producer session, so a new handle is refused ...
+    assert_eq!(
+        admit_with(
+            &mut table,
+            &world,
+            &operations,
+            &project(),
+            CONSUMER_SESSION,
+            &handle(&world, 2, 500),
+        )
+        .unwrap_err(),
+        HandleRejection::Operation(OperationFault::ProducerSessionMismatch {
+            operation: OPERATION
+        })
+    );
+    // ... and admitted once the record names the respawned producer.
+    operations
+        .bound
+        .borrow_mut()
+        .insert(OPERATION, (project(), CONSUMER_SESSION, WorkerSession(23)));
+    assert!(admit_with(
+        &mut table,
+        &world,
+        &operations,
+        &project(),
+        CONSUMER_SESSION,
+        &handle(&world, 2, 500),
+    )
+    .is_ok());
+}
+
+#[test]
+fn the_matching_project_and_sessions_are_admitted_and_consumed() {
+    let world = world();
+    let mut table = table();
+    let operations = known_operations(&world);
+    let admitted = admit_with(
+        &mut table,
+        &world,
+        &operations,
+        &project(),
+        CONSUMER_SESSION,
+        &handle(&world, 1, 500),
+    )
+    .expect("admitted");
+    let consumed = table
+        .consume(ConsumeRequest {
+            now_ms: 20,
+            admitted,
+            live: &live(&world),
+            operations: &operations,
+        })
+        .expect("consumed");
+    assert_eq!(consumed.reclaim().reason, ReclaimReason::Consumed);
+    assert_eq!(
+        ptr_runtime::revalidate_operation(&consumed, &operations),
+        Ok(())
+    );
+}
+
+#[test]
+fn a_handle_signed_beyond_the_operation_deadline_is_refused_with_no_state_recorded() {
+    let world = world();
+    let mut table = table();
+    let operations = known_operations(&world);
+    operations.deadline.borrow_mut().insert(OPERATION, 400);
+    let refused = admit_with(
+        &mut table,
+        &world,
+        &operations,
+        &project(),
+        CONSUMER_SESSION,
+        &handle(&world, 1, 500),
+    );
+    assert!(matches!(
+        refused,
+        Err(HandleRejection::Operation(
+            OperationFault::DeadlineBeyondOperation {
+                operation: OPERATION
+            }
+        ))
+    ));
+    // Nothing was recorded: the same nonce under a deadline inside the operation's is admitted.
+    let admitted = admit_with(
+        &mut table,
+        &world,
+        &operations,
+        &project(),
+        CONSUMER_SESSION,
+        &handle(&world, 1, 400),
+    );
+    assert!(admitted.is_ok());
+}
+
+#[test]
+fn admission_consume_and_output_revalidation_ask_the_authority_with_the_same_captured_values() {
+    let world = world();
+    let mut table = table();
+    let operations = known_operations(&world);
+    let admitted = admit_with(
+        &mut table,
+        &world,
+        &operations,
+        &project(),
+        CONSUMER_SESSION,
+        &handle(&world, 1, 500),
+    )
+    .expect("admitted");
+    let consumed = table
+        .consume(ConsumeRequest {
+            now_ms: 20,
+            admitted,
+            live: &live(&world),
+            operations: &operations,
+        })
+        .expect("consumed");
+    ptr_runtime::revalidate_operation(&consumed, &operations).expect("still current");
+    let expected = (project(), CONSUMER_SESSION, PRODUCER_SESSION, 500);
+    assert_eq!(
+        operations.asked.borrow().as_slice(),
+        &[expected.clone(), expected.clone(), expected]
     );
 }

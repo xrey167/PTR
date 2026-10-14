@@ -17,9 +17,13 @@
 //!    The handle carries no input lineage (codec v1 has none); the lineage is derived from the
 //!    authority instead: [`OperationLiveness`] answers, for the signed operation, whether every
 //!    input that operation read (semantic, memory, derived) is still live at the current
-//!    committed anchor. An unknown operation or a dead input is refused. The runtime provides
-//!    the implementation when it wires the worker protocol (a follow-up); until then the
-//!    caller supplies it and the tests use a fake.
+//!    committed anchor, and whether the operation belongs to the project of the call, is served
+//!    by the recorded consumer worker session and runs under the recorded producer worker
+//!    session (the handle carries none of the three: the project and the consumer session come
+//!    from the consumer's call context, the producer session from the producer registration).
+//!    An unknown operation, another project, a stale session or a dead input is refused. The
+//!    runtime provides the implementation when it wires the worker protocol (a follow-up);
+//!    until then the caller supplies it and the tests use a fake.
 //!    The same record also holds the chain and the payload types the operation expects, so a live
 //!    but different adapter or expert, or a payload type the operation does not accept, is
 //!    refused.
@@ -96,7 +100,7 @@ use ptr_protocol::{
     TensorHandle,
 };
 
-use ptr_types::TypeId;
+use ptr_types::{ProjectId, TypeId};
 
 use crate::split_stage::{revalidate_chain, ChainFault, StageLiveness};
 
@@ -166,6 +170,12 @@ impl HandlePolicy {
     }
 }
 
+/// The random id of one spawn of a worker, drawn by the supervisor at every spawn of that
+/// worker. A respawned worker has a new session, so a record bound to the old session no longer
+/// matches (doc 42 section 1).
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct WorkerSession(pub u64);
+
 /// Why an operation's inputs are not usable now.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum OperationFault {
@@ -183,6 +193,14 @@ pub enum OperationFault {
         operation: u64,
         payload_type: TypeId,
     },
+    /// The operation belongs to another project than the one of the call.
+    WrongProject { operation: u64 },
+    /// The consumer stage is no longer served by the worker session the operation recorded.
+    ConsumerSessionMismatch { operation: u64 },
+    /// The producer no longer runs under the worker session the operation recorded.
+    ProducerSessionMismatch { operation: u64 },
+    /// The handle's signed deadline lies beyond the operation's absolute deadline.
+    DeadlineBeyondOperation { operation: u64 },
 }
 
 /// What admission and use ask the authority about one handle.
@@ -194,26 +212,50 @@ pub struct OperationCheck<'a> {
     pub upstream_chain: &'a UpstreamChain,
     /// The schema and argument slot the handle claims for its tensor.
     pub payload_type: &'a TypeId,
+    /// The project of the consumer's call, derived by the authority, never read from the handle.
+    pub project: &'a ProjectId,
+    /// The session of the consumer worker that serves the consumer stage, from the consumer's
+    /// call context, never from the handle.
+    pub consumer_session: WorkerSession,
+    /// The session the producer worker runs under, from the producer registration, never from
+    /// the handle.
+    pub producer_session: WorkerSession,
+    /// The handle's signed absolute deadline; the authority refuses a handle whose deadline lies
+    /// beyond the operation's own absolute deadline (`DeadlineBeyondOperation`).
+    pub signed_absolute_deadline_ms: u64,
 }
 
 /// What the handle admission asks the authority about the operation a handle was produced for.
 ///
-/// The authority process owns a record of every operation it started: the generations of every
-/// input the operation read (semantic, memory and derived state), the ordered Raw ancestry it read
-/// (`(Raw, content_digest)` pairs, since Raw segments carry no generation), the destination
-/// placement (the consumer stage's placement and epoch when the operation started) with the
-/// consumer worker's session id (drawn at every spawn), the model-side chain it expects (stage,
-/// base model, adapters and experts with identity, generation, digest and fence epoch) and the
-/// payload types it accepts. It answers `Ok` only if the operation is known, every input is still
-/// live at the current committed anchor and every Raw ancestor is still present with its digest
-/// (otherwise `InputNotLive`), the consumer still holds the recorded destination placement and is
-/// served by the recorded worker session (re-placing a consumer or respawning its worker cancels
-/// its operations, which are then unknown), the handle's chain equals the expected chain exactly,
-/// the payload type is one the operation accepts, and the operation ran in Exact KV reuse mode
-/// without any taint (Approximate or tainted operations are refused with `NotExact`: codec v1
-/// handles carry neither mode nor taint, so they are not admitted; carrying them in the handle is a
-/// later codec version). The handle itself carries no input lineage; this is how admission and use
-/// prove it from the authority.
+/// The authority process owns a record of every operation it started. The record binds the
+/// authority-derived project, the consumer worker's session id and the producer worker's session
+/// id (both drawn by the supervisor at every spawn of that worker), and holds the generations of
+/// every input the operation read (semantic, memory and derived state), the ordered Raw ancestry it
+/// read (`(Raw, content_digest)` pairs, since Raw segments carry no generation), the destination
+/// placement (the consumer stage's placement and epoch when the operation started), the model-side
+/// chain it expects (stage, base model, adapters and experts with identity, generation, digest and
+/// fence epoch) and the payload types it accepts. Every lookup is keyed by the project: an
+/// operation of another project is refused with `WrongProject`, never answered with a detail.
+///
+/// It answers `Ok` only if the operation is known, belongs to the project of the call, every input
+/// is still live at the current committed anchor and every Raw ancestor is still present with its
+/// digest (otherwise `InputNotLive`), the consumer still holds the recorded destination placement
+/// and is served by the recorded consumer session (`ConsumerSessionMismatch`; re-placing a consumer
+/// or respawning its worker cancels its operations, which are then unknown), the producer still
+/// runs under the recorded producer session (`ProducerSessionMismatch`), the handle's chain equals
+/// the expected chain exactly, the payload type is one the operation accepts, and the operation ran
+/// in Exact KV reuse mode without any taint (Approximate or tainted operations are refused with
+/// `NotExact`: codec v1 handles carry neither mode nor taint, so they are not admitted; carrying
+/// them in the handle is a later codec version). The handle itself carries no input lineage, no
+/// project and no session; this is how admission and use prove them from the authority.
+///
+/// The record is size-bounded: the count of each input category, the size of each identity, the
+/// encoded bytes per record and in total. Starting an operation that would exceed a bound is
+/// refused with a typed saturation refusal when the operation is started, never later. The record
+/// carries an absolute operation deadline minted by the authority: a handle whose
+/// `signed_absolute_deadline_ms` lies beyond it is refused (`DeadlineBeyondOperation`),
+/// and the record is retained until that deadline plus the clock skew. For a `Remote` handle the
+/// destination authority revalidates with the source authority, which owns the record.
 ///
 /// When several faults apply at once, which one is reported is unspecified. Callers must treat
 /// every fault as a refusal and must not branch on precedence.
@@ -333,6 +375,12 @@ pub struct HandleAdmissionRequest<'a> {
     pub live: &'a dyn StageLiveness,
     /// The authority's answer about the operation's inputs.
     pub operations: &'a dyn OperationLiveness,
+    /// The authority-derived project of the consumer's call, supplied by the consumer's call
+    /// context, never by the handle.
+    pub project: &'a ProjectId,
+    /// The session of the consumer worker serving the consumer stage, supplied by the consumer's
+    /// call context, never by the handle.
+    pub consumer_session: WorkerSession,
 }
 
 /// One admitted handle presented for use.
@@ -354,6 +402,10 @@ pub struct AdmittedHandle {
     ticket: u64,
     principal: String,
     handle: TensorHandle,
+    /// Captured at admission; `consume` hands them to the authority again.
+    project: ProjectId,
+    consumer_session: WorkerSession,
+    producer_session: WorkerSession,
 }
 
 impl fmt::Debug for AdmittedHandle {
@@ -424,6 +476,10 @@ impl AdmittedHandle {
 pub struct ConsumedHandle {
     handle: TensorHandle,
     reclaim: ReclaimNotice,
+    /// Captured at admission; `revalidate_operation` hands them to the authority again.
+    project: ProjectId,
+    consumer_session: WorkerSession,
+    producer_session: WorkerSession,
 }
 
 impl fmt::Debug for ConsumedHandle {
@@ -466,7 +522,8 @@ impl ConsumedHandle {
 ///
 /// This covers **only the authority's operation record**: the operation is known, its inputs are
 /// live, it is Exact, the handle's chain equals the expected chain and the payload type is
-/// accepted. It does not check chain liveness or the placement epoch: the caller must also call
+/// accepted, and the project and both worker sessions captured at admission are still current. It
+/// does not check chain liveness or the placement epoch: the caller must also call
 /// [`revalidate_chain`] (with a [`StageLiveness`]) on the handle's chain and placement epoch, as a
 /// separate call, when it admits the computed output (doc 42 rule 4).
 pub fn revalidate_operation(
@@ -479,6 +536,10 @@ pub fn revalidate_operation(
             parent_operation_id: handle.parent_operation_id,
             upstream_chain: &handle.upstream_chain,
             payload_type: &handle.payload_type,
+            project: &consumed.project,
+            consumer_session: consumed.consumer_session,
+            producer_session: consumed.producer_session,
+            signed_absolute_deadline_ms: handle.signed_absolute_deadline_ms,
         })
         .map_err(HandleRejection::Operation)
 }
@@ -507,6 +568,8 @@ struct Slot {
 struct Producer {
     key: VerifyingKey,
     stage_identity: String,
+    /// The session the producer worker runs under; the authority checks it on every use.
+    session: WorkerSession,
     /// False once removed with `unregister_producer`; the entry stays while it holds slots,
     /// so the tombstones keep refusing replays.
     active: bool,
@@ -578,10 +641,13 @@ impl HandleTable {
     /// for that principal, never a value read from a handle. This is a host call: the set of
     /// principals is bounded by the trusted deployment, not by peers.
     ///
-    /// Registering the same key and stage identity again (a reconnect) changes nothing.
-    /// Registering another key or stage identity abandons the principal's open handles: they
-    /// can no longer be consumed, their nonces stay tombstoned until their deadline plus the
-    /// skew, and the buffers they claimed are returned once, with
+    /// `session` is the producer worker's session id, drawn by the supervisor at every spawn;
+    /// admitted handles keep it and the authority compares it with its record on every use.
+    ///
+    /// Registering the same key, stage identity and session again (a reconnect) changes nothing.
+    /// Registering another key, stage identity or session (a respawned producer) abandons the
+    /// principal's open handles: they can no longer be consumed, their nonces stay tombstoned
+    /// until their deadline plus the skew, and the buffers they claimed are returned once, with
     /// [`ReclaimReason::ProducerReplaced`]. Only that release frees their bytes from the budget.
     #[must_use = "the returned notices name buffers the producer may reclaim"]
     pub fn register_producer(
@@ -589,6 +655,7 @@ impl HandleTable {
         principal: &str,
         key: VerifyingKey,
         stage_identity: &str,
+        session: WorkerSession,
     ) -> Vec<ReclaimNotice> {
         let Some(producer) = self.producers.get_mut(principal) else {
             self.producers.insert(
@@ -596,19 +663,23 @@ impl HandleTable {
                 Producer {
                     key,
                     stage_identity: stage_identity.to_owned(),
+                    session,
                     active: true,
                     slots: BTreeMap::new(),
                 },
             );
             return Vec::new();
         };
-        let changed = producer.key != key || producer.stage_identity != stage_identity;
+        let changed = producer.key != key
+            || producer.stage_identity != stage_identity
+            || producer.session != session;
         producer.active = true;
         if !changed {
             return Vec::new();
         }
         producer.key = key;
         producer.stage_identity = stage_identity.to_owned();
+        producer.session = session;
         let released = abandon_open(producer, principal, ReclaimReason::ProducerReplaced);
         self.open_total = self.open_total.saturating_sub(released.len());
         released
@@ -688,6 +759,10 @@ impl HandleTable {
                 parent_operation_id: handle.parent_operation_id,
                 upstream_chain: &handle.upstream_chain,
                 payload_type: &handle.payload_type,
+                project: request.project,
+                consumer_session: request.consumer_session,
+                producer_session: producer.session,
+                signed_absolute_deadline_ms: handle.signed_absolute_deadline_ms,
             })
             .map_err(HandleRejection::Operation)?;
         if let Some(slot) = producer.slots.get(&handle.handle_nonce) {
@@ -754,6 +829,9 @@ impl HandleTable {
             ticket,
             principal: request.principal.to_owned(),
             handle: handle.into_owned(),
+            project: request.project.clone(),
+            consumer_session: request.consumer_session,
+            producer_session: producer.session,
         })
     }
 
@@ -809,6 +887,10 @@ impl HandleTable {
                     parent_operation_id: admitted.handle.parent_operation_id,
                     upstream_chain: &admitted.handle.upstream_chain,
                     payload_type: &admitted.handle.payload_type,
+                    project: &admitted.project,
+                    consumer_session: admitted.consumer_session,
+                    producer_session: admitted.producer_session,
+                    signed_absolute_deadline_ms: admitted.handle.signed_absolute_deadline_ms,
                 })
                 .map_err(HandleRejection::Operation)
         });
@@ -832,6 +914,9 @@ impl HandleTable {
         Ok(ConsumedHandle {
             handle: admitted.handle,
             reclaim,
+            project: admitted.project,
+            consumer_session: admitted.consumer_session,
+            producer_session: admitted.producer_session,
         })
     }
 
@@ -972,6 +1057,12 @@ mod tests {
     const CONSUMER: &str = "down";
     const OP: u64 = 7;
     const PAYLOAD: &str = "ptr.split.activation.v1";
+    const CONSUMER_SESSION: WorkerSession = WorkerSession(11);
+    const PRODUCER_SESSION: WorkerSession = WorkerSession(22);
+
+    fn project() -> ProjectId {
+        ProjectId::from("p")
+    }
 
     #[derive(Default)]
     struct Live {
@@ -1041,15 +1132,35 @@ mod tests {
         expected: RefCell<BTreeMap<u64, (UpstreamChain, Vec<TypeId>)>>,
         /// Operations recorded as Approximate or tainted.
         inexact: RefCell<Vec<u64>>,
+        /// The project, consumer session and producer session each operation is bound to.
+        bound: RefCell<BTreeMap<u64, (ProjectId, WorkerSession, WorkerSession)>>,
+        /// The last check the authority was asked, for what the table passes on.
+        last: RefCell<Option<(ProjectId, WorkerSession, WorkerSession)>>,
     }
 
     impl OperationLiveness for Operations {
         fn operation_admits(&self, check: OperationCheck<'_>) -> Result<(), OperationFault> {
             let operation = check.parent_operation_id;
+            *self.last.borrow_mut() = Some((
+                check.project.clone(),
+                check.consumer_session,
+                check.producer_session,
+            ));
             let inputs = self.inputs.borrow();
             let read = inputs
                 .get(&operation)
                 .ok_or(OperationFault::UnknownOperation { operation })?;
+            if let Some((project, consumer, producer)) = self.bound.borrow().get(&operation) {
+                if project != check.project {
+                    return Err(OperationFault::WrongProject { operation });
+                }
+                if *consumer != check.consumer_session {
+                    return Err(OperationFault::ConsumerSessionMismatch { operation });
+                }
+                if *producer != check.producer_session {
+                    return Err(OperationFault::ProducerSessionMismatch { operation });
+                }
+            }
             if self.inexact.borrow().contains(&operation) {
                 return Err(OperationFault::NotExact { operation });
             }
@@ -1079,6 +1190,9 @@ mod tests {
         /// The authority's record of `operation`: the inputs it read, the chain it expects and the
         /// payload types it accepts.
         fn know(&self, operation: u64, inputs: &[&str], chain: UpstreamChain, accepted: &[&str]) {
+            self.bound
+                .borrow_mut()
+                .insert(operation, (project(), CONSUMER_SESSION, PRODUCER_SESSION));
             self.inputs
                 .borrow_mut()
                 .insert(operation, inputs.iter().map(|i| (*i).to_owned()).collect());
@@ -1106,7 +1220,12 @@ mod tests {
 
     fn table() -> HandleTable {
         let mut table = HandleTable::new(policy(), CONSUMER).expect("a valid policy");
-        let replaced = table.register_producer(PRINCIPAL, signer().verifying_key(), "stage");
+        let replaced = table.register_producer(
+            PRINCIPAL,
+            signer().verifying_key(),
+            "stage",
+            PRODUCER_SESSION,
+        );
         assert!(replaced.is_empty());
         table
     }
@@ -1163,6 +1282,8 @@ mod tests {
             now_ms,
             principal: PRINCIPAL,
             expected_operation: OP,
+            project: &project(),
+            consumer_session: CONSUMER_SESSION,
             operations: &AllLive,
             handle: HandleSource::Decoded(handle),
             live,
@@ -1245,6 +1366,8 @@ mod tests {
                 now_ms: 10,
                 principal: PRINCIPAL,
                 expected_operation: OP,
+                project: &project(),
+                consumer_session: CONSUMER_SESSION,
                 operations: &AllLive,
                 handle: HandleSource::Encoded(&bytes),
                 live: &live,
@@ -1263,6 +1386,8 @@ mod tests {
             now_ms: 10,
             principal: "stranger",
             expected_operation: OP,
+            project: &project(),
+            consumer_session: CONSUMER_SESSION,
             operations: &AllLive,
             handle: HandleSource::Encoded(&[0xFF; 3]),
             live: &live,
@@ -1278,6 +1403,8 @@ mod tests {
             now_ms: 10,
             principal: PRINCIPAL,
             expected_operation: OP,
+            project: &project(),
+            consumer_session: CONSUMER_SESSION,
             operations: &AllLive,
             handle: HandleSource::Encoded(&[1, 2, 3, 4, 5, 6, 7, 8]),
             live: &live,
@@ -1445,7 +1572,12 @@ mod tests {
             CONSUMER,
         )
         .expect("policy");
-        let _ = table.register_producer(PRINCIPAL, signer().verifying_key(), "stage");
+        let _ = table.register_producer(
+            PRINCIPAL,
+            signer().verifying_key(),
+            "stage",
+            PRODUCER_SESSION,
+        );
         for nonce in 1..=3 {
             let admitted = admit(&mut table, &live, 10, &signed(nonce, 500)).expect("room");
             let _ = consume(&mut table, &live, 11, admitted).expect("consumed");
@@ -1581,12 +1713,17 @@ mod tests {
 
         // The same key and stage again (a reconnect) changes nothing.
         assert!(table
-            .register_producer(PRINCIPAL, signer().verifying_key(), "stage")
+            .register_producer(
+                PRINCIPAL,
+                signer().verifying_key(),
+                "stage",
+                PRODUCER_SESSION
+            )
             .is_empty());
         assert_eq!(table.open_handles(), 1);
 
         let other = SigningKey::from_bytes(&[0xB2; 32]).verifying_key();
-        let notices = table.register_producer(PRINCIPAL, other, "stage");
+        let notices = table.register_producer(PRINCIPAL, other, "stage", PRODUCER_SESSION);
         assert_eq!(notices.len(), 1);
         assert_eq!(notices[0].handle_nonce, 1);
         assert_eq!(notices[0].reason, ReclaimReason::ProducerReplaced);
@@ -1602,7 +1739,12 @@ mod tests {
         );
         // Under the original key again, the used nonce is still a replay and the abandoned
         // one is still abandoned: the tombstones outlive the key change.
-        let _ = table.register_producer(PRINCIPAL, signer().verifying_key(), "stage");
+        let _ = table.register_producer(
+            PRINCIPAL,
+            signer().verifying_key(),
+            "stage",
+            PRODUCER_SESSION,
+        );
         assert_eq!(
             admit(&mut table, &live, 21, &signed(2, 500)).unwrap_err(),
             HandleRejection::Replayed
@@ -1626,7 +1768,12 @@ mod tests {
             CONSUMER,
         )
         .expect("policy");
-        let _ = table.register_producer(PRINCIPAL, signer().verifying_key(), "stage");
+        let _ = table.register_producer(
+            PRINCIPAL,
+            signer().verifying_key(),
+            "stage",
+            PRODUCER_SESSION,
+        );
         table
     }
 
@@ -1788,6 +1935,8 @@ mod tests {
             now_ms: 10,
             principal: PRINCIPAL,
             expected_operation: OP + 1,
+            project: &project(),
+            consumer_session: CONSUMER_SESSION,
             operations: &AllLive,
             handle: HandleSource::Decoded(&handle),
             live: &live,
@@ -1817,9 +1966,19 @@ mod tests {
             CONSUMER,
         )
         .expect("policy");
-        let _ = table.register_producer(PRINCIPAL, signer().verifying_key(), "stage");
+        let _ = table.register_producer(
+            PRINCIPAL,
+            signer().verifying_key(),
+            "stage",
+            PRODUCER_SESSION,
+        );
         let neighbour = SigningKey::from_bytes(&[0xE5; 32]);
-        let _ = table.register_producer("neighbour", neighbour.verifying_key(), "stage");
+        let _ = table.register_producer(
+            "neighbour",
+            neighbour.verifying_key(),
+            "stage",
+            PRODUCER_SESSION,
+        );
         admit(&mut table, &live, 10, &signed(1, 500)).expect("first");
         admit(&mut table, &live, 10, &signed(2, 500)).expect("second");
         assert_eq!(
@@ -1833,6 +1992,8 @@ mod tests {
             now_ms: 10,
             principal: "neighbour",
             expected_operation: OP,
+            project: &project(),
+            consumer_session: CONSUMER_SESSION,
             operations: &AllLive,
             handle: HandleSource::Decoded(&theirs),
             live: &live,
@@ -1863,7 +2024,12 @@ mod tests {
         );
         assert!(table.unregister_producer("nobody").is_empty());
         // The tombstones outlive the removal: registered again, a used nonce is a replay.
-        let _ = table.register_producer(PRINCIPAL, signer().verifying_key(), "stage");
+        let _ = table.register_producer(
+            PRINCIPAL,
+            signer().verifying_key(),
+            "stage",
+            PRODUCER_SESSION,
+        );
         assert_eq!(
             admit(&mut table, &live, 13, &signed(2, 500)).unwrap_err(),
             HandleRejection::Replayed
@@ -1884,6 +2050,8 @@ mod tests {
             now_ms: 10,
             principal: PRINCIPAL,
             expected_operation: OP,
+            project: &project(),
+            consumer_session: CONSUMER_SESSION,
             operations,
             handle: HandleSource::Decoded(handle),
             live,
@@ -2255,6 +2423,51 @@ mod tests {
         assert_eq!(
             consumed.reclaim().locator,
             CarrierLocator::Bytes { inline: vec![] }
+        );
+    }
+
+    #[test]
+    fn revalidate_operation_passes_the_values_captured_at_admission() {
+        let live = live();
+        let mut table = table();
+        let operations = Operations::default();
+        operations.know(OP, &["semdb/a"], standard_chain(), &[PAYLOAD]);
+        let admitted = table
+            .admit(HandleAdmissionRequest {
+                now_ms: 10,
+                principal: PRINCIPAL,
+                expected_operation: OP,
+                project: &project(),
+                consumer_session: CONSUMER_SESSION,
+                operations: &operations,
+                handle: HandleSource::Decoded(&signed(1, 500)),
+                live: &live,
+            })
+            .expect("admitted");
+        let consumed = table
+            .consume(ConsumeRequest {
+                now_ms: 20,
+                admitted,
+                live: &live,
+                operations: &operations,
+            })
+            .expect("consumed");
+        *operations.last.borrow_mut() = None;
+        assert_eq!(revalidate_operation(&consumed, &operations), Ok(()));
+        assert_eq!(
+            operations.last.borrow().clone(),
+            Some((project(), CONSUMER_SESSION, PRODUCER_SESSION))
+        );
+        // The authority's record moves to another consumer session: the captured one is refused.
+        operations
+            .bound
+            .borrow_mut()
+            .insert(OP, (project(), WorkerSession(99), PRODUCER_SESSION));
+        assert_eq!(
+            revalidate_operation(&consumed, &operations),
+            Err(HandleRejection::Operation(
+                OperationFault::ConsumerSessionMismatch { operation: OP }
+            ))
         );
     }
 }
