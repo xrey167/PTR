@@ -21,6 +21,33 @@ pub enum IngressDiagnosticsMode {
     Advisory,
 }
 
+/// Default number of ingress analyses that may run at once.
+pub const DEFAULT_MAX_CONCURRENT_INGRESS_DIAGNOSTICS: usize = 2;
+/// Default cap on the request-text prefix that is analysed, in bytes.
+pub const DEFAULT_MAX_INGRESS_ANALYZED_BYTES: usize = 64 * 1024;
+
+/// Resource bounds of the advisory ingress diagnostics (Invariant #8). The pipeline builds
+/// per-character offset tables (about 56 bytes per character), so the bounds are separate from,
+/// and much tighter than, the request admission and body caps.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct IngressDiagnosticsLimits {
+    /// Analyses allowed at once. A request that finds none free skips its diagnostics
+    /// (`"skipped": "busy"`) instead of waiting. Must be non-zero.
+    pub max_concurrent: usize,
+    /// Only this many leading bytes of the request text (cut at a character boundary) are
+    /// analysed; the report then carries `"truncated": true`. Must be non-zero.
+    pub max_analyzed_bytes: usize,
+}
+
+impl Default for IngressDiagnosticsLimits {
+    fn default() -> Self {
+        Self {
+            max_concurrent: DEFAULT_MAX_CONCURRENT_INGRESS_DIAGNOSTICS,
+            max_analyzed_bytes: DEFAULT_MAX_INGRESS_ANALYZED_BYTES,
+        }
+    }
+}
+
 /// Redacted request tracing: one span per request, exported as OTLP/JSON-shaped lines.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RequestTracingOptions {
@@ -52,6 +79,10 @@ pub struct ServerOptions {
 pub enum ServerOptionsError {
     /// `max_export_bytes` was zero, so no span could ever be exported.
     ZeroTraceExportCap,
+    /// `IngressDiagnosticsLimits::max_concurrent` was zero.
+    ZeroIngressConcurrency,
+    /// `IngressDiagnosticsLimits::max_analyzed_bytes` was zero.
+    ZeroIngressAnalysisCap,
     /// The export file could not be created or opened for appending.
     TraceExportUnavailable {
         path: PathBuf,
@@ -63,6 +94,8 @@ impl fmt::Display for ServerOptionsError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ZeroTraceExportCap => f.write_str("max_export_bytes must be non-zero"),
+            Self::ZeroIngressConcurrency => f.write_str("max_concurrent must be non-zero"),
+            Self::ZeroIngressAnalysisCap => f.write_str("max_analyzed_bytes must be non-zero"),
             Self::TraceExportUnavailable { path, kind } => {
                 write!(f, "trace export file {} unusable: {kind}", path.display())
             }
@@ -77,18 +110,50 @@ impl std::error::Error for ServerOptionsError {}
 pub(crate) struct ActiveOptions {
     pub(crate) tracing: Option<Arc<RequestTracing>>,
     pub(crate) ingress: Option<Arc<IngressDiagnosticsRunner>>,
+    pub(crate) ingress_limits: IngressDiagnosticsLimits,
 }
 
 impl ActiveOptions {
-    pub(crate) fn build(options: ServerOptions) -> Result<Self, ServerOptionsError> {
+    pub(crate) fn build(
+        options: ServerOptions,
+        ingress_limits: IngressDiagnosticsLimits,
+    ) -> Result<Self, ServerOptionsError> {
         let tracing = options
             .request_tracing
             .map(|tracing| RequestTracing::new(tracing).map(Arc::new))
             .transpose()?;
-        let ingress = match options.ingress_diagnostics {
-            IngressDiagnosticsMode::Off => None,
-            IngressDiagnosticsMode::Advisory => Some(Arc::new(IngressDiagnosticsRunner::new())),
+        let ingress = Self::runner(options.ingress_diagnostics, ingress_limits)?;
+        Ok(Self {
+            tracing,
+            ingress,
+            ingress_limits,
+        })
+    }
+
+    /// Replace the ingress diagnostics bounds; the runner (if enabled) is rebuilt.
+    pub(crate) fn with_ingress_limits(
+        mut self,
+        limits: IngressDiagnosticsLimits,
+    ) -> Result<Self, ServerOptionsError> {
+        let mode = if self.ingress.is_some() {
+            IngressDiagnosticsMode::Advisory
+        } else {
+            IngressDiagnosticsMode::Off
         };
-        Ok(Self { tracing, ingress })
+        self.ingress = Self::runner(mode, limits)?;
+        self.ingress_limits = limits;
+        Ok(self)
+    }
+
+    fn runner(
+        mode: IngressDiagnosticsMode,
+        limits: IngressDiagnosticsLimits,
+    ) -> Result<Option<Arc<IngressDiagnosticsRunner>>, ServerOptionsError> {
+        match mode {
+            IngressDiagnosticsMode::Off => Ok(None),
+            IngressDiagnosticsMode::Advisory => {
+                IngressDiagnosticsRunner::new(limits).map(|runner| Some(Arc::new(runner)))
+            }
+        }
     }
 }

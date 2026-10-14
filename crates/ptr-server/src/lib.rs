@@ -37,8 +37,9 @@ mod request_tracing;
 pub mod vcw;
 
 pub use options::{
-    IngressDiagnosticsMode, RequestTracingOptions, ServerOptions, ServerOptionsError,
-    DEFAULT_MAX_TRACE_EXPORT_BYTES,
+    IngressDiagnosticsLimits, IngressDiagnosticsMode, RequestTracingOptions, ServerOptions,
+    ServerOptionsError, DEFAULT_MAX_CONCURRENT_INGRESS_DIAGNOSTICS,
+    DEFAULT_MAX_INGRESS_ANALYZED_BYTES, DEFAULT_MAX_TRACE_EXPORT_BYTES,
 };
 
 pub use vcw::{
@@ -373,7 +374,23 @@ impl ServerState {
     /// # Errors
     /// [`ServerOptionsError`] when the trace export cap is zero or its file is unusable.
     pub fn with_options(mut self, options: ServerOptions) -> Result<Self, ServerOptionsError> {
-        self.options = options::ActiveOptions::build(options)?;
+        self.options = options::ActiveOptions::build(options, self.options.ingress_limits)?;
+        Ok(self)
+    }
+
+    /// Bound the advisory ingress diagnostics: how many analyses run at once and how many
+    /// leading bytes of a request text are analysed (defaults: 2 and 64 KiB). Independent of
+    /// the order relative to [`ServerState::with_options`]; without the `Advisory` mode it only
+    /// records the limits.
+    ///
+    /// # Errors
+    /// [`ServerOptionsError::ZeroIngressConcurrency`] or
+    /// [`ServerOptionsError::ZeroIngressAnalysisCap`] for a zero limit.
+    pub fn with_ingress_diagnostics_limits(
+        mut self,
+        limits: IngressDiagnosticsLimits,
+    ) -> Result<Self, ServerOptionsError> {
+        self.options = self.options.with_ingress_limits(limits)?;
         Ok(self)
     }
 
@@ -1185,5 +1202,58 @@ mod tests {
             verifier.verify(&payload("t", b"abc")).status,
             VerificationStatus::Fail
         );
+    }
+
+    #[tokio::test]
+    async fn with_every_diagnostics_permit_held_the_request_is_served_with_skipped_diagnostics() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        let state = ServerState::new(PtrRuntime::new(ptr_config::PtrConfig::default()).unwrap())
+            .with_options(ServerOptions {
+                ingress_diagnostics: IngressDiagnosticsMode::Advisory,
+                ..ServerOptions::default()
+            })
+            .unwrap()
+            .with_ingress_diagnostics_limits(IngressDiagnosticsLimits {
+                max_concurrent: 2,
+                max_analyzed_bytes: 1024,
+            })
+            .unwrap();
+        let runner = state.options.ingress.clone().expect("advisory runner");
+        let held = (runner.try_acquire().unwrap(), runner.try_acquire().unwrap());
+        let app = router_from_state(state);
+        let send = |app: Router| async move {
+            let response = app
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/v1/requests")
+                        .header("content-type", "application/json")
+                        .body(Body::from(r#"{"id":"r1","text":"please delete the file"}"#))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = response.status();
+            let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            (
+                status,
+                serde_json::from_slice::<serde_json::Value>(&bytes).unwrap(),
+            )
+        };
+        let (status, json) = send(app.clone()).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["text"], "please delete the file");
+        assert_eq!(
+            json["ingress_diagnostics"],
+            serde_json::json!({"advisory": true, "skipped": "busy"})
+        );
+        drop(held);
+        let (status, json) = send(app).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["ingress_diagnostics"]["kind"], "text");
+        assert_eq!(json["ingress_diagnostics"]["truncated"], false);
     }
 }
