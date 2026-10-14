@@ -34,6 +34,12 @@ clean checkout runs without a prior step. The training step builds the encoder t
 pin is a `must-be-pinned-…` placeholder, or the pinned encoder cannot be built, the run exits 2 (harness failure) and
 never falls back to another encoder. Only `--smoke` selects the stand-in, and its output is marked as no evidence.
 
+The Python environment is frozen as well. A confirmatory run goes through `uv run --locked --project training
+--extra dragonfly`; the digest of `training/uv.lock` is pinned at the freeze (`training_lock_sha256`). The
+training step exits 2 when the installed `sentence-transformers`, `torch`, `transformers` or `numpy` differ
+from the lock, and every run prints the interpreter version, those package versions, the locked versions and
+the lock digest (`environment`). A smoke run only records them. A result is reported with that block.
+
 ## 4. Arms
 
 All arms see the same probes: 36 labelled held-out questions (three phrasings the trainer never saw, times both

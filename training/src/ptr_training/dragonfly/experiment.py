@@ -13,12 +13,23 @@ built (its optional extra is not installed), the run stops with exit status 2: a
 never falls back to another encoder. `--smoke` selects the deterministic stand-in encoder
 (`hashed-bow-64`) instead and marks the world, and so the harness output, as no evidence about any
 language model.
+
+The Python environment is part of the experiment. The Rust harness starts this module through
+`uv run --locked --project training --extra dragonfly` for a confirmatory run, so the installed
+packages are the ones `training/uv.lock` names. The module checks that again itself: a run without
+`--smoke` stops with exit status 2 when the interpreter's installed `sentence-transformers`,
+`torch`, `transformers` or `numpy` differ from the lock (or are missing), and every run, smoke or
+not, writes the interpreter version, those package versions, the locked versions and the SHA-256 of
+`training/uv.lock` into `world.json` (`environment`). A smoke run only records the mismatch.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
+import importlib.metadata
 import json
+import platform
 import random
 import sys
 import tomllib
@@ -38,10 +49,45 @@ CONFIG = (
     / "experiments/runtime/R015-dragonfly-pod-addressing/config.toml"
 )
 PLACEHOLDER_PREFIX = "must-be-pinned"
+LOCK = Path(__file__).resolve().parents[4] / "training/uv.lock"
+#: The packages whose versions decide what a sentence encoder computes.
+LOCKED_PACKAGES = ("sentence-transformers", "torch", "transformers", "numpy")
 
 
 class EncoderUnavailable(Exception):
     """The encoder the preregistration names cannot be used; a confirmatory run stops."""
+
+
+def environment_report(
+    lock: Path = LOCK, packages: tuple[str, ...] = LOCKED_PACKAGES
+) -> dict:
+    """The interpreter, the installed and the locked versions of `packages`, and the lock digest.
+
+    `matches_lock` is true only when every package is installed at a version the lock names.
+    """
+    raw = lock.read_bytes()
+    locked: dict[str, list[str]] = {}
+    for package in tomllib.loads(raw.decode("utf-8")).get("package", []):
+        locked.setdefault(package["name"], []).append(package["version"])
+    report: dict = {}
+    mismatches: list[str] = []
+    for name in packages:
+        try:
+            installed: str | None = importlib.metadata.version(name)
+        except importlib.metadata.PackageNotFoundError:
+            installed = None
+        wanted = sorted(set(locked.get(name, [])))
+        report[name] = {"installed": installed, "locked": wanted}
+        if installed is None or installed not in wanted:
+            mismatches.append(name)
+    return {
+        "python": sys.version.split()[0],
+        "implementation": platform.python_implementation(),
+        "uv_lock_sha256": hashlib.sha256(raw).hexdigest(),
+        "packages": report,
+        "matches_lock": not mismatches,
+        "mismatches": mismatches,
+    }
 
 
 def pinned_encoder(config: Path = CONFIG) -> Encoder:
@@ -154,7 +200,15 @@ def _spec(pod: dict, others: list[dict]) -> PodTrainingSpec:
     )
 
 
-def build(seed: int, out_dir: Path, encoder: Encoder, *, steps: int = 300, smoke: bool = False) -> dict:
+def build(
+    seed: int,
+    out_dir: Path,
+    encoder: Encoder,
+    *,
+    steps: int = 300,
+    smoke: bool = False,
+    environment: dict | None = None,
+) -> dict:
     """Train every pod of `seed` with `encoder`, export the artifacts and write `world.json`."""
     pods = draw_world(seed)
     entries = []
@@ -204,6 +258,7 @@ def build(seed: int, out_dir: Path, encoder: Encoder, *, steps: int = 300, smoke
         # A smoke world is produced with the stand-in encoder and is no evidence about any model.
         "smoke": smoke,
         "evidence": "none (stand-in encoder)" if smoke else "candidate",
+        "environment": environment if environment is not None else environment_report(),
         "pods": entries,
         "probes": probes,
     }
@@ -229,6 +284,7 @@ def main(argv: list[str] | None = None) -> int:
         help="use the deterministic stand-in encoder; the world is marked as no evidence",
     )
     parser.add_argument("--config", type=Path, default=CONFIG, help="preregistration config.toml")
+    parser.add_argument("--lock", type=Path, default=LOCK, help="the uv.lock the run must match")
     arguments = parser.parse_args(argv)
     if arguments.smoke:
         encoder: Encoder = HashedBagOfWordsEncoder(ENCODER_DIMS)
@@ -238,8 +294,24 @@ def main(argv: list[str] | None = None) -> int:
         except EncoderUnavailable as error:
             print(f"ptr_training.dragonfly.experiment: {error}", file=sys.stderr)
             return 2
+    environment = environment_report(arguments.lock)
+    if not arguments.smoke and not environment["matches_lock"]:
+        print(
+            "ptr_training.dragonfly.experiment: the installed "
+            f"{', '.join(environment['mismatches'])} differ from {arguments.lock.name}; "
+            "run through `uv run --locked --project training --extra dragonfly`",
+            file=sys.stderr,
+        )
+        return 2
     out = arguments.out or Path("target/dragonfly-addressing") / str(arguments.seed)
-    world = build(arguments.seed, out, encoder, steps=arguments.steps, smoke=arguments.smoke)
+    world = build(
+        arguments.seed,
+        out,
+        encoder,
+        steps=arguments.steps,
+        smoke=arguments.smoke,
+        environment=environment,
+    )
     activated = sum(1 for pod in world["pods"] if pod["status"] == "activated")
     print(f"seed {arguments.seed}: {activated}/{len(world['pods'])} pods activated -> {out}")
     return 0

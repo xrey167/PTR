@@ -1,5 +1,6 @@
 use ptr_types::{
-    PodEndpoint, PodIdentity, PodRevisionAddress, PodRoute, ResolveError, RouteConstraints,
+    PodEndpoint, PodIdentity, PodRevisionAddress, PodRoute, ProjectId, ResolveError,
+    RouteConstraints,
 };
 use std::collections::BTreeMap;
 
@@ -13,16 +14,20 @@ pub trait PodDirectory {
         constraints: &RouteConstraints,
     ) -> Result<PodRoute, ResolveError>;
 
-    /// Resolves a stable [`PodIdentity`] by way of its committed head: identity, then head, then
-    /// [`PodDirectory::resolve`]. An identity without an unrevoked head is
-    /// [`ResolveError::NotFound`]; the route is never built from an older revision.
+    /// Resolves a stable [`PodIdentity`] of `project` by way of its committed head: project and
+    /// identity, then head, then [`PodDirectory::resolve`]. An identity without a live head in
+    /// that project is [`ResolveError::NotFound`]: another project's head for the same identity is
+    /// never consulted, and the route is never built from an older revision.
     fn resolve_head(
         &self,
         heads: &dyn PodHeadSource,
+        project: &ProjectId,
         identity: &PodIdentity,
         constraints: &RouteConstraints,
     ) -> Result<PodRoute, ResolveError> {
-        let head = heads.pod_head(identity).ok_or(ResolveError::NotFound)?;
+        let head = heads
+            .pod_head(project, identity)
+            .ok_or(ResolveError::NotFound)?;
         self.resolve(head, constraints)
     }
 }
@@ -30,8 +35,8 @@ pub trait PodDirectory {
 /// Where the committed head of a pod identity is read from. The runtime implements it over its
 /// ledger projection; a directory stays unaware of the ledger.
 pub trait PodHeadSource {
-    /// The current head of `identity`, or `None` when it has none or its generation is revoked.
-    fn pod_head(&self, identity: &PodIdentity) -> Option<&PodRevisionAddress>;
+    /// The current head of `identity` in `project`, or `None` when it has none or may not answer.
+    fn pod_head(&self, project: &ProjectId, identity: &PodIdentity) -> Option<&PodRevisionAddress>;
 }
 
 #[derive(Default)]

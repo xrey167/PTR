@@ -1,6 +1,8 @@
 //! Head of a stable pod identity.
 //!
-//! A [`PodIdentity`] names a pod across artifacts and generations; its *head* is the
+//! A [`PodIdentity`] names a pod across artifacts and generations; two projects with the same pod
+//! semantics derive the same identity, so a head belongs to a `(ProjectId, PodIdentity)` pair and
+//! never crosses a project. Its *head* is the
 //! [`PodRevisionAddress`] that currently answers for it. The head moves only through a committed
 //! [`ptr_ledger::LedgerEvent::PodHeadAdvanced`] record, which is a compare-and-swap: the writer
 //! names the head it observed (`expected`) and the record is refused unless that is still the
@@ -11,16 +13,18 @@
 //! whose generation carries a revocation tombstone is never returned.
 
 use ptr_state::POD_HEAD_PREFIX;
-use ptr_types::{Generation, PodIdentity, PodRevisionAddress};
+use ptr_types::{Generation, PodIdentity, PodRevisionAddress, ProjectId};
 use std::collections::BTreeMap;
 
 use crate::{PtrRuntime, RuntimeError};
 use ptr_ledger::LedgerEvent;
 use ptr_types::CommitIndex;
 
-/// A request to move the head of `identity` to `new`, provided it is still `expected`.
+/// A request to move the head of `identity` in `project` to `new`, provided it is still
+/// `expected`. Every address of the request names `project`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AdvancePodHead {
+    pub project: ProjectId,
     pub identity: PodIdentity,
     /// The head the caller observed; `None` when the caller expects no head yet.
     pub expected: Option<PodRevisionAddress>,
@@ -32,30 +36,43 @@ pub struct AdvancePodHead {
 pub enum PodHeadError {
     /// The committed head is not the one the writer observed.
     Conflict {
+        project: ProjectId,
         identity: PodIdentity,
         expected: Option<PodRevisionAddress>,
         actual: Option<PodRevisionAddress>,
     },
     /// The new generation is below the generation the lifecycle authority holds live for the pod.
     BelowLiveGeneration {
+        project: ProjectId,
         identity: PodIdentity,
         live: Generation,
         requested: Generation,
     },
     /// The new generation is not strictly above the current one.
     NotAdvancing {
+        project: ProjectId,
         identity: PodIdentity,
         current: Generation,
         requested: Generation,
     },
     /// The new generation carries a revocation tombstone.
     RevokedGeneration {
+        project: ProjectId,
         identity: PodIdentity,
         target: String,
         generation: Generation,
     },
     /// The address of a request is malformed.
-    InvalidAddress { identity: PodIdentity },
+    InvalidAddress {
+        project: ProjectId,
+        identity: PodIdentity,
+    },
+    /// An address of the request belongs to another project than the head being moved.
+    ProjectMismatch {
+        project: ProjectId,
+        identity: PodIdentity,
+        address_project: ProjectId,
+    },
     /// A materialized `pod-head:` entry does not parse; the state is refused rather than
     /// restored without a head.
     MalformedEntry { key: String },
@@ -77,7 +94,7 @@ pub enum PodHeadStatus<'a> {
 /// The heads, derived from the committed history.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct PodHeads {
-    heads: BTreeMap<PodIdentity, PodRevisionAddress>,
+    heads: BTreeMap<(ProjectId, PodIdentity), PodRevisionAddress>,
 }
 
 impl PodHeads {
@@ -88,31 +105,54 @@ impl PodHeads {
     ) -> Result<Self, RuntimeError> {
         let mut heads = BTreeMap::new();
         for (key, value) in values.range(POD_HEAD_PREFIX.to_owned()..) {
-            let Some(identity) = key.strip_prefix(POD_HEAD_PREFIX) else {
+            let Some(rest) = key.strip_prefix(POD_HEAD_PREFIX) else {
                 break;
             };
             let malformed = || {
                 RuntimeError::PodHead(Box::new(PodHeadError::MalformedEntry { key: key.clone() }))
             };
             let address = PodRevisionAddress::parse(value).map_err(|_| malformed())?;
-            if identity.is_empty() {
+            let Some((project, identity)) = rest.split_once('/') else {
+                return Err(malformed());
+            };
+            // The entry must be the one its own address belongs to.
+            if project.is_empty() || identity.is_empty() || address.address.project.0 != project {
                 return Err(malformed());
             }
-            heads.insert(PodIdentity(identity.to_owned()), address);
+            heads.insert(
+                (
+                    ProjectId(project.to_owned()),
+                    PodIdentity(identity.to_owned()),
+                ),
+                address,
+            );
         }
         Ok(Self { heads })
     }
 
-    pub(crate) fn get(&self, identity: &PodIdentity) -> Option<&PodRevisionAddress> {
-        self.heads.get(identity)
+    pub(crate) fn get(
+        &self,
+        project: &ProjectId,
+        identity: &PodIdentity,
+    ) -> Option<&PodRevisionAddress> {
+        self.heads.get(&(project.clone(), identity.clone()))
     }
 
-    pub(crate) fn set(&mut self, identity: PodIdentity, head: PodRevisionAddress) {
-        self.heads.insert(identity, head);
+    pub(crate) fn set(
+        &mut self,
+        project: ProjectId,
+        identity: PodIdentity,
+        head: PodRevisionAddress,
+    ) {
+        self.heads.insert((project, identity), head);
     }
 
-    pub(crate) fn iter(&self) -> impl Iterator<Item = (&PodIdentity, &PodRevisionAddress)> {
-        self.heads.iter()
+    pub(crate) fn iter(
+        &self,
+    ) -> impl Iterator<Item = (&ProjectId, &PodIdentity, &PodRevisionAddress)> {
+        self.heads
+            .iter()
+            .map(|((project, identity), head)| (project, identity, head))
     }
 }
 
@@ -127,8 +167,8 @@ pub fn pod_lifecycle_target(pod: &PodRevisionAddress) -> String {
 }
 
 impl crate::directory::PodHeadSource for PtrRuntime {
-    fn pod_head(&self, identity: &PodIdentity) -> Option<&PodRevisionAddress> {
-        PtrRuntime::pod_head(self, identity)
+    fn pod_head(&self, project: &ProjectId, identity: &PodIdentity) -> Option<&PodRevisionAddress> {
+        PtrRuntime::pod_head(self, project, identity)
     }
 }
 
@@ -150,16 +190,24 @@ impl PtrRuntime {
     /// A head is hidden when its generation is revoked or is not the live generation of the pod
     /// (superseded, or never made live). Nothing falls back to an older revision: which older
     /// revision may answer is a decision for a new committed head.
-    pub fn pod_head(&self, identity: &PodIdentity) -> Option<&PodRevisionAddress> {
-        let head = self.pod_heads.get(identity)?;
+    pub fn pod_head(
+        &self,
+        project: &ProjectId,
+        identity: &PodIdentity,
+    ) -> Option<&PodRevisionAddress> {
+        let head = self.pod_heads.get(project, identity)?;
         self.pod_head_is_current(head).then_some(head)
     }
 
     /// The committed head of `identity` and why it may or may not answer. Unlike
     /// [`PtrRuntime::pod_head`] this shows a revoked or stale head, so a writer can name it as
     /// `expected` when it moves the identity to a new generation.
-    pub fn pod_head_status(&self, identity: &PodIdentity) -> Option<PodHeadStatus<'_>> {
-        let head = self.pod_heads.get(identity)?;
+    pub fn pod_head_status(
+        &self,
+        project: &ProjectId,
+        identity: &PodIdentity,
+    ) -> Option<PodHeadStatus<'_>> {
+        let head = self.pod_heads.get(project, identity)?;
         let target = pod_lifecycle_target(head);
         Some(
             if self
@@ -175,11 +223,13 @@ impl PtrRuntime {
         )
     }
 
-    /// Every head that may answer, ordered by identity.
-    pub fn pod_heads(&self) -> impl Iterator<Item = (&PodIdentity, &PodRevisionAddress)> {
+    /// Every head that may answer, ordered by project and identity.
+    pub fn pod_heads(
+        &self,
+    ) -> impl Iterator<Item = (&ProjectId, &PodIdentity, &PodRevisionAddress)> {
         self.pod_heads
             .iter()
-            .filter(|(_, head)| self.pod_head_is_current(head))
+            .filter(|(_, _, head)| self.pod_head_is_current(head))
     }
 
     /// Moves the head of `request.identity` to `request.new` through the ledger.
@@ -194,6 +244,7 @@ impl PtrRuntime {
         request: AdvancePodHead,
     ) -> Result<CommitIndex, RuntimeError> {
         self.commit(LedgerEvent::PodHeadAdvanced {
+            project: request.project,
             identity: request.identity,
             old: request.expected,
             new: request.new,
@@ -202,19 +253,33 @@ impl PtrRuntime {
 
     pub(crate) fn validate_pod_head_advance(
         &self,
+        project: &ProjectId,
         identity: &PodIdentity,
         old: Option<&PodRevisionAddress>,
         new: &PodRevisionAddress,
     ) -> Result<(), RuntimeError> {
         let invalid = || {
             RuntimeError::PodHead(Box::new(PodHeadError::InvalidAddress {
+                project: project.clone(),
                 identity: identity.clone(),
             }))
         };
         new.validate().map_err(|_| invalid())?;
-        let current = self.pod_heads.get(identity);
+        for address in std::iter::once(new).chain(old) {
+            if address.address.project != *project {
+                return Err(RuntimeError::PodHead(Box::new(
+                    PodHeadError::ProjectMismatch {
+                        project: project.clone(),
+                        identity: identity.clone(),
+                        address_project: address.address.project.clone(),
+                    },
+                )));
+            }
+        }
+        let current = self.pod_heads.get(project, identity);
         if current != old {
             return Err(RuntimeError::PodHead(Box::new(PodHeadError::Conflict {
+                project: project.clone(),
                 identity: identity.clone(),
                 expected: old.cloned(),
                 actual: current.cloned(),
@@ -224,6 +289,7 @@ impl PtrRuntime {
             if new.generation <= old.generation {
                 return Err(RuntimeError::PodHead(Box::new(
                     PodHeadError::NotAdvancing {
+                        project: project.clone(),
                         identity: identity.clone(),
                         current: old.generation,
                         requested: new.generation,
@@ -236,6 +302,7 @@ impl PtrRuntime {
             if new.generation < *live {
                 return Err(RuntimeError::PodHead(Box::new(
                     PodHeadError::BelowLiveGeneration {
+                        project: project.clone(),
                         identity: identity.clone(),
                         live: *live,
                         requested: new.generation,
@@ -249,6 +316,7 @@ impl PtrRuntime {
         {
             return Err(RuntimeError::PodHead(Box::new(
                 PodHeadError::RevokedGeneration {
+                    project: project.clone(),
                     identity: identity.clone(),
                     target,
                     generation: new.generation,

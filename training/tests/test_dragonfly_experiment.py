@@ -1,10 +1,12 @@
 import contextlib
+import importlib.metadata
 import importlib.util
 import io
 import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from ptr_training.dragonfly import experiment
 from ptr_training.dragonfly.experiment import EncoderUnavailable, main, pinned_encoder
@@ -77,6 +79,97 @@ class EntrypointTest(unittest.TestCase):
             world = experiment.build(1001, Path(raw) / "w", encoder, steps=5, smoke=False)
             self.assertFalse(world["smoke"])
             self.assertEqual(world["evidence"], "candidate")
+
+
+def _lock(directory: Path, versions: dict[str, str]) -> Path:
+    path = directory / "uv.lock"
+    body = "version = 1\n" + "".join(
+        f'\n[[package]]\nname = "{name}"\nversion = "{version}"\n'
+        for name, version in versions.items()
+    )
+    path.write_text(body, encoding="utf-8")
+    return path
+
+
+class EnvironmentTest(unittest.TestCase):
+    PACKAGES = ("alpha", "beta")
+
+    def _report(self, lock: Path, installed: dict[str, str]) -> dict:
+        def version(name: str) -> str:
+            if name not in installed:
+                raise importlib.metadata.PackageNotFoundError(name)
+            return installed[name]
+
+        with mock.patch.object(experiment.importlib.metadata, "version", version):
+            return experiment.environment_report(lock, self.PACKAGES)
+
+    def test_a_matching_environment_is_reported_with_the_lock_digest(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            lock = _lock(Path(raw), {"alpha": "1.0", "beta": "2.0"})
+            report = self._report(lock, {"alpha": "1.0", "beta": "2.0"})
+            self.assertTrue(report["matches_lock"])
+            self.assertEqual(report["mismatches"], [])
+            self.assertEqual(report["packages"]["alpha"], {"installed": "1.0", "locked": ["1.0"]})
+            self.assertEqual(len(report["uv_lock_sha256"]), 64)
+            self.assertIn("python", report)
+
+    def test_a_different_or_missing_package_is_a_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            lock = _lock(Path(raw), {"alpha": "1.0", "beta": "2.0"})
+            report = self._report(lock, {"alpha": "1.1"})
+            self.assertFalse(report["matches_lock"])
+            self.assertEqual(report["mismatches"], ["alpha", "beta"])
+
+    def test_a_package_the_lock_does_not_name_is_a_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            lock = _lock(Path(raw), {"alpha": "1.0"})
+            report = self._report(lock, {"alpha": "1.0", "beta": "2.0"})
+            self.assertEqual(report["mismatches"], ["beta"])
+
+    def test_the_repository_lock_names_the_packages_a_run_depends_on(self) -> None:
+        report = experiment.environment_report()
+        for name in experiment.LOCKED_PACKAGES:
+            self.assertTrue(report["packages"][name]["locked"], name)
+
+    def _pinned(self, directory: Path) -> Path:
+        return _config(directory, "sentence-transformers/all-MiniLM-L6-v2", "abc123")
+
+    def test_a_confirmatory_run_stops_with_status_2_when_the_environment_differs(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            out = Path(raw) / "world"
+            lock = _lock(Path(raw), {"sentence-transformers": "0.0.1"})
+            stderr = io.StringIO()
+            standin = experiment.HashedBagOfWordsEncoder(experiment.ENCODER_DIMS)
+            with (
+                mock.patch.object(experiment, "pinned_encoder", return_value=standin),
+                contextlib.redirect_stderr(stderr),
+            ):
+                status = main(
+                    [
+                        "--seed", "1001", "--out", str(out),
+                        "--config", str(self._pinned(Path(raw))), "--lock", str(lock),
+                    ]
+                )
+            self.assertEqual(status, 2)
+            self.assertFalse(out.exists())
+            self.assertIn("differ from uv.lock", stderr.getvalue())
+
+    def test_a_smoke_run_only_records_a_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            out = Path(raw) / "world"
+            lock = _lock(Path(raw), {"sentence-transformers": "0.0.1"})
+            with contextlib.redirect_stdout(io.StringIO()):
+                status = main(
+                    [
+                        "--seed", "1001", "--out", str(out), "--smoke", "--steps", "5",
+                        "--lock", str(lock),
+                    ]
+                )
+            self.assertEqual(status, 0)
+            world = json.loads((out / "world.json").read_text(encoding="utf-8"))
+            self.assertFalse(world["environment"]["matches_lock"])
+            self.assertIn("sentence-transformers", world["environment"]["mismatches"])
+            self.assertEqual(len(world["environment"]["uv_lock_sha256"]), 64)
 
 
 if __name__ == "__main__":

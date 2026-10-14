@@ -829,6 +829,19 @@ impl Default for LearnedRouterConfig {
     }
 }
 
+/// A router whose scores come from vectors of one frozen encoder. A host that embeds queries
+/// compares its own encoder with this one before it feeds the router.
+pub trait EncodedWith {
+    /// The encoder every representation of this router was trained over.
+    fn encoder(&self) -> &EncoderRef;
+}
+
+impl EncodedWith for LearnedPodRouter {
+    fn encoder(&self) -> &EncoderRef {
+        self.store.encoder()
+    }
+}
+
 /// An advisory router that ranks registry candidates by their learned representation and abstains
 /// when it is not confident. See the module documentation.
 #[derive(Clone, Debug)]

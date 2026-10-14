@@ -235,7 +235,10 @@ def train_pod_address(
 
 def _spec_from_json(data: dict) -> PodTrainingSpec:
     descriptor = PodIdentityDescriptor.from_json(data["descriptor"])
+    if not data.get("project"):
+        raise ValueError(f"pod spec {data.get('pod_id')!r} needs a non-empty `project`")
     return PodTrainingSpec(
+        project=data["project"],
         pod_id=data["pod_id"],
         descriptor=descriptor,
         generation=data["generation"],

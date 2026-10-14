@@ -377,11 +377,16 @@ pub fn projection_entries(committed: &CommittedEvent) -> Vec<(String, String)> {
             },
             egress_refusal_entry(index, *reason, *count, *saturated, target),
         )],
-        // The head of a stable pod identity: `pod-head:<identity>` holds the canonical revision
-        // address of the current head. The ledger codec already refused a malformed address, so
+        // The head of a stable pod identity in one project: `pod-head:<project>/<identity>` holds
+        // the canonical revision address of the current head. The ledger codec already refused a malformed address, so
         // the fallback to an empty value is unreachable for a committed event.
-        LedgerEvent::PodHeadAdvanced { identity, new, .. } => vec![(
-            pod_head_key(&identity.0),
+        LedgerEvent::PodHeadAdvanced {
+            project,
+            identity,
+            new,
+            ..
+        } => vec![(
+            pod_head_key(&project.0, &identity.0),
             // An address that does not render is projected as a value no reader parses, so a
             // restore of this state refuses it (`PodHeadError::MalformedEntry`) instead of
             // holding an empty or invented head.
@@ -431,10 +436,11 @@ pub const POD_HEAD_UNRENDERABLE: &str = "unrenderable";
 /// The prefix of every pod head key ([`pod_head_key`]).
 pub const POD_HEAD_PREFIX: &str = "pod-head:";
 
-/// The materialized key of one pod identity's head: `pod-head:<identity>`. Its value is the
-/// canonical `ptr://` revision address of the head.
-pub fn pod_head_key(identity: &str) -> String {
-    format!("{POD_HEAD_PREFIX}{identity}")
+/// The materialized key of one pod identity's head in one project:
+/// `pod-head:<project>/<identity>`. Its value is the canonical `ptr://` revision address of the
+/// head. A project id holds no `/` (the ledger codec refuses one), so the key parses back.
+pub fn pod_head_key(project: &str, identity: &str) -> String {
+    format!("{POD_HEAD_PREFIX}{project}/{identity}")
 }
 
 /// The prefix of every approximate-KV taint key: `kv-taint:<kind>:<hex digest>`.

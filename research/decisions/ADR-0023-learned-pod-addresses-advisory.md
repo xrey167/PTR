@@ -12,7 +12,7 @@ Symlink-LoRA, a model that emits a pod link, is not implemented. It is a candida
 
 Decided with it:
 - The cluster key excludes aliases (research definition); the identity includes them.
-- The head is a projection (`pod-head:<identity>`) rather than a new field of the compacted snapshot.
+- The head is scoped by project, `(ProjectId, PodIdentity)`, because two projects with equal semantics derive one identity; it is a projection (`pod-head:<project>/<identity>`) rather than a new field of the compacted snapshot.
 - The alias-by-alias gate is a training-coverage check, not a proof for unseen spellings.
 - The synthetic experiment uses a deterministic stand-in encoder; the sentence encoder is an optional extra.
 

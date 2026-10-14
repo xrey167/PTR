@@ -16,9 +16,9 @@ use ptr_router::{
 };
 use ptr_runtime::neural::{Denial, NeuralError, NeuralState, NeuralStateCache};
 use ptr_runtime::{
-    pod_lifecycle_target, BindPodRepresentation, EmbeddingSampler, PodRepresentationError,
-    PtrRuntime, QueryEmbedder, RepresentationDenial, RepresentationRefusal, RouteQuery,
-    RuntimeError,
+    pod_lifecycle_target, BindPodRepresentation, EmbeddingSampler, EmbeddingSamplerError,
+    PodRepresentationError, PtrRuntime, QueryEmbedder, RepresentationDenial, RepresentationRefusal,
+    RouteQuery, RuntimeError,
 };
 use ptr_types::{
     CapabilityId, CapsuleId, ClusterKey, CodebookVersion, Effect, Generation, NamespaceId,
@@ -382,6 +382,11 @@ fn pods() -> PodRegistry {
 /// A stand-in encoder: the request payload names its own axis.
 struct AxisEmbedder;
 impl QueryEmbedder for AxisEmbedder {
+    fn encoder(&self) -> &EncoderRef {
+        static ENCODER: std::sync::OnceLock<EncoderRef> = std::sync::OnceLock::new();
+        ENCODER.get_or_init(encoder)
+    }
+
     fn embed(&self, query: &RouteQuery<'_>) -> Result<Vec<f32>, RouteError> {
         match query.payload {
             b"alpha question" => Ok(vec![1.0, 0.0, 0.0]),
@@ -405,6 +410,7 @@ fn sampler(store: RepresentationStore) -> EmbeddingSampler<LearnedPodRouter> {
         ),
         Arc::new(AxisEmbedder),
     )
+    .unwrap()
 }
 
 fn run(
@@ -543,4 +549,56 @@ fn the_debug_output_of_a_route_query_does_not_contain_the_payload() {
     assert!(!shown.contains(&format!("{secret:?}")), "{shown}");
     assert!(shown.contains("payload_len"));
     assert!(shown.contains(&secret.len().to_string()));
+}
+
+struct OtherEncoder(EncoderRef);
+impl QueryEmbedder for OtherEncoder {
+    fn encoder(&self) -> &EncoderRef {
+        &self.0
+    }
+
+    fn embed(&self, _: &RouteQuery<'_>) -> Result<Vec<f32>, RouteError> {
+        Ok(vec![1.0, 0.0, 0.0])
+    }
+}
+
+#[test]
+fn an_embedder_of_another_model_or_revision_is_refused_even_at_the_same_dimension() {
+    let router = |store| {
+        CheckedRouter::new(
+            LearnedPodRouter::new(store, LearnedRouterConfig::default()).unwrap(),
+            SamplingKey::from_bytes([9; 32]),
+            NonceSequence::starting_at([4; 8], 0),
+        )
+    };
+    let mut store = RepresentationStore::new(encoder());
+    store
+        .insert(representation("alpha", vec![1.0, 0.0, 0.0], 1))
+        .unwrap();
+    for other in [
+        EncoderRef {
+            id: "test-encoder".into(),
+            revision: "r2".into(),
+        },
+        EncoderRef {
+            id: "another-encoder".into(),
+            revision: "r1".into(),
+        },
+    ] {
+        // Same three dimensions as the store: only the identity of the encoder differs.
+        let error =
+            EmbeddingSampler::new(router(store.clone()), Arc::new(OtherEncoder(other.clone())))
+                .err()
+                .expect("a mismatched encoder is refused");
+        assert_eq!(
+            error,
+            EmbeddingSamplerError::EncoderMismatch {
+                embedder: other,
+                store: encoder(),
+            }
+        );
+        assert!(error.to_string().contains("test-encoder@r1"), "{error}");
+    }
+    // The matching encoder is accepted.
+    assert!(EmbeddingSampler::new(router(store), Arc::new(OtherEncoder(encoder()))).is_ok());
 }

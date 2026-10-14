@@ -42,6 +42,11 @@ sweep_min_margin_permille = [100, 150, 200, 300]
 accuracy_margin_permille = 0
 # The preregistered text and the decision criteria (criteria.toml) are frozen with this table. Their
 # digests are pinned at the freeze, together with the encoder, when R015 leaves `planned`.
+# The locked Python environment of the training step: a run goes through
+# `uv run --locked --project training --extra dragonfly`, and the training step exits 2 when the
+# installed sentence-transformers, torch, transformers or numpy differ from this lock.
+training_lock = "training/uv.lock"
+training_lock_sha256 = "must-be-pinned-at-freeze"
 preregistration_text = "experiments/runtime/R015-dragonfly-pod-addressing/PREREGISTRATION.md"
 preregistration_text_sha256 = "must-be-pinned-at-freeze"
 criteria = "experiments/runtime/R015-dragonfly-pod-addressing/criteria.toml"

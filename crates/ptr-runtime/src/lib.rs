@@ -102,7 +102,7 @@ pub use policy::{
     SignedPolicyBundle,
 };
 pub use protected_state::ProtectedStateCoordinator;
-pub use routing::{EmbeddingSampler, PodSampler, QueryEmbedder, RouteQuery};
+pub use routing::{EmbeddingSampler, EmbeddingSamplerError, PodSampler, QueryEmbedder, RouteQuery};
 pub use sandbox::{
     ExternalSandboxExecutor, NativeSandboxExecutor, NetworkMode, SandboxBackend, SandboxError,
     SandboxExecutor, SandboxLease, SandboxProfile, SandboxRequest, SandboxResponse,
@@ -3233,9 +3233,12 @@ impl PtrRuntime {
             LedgerEvent::EgressRefused { .. } => ptr_ledger::check_encodable(event)
                 .map_err(|error| RuntimeError::Ledger(error.to_string())),
             // A compare-and-swap on the head of one pod identity, checked again on replay.
-            LedgerEvent::PodHeadAdvanced { identity, old, new } => {
-                self.validate_pod_head_advance(identity, old.as_ref(), new)
-            }
+            LedgerEvent::PodHeadAdvanced {
+                project,
+                identity,
+                old,
+                new,
+            } => self.validate_pod_head_advance(project, identity, old.as_ref(), new),
         }
     }
 
@@ -3522,8 +3525,14 @@ impl PtrRuntime {
                     })?;
             }
             LedgerEvent::ProtectedStateCommitted { .. } => {}
-            LedgerEvent::PodHeadAdvanced { identity, new, .. } => {
-                self.pod_heads.set(identity.clone(), new.clone());
+            LedgerEvent::PodHeadAdvanced {
+                project,
+                identity,
+                new,
+                ..
+            } => {
+                self.pod_heads
+                    .set(project.clone(), identity.clone(), new.clone());
             }
         }
 

@@ -6,7 +6,7 @@ use ptr_runtime::{
 };
 use ptr_types::{
     CapsuleId, Generation, PodAddress, PodEndpoint, PodIdentity, PodRevisionAddress, PodTransport,
-    ResolveError, RouteConstraints,
+    ProjectId, ResolveError, RouteConstraints,
 };
 
 fn endpoint(generation: u64) -> PodEndpoint {
@@ -48,6 +48,10 @@ fn identity() -> PodIdentity {
     PodIdentity::from("pod:stable")
 }
 
+fn project() -> ProjectId {
+    ProjectId::from("project")
+}
+
 /// Makes `revision`'s generation the live one for its pod in the lifecycle.
 fn make_live(runtime: &mut PtrRuntime, revision: &PodRevisionAddress) {
     let target = pod_lifecycle_target(revision);
@@ -72,7 +76,7 @@ fn an_identity_without_a_head_does_not_resolve() {
     directory.register(endpoint(1)).unwrap();
     let runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
     assert!(matches!(
-        directory.resolve_head(&runtime, &identity(), &constraints()),
+        directory.resolve_head(&runtime, &project(), &identity(), &constraints()),
         Err(ResolveError::NotFound)
     ));
 }
@@ -87,13 +91,14 @@ fn an_identity_resolves_to_the_endpoint_of_its_current_head() {
     make_live(&mut runtime, &first.pod);
     runtime
         .advance_pod_head(AdvancePodHead {
+            project: project(),
             identity: identity(),
             expected: None,
             new: first.pod.clone(),
         })
         .unwrap();
     let route = directory
-        .resolve_head(&runtime, &identity(), &constraints())
+        .resolve_head(&runtime, &project(), &identity(), &constraints())
         .unwrap();
     assert_eq!(route.destination, first.pod);
     assert_eq!(route.endpoint, first);
@@ -101,13 +106,14 @@ fn an_identity_resolves_to_the_endpoint_of_its_current_head() {
     make_live(&mut runtime, &second.pod);
     runtime
         .advance_pod_head(AdvancePodHead {
+            project: project(),
             identity: identity(),
             expected: Some(first.pod.clone()),
             new: second.pod.clone(),
         })
         .unwrap();
     let route = directory
-        .resolve_head(&runtime, &identity(), &constraints())
+        .resolve_head(&runtime, &project(), &identity(), &constraints())
         .unwrap();
     assert_eq!(route.destination, second.pod);
 }
@@ -122,6 +128,7 @@ fn a_revoked_head_does_not_resolve_and_no_older_revision_answers() {
     make_live(&mut runtime, &first.pod);
     runtime
         .advance_pod_head(AdvancePodHead {
+            project: project(),
             identity: identity(),
             expected: None,
             new: first.pod.clone(),
@@ -130,6 +137,7 @@ fn a_revoked_head_does_not_resolve_and_no_older_revision_answers() {
     make_live(&mut runtime, &second.pod);
     runtime
         .advance_pod_head(AdvancePodHead {
+            project: project(),
             identity: identity(),
             expected: Some(first.pod.clone()),
             new: second.pod.clone(),
@@ -142,7 +150,7 @@ fn a_revoked_head_does_not_resolve_and_no_older_revision_answers() {
         })
         .unwrap();
     assert!(matches!(
-        directory.resolve_head(&runtime, &identity(), &constraints()),
+        directory.resolve_head(&runtime, &project(), &identity(), &constraints()),
         Err(ResolveError::NotFound)
     ));
 }
@@ -157,19 +165,50 @@ fn a_head_on_a_superseded_generation_does_not_resolve() {
     make_live(&mut runtime, &first.pod);
     runtime
         .advance_pod_head(AdvancePodHead {
+            project: project(),
             identity: identity(),
             expected: None,
             new: first.pod.clone(),
         })
         .unwrap();
     assert!(directory
-        .resolve_head(&runtime, &identity(), &constraints())
+        .resolve_head(&runtime, &project(), &identity(), &constraints())
         .is_ok());
     // The lifecycle moves on to generation 2; the head still names 1 and no longer answers, and
     // the endpoint of generation 1 is not offered in its place.
     make_live(&mut runtime, &endpoint(2).pod);
     assert!(matches!(
-        directory.resolve_head(&runtime, &identity(), &constraints()),
+        directory.resolve_head(&runtime, &project(), &identity(), &constraints()),
+        Err(ResolveError::NotFound)
+    ));
+}
+
+#[test]
+fn an_identity_does_not_resolve_through_another_projects_head() {
+    let mut directory = InMemoryPodDirectory::default();
+    let first = endpoint(1);
+    directory.register(first.clone()).unwrap();
+    let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+    make_live(&mut runtime, &first.pod);
+    runtime
+        .advance_pod_head(AdvancePodHead {
+            project: project(),
+            identity: identity(),
+            expected: None,
+            new: first.pod.clone(),
+        })
+        .unwrap();
+    assert!(directory
+        .resolve_head(&runtime, &project(), &identity(), &constraints())
+        .is_ok());
+    // The same identity in another project has no head, whatever this project's head is.
+    assert!(matches!(
+        directory.resolve_head(
+            &runtime,
+            &ProjectId::from("other"),
+            &identity(),
+            &constraints()
+        ),
         Err(ResolveError::NotFound)
     ));
 }

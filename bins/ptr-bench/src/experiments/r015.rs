@@ -199,16 +199,41 @@ impl Drop for Scratch {
     }
 }
 
-/// Runs the training step for `seed` into `out`; a non-zero exit is a harness failure.
-fn generate_world(seed: u64, out: &Path, smoke: bool) -> Result<(), String> {
-    let training_source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../training/src");
-    let mut command = Command::new("python3");
+/// The command that runs the training step for `seed` into `out`.
+///
+/// A confirmatory run goes through the locked environment: `uv run --locked --project training
+/// --extra dragonfly`, with the virtual environment in `venv` (inside the run's scratch directory,
+/// so the checkout is not written to). `--locked` refuses a `uv.lock` that is out of date, and the
+/// training step itself exits 2 when the installed `sentence-transformers`, `torch`,
+/// `transformers` or `numpy` differ from the lock. A smoke run uses the plain `python3` and needs
+/// no network: it only records the environment in the world.
+fn training_command(seed: u64, out: &Path, smoke: bool, venv: &Path) -> Command {
+    let training = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../training");
+    let module_args = [
+        "python",
+        "-B",
+        "-m",
+        "ptr_training.dragonfly.experiment",
+        "--seed",
+    ];
+    let mut command;
+    if smoke {
+        command = Command::new("python3");
+        command.args(&module_args[1..]);
+    } else {
+        command = Command::new("uv");
+        command
+            .args(["run", "--locked", "--project"])
+            .arg(&training)
+            .args(["--extra", "dragonfly"])
+            .args(module_args)
+            .env("UV_PROJECT_ENVIRONMENT", venv);
+    }
     command
-        .args(["-B", "-m", "ptr_training.dragonfly.experiment", "--seed"])
         .arg(seed.to_string())
         .arg("--out")
         .arg(out)
-        .env("PYTHONPATH", &training_source)
+        .env("PYTHONPATH", training.join("src"))
         .env("PYTHONDONTWRITEBYTECODE", "1")
         // The harness prints exactly one JSON object on stdout; the training step's own report is
         // not part of it (its world is read from the scratch directory).
@@ -216,15 +241,22 @@ fn generate_world(seed: u64, out: &Path, smoke: bool) -> Result<(), String> {
     if smoke {
         command.arg("--smoke");
     }
+    command
+}
+
+/// Runs the training step for `seed` into `out`; a non-zero exit is a harness failure.
+fn generate_world(seed: u64, out: &Path, smoke: bool, venv: &Path) -> Result<(), String> {
+    let mut command = training_command(seed, out, smoke, venv);
+    let program = command.get_program().to_string_lossy().into_owned();
     let status = command
         .status()
-        .map_err(|error| format!("cannot start the training step (python3): {error}"))?;
+        .map_err(|error| format!("cannot start the training step ({program}): {error}"))?;
     if status.success() {
         Ok(())
     } else {
         Err(format!(
             "the training step failed ({status}); a confirmatory run needs the encoder the \
-             preregistration pins"
+             preregistration pins and the environment training/uv.lock names"
         ))
     }
 }
@@ -275,7 +307,7 @@ fn learned_router(
 fn run_seed(seed: u64, smoke: bool) -> Result<Value, String> {
     let scratch = Scratch::create(seed)?;
     let dir = scratch.0.as_path();
-    generate_world(seed, dir, smoke)?;
+    generate_world(seed, dir, smoke, &dir.join("venv"))?;
     let world = read_json(&dir.join("world.json"))?;
     let world_smoke = world["smoke"].as_bool().ok_or("world.smoke missing")?;
     if world_smoke != smoke {
@@ -427,6 +459,8 @@ fn run_seed(seed: u64, smoke: bool) -> Result<Value, String> {
         "smoke": world_smoke,
         "evidence": world["evidence"],
         "encoder": world["encoder"],
+        // Interpreter, package versions, the locked versions and the SHA-256 of training/uv.lock.
+        "environment": world["environment"],
         "pods": world["pods"].as_array().map_or(0, Vec::len),
         "representations_loaded": loaded,
         "representations_refused": refused,
@@ -488,6 +522,48 @@ pub fn run(seed: u64, smoke: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn words(command: &Command) -> Vec<String> {
+        command
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn a_confirmatory_run_goes_through_the_locked_environment() {
+        let command = training_command(
+            2017,
+            Path::new("/scratch/out"),
+            false,
+            Path::new("/scratch/venv"),
+        );
+        assert_eq!(command.get_program(), "uv");
+        let args = words(&command);
+        assert_eq!(&args[..2], ["run", "--locked"]);
+        assert!(args.windows(2).any(|pair| pair == ["--extra", "dragonfly"]));
+        assert!(args.contains(&"ptr_training.dragonfly.experiment".to_owned()));
+        assert!(!args.contains(&"--smoke".to_owned()));
+        let envs: Vec<_> = command.get_envs().collect();
+        assert!(envs.iter().any(|(key, value)| {
+            *key == "UV_PROJECT_ENVIRONMENT"
+                && value.map(|v| v.to_string_lossy().into_owned()) == Some("/scratch/venv".into())
+        }));
+    }
+
+    #[test]
+    fn a_smoke_run_uses_the_plain_interpreter_and_marks_itself() {
+        let command = training_command(
+            1001,
+            Path::new("/scratch/out"),
+            true,
+            Path::new("/scratch/venv"),
+        );
+        assert_eq!(command.get_program(), "python3");
+        let args = words(&command);
+        assert_eq!(args.last().map(String::as_str), Some("--smoke"));
+        assert!(!args.contains(&"uv".to_owned()) && !args.contains(&"--locked".to_owned()));
+    }
 
     #[test]
     fn gaps_round_towards_minus_infinity() {

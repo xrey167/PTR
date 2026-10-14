@@ -41,7 +41,7 @@ predicate change moves both.
 
 ## Head resolver (`ptr-ledger`, `ptr-state`, `ptr-runtime`)
 
-`LedgerEvent::PodHeadAdvanced { identity, old, new }` (tag 38) is a compare-and-swap record:
+`LedgerEvent::PodHeadAdvanced { project, identity, old, new }` (tag 38) is a compare-and-swap record. The head is scoped by project: two projects with the same pod semantics derive the same `PodIdentity`, so a head is keyed `(ProjectId, PodIdentity)` and every address of the record names that project (the ledger codec refuses anything else):
 
 - `new` must be a valid revision address; with an `old` its generation must rise strictly (the
   ledger codec refuses anything else on append and on decode);
@@ -49,7 +49,7 @@ predicate change moves both.
   `new` is not a revoked pod generation and `new.generation` is not below the generation the
   lifecycle authority holds live for that pod, and checks the same on replay.
 
-The head is projected to `pod-head:<identity>` in the materialized state, so replay, the Postgres
+The head is projected to `pod-head:<project>/<identity>` in the materialized state, so replay, the Postgres
 projection and a compacted snapshot all reproduce it with no extra snapshot format. A restore
 fails closed on a malformed entry.
 
@@ -58,8 +58,8 @@ while its generation is the one the lifecycle authority holds live for the pod, 
 admits a bound representation: a head whose generation was revoked, superseded, or is not (yet)
 live fails closed, including when the pod has no live generation. It never falls back to an older
 revision. `pod_head_status` still shows such a head (`Revoked` or `Stale`), so a writer can name
-it as `expected` and move the identity on. `advance_pod_head(AdvancePodHead { identity, expected, new })` commits through the
-ledger. `PodDirectory::resolve_head` resolves identity, then head, then the ordinary `resolve`.
+it as `expected` and move the identity on. `advance_pod_head(AdvancePodHead { project, identity, expected, new })` commits through the
+ledger. `PodDirectory::resolve_head` resolves the caller's project and identity, then head, then the ordinary `resolve`; another project's head for the same identity is never consulted.
 A pod generation is the lifecycle target `pod:<project>/<namespace>/<pod>` (`pod_lifecycle_target`).
 
 ```mermaid
@@ -68,7 +68,7 @@ flowchart LR
     D -->|cluster_key| C["ClusterKey"]
     W["advance_pod_head (expected, new)"] -->|CAS, tag 38| L[("Ledger")]
     L -->|pod-head: entry| S["materialized state"]
-    S --> H["pod_head(identity)"]
+    S --> H["pod_head(project, identity)"]
     H --> R["PodDirectory::resolve"]
     V["Revoked(pod target, generation)"] -.hides.-> H
 ```
@@ -106,6 +106,10 @@ without naming a pod; the fallback and counters are work package 2.
 
 **Query vector.** `PodSampler::features` supplies `RouteFeatures::vector`; `EmbeddingSampler`
 wraps a `CheckedRouter` with a `QueryEmbedder`. PTR has no Rust encoder: the host provides one.
+The embedder names its encoder (model and revision), and `EmbeddingSampler::new` refuses it with
+`EmbeddingSamplerError::EncoderMismatch` unless that equals the encoder of the router's
+representation store, also when the dimensions are equal: vectors of two encoders do not share a
+space.
 `RouteQuery` carries the request payload, which can hold user text, so its `Debug` shows only the
 payload length and a digest prefix (Invariant 13).
 `ptrd` does not wire a learned router for that reason.

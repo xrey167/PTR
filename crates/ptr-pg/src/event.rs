@@ -257,7 +257,9 @@ pub fn event_subject(committed: &CommittedEvent) -> String {
             source: ptr_ledger::EgressRefusalSource::Overflow,
             ..
         } => "egress-overflow".to_owned(),
-        LedgerEvent::PodHeadAdvanced { identity, .. } => format!("pod-head:{identity}"),
+        LedgerEvent::PodHeadAdvanced {
+            project, identity, ..
+        } => format!("pod-head:{project}/{identity}"),
     }
 }
 
@@ -349,17 +351,18 @@ mod tests {
         let event = committed(
             4,
             LedgerEvent::PodHeadAdvanced {
+                project: ProjectId::from("p"),
                 identity: PodIdentity::from("pod:stable"),
                 old: None,
                 new: new.clone(),
             },
         );
         assert_eq!(event_topic(&event.event), "pod.head_advanced");
-        assert_eq!(event_subject(&event), "pod-head:pod:stable");
+        assert_eq!(event_subject(&event), "pod-head:p/pod:stable");
         assert_eq!(lifecycle_change(&event), LifecycleChange::None);
         assert_eq!(
             event_payload(&event)["entries"],
-            serde_json::json!({ "pod-head:pod:stable": new.canonical_uri().unwrap() })
+            serde_json::json!({ "pod-head:p/pod:stable": new.canonical_uri().unwrap() })
         );
     }
 

@@ -1204,7 +1204,9 @@ fn expected_subject(record: &CommittedEvent) -> String {
             source: ptr_ledger::EgressRefusalSource::Overflow,
             ..
         } => "egress-overflow".to_owned(),
-        LedgerEvent::PodHeadAdvanced { identity, .. } => format!("pod-head:{identity}"),
+        LedgerEvent::PodHeadAdvanced {
+            project, identity, ..
+        } => format!("pod-head:{project}/{identity}"),
     }
 }
 

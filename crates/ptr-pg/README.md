@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-13  
-**Code footprint:** 17 Rust source files · 6849 nonblank source lines · 3 integration-test files · 171 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 17 Rust source files · 6852 nonblank source lines · 3 integration-test files · 171 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -62,7 +62,7 @@
 - ExpertFenceCommitted maps to no lifecycle change, topic expert.fence_committed, subject project:<project> and the entry the shared ptr-state projection yields (expert:<project>/<pod> = <generation>:fenced|serving|frozen:<epoch>); the projection still holds no expert catalog
 - KvTaintCommitted maps to no lifecycle change, topic kv.taint_committed, subject kv-taint:<kind>:<hex> of its first subject and the kv-taint entries of the shared ptr-state projection; there is no taint table
 - InputInvalidated (ledger tag 30, R011 WP3) has the topic expert.input_invalidated and the subject expert-input:<identity>; a Revoked kind is a lifecycle Tombstone for (input, generation), like a Revoked record, and a Superseded kind changes no lifecycle row (the supersession floor and the fenced experts are the runtime's dependency index, which this projection does not hold); the payload entries are exactly ptr-state's projection of the event
-- Event metadata for PodHeadAdvanced: topic `pod.head_advanced`, subject `pod-head:<identity>`, projection payload entry from ptr-state, no lifecycle row change
+- Event metadata for PodHeadAdvanced: topic `pod.head_advanced`, subject `pod-head:<project>/<identity>`, projection payload entry from ptr-state, no lifecycle row change
 
 ### Missing for the target architecture
 

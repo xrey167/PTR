@@ -790,6 +790,11 @@ impl<R: Router> CheckedRouter<R> {
         Self { inner, key, nonces }
     }
 
+    /// The wrapped router, read-only. The key and the nonce sequence stay private.
+    pub fn inner(&self) -> &R {
+        &self.inner
+    }
+
     /// [`route_checked`] on the wrapped router with the owned key and the next fresh nonce. The
     /// nonce is consumed even if routing fails. [`RouteError::NonceExhausted`] when the
     /// sequence has no fresh nonce left.

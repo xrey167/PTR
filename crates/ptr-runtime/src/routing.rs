@@ -9,8 +9,8 @@ use crate::{PtrRuntime, RuntimeError};
 use ptr_events::RuntimeEvent;
 use ptr_pods::{DynPod, PodRegistry};
 use ptr_router::{
-    CheckedRouter, PodRouter, RouteError, RouteFeatures, RouteRequest, RoutedChoice, RoutedError,
-    Router,
+    CheckedRouter, EncodedWith, EncoderRef, PodRouter, RouteError, RouteFeatures, RouteRequest,
+    RoutedChoice, RoutedError, Router,
 };
 use ptr_types::{CapabilityId, Digest, ProjectId, RequestId, TypeId};
 use sha2::{Digest as _, Sha256};
@@ -49,6 +49,11 @@ impl std::fmt::Debug for RouteQuery<'_> {
 /// Turns a Pod request into the query vector a learned router scores candidates with. The encoder
 /// behind it is frozen and pinned; this crate defines no encoder of its own.
 pub trait QueryEmbedder: Send + Sync {
+    /// The model and revision this embedder encodes with. A learned router scores only vectors of
+    /// the encoder its representations were trained over, so [`EmbeddingSampler::new`] compares
+    /// the two.
+    fn encoder(&self) -> &EncoderRef;
+
     /// The embedding of `query`, or the reason there is none.
     fn embed(&self, query: &RouteQuery<'_>) -> Result<Vec<f32>, RouteError>;
 }
@@ -80,9 +85,46 @@ pub struct EmbeddingSampler<R> {
     embedder: Arc<dyn QueryEmbedder>,
 }
 
-impl<R> EmbeddingSampler<R> {
-    pub fn new(router: CheckedRouter<R>, embedder: Arc<dyn QueryEmbedder>) -> Self {
-        Self { router, embedder }
+/// The embedder and the router's representations use different encoders.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum EmbeddingSamplerError {
+    /// The embedder's model or revision differs from the one the representation store was built
+    /// for, even if the dimension happens to be equal: the vectors would live in different spaces.
+    EncoderMismatch {
+        embedder: EncoderRef,
+        store: EncoderRef,
+    },
+}
+
+impl std::fmt::Display for EmbeddingSamplerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EncoderMismatch { embedder, store } => write!(
+                f,
+                "query embedder {}@{} does not match the representation store's encoder {}@{}",
+                embedder.id, embedder.revision, store.id, store.revision
+            ),
+        }
+    }
+}
+
+impl std::error::Error for EmbeddingSamplerError {}
+
+impl<R: Router + EncodedWith> EmbeddingSampler<R> {
+    /// # Errors
+    /// [`EmbeddingSamplerError::EncoderMismatch`] when `embedder` encodes with another model or
+    /// revision than the router's representation store.
+    pub fn new(
+        router: CheckedRouter<R>,
+        embedder: Arc<dyn QueryEmbedder>,
+    ) -> Result<Self, EmbeddingSamplerError> {
+        if embedder.encoder() != router.inner().encoder() {
+            return Err(EmbeddingSamplerError::EncoderMismatch {
+                embedder: embedder.encoder().clone(),
+                store: router.inner().encoder().clone(),
+            });
+        }
+        Ok(Self { router, embedder })
     }
 }
 

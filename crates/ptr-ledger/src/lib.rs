@@ -366,6 +366,10 @@ pub enum LedgerEvent {
     /// valid and the generation rises. It cannot check `old` against the current head; the
     /// runtime does that on commit and again on replay.
     PodHeadAdvanced {
+        /// The project the head belongs to. Two projects with the same pod semantics derive the
+        /// same [`PodIdentity`] and keep independent heads. Every address of the record names this
+        /// project.
+        project: ProjectId,
         identity: PodIdentity,
         old: Option<PodRevisionAddress>,
         new: PodRevisionAddress,
@@ -1403,8 +1407,14 @@ fn encode_event(event: &LedgerEvent) -> Vec<u8> {
             out.push(u8::from(*saturated));
             out.push(reason.code());
         }
-        LedgerEvent::PodHeadAdvanced { identity, old, new } => {
+        LedgerEvent::PodHeadAdvanced {
+            project,
+            identity,
+            old,
+            new,
+        } => {
             out.push(38);
+            put_string(&mut out, &project.0);
             put_string(&mut out, &identity.0);
             match old {
                 None => out.push(0),
@@ -1901,6 +1911,7 @@ fn decode_event(payload: &[u8]) -> io::Result<LedgerEvent> {
             event
         }
         38 => {
+            let project = ProjectId(cursor.string()?);
             let identity = PodIdentity(cursor.string()?);
             let old = match cursor.u8()? {
                 0 => None,
@@ -1908,7 +1919,12 @@ fn decode_event(payload: &[u8]) -> io::Result<LedgerEvent> {
                 other => return Err(presence_byte(other)),
             };
             let new = read_revision_address(&mut cursor)?;
-            let event = LedgerEvent::PodHeadAdvanced { identity, old, new };
+            let event = LedgerEvent::PodHeadAdvanced {
+                project,
+                identity,
+                old,
+                new,
+            };
             check_pod_head_advanced(&event)?;
             event
         }
@@ -2769,15 +2785,28 @@ fn scope_kind_from_code(code: u8) -> io::Result<ScopeLifecycleKind> {
 /// A head move names a non-empty identity, two valid revision addresses and a strictly rising
 /// generation: the one canonical form. The decoder and the append paths both call this.
 fn check_pod_head_advanced(event: &LedgerEvent) -> Result<(), io::Error> {
-    let LedgerEvent::PodHeadAdvanced { identity, old, new } = event else {
+    let LedgerEvent::PodHeadAdvanced {
+        project,
+        identity,
+        old,
+        new,
+    } = event
+    else {
         return Ok(());
     };
     if identity.0.is_empty() {
         return Err(integrity::invalid("PTR_LEDGER_POD_HEAD_IDENTITY"));
     }
+    // The project is a path segment of the projection key (`pod-head:<project>/<identity>`).
+    if project.0.is_empty() || project.0.contains('/') || new.address.project != *project {
+        return Err(integrity::invalid("PTR_LEDGER_POD_HEAD_PROJECT"));
+    }
     new.validate()
         .map_err(|_| integrity::invalid("PTR_LEDGER_POD_HEAD_ADDRESS"))?;
     if let Some(old) = old {
+        if old.address.project != *project {
+            return Err(integrity::invalid("PTR_LEDGER_POD_HEAD_PROJECT"));
+        }
         old.validate()
             .map_err(|_| integrity::invalid("PTR_LEDGER_POD_HEAD_ADDRESS"))?;
         if new.generation <= old.generation {
@@ -3761,6 +3790,7 @@ mod effect_record_tests {
 
     fn head_event(old: Option<u64>, new: u64) -> LedgerEvent {
         LedgerEvent::PodHeadAdvanced {
+            project: ProjectId::from("project"),
             identity: PodIdentity::from("pod:stable"),
             old: old.map(|generation| head_address("reader", generation)),
             new: head_address("reader", new),
@@ -3793,6 +3823,18 @@ mod effect_record_tests {
         if let LedgerEvent::PodHeadAdvanced { new, .. } = &mut zero_revision {
             new.semantic_revision = [0; 32];
         }
+        let mut other_project = head_event(None, 1);
+        if let LedgerEvent::PodHeadAdvanced { project, .. } = &mut other_project {
+            *project = ProjectId::from("other");
+        }
+        let mut old_in_other_project = head_event(Some(1), 2);
+        if let LedgerEvent::PodHeadAdvanced { old: Some(old), .. } = &mut old_in_other_project {
+            old.address.project = ProjectId::from("other");
+        }
+        let mut empty_project = head_event(None, 1);
+        if let LedgerEvent::PodHeadAdvanced { project, .. } = &mut empty_project {
+            project.0.clear();
+        }
         let mut bad_segment = head_event(None, 1);
         if let LedgerEvent::PodHeadAdvanced { new, .. } = &mut bad_segment {
             new.address.pod_id = PodId::from("a/b");
@@ -3801,6 +3843,10 @@ mod effect_record_tests {
             empty_identity,
             zero_revision,
             bad_segment,
+            // The record's project must be the project of every address it names.
+            other_project,
+            old_in_other_project,
+            empty_project,
             // The generation must rise strictly.
             head_event(Some(2), 2),
             head_event(Some(3), 2),
@@ -3833,8 +3879,8 @@ mod effect_record_tests {
     #[test]
     fn pod_head_advance_refuses_an_unknown_presence_byte() {
         let mut encoded = encode_event(&head_event(None, 1));
-        // tag, identity (length prefix + bytes), then the presence byte of `old`.
-        let presence_at = 1 + 4 + "pod:stable".len();
+        // tag, project and identity (length prefix + bytes each), then the presence byte of `old`.
+        let presence_at = 1 + 4 + "project".len() + 4 + "pod:stable".len();
         assert_eq!(encoded[presence_at], 0);
         encoded[presence_at] = 2;
         assert!(decode_event(&encoded).is_err());
