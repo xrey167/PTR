@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-14  
-**Code footprint:** 14 Rust source files · 2316 nonblank source lines · 11 integration-test files · 59 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 14 Rust source files · 2328 nonblank source lines · 11 integration-test files · 62 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -25,6 +25,7 @@
 - Internal macro_rules-generated TraceValue conversions plus public hygienic trace_event! builder macro
 - Bounded span model: deterministic seeded TraceId/SpanId generator, Tracer with injectable monotonic Clock (ManualClock for tests), RAII SpanGuard, events attached to spans, typed SpanError for open-span/parent limits and counted drops/truncation for finished-span ring, fields, events and value length
 - RedactingSink<S: TraceSink>: case-insensitive substring key deny-list (password, secret, token, api_key, authorization, cookie, dsn, private_key, ...) plus value heuristics (Bearer/Basic, URL passwords, PEM private keys, JWT shape, known credential prefixes, long hex / high-entropy tokens) applied before any inner sink sees an event
+- Value heuristics cover every text-carrying TraceValue variant (String and RequestId, since clients may supply any string as a request id); a secret-looking RequestId is replaced by the [REDACTED] string in both RedactingSink and the OTLP-JSON exporter (shared Redactor::redact_fields)
 - MemorySink bounded ring, FanoutSink, and deterministic counter-based per-level 1-in-N SamplingSink
 - OtlpJsonFileExporter: hand-written, redacting JSON-lines file writer following the OTLP/JSON trace field layout (resourceSpans/scopeSpans/spans); not an OpenTelemetry SDK, collector or network exporter
 - PlanRecord plus deterministic plan-vs-execution correlator over spans tagged ptr.plan_step reporting Executed/Skipped/OutOfOrder/Failed/Unplanned per step with a summary
