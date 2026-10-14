@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-14  
-**Code footprint:** 14 Rust source files · 4286 nonblank source lines · 8 integration-test files · 87 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 14 Rust source files · 4326 nonblank source lines · 8 integration-test files · 89 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -35,6 +35,7 @@
 - Revocation propagation: revoking a record flags every transitive derived_from dependent as NeedsRevalidation with the revoked ancestor recorded, using a breadth-first, cycle-safe traversal bounded by depth and visited count that changes nothing when a bound is hit; the result is persisted through the journal and a flagged record cannot be re-authorised while a revoked ancestor stands
 - ConsolidationPolicy is a deterministic rule set, not a learned model: an episodic record is promoted to semantic and authoritative after observations from N distinct sources at or below the committed revision, a typed Contradiction rejects promotion regardless of any learned score (Invariant 11), derived/search-only support is rejected (Invariant 5), uncommitted observations defer (Invariant 4); retention forgets stale unpinned episodic records by logical-clock TTL and demotes contradicted authoritative records (a contradiction outranks pinning, pinning only prevents forgetting); promotion into the semantic class is refused with CapacityExceeded at max_records_per_class
 - SemanticObject (Goal, Constraint, KnownFact, Hypothesis, Unknown, Relation) with lossless conversion to and from the six String buckets of SemanticCapsule (relations use the text form `subject -[predicate]-> object`); the existing capsule types are unchanged and malformed relation strings are a typed error
+- Automatic compaction in DurableMemoryStore and DurableKnowledgeStore is best effort after the commit: when the journal rewrite fails the already durable mutation still returns success, the failure is exposed through compaction_failures() and last_compaction_error() (cleared by the next successful compaction), and compaction is retried on later commits
 - Deterministic Markdown mirrors (render_memory_mirror, render_knowledge_mirror): sorted, stable output with escaped free text; sensitive record bodies are written as [REDACTED] and raw events appear only as size and SHA-256 digest
 
 ### Missing for the target architecture
