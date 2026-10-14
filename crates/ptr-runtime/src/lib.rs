@@ -888,7 +888,7 @@ impl PtrRuntime {
             policy_authority_ready: false,
             revoked_sessions: BTreeSet::new(),
             egress_refusals: egress::EgressRefusalWindows::default(),
-            adapters: adapter::AdapterProjection::default(),
+            adapters: adapter::AdapterProjection::new(),
             hypotheses: BTreeMap::new(),
             tier_journal: TierJournalProjection::default(),
             experts: expert::ExpertRegistryProjection::default(),

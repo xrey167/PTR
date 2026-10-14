@@ -31,7 +31,7 @@ use crate::{
     InferenceBackend, ModelError, ModelEvent, ModelRequest, ModelResumeRequest,
     ResumableInferenceBackend,
 };
-use ptr_types::{Generation, Timestamp};
+use ptr_types::{Generation, RequestId, Timestamp};
 use std::fmt;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -261,9 +261,34 @@ impl fmt::Debug for Job {
     }
 }
 
+/// The most request ids whose scoped key is remembered for a later `resume`.
+const MAX_REMEMBERED_KEYS: usize = 4096;
+
+/// The scoped keys of recent requests by id, oldest evicted first, so a `resume` is held to the
+/// key its `infer` was admitted under.
+#[derive(Default)]
+struct RememberedKeys {
+    order: std::collections::VecDeque<RequestId>,
+    keys: std::collections::HashMap<RequestId, BatchKey>,
+}
+
+impl RememberedKeys {
+    fn remember(&mut self, id: RequestId, key: BatchKey) {
+        if self.keys.insert(id.clone(), key).is_none() {
+            if self.order.len() >= MAX_REMEMBERED_KEYS {
+                if let Some(oldest) = self.order.pop_front() {
+                    self.keys.remove(&oldest);
+                }
+            }
+            self.order.push_back(id);
+        }
+    }
+}
+
 struct State {
     queue: BatchQueue<Job>,
     closed: bool,
+    remembered: RememberedKeys,
 }
 
 struct Shared<B> {
@@ -328,6 +353,7 @@ impl<B: BatchInferenceBackend + 'static> AdaptiveBatcher<B> {
             state: Mutex::new(State {
                 queue: BatchQueue::new(policy),
                 closed: false,
+                remembered: RememberedKeys::default(),
             }),
             wake: Condvar::new(),
             counters: Counters::default(),
@@ -380,6 +406,9 @@ impl<B: BatchInferenceBackend + 'static> AdaptiveBatcher<B> {
             if state.closed {
                 return Err(ModelError::closed());
             }
+            state
+                .remembered
+                .remember(request.request_id.clone(), admission.key.clone());
             let job = Job {
                 request: request.clone(),
                 reply,
@@ -399,6 +428,32 @@ impl<B: BatchInferenceBackend + 'static> AdaptiveBatcher<B> {
         answer_rx
             .recv()
             .unwrap_or_else(|_| Err(ModelError::closed()))
+    }
+
+    /// Resume a request under an explicit key, for a caller that knows the scope its request was
+    /// admitted under. The gate is asked about exactly this key; a key that names an adapter is
+    /// refused when there is no gate.
+    ///
+    /// # Errors
+    /// [`ModelError::revoked`] when the gate does not admit the key, and whatever the backend
+    /// returns.
+    pub fn resume_with(
+        &self,
+        request: &ModelResumeRequest,
+        key: &BatchKey,
+    ) -> Result<Vec<ModelEvent>, ModelError>
+    where
+        B: ResumableInferenceBackend,
+    {
+        let admitted = match &self.shared.gate {
+            Some(gate) => gate.admits(key),
+            None => key.adapter.is_none(),
+        };
+        if !admitted {
+            bump(&self.shared.counters.revoked, 1);
+            return Err(ModelError::revoked());
+        }
+        self.shared.backend.resume(request)
     }
 
     /// The counters since the batcher was built.
@@ -449,16 +504,19 @@ impl<B: BatchInferenceBackend + ResumableInferenceBackend + 'static> ResumableIn
     for AdaptiveBatcher<B>
 {
     /// A resume carries its whole observation, so it is not batched: it goes straight to the
-    /// backend, after the gate (if there is one) has admitted the unscoped key, so a host that
-    /// has closed the gate stops resumes too.
+    /// backend, after the gate has admitted the key its request was admitted under (remembered
+    /// by request id for the most recent 4096 requests; a request this batcher never saw is
+    /// held to the unscoped key). A generation revoked since the `infer` stops the resume.
     fn resume(&self, request: &ModelResumeRequest) -> Result<Vec<ModelEvent>, ModelError> {
-        if let Some(gate) = &self.shared.gate {
-            if !gate.admits(&BatchKey::unscoped()) {
-                bump(&self.shared.counters.revoked, 1);
-                return Err(ModelError::revoked());
-            }
-        }
-        self.shared.backend.resume(request)
+        let key = self
+            .shared
+            .lock()
+            .remembered
+            .keys
+            .get(&request.request_id)
+            .cloned()
+            .unwrap_or_else(BatchKey::unscoped);
+        self.resume_with(request, &key)
     }
 }
 
@@ -525,6 +583,27 @@ fn run_batch<B: BatchInferenceBackend + 'static>(shared: &Shared<B>, batch: Vec<
         for entry in batch {
             answer(entry, Err(ModelError::revoked()));
         }
+        return;
+    }
+    // The gate may have taken a while: look again at deadlines and cancellations, so nothing
+    // stale reaches the model.
+    let now = shared.clock.now().0;
+    let mut live = Vec::with_capacity(batch.len());
+    for entry in batch {
+        match entry.stale_at(now) {
+            Some(Dropped::DeadlinePassed) => {
+                bump(&counters.deadline_drops, 1);
+                answer(entry, Err(ModelError::deadline_exceeded()));
+            }
+            Some(Dropped::Cancelled) => {
+                bump(&counters.cancelled, 1);
+                answer(entry, Err(ModelError::cancelled()));
+            }
+            None => live.push(entry),
+        }
+    }
+    let batch = live;
+    if batch.is_empty() {
         return;
     }
     bump(&counters.batches, 1);

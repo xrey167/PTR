@@ -43,6 +43,7 @@ use ptr_types::{CommitIndex, Generation, ProjectId, Validity};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 /// The most `(project, adapter)` bindings the runtime keeps.
@@ -101,6 +102,9 @@ pub enum AdapterError {
     TooManyCycleProjects { limit: usize },
     /// The policy digest of a cycle is all zero.
     ZeroPolicyDigest,
+    /// The ticket was not admitted by this runtime, or its admission has expired or was
+    /// already used. Nothing was committed.
+    TicketNotAdmitted,
 }
 
 /// A promotion of one adapter generation.
@@ -171,6 +175,9 @@ impl PromotedAdapter {
 #[derive(Debug, Eq, PartialEq)]
 #[must_use = "an admitted cycle must be recorded, or it stays counted as running"]
 pub struct ImprovementCycleTicket {
+    /// The runtime instance that admitted the cycle, and the admission's serial in it.
+    issuer: u64,
+    serial: u64,
     project: ProjectId,
     day: u64,
     policy_digest: [u8; 32],
@@ -212,12 +219,22 @@ pub(crate) struct CycleDay {
     recorded: u64,
 }
 
+/// How many days an admitted cycle may stay unrecorded before its admission expires and the
+/// ticket can no longer be recorded.
+pub const OPEN_CYCLE_RETENTION_DAYS: u64 = 7;
+
+static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(1);
+
 /// The adapter state projected from committed events.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct AdapterProjection {
+    /// Distinguishes this runtime's admissions from another's: a ticket names its issuer.
+    instance: u64,
+    next_serial: u64,
     promoted: BTreeMap<String, PromotedAdapter>,
     cycle_days: BTreeMap<String, CycleDay>,
-    open_cycles: BTreeMap<(String, u64), u32>,
+    /// Admitted and not yet recorded cycles: serial -> (project, day). Memory only.
+    open: BTreeMap<u64, (String, u64)>,
     /// The latest day a project has a cycle admitted or recorded for. A cycle is refused on any
     /// earlier day, so the open counts of earlier days can be dropped without opening a way back.
     high_water: BTreeMap<String, u64>,
@@ -226,8 +243,20 @@ pub(crate) struct AdapterProjection {
 }
 
 impl AdapterProjection {
+    pub(crate) fn new() -> Self {
+        Self {
+            instance: NEXT_INSTANCE.fetch_add(1, Ordering::Relaxed),
+            ..Self::default()
+        }
+    }
+
+    /// Whether any adapter or cycle state exists that no snapshot layout carries: promoted
+    /// adapters, recorded cycles, high-water days and admitted-but-unrecorded cycles alike.
     pub(crate) fn is_empty(&self) -> bool {
-        self.promoted.is_empty() && self.cycle_days.is_empty()
+        self.promoted.is_empty()
+            && self.cycle_days.is_empty()
+            && self.high_water.is_empty()
+            && self.open.is_empty()
     }
 
     fn used(&self, project: &str, day: u64) -> impl Iterator<Item = CycleRecord> {
@@ -237,10 +266,10 @@ impl AdapterProjection {
             .filter(|latest| latest.day == day)
             .map_or(0, |latest| latest.recorded);
         let open = self
-            .open_cycles
-            .get(&(project.to_owned(), day))
-            .copied()
-            .unwrap_or(0);
+            .open
+            .values()
+            .filter(|(open_project, open_day)| open_project == project && *open_day == day)
+            .count();
         let completed = CycleRecord {
             day,
             outcome: CycleOutcomeKind::Completed,
@@ -463,25 +492,25 @@ impl PtrRuntime {
         budget
             .check_budget(day, self.adapters.used(&project.0, day))
             .map_err(AdapterError::BudgetExhausted)?;
+        // Admissions of this project that stayed unrecorded for longer than the retention expire
+        // (they stay counted for the days they belong to, but can no longer be recorded).
+        self.adapters.open.retain(|_, (open_project, open_day)| {
+            open_project != &project.0 || open_day.saturating_add(OPEN_CYCLE_RETENTION_DAYS) >= day
+        });
         // The open table is bounded like the recorded one, and before it grows.
-        let open_key = (project.0.clone(), day);
-        if !self.adapters.open_cycles.contains_key(&open_key)
-            && self.adapters.open_cycles.len() >= MAX_TRACKED_CYCLE_PROJECTS
-        {
+        if self.adapters.open.len() >= MAX_TRACKED_CYCLE_PROJECTS {
             return Err(AdapterError::TooManyCycleProjects {
                 limit: MAX_TRACKED_CYCLE_PROJECTS,
             }
             .into());
         }
-        // Nothing can fail from here. Earlier days are refused from now on (the high-water day
-        // moves to today), so their open counts can no longer matter and are dropped.
         self.adapters.high_water.insert(project.0.clone(), day);
-        self.adapters
-            .open_cycles
-            .retain(|(open_project, open_day), _| open_project != &project.0 || *open_day >= day);
-        let open = self.adapters.open_cycles.entry(open_key).or_insert(0);
-        *open = open.saturating_add(1);
+        let serial = self.adapters.next_serial;
+        self.adapters.next_serial = serial.saturating_add(1);
+        self.adapters.open.insert(serial, (project.0.clone(), day));
         Ok(ImprovementCycleTicket {
+            issuer: self.adapters.instance,
+            serial,
             project,
             day,
             policy_digest,
@@ -500,23 +529,32 @@ impl PtrRuntime {
         outcome: ImprovementCycleOutcome,
     ) -> Result<CommitIndex, RuntimeError> {
         let ImprovementCycleTicket {
+            issuer,
+            serial,
             project,
             day,
             policy_digest,
         } = ticket;
-        let key = (project.0.clone(), day);
+        // Only this runtime's own, still open admission may be recorded: a ticket of another
+        // runtime, an expired one or one already used commits nothing.
+        let admitted = issuer == self.adapters.instance
+            && self
+                .adapters
+                .open
+                .get(&serial)
+                .is_some_and(|(open_project, open_day)| {
+                    open_project == &project.0 && *open_day == day
+                });
+        if !admitted {
+            return Err(AdapterError::TicketNotAdmitted.into());
+        }
         let index = self.commit_gated(LedgerEvent::ImprovementCycleRecorded {
             project,
             day,
             outcome,
             policy_digest,
         })?;
-        if let Some(open) = self.adapters.open_cycles.get_mut(&key) {
-            *open = open.saturating_sub(1);
-            if *open == 0 {
-                self.adapters.open_cycles.remove(&key);
-            }
-        }
+        self.adapters.open.remove(&serial);
         Ok(index)
     }
 
@@ -571,6 +609,19 @@ impl PtrRuntime {
                         current,
                         requested: *generation,
                     });
+                }
+                Ok(())
+            }
+            LedgerEvent::ImprovementCycleRecorded { project, .. } => {
+                // The bound of the live admission holds on replay too: a history that names
+                // more projects than the runtime tracks is refused, not grown into.
+                if !self.adapters.high_water.contains_key(&project.0)
+                    && self.adapters.high_water.len() >= MAX_TRACKED_CYCLE_PROJECTS
+                {
+                    return Err(AdapterError::TooManyCycleProjects {
+                        limit: MAX_TRACKED_CYCLE_PROJECTS,
+                    }
+                    .into());
                 }
                 Ok(())
             }

@@ -12,7 +12,6 @@ from ptr_training.replay import (
     choose_winner,
 )
 
-
 RULE = {"min_within_bound": 2, "min_within_fraction": 0.5}
 
 
@@ -215,3 +214,59 @@ class WinnerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CategoricalAndPrecisionTests(unittest.TestCase):
+    def test_a_categorical_change_is_one_decision_that_can_be_attributed(self):
+        pool = HistoryPool()
+        pool.add_generation("g0", order=0, decisions={}, outcome=outcome(200))
+        pool.add_generation("g1", order=1, decisions={"mode": "off"}, outcome=outcome(300))
+        pool.add_generation("g2", order=2, decisions={"mode": "on"}, outcome=outcome(500))
+        simulator = ReplaySimulator(pool)
+        self.assertEqual(simulator.ambiguous, [])
+        self.assertEqual(set(simulator.responses), {"mode"})
+        self.assertEqual(pool.categories(), {"mode": ["off", "on"]})
+        # off -> on moved the single decision `mode` by one level and the fit says so.
+        self.assertAlmostEqual(simulator.responses["mode"]["typed"], 0.15)
+        self.assertTrue(simulator.simulate({"mode": "on"})["typed"].identified)
+
+    def test_an_unseen_category_is_extrapolation_and_never_a_silent_winner(self):
+        pool = HistoryPool()
+        pool.add_generation("g0", order=0, decisions={}, outcome=outcome(200))
+        pool.add_generation("g1", order=1, decisions={"mode": "off"}, outcome=outcome(300))
+        pool.add_generation("g2", order=2, decisions={"mode": "on"}, outcome=outcome(500))
+        simulator = ReplaySimulator(pool)
+        beyond = simulator.extrapolation({"mode": "turbo"})
+        self.assertEqual(beyond[0]["decision"], "mode")
+        ranked = simulator.rank([{"mode": "turbo"}])
+        self.assertTrue(ranked[0]["extrapolation"])
+        # Encoding a policy never registers its value in the pool.
+        self.assertEqual(pool.categories(), {"mode": ["off", "on"]})
+
+    def test_a_refused_generation_leaves_the_registered_categories_alone(self):
+        pool = HistoryPool()
+        pool.add_generation("g0", order=0, decisions={"mode": "off"}, outcome=outcome(200))
+        with self.assertRaises(HistoryError):
+            pool.add_generation("g0", order=1, decisions={"mode": "on"}, outcome=outcome(300))
+        with self.assertRaises(HistoryError):
+            pool.add_generation("g1", order=1, decisions={"mode": "on", "x": math.nan}, outcome=outcome(300))
+        self.assertEqual(pool.categories(), {"mode": ["off"]})
+
+    def test_the_decision_uses_the_exact_error_and_only_the_report_is_rounded(self):
+        total = 10_000_000
+
+        def exact(correct):
+            return {"typed": Outcome(correct=correct, total=total)}
+
+        pool = HistoryPool()
+        # g2 is predicted .4 from g0 and g1 and observed .4500004: an error of .0500004.
+        for order, correct in enumerate((2_000_000, 3_000_000, 4_500_004)):
+            pool.add_generation(
+                f"g{order}", order=order, decisions={"x": order}, outcome=exact(correct)
+            )
+        report = backtest(pool, error_bound=0.05, min_within_bound=2, min_within_fraction=0.5)
+        row = next(r for r in report.per_generation if r["generation"] == "g2")
+        self.assertEqual(row["abs_error"]["typed"], 0.05, "the report rounds to six places")
+        self.assertFalse(row["within_bound"], "the decision does not")
+        self.assertEqual(report.within_bound, 1)
+        self.assertFalse(report.predictive)

@@ -309,3 +309,84 @@ fn the_tracked_projects_are_bounded_for_admitted_and_for_recorded_cycles() {
         Err(too_many)
     );
 }
+
+#[test]
+fn an_admitted_cycle_that_is_not_recorded_blocks_a_compacted_snapshot() {
+    let (mut runtime, _clock) = runtime(1, 10);
+    assert!(runtime.export_compacted_snapshot().is_ok());
+    let _running = runtime
+        .begin_improvement_cycle(begin("alpha"))
+        .expect("admitted");
+    assert!(matches!(
+        runtime.export_compacted_snapshot(),
+        Err(RuntimeError::Adapter(AdapterError::CompactionUnsupported))
+    ));
+}
+
+#[test]
+fn a_ticket_of_another_runtime_is_refused_and_commits_nothing() {
+    let (mut a, _clock_a) = runtime(2, 10);
+    let (mut b, _clock_b) = runtime(2, 10);
+    // B has an admission for the very same project and day, so a count-only check would pass.
+    let _b_own = b
+        .begin_improvement_cycle(begin("alpha"))
+        .expect("admitted by b");
+    let ticket_of_a = a
+        .begin_improvement_cycle(begin("alpha"))
+        .expect("admitted by a");
+    let before = b.committed_events().len();
+    assert_eq!(
+        b.record_improvement_cycle(ticket_of_a, ImprovementCycleOutcome::Completed),
+        Err(RuntimeError::Adapter(AdapterError::TicketNotAdmitted))
+    );
+    assert_eq!(b.committed_events().len(), before);
+    assert_eq!(b.improvement_cycles_used(&ProjectId::from("alpha"), 10), 1);
+}
+
+#[test]
+fn an_admission_that_stayed_open_past_the_retention_can_no_longer_be_recorded() {
+    use ptr_runtime::adapter::OPEN_CYCLE_RETENTION_DAYS;
+    let (mut runtime, clock) = runtime(1, 10);
+    let stale = runtime
+        .begin_improvement_cycle(begin("alpha"))
+        .expect("admitted");
+    clock.set(10 + OPEN_CYCLE_RETENTION_DAYS + 1);
+    let _fresh = runtime
+        .begin_improvement_cycle(begin("alpha"))
+        .expect("a later day has its own budget");
+    let before = runtime.committed_events().len();
+    assert_eq!(
+        runtime.record_improvement_cycle(stale, ImprovementCycleOutcome::Completed),
+        Err(RuntimeError::Adapter(AdapterError::TicketNotAdmitted))
+    );
+    assert_eq!(runtime.committed_events().len(), before);
+}
+
+#[test]
+fn replay_refuses_a_history_that_names_more_projects_than_the_runtime_tracks() {
+    use ptr_ledger::CommittedEvent;
+    use ptr_runtime::adapter::MAX_TRACKED_CYCLE_PROJECTS;
+    use ptr_types::CommitIndex;
+
+    let history: Vec<CommittedEvent> = (0..=MAX_TRACKED_CYCLE_PROJECTS)
+        .map(|n| CommittedEvent {
+            index: CommitIndex(n as u64 + 1),
+            event: LedgerEvent::ImprovementCycleRecorded {
+                project: ProjectId::from(format!("p{n}").as_str()),
+                day: 1,
+                outcome: ImprovementCycleOutcome::Completed,
+                policy_digest: [7; 32],
+            },
+        })
+        .collect();
+    assert_eq!(
+        PtrRuntime::replay(PtrConfig::default(), &history).err(),
+        Some(RuntimeError::Adapter(AdapterError::TooManyCycleProjects {
+            limit: MAX_TRACKED_CYCLE_PROJECTS,
+        }))
+    );
+    // One project fewer replays.
+    assert!(
+        PtrRuntime::replay(PtrConfig::default(), &history[..MAX_TRACKED_CYCLE_PROJECTS]).is_ok()
+    );
+}

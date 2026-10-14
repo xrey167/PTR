@@ -437,3 +437,166 @@ fn a_resume_is_stopped_by_a_closed_gate() {
         Err(ModelError::revoked())
     );
 }
+
+/// Admits everything except one project once it is revoked; the unscoped key stays admitted.
+struct RevocableProject {
+    revoked: AtomicBool,
+    project: &'static str,
+}
+
+impl BatchGate for RevocableProject {
+    fn admits(&self, key: &BatchKey) -> bool {
+        !(self.revoked.load(Ordering::SeqCst) && key.project.as_deref() == Some(self.project))
+    }
+}
+
+fn echo_batcher(gate: Arc<dyn BatchGate>) -> AdaptiveBatcher<ptr_model_api::ReferenceEchoBackend> {
+    AdaptiveBatcher::with_parts(
+        Arc::new(ptr_model_api::ReferenceEchoBackend),
+        policy(1, 0, 4),
+        Arc::new(SystemClock),
+        Some(gate),
+    )
+    .expect("built")
+}
+
+#[test]
+fn a_resume_is_held_to_the_scoped_key_its_request_was_admitted_under() {
+    use ptr_model_api::ResumableInferenceBackend;
+    let gate = Arc::new(RevocableProject {
+        revoked: AtomicBool::new(false),
+        project: "p",
+    });
+    let batcher = echo_batcher(Arc::clone(&gate) as Arc<dyn BatchGate>);
+    batcher
+        .infer_with(&request("r1"), keyed("p", "coder"))
+        .expect("served");
+    assert!(batcher.resume(&common::resume_request("r1")).is_ok());
+    // The generation is revoked after the first call. The unscoped key would still be admitted;
+    // the key the request was admitted under is not.
+    gate.revoked.store(true, Ordering::SeqCst);
+    assert_eq!(
+        batcher.resume(&common::resume_request("r1")),
+        Err(ModelError::revoked())
+    );
+    // A request the batcher never saw is held to the unscoped key, which is still admitted.
+    assert!(batcher.resume(&common::resume_request("other")).is_ok());
+}
+
+#[test]
+fn resume_with_asks_the_gate_about_exactly_the_given_key() {
+    let gate = Arc::new(RevocableProject {
+        revoked: AtomicBool::new(true),
+        project: "p",
+    });
+    let batcher = echo_batcher(gate as Arc<dyn BatchGate>);
+    let request = common::resume_request("r");
+    let live = BatchKey {
+        project: Some("q".into()),
+        adapter: Some("coder".into()),
+        principal: None,
+        generation: Generation(1),
+    };
+    let revoked = BatchKey {
+        project: Some("p".into()),
+        ..live.clone()
+    };
+    assert!(batcher.resume_with(&request, &live).is_ok());
+    assert_eq!(
+        batcher.resume_with(&request, &revoked),
+        Err(ModelError::revoked())
+    );
+}
+
+/// A gate that holds the dispatching worker until the test lets it go.
+struct HeldGate {
+    entered: AtomicBool,
+    latch: Latch,
+}
+
+impl BatchGate for HeldGate {
+    fn admits(&self, _key: &BatchKey) -> bool {
+        self.entered.store(true, Ordering::SeqCst);
+        self.latch.wait();
+        true
+    }
+}
+
+#[test]
+fn a_deadline_that_passes_while_the_gate_decides_keeps_the_request_from_the_backend() {
+    let backend = Arc::new(RecordingBackend::default());
+    let gate = Arc::new(HeldGate {
+        entered: AtomicBool::new(false),
+        latch: Latch::default(),
+    });
+    let batcher = AdaptiveBatcher::with_parts(
+        Arc::clone(&backend),
+        policy(1, 0, 4),
+        Arc::new(SystemClock),
+        Some(Arc::clone(&gate) as Arc<dyn BatchGate>),
+    )
+    .expect("built");
+    std::thread::scope(|scope| {
+        let batcher = &batcher;
+        let soon = Timestamp(SystemClock.now().0 + 100);
+        let waiting = scope.spawn(move || {
+            batcher.infer_with(
+                &request("late"),
+                BatchAdmission {
+                    key: key("a"),
+                    deadline: Some(soon),
+                    cancel: None,
+                },
+            )
+        });
+        assert!(eventually(PATIENT, || gate.entered.load(Ordering::SeqCst)));
+        std::thread::sleep(Duration::from_millis(200));
+        gate.latch.open();
+        assert_eq!(
+            waiting.join().expect("thread"),
+            Err(ModelError::deadline_exceeded())
+        );
+    });
+    assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(batcher.stats().deadline_drops, 1);
+}
+
+#[test]
+fn a_cancellation_that_lands_while_the_gate_decides_keeps_the_request_from_the_backend() {
+    let backend = Arc::new(RecordingBackend::default());
+    let gate = Arc::new(HeldGate {
+        entered: AtomicBool::new(false),
+        latch: Latch::default(),
+    });
+    let batcher = AdaptiveBatcher::with_parts(
+        Arc::clone(&backend),
+        policy(1, 0, 4),
+        Arc::new(SystemClock),
+        Some(Arc::clone(&gate) as Arc<dyn BatchGate>),
+    )
+    .expect("built");
+    let flag = CancelFlag::default();
+    std::thread::scope(|scope| {
+        let batcher = &batcher;
+        let cancel = flag.clone();
+        let waiting = scope.spawn(move || {
+            batcher.infer_with(
+                &request("withdrawn"),
+                BatchAdmission {
+                    key: key("a"),
+                    deadline: None,
+                    cancel: Some(cancel),
+                },
+            )
+        });
+        assert!(eventually(PATIENT, || gate.entered.load(Ordering::SeqCst)));
+        flag.cancel();
+        gate.latch.open();
+        assert_eq!(
+            waiting.join().expect("thread"),
+            Err(ModelError::cancelled())
+        );
+    });
+    assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(batcher.stats().cancelled, 1);
+}

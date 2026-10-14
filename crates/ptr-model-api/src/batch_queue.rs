@@ -28,6 +28,20 @@ pub(crate) struct Entry<J> {
     pub(crate) payload: J,
 }
 
+impl<J> Entry<J> {
+    /// Whether this request must not reach the model at `now`: it was cancelled, or its
+    /// deadline has passed. Asked again right before the model call, after the gate.
+    pub(crate) fn stale_at(&self, now: u64) -> Option<Dropped> {
+        if self.cancel.as_ref().is_some_and(CancelFlag::is_cancelled) {
+            Some(Dropped::Cancelled)
+        } else if self.deadline.is_some_and(|deadline| deadline <= now) {
+            Some(Dropped::DeadlinePassed)
+        } else {
+            None
+        }
+    }
+}
+
 /// Why a request left the queue without being served.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Dropped {

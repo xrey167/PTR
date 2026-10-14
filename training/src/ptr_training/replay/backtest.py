@@ -92,8 +92,25 @@ class Generation:
     levels: Mapping[str, float] = field(default_factory=dict)
 
 
-def levels_of(decisions: Mapping[str, Level]) -> dict[str, float]:
-    """Decision values as numbers; a string becomes the indicator ``name=value`` = 1."""
+def levels_of(
+    decisions: Mapping[str, Level],
+    categories: dict[str, list[str]],
+    *,
+    register: bool = False,
+) -> dict[str, float]:
+    """Decision values as numbers, one number per decision.
+
+    A string is one categorical decision, not one indicator per value: its level is the
+    1-based position of the value among the values the pool has seen for that decision, in
+    order of first appearance, and 0 means the decision was not set. Changing ``mode`` from
+    "off" to "on" is therefore one decision moving from level 1 to level 2, which the fit can
+    attribute. The positions are an ordering by first appearance, so a decision with more than
+    two values is treated as linear in that order; that is a stated limit of the model.
+
+    ``register`` adds a value the pool has not seen to ``categories``; without it, an unseen
+    value gets the level one past the last known one, which is outside the observed range and
+    is therefore flagged as extrapolation.
+    """
     levels: dict[str, float] = {}
     for name, value in decisions.items():
         if isinstance(value, bool):
@@ -103,7 +120,12 @@ def levels_of(decisions: Mapping[str, Level]) -> dict[str, float]:
                 raise HistoryError(f"decision {name!r} is not finite")
             levels[name] = float(value)
         elif isinstance(value, str):
-            levels[f"{name}={value}"] = 1.0
+            known = categories.setdefault(name, []) if register else categories.get(name, [])
+            if value not in known:
+                if register:
+                    known.append(value)
+            position = known.index(value) + 1 if value in known else len(known) + 1
+            levels[name] = float(position)
         else:
             raise HistoryError(f"decision {name!r} has an unsupported type")
     return levels
@@ -119,6 +141,11 @@ class HistoryPool:
 
     def __init__(self) -> None:
         self._generations: list[Generation] = []
+        self._categories: dict[str, list[str]] = {}
+
+    def categories(self) -> dict[str, list[str]]:
+        """The values seen per categorical decision, in order of first appearance (a copy)."""
+        return {name: list(values) for name, values in self._categories.items()}
 
     @property
     def generations(self) -> tuple[Generation, ...]:
@@ -164,7 +191,10 @@ class HistoryPool:
         for value in outcome.values():
             if not isinstance(value, Outcome):
                 raise HistoryError("outcome values must be Outcome instances")
-        levels = levels_of(decisions)
+        # Encode against a copy, so a refusal leaves the registered categories untouched.
+        categories = self.categories()
+        levels = levels_of(decisions, categories, register=True)
+        self._categories = categories
         self._generations.append(
             Generation(
                 name=name,
@@ -250,7 +280,7 @@ class ReplaySimulator:
         return None
 
     def simulate(self, decisions: Mapping[str, Level]) -> dict[str, Prediction]:
-        levels = levels_of(decisions)
+        levels = levels_of(decisions, self.pool.categories())
         unknown = tuple(
             sorted(n for n, level in levels.items() if level != 0.0 and n not in self.responses)
         )
@@ -270,7 +300,7 @@ class ReplaySimulator:
     def extrapolation(self, decisions: Mapping[str, Level]) -> list[dict[str, Any]]:
         """Levels asked for that the history never showed."""
         beyond = []
-        for name, level in levels_of(decisions).items():
+        for name, level in levels_of(decisions, self.pool.categories()).items():
             low, high = self.limits.get(name, (0.0, 0.0))
             if level < low or level > high:
                 beyond.append({"decision": name, "level": level, "observed": [low, high]})
@@ -413,15 +443,16 @@ def backtest(
                 }
             )
             continue
-        errors = {
-            f: round(abs((p.rate or 0.0) - generation.outcome[f].rate), 6)
-            for f, p in prediction.items()
+        # The decision is taken on the exact errors; rounding is for the report only.
+        exact = {
+            f: abs((p.rate or 0.0) - generation.outcome[f].rate) for f, p in prediction.items()
         }
+        errors = {f: round(value, 6) for f, value in exact.items()}
         extrapolation = reduced.extrapolation(generation.decisions)
-        ok = max(errors.values()) <= error_bound
+        ok = max(exact.values()) <= error_bound
         predicted += 1
         within += 1 if ok else 0
-        out_errors.extend(errors.values())
+        out_errors.extend(exact.values())
         rows.append(
             {
                 "generation": generation.name,
