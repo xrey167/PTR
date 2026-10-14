@@ -329,8 +329,8 @@ with a hand-written, bounded, versioned frame format (not protobuf):
 The sender is always the authenticated connection, never a field; peers are admitted by host
 policy ([doc 29](docs/architecture/29-peer-admission-and-pod-scope.md)). Nothing runs an
 accept/tick loop in a deployment yet, and receipts and answers are not signed (ADR-0022). A Pod
-whose deadline has passed refuses egress, and the refusal is committed to the ledger
-(`crates/ptr-pods/src/egress.rs`).
+call refused by egress policy is committed to the ledger (`crates/ptr-runtime/src/egress.rs`);
+an expired V4 deadline is refused as a protocol error and is not recorded.
 
 ## MoE, model and training
 
