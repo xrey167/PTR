@@ -330,3 +330,35 @@ fn unwritable_path_is_typed_export_error() {
     let error = exporter.export(&sample_spans()).expect_err("must fail");
     assert_eq!(error.code(), "export");
 }
+
+#[test]
+fn exporter_redacts_secret_looking_request_id() {
+    let clock = Arc::new(ManualClock::new(0));
+    let tracer = Tracer::new(TracerConfig::default(), clock);
+    let span = tracer.root_span("req").expect("root");
+    span.set_field(
+        "client.request",
+        ptr_types::RequestId::from("Bearer abcdef0123456789"),
+    );
+    span.event(TraceEvent::request(
+        TraceLevel::Info,
+        "inner",
+        ptr_types::RequestId::from("q8Zr3xK9LmP2vB7nT5yW1cD6hJ4sA0eFgUiOpXzRtYu"),
+        ptr_types::Revision(1),
+    ));
+    span.finish();
+    let spans = tracer.drain_finished();
+
+    let path = temp_path("reqid");
+    let exporter = OtlpJsonFileExporter::new(path.clone(), OtlpFileConfig::default());
+    exporter.export(&spans).expect("export");
+    let written = std::fs::read_to_string(&path).expect("read");
+    let _ = std::fs::remove_file(&path);
+    for plaintext in [
+        "abcdef0123456789",
+        "q8Zr3xK9LmP2vB7nT5yW1cD6hJ4sA0eFgUiOpXzRtYu",
+    ] {
+        assert!(!written.contains(plaintext), "leaked {plaintext}");
+    }
+    assert!(written.contains(REDACTED));
+}

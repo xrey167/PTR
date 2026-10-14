@@ -239,8 +239,20 @@ impl Redactor {
     pub fn redact_fields(&self, fields: &mut BTreeMap<String, TraceValue>) -> usize {
         let mut redacted = 0;
         for (key, value) in fields.iter_mut() {
-            let secret = self.is_secret_key(key)
-                || matches!(value, TraceValue::String(text) if self.looks_like_secret(text));
+            // Every variant that carries caller-supplied text is inspected: `String` and
+            // `RequestId` (a client may supply any string as a request id). The numeric and
+            // boolean variants (`U64`, `Bool`, `Revision`, `Generation`, `CommitIndex`) hold no
+            // text and cannot encode a credential.
+            let text_secret = match value {
+                TraceValue::String(text) => self.looks_like_secret(text),
+                TraceValue::RequestId(id) => self.looks_like_secret(&id.0),
+                TraceValue::U64(_)
+                | TraceValue::Bool(_)
+                | TraceValue::Revision(_)
+                | TraceValue::Generation(_)
+                | TraceValue::CommitIndex(_) => false,
+            };
+            let secret = self.is_secret_key(key) || text_secret;
             if secret && *value != TraceValue::String(REDACTED.to_owned()) {
                 *value = TraceValue::String(REDACTED.to_owned());
                 redacted += 1;
