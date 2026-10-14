@@ -11,7 +11,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use common::handle;
 use ptr_fabric::{host_page_size, FabricError, Seal, ShmExpectation, ShmExport, ShmMapping};
-use ptr_protocol::{content_digest, Carrier, CarrierLocator};
+use ptr_protocol::{content_digest, Carrier, CarrierLocator, MAX_HANDLE_BYTES};
 use rustix::fs::{
     fcntl_add_seals, fcntl_get_seals, ftruncate, memfd_create, MemfdFlags, SealFlags,
 };
@@ -343,4 +343,61 @@ fn a_descriptor_that_is_not_a_memfd_is_refused_as_not_sealable() {
     );
     assert_eq!(mapped_regions(), before);
     let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn a_length_above_the_handle_bound_is_refused_before_the_descriptor_is_touched() {
+    let _serial = serial();
+    let before = mapped_regions();
+    let path = std::env::temp_dir().join(format!("ptr-fabric-too-large-{}", std::process::id()));
+    let fd = OwnedFd::from(File::create(&path).expect("regular file"));
+    let too_large = ShmExpectation {
+        byte_len: MAX_HANDLE_BYTES + 1,
+        offset: 0,
+        content_digest: [0; 32],
+    };
+    // A regular file would be `NotSealable` if the seal query ran first; the size error shows
+    // no `fcntl`, `fstat` or `mmap` was reached.
+    assert_eq!(
+        ShmMapping::map(fd.try_clone().expect("dup"), &too_large).unwrap_err(),
+        FabricError::TooLarge {
+            len: MAX_HANDLE_BYTES + 1,
+            max: MAX_HANDLE_BYTES,
+        }
+    );
+    let huge = ShmExpectation {
+        byte_len: u64::MAX,
+        ..too_large
+    };
+    assert!(matches!(
+        ShmMapping::map(fd.try_clone().expect("dup"), &huge).unwrap_err(),
+        FabricError::TooLarge { .. }
+    ));
+    // At the bound the descriptor is reached, so the next refusal is the seal query.
+    let at_bound = ShmExpectation {
+        byte_len: MAX_HANDLE_BYTES,
+        ..too_large
+    };
+    assert_eq!(
+        ShmMapping::map(fd, &at_bound).unwrap_err(),
+        FabricError::NotSealable
+    );
+    assert_eq!(mapped_regions(), before);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn an_expectation_from_a_handle_above_the_bound_is_refused() {
+    let locator = CarrierLocator::HostShm {
+        fd_slot: 0,
+        offset: 0,
+    };
+    let oversize = handle(locator, MAX_HANDLE_BYTES + 4, [0; 32]);
+    assert_eq!(
+        ShmExpectation::from_handle(&oversize).unwrap_err(),
+        FabricError::TooLarge {
+            len: MAX_HANDLE_BYTES + 4,
+            max: MAX_HANDLE_BYTES,
+        }
+    );
 }

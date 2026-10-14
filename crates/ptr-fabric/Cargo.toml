@@ -10,6 +10,12 @@ default = []
 # The HostShm carrier: a dedicated sealed memfd per export. Linux only; on every other target
 # the feature compiles to nothing, so enabling it never breaks a Windows or macOS build.
 shm-backend = ["dep:rustix"]
+# The worker data channel: framed messages with `SCM_RIGHTS` descriptors over a connected
+# `SOCK_SEQPACKET` pair (doc 42 stage S1). Linux only, like `shm-backend`.
+worker-channel = ["shm-backend", "rustix/net", "rustix/event"]
+# Descriptor confinement for a worker: the host probe, the confinement value, the carrier
+# policy and the seccomp allowlist (doc 42 stage S1). Linux only.
+worker-confine = ["worker-channel", "dep:libc"]
 
 [dependencies]
 # The handle, its locators and the digest rule the carriers check against.
@@ -20,6 +26,9 @@ ptr-protocol = { workspace = true }
 # no package. `fs` for memfd_create and the seals, `mm` for mmap and munmap, `param` for the
 # page size. Linux only, so `shm-backend` builds nothing and pulls nothing on other targets.
 rustix = { version = "=1.1.5", optional = true, default-features = false, features = ["std", "fs", "mm", "param"] }
+# Raw `prctl`, `seccomp`, `unshare` and `fork` for the confinement probe and the filter, and the
+# syscall numbers of the allowlist. Version already in the lockfile.
+libc = { version = "=0.2.189", optional = true }
 
 [dev-dependencies]
 ptr-types = { workspace = true }
@@ -32,3 +41,13 @@ path = "tests/bytes_carrier.rs"
 name = "host_shm"
 path = "tests/host_shm.rs"
 required-features = ["shm-backend"]
+
+[[test]]
+name = "worker_channel"
+path = "tests/worker_channel.rs"
+required-features = ["worker-channel"]
+
+[[test]]
+name = "worker_confine"
+path = "tests/worker_confine.rs"
+required-features = ["worker-confine"]

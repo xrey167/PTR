@@ -300,8 +300,11 @@ ci-pod-wire:
 ci-fabric-shm:
 	cargo +stable test -p ptr-fabric --features shm-backend --locked
 	cargo +stable clippy -p ptr-fabric --features shm-backend --all-targets --locked -- -D warnings
+	cargo +stable test -p ptr-fabric --features worker-channel,worker-confine --locked
+	cargo +stable clippy -p ptr-fabric --features worker-channel,worker-confine --all-targets --locked -- -D warnings
 	rustup toolchain install 1.99.0 --profile minimal
 	cargo +1.99.0 test -p ptr-fabric --features shm-backend --locked
+	cargo +1.99.0 test -p ptr-fabric --features worker-channel,worker-confine --locked
 
 ci-storage-tiers:
 	cargo +stable test -p ptr-storage --features tier-opendal-fs --test opendal_tier --locked
