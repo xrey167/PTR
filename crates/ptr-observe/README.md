@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-14  
-**Code footprint:** 14 Rust source files · 2356 nonblank source lines · 11 integration-test files · 64 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 14 Rust source files · 2514 nonblank source lines · 11 integration-test files · 66 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -29,6 +29,7 @@
 - Tracer bounds every text-carrying field value (String and RequestId, exhaustive match) to max_value_len before retaining it, counting truncations
 - MemorySink bounded ring, FanoutSink, and deterministic counter-based per-level 1-in-N SamplingSink
 - OtlpJsonFileExporter: hand-written, redacting JSON-lines file writer following the OTLP/JSON trace field layout (resourceSpans/scopeSpans/spans); not an OpenTelemetry SDK, collector or network exporter
+- OtlpJsonFileExporter append rollback: a failed or partial line write (write/flush) is truncated back to the pre-call file length so the append-only JSONL never keeps a fragment; if the truncate also fails the exporter (and every clone) is poisoned and returns TraceError::ExporterPoisoned until re-created; the exporter has no byte cap or dropped-export counter, so there is no accounting to adjust
 - PlanRecord plus deterministic plan-vs-execution correlator over spans tagged ptr.plan_step reporting Executed/Skipped/OutOfOrder/Failed/Unplanned per step with a summary
 - Tracer::active_tree: open-span tree snapshot with ages relative to the clock, text rendering and stuck-span detection (std-only stand-in for async-backtrace, covers only instrumented spans); StuckSpan paths are capped at 16 names and 4096 ancestor-name bytes with an explicit path_truncated flag, so the stuck report stays linear in open spans
 
