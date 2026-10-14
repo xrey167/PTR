@@ -94,6 +94,26 @@ def stale_audit_exceptions(root: Path) -> list[str]:
     return stale
 
 
+def reachable_audit_exceptions(root: Path, run=subprocess.run) -> list[str]:
+    """Exceptions whose package the workspace can build for some target or feature.
+
+    `cargo tree -i <name>@<version>` over every target, every feature and every
+    edge kind prints nothing when no path leads to the package; any output (or
+    a failed command) means the exception no longer holds.
+    """
+    reachable = []
+    for manifest, exception in sorted(AUDIT_EXCEPTIONS.items()):
+        name, version = exception["package"]
+        command = ["cargo", "+stable", "tree", "--manifest-path", str(root / manifest),
+                   "--locked", "--target", "all", "--all-features",
+                   "-e", "normal,build,dev", "-i", f"{name}@{version}"]
+        result = run(command, cwd=root, capture_output=True, **TEXT_OUTPUT)
+        if result.returncode != 0 or result.stdout.strip():
+            reachable.append(f"{manifest}: {name} {version} is reachable or the graph "
+                             f"check failed (exit {result.returncode})")
+    return reachable
+
+
 def workspace_name(relative: Path) -> str:
     """Stable flat evidence prefix for a workspace manifest."""
     return (
@@ -111,6 +131,9 @@ def scan(kind: str, output: Path, root: Path = ROOT) -> int:
         stale = stale_audit_exceptions(root)
         if stale:
             raise ValueError(f"stale audit exceptions, remove them: {stale}")
+        reachable = reachable_audit_exceptions(root)
+        if reachable:
+            raise ValueError(f"audit exceptions no longer hold: {reachable}")
     for relative in workspaces(root):
         name = workspace_name(relative)
         manifest = root / relative

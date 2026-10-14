@@ -125,5 +125,22 @@ class SecurityWorkspaceTests(unittest.TestCase):
             self.assertEqual(len(stale), 1)
             self.assertIn('rustls 0.23.45 is no longer locked', stale[0])
 
+    def test_audit_exception_fails_when_the_package_becomes_reachable(self):
+        from types import SimpleNamespace
+        calls = []
+        def unreachable(command, **kwargs):
+            calls.append(command)
+            return SimpleNamespace(returncode=0, stdout='', stderr='warning: nothing to print.')
+        self.assertEqual(security.reachable_audit_exceptions(ROOT, run=unreachable), [])
+        self.assertIn('--all-features', calls[0])
+        self.assertEqual(calls[0][calls[0].index('--target') + 1], 'all')
+        self.assertEqual(calls[0][-1], 'rustls@0.23.45')
+        def reachable(command, **kwargs):
+            return SimpleNamespace(returncode=0, stdout='rustls v0.23.45\n└── some-dep\n', stderr='')
+        self.assertEqual(len(security.reachable_audit_exceptions(ROOT, run=reachable)), 1)
+        def failed(command, **kwargs):
+            return SimpleNamespace(returncode=101, stdout='', stderr='error')
+        self.assertEqual(len(security.reachable_audit_exceptions(ROOT, run=failed)), 1)
+
 if __name__ == '__main__':
     unittest.main()
