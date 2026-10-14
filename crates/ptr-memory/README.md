@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-14  
-**Code footprint:** 14 Rust source files · 4510 nonblank source lines · 8 integration-test files · 96 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 14 Rust source files · 4527 nonblank source lines · 8 integration-test files · 98 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -42,7 +42,7 @@
 - DurableKnowledgeStore journals KnowledgeObject.validity (presence byte and u64 per bound, after token_cost), so a bounded validity survives reopen and compaction (tests/durable_knowledge.rs bounded_validity_survives_reopen_and_compaction); journals written before this field are not readable, which affects no released data because the journal is new in this change
 - Automatic compaction in DurableMemoryStore and DurableKnowledgeStore is best effort after the commit: when the journal rewrite fails the already durable mutation still returns success, the failure is exposed through compaction_failures() and last_compaction_error() (cleared by the next successful compaction), and compaction is retried on later commits
 - DurableMemoryStore::open revalidates the replayed records against the configured MemoryLimits (id, body, support and derivation bounds, per-class capacity) and rejects a journal written under more permissive limits with RecoveredRecordInvalid or RecoveredCapacityExceeded, leaving the journal file untouched
-- Deterministic Markdown mirrors (render_memory_mirror, render_knowledge_mirror): sorted, stable output with escaped free text; sensitive record bodies are written as [REDACTED] and raw events appear only as size and SHA-256 digest
+- Deterministic Markdown mirrors (render_memory_mirror, render_knowledge_mirror): sorted, stable output with escaped free text; sensitive record bodies are written as [REDACTED] and raw events appear only as size and SHA-256 digest, and session ids are written only as a truncated SHA-256 digest (session:sha256:<16 hex>) because they may carry client tokens; raw event, object and entity ids are still written escaped
 
 ### Missing for the target architecture
 
