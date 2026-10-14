@@ -545,3 +545,42 @@ fn undecodable_frame_is_a_decode_error() {
         })
     ));
 }
+
+#[test]
+fn promotion_respects_the_semantic_class_capacity() {
+    let file = TempJournal::new("ms-promote-cap");
+    let limits = MemoryLimits {
+        max_records_per_class: 1,
+        ..MemoryLimits::default()
+    };
+    let mut store =
+        DurableMemoryStore::open(&file.0, MemoryStoreOptions { limits, ..quiet() }).unwrap();
+    store
+        .insert(new_record("sem", MemoryClass::Semantic, vec![]))
+        .unwrap();
+    store
+        .insert(new_record(
+            "epi",
+            MemoryClass::Episodic,
+            vec![observation("a", 1)],
+        ))
+        .unwrap();
+    store.advance_committed_revision(Revision(1)).unwrap();
+    let policy = ptr_memory::ConsolidationPolicy {
+        min_independent_sources: 1,
+        episodic_ttl: 10,
+    };
+    let before = store.clock();
+    let result = store.promote(
+        &rid("epi"),
+        &policy,
+        &ptr_memory::PromotionContext::default(),
+    );
+    assert!(matches!(
+        result,
+        Err(MemoryStoreError::CapacityExceeded { limit: 1, .. })
+    ));
+    assert_eq!(store.get(&rid("epi")).unwrap().class, MemoryClass::Episodic);
+    assert_eq!(store.records_of(MemoryClass::Semantic).count(), 1);
+    assert_eq!(store.clock(), before, "nothing committed");
+}

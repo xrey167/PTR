@@ -136,7 +136,12 @@ impl ConsolidationPolicy {
         now: u64,
         contradictions: &[Contradiction],
     ) -> RetentionVerdict {
-        if record.pinned {
+        // A verifier contradiction outranks pinning (Invariant 11); pinning only prevents
+        // forgetting.
+        if record.pinned
+            && !(record.state == RecordState::Authoritative
+                && contradictions.iter().any(|c| c.record == record.id))
+        {
             return RetentionVerdict::Keep;
         }
         match record.state {

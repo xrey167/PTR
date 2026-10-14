@@ -113,7 +113,8 @@ pub enum JournalError {
     },
     /// An append or rewrite payload exceeds `max_record_bytes`.
     RecordTooLarge { len: usize, max: usize },
-    /// The file exceeds `max_file_bytes`.
+    /// The file exceeds `max_file_bytes`. On open the file is refused; on append or rewrite the
+    /// operation is refused before anything is written (`len` is the projected size).
     FileTooLarge { len: u64, max: u64 },
     /// An earlier write failed; the journal refuses further appends because the file tail is
     /// unknown. Reopen it to recover.
@@ -200,6 +201,8 @@ pub struct MemoryJournal {
     kind: JournalKind,
     options: JournalOptions,
     file: File,
+    /// Current file length; every frame is checked against `max_file_bytes` before it is written.
+    len: u64,
     appended_since_open_or_rewrite: u64,
     poisoned: bool,
 }
@@ -294,11 +297,13 @@ impl MemoryJournal {
             .append(true)
             .open(&path)
             .map_err(|e| io_error("open for append", &e))?;
+        let len = file.metadata().map_err(|e| io_error("stat", &e))?.len();
         Ok(Self {
             path,
             kind,
             options,
             file,
+            len,
             appended_since_open_or_rewrite: 0,
             poisoned: false,
         })
@@ -314,6 +319,16 @@ impl MemoryJournal {
         self.appended_since_open_or_rewrite
     }
 
+    /// Reads the intact payloads currently on disk without modifying the file (a torn tail is
+    /// ignored, not truncated). Used to rebuild in-memory state after a failed append.
+    pub(crate) fn read_records(&self) -> Result<Vec<Vec<u8>>, JournalError> {
+        let bytes = fs::read(&self.path).map_err(|e| io_error("read", &e))?;
+        if bytes.len() < HEADER_LEN || bytes[..HEADER_LEN] != header(self.kind) {
+            return Err(JournalError::BadHeader);
+        }
+        scan(&bytes, self.options.max_record_bytes).map(|(records, _)| records)
+    }
+
     /// Appends one framed payload. After an I/O failure the journal is poisoned.
     pub fn append(&mut self, payload: &[u8]) -> Result<(), JournalError> {
         if self.poisoned {
@@ -321,6 +336,14 @@ impl MemoryJournal {
         }
         let mut frame = Vec::with_capacity(FRAME_HEADER_LEN + payload.len());
         encode_frame(&mut frame, payload, self.options.max_record_bytes)?;
+        // Refuse before writing: a file past `max_file_bytes` could not be opened again.
+        let projected = self.len.saturating_add(frame.len() as u64);
+        if projected > self.options.max_file_bytes {
+            return Err(JournalError::FileTooLarge {
+                len: projected,
+                max: self.options.max_file_bytes,
+            });
+        }
         let result = self.file.write_all(&frame).and_then(|()| {
             if self.options.sync_on_append {
                 self.file.sync_data()
@@ -330,6 +353,7 @@ impl MemoryJournal {
         });
         match result {
             Ok(()) => {
+                self.len = projected;
                 self.appended_since_open_or_rewrite =
                     self.appended_since_open_or_rewrite.saturating_add(1);
                 Ok(())
@@ -350,6 +374,13 @@ impl MemoryJournal {
         for payload in payloads {
             encode_frame(&mut image, payload, self.options.max_record_bytes)?;
         }
+        let image_len = image.len() as u64;
+        if image_len > self.options.max_file_bytes {
+            return Err(JournalError::FileTooLarge {
+                len: image_len,
+                max: self.options.max_file_bytes,
+            });
+        }
         let tmp = temp_path(&self.path);
         let write = || -> io::Result<()> {
             let mut file = File::create(&tmp)?;
@@ -367,6 +398,7 @@ impl MemoryJournal {
         match OpenOptions::new().append(true).open(&self.path) {
             Ok(file) => {
                 self.file = file;
+                self.len = image_len;
                 self.appended_since_open_or_rewrite = 0;
                 Ok(())
             }

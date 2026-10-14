@@ -253,3 +253,69 @@ fn mid_file_corruption_surfaces_as_a_journal_error() {
         Err(DurableKnowledgeError::Journal(JournalError::Corrupt { .. }))
     ));
 }
+
+fn tool_event(id: &str, call: Option<(&str, &[u8])>) -> ptr_memory::RawEvent {
+    let mut event = raw_event(id, "c");
+    event.tool_call = call.map(|(name, arguments)| ptr_memory::ToolCall {
+        name: name.to_owned(),
+        arguments: arguments.to_vec(),
+    });
+    event
+}
+
+fn digest_of(event: ptr_memory::RawEvent) -> [u8; 32] {
+    let mut store = KnowledgeStore::default();
+    store.append_raw(event).unwrap();
+    store.state_digest()
+}
+
+#[test]
+fn state_digest_distinguishes_tool_call_presence_and_field_boundaries() {
+    let none = digest_of(tool_event("e", None));
+    let empty = digest_of(tool_event("e", Some(("", b""))));
+    assert_ne!(none, empty, "no tool call vs an empty tool call");
+    let split_a = digest_of(tool_event("e", Some(("a", b"bc"))));
+    let split_b = digest_of(tool_event("e", Some(("ab", b"c"))));
+    assert_ne!(split_a, split_b, "name/arguments boundary");
+    // Tool call arguments vs tool result output must not alias either.
+    let mut with_result = tool_event("e", Some(("n", b"")));
+    with_result.tool_result = Some(ptr_memory::ToolResult {
+        output: b"x".to_vec(),
+    });
+    let mut call_args = tool_event("e", Some(("n", b"x")));
+    call_args.tool_result = Some(ptr_memory::ToolResult { output: Vec::new() });
+    assert_ne!(digest_of(with_result), digest_of(call_args));
+}
+
+#[test]
+fn rejected_journal_write_leaves_no_observable_state_change() {
+    let file = TempJournal::new("dk-rollback");
+    let options = DurableOptions {
+        journal: ptr_memory::JournalOptions {
+            max_record_bytes: 256,
+            ..ptr_memory::JournalOptions::default()
+        },
+        compact_after_records: None,
+    };
+    let mut durable = DurableKnowledgeStore::open(&file.0, options).unwrap();
+    durable.append_raw(raw_event("small", "ok")).unwrap();
+    let before = durable.state_digest();
+    let big = raw_event("big", &"x".repeat(1024));
+    let err = durable.append_raw(big).unwrap_err();
+    assert!(matches!(
+        err,
+        DurableKnowledgeError::Journal(JournalError::RecordTooLarge { .. })
+    ));
+    // The caller was told the append failed, so no reader may see it.
+    assert!(durable
+        .store()
+        .raw(&ptr_types::RawEventId::from("big"))
+        .is_none());
+    assert_eq!(durable.state_digest(), before);
+    // The rejection touched nothing on disk, so the store stays usable and matches a reopen.
+    durable.append_raw(raw_event("after", "ok")).unwrap();
+    let digest = durable.state_digest();
+    drop(durable);
+    let reopened = DurableKnowledgeStore::open(&file.0, options).unwrap();
+    assert_eq!(reopened.state_digest(), digest);
+}

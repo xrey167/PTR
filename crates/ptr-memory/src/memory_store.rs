@@ -578,6 +578,12 @@ impl DurableMemoryStore {
             record.state = RecordState::Authoritative;
             record.revoked_ancestors.clear();
         }
+        if self.class_count(MemoryClass::Semantic) >= self.options.limits.max_records_per_class {
+            return Err(MemoryStoreError::CapacityExceeded {
+                class: crate::record::class_name(MemoryClass::Semantic),
+                limit: self.options.limits.max_records_per_class,
+            });
+        }
         record.class = MemoryClass::Semantic;
         self.commit(vec![record], self.horizon)?;
         Ok(decision)

@@ -313,3 +313,52 @@ fn retention_forgets_stale_unpinned_episodes_and_demotes_contradicted_authority(
     let store = open(&file);
     assert_eq!(store.get(&rid("old")).unwrap().state, RecordState::Retired);
 }
+
+#[test]
+fn contradiction_demotes_a_pinned_authoritative_record() {
+    let file = TempJournal::new("co-pinned-contradiction");
+    let mut store = open(&file);
+    let mut pinned = new_record("p", MemoryClass::Semantic, vec![observation("a", 1)]);
+    pinned.pinned = true;
+    store.insert(pinned).unwrap();
+    store.advance_committed_revision(Revision(1)).unwrap();
+    store
+        .transition(&rid("p"), RecordState::Authoritative)
+        .unwrap();
+    let verdict = policy().decide_retention(
+        store.get(&rid("p")).unwrap(),
+        store.clock(),
+        &[contradiction("p")],
+    );
+    assert_eq!(verdict, RetentionVerdict::Demote);
+    store
+        .apply_retention(&policy(), &[contradiction("p")])
+        .unwrap();
+    assert_eq!(
+        store.get(&rid("p")).unwrap().state,
+        RecordState::NeedsRevalidation
+    );
+}
+
+#[test]
+fn pinning_still_prevents_forgetting_stale_episodes() {
+    let file = TempJournal::new("co-pin-forget");
+    let mut store = open(&file);
+    let mut pinned = new_record("p", MemoryClass::Episodic, vec![]);
+    pinned.pinned = true;
+    store.insert(pinned).unwrap();
+    for i in 0..12 {
+        store
+            .insert(new_record(
+                &format!("f{i}"),
+                MemoryClass::Procedural,
+                vec![],
+            ))
+            .unwrap();
+    }
+    assert!(store.apply_retention(&policy(), &[]).unwrap().is_empty());
+    assert_eq!(
+        store.get(&rid("p")).unwrap().state,
+        RecordState::Provisional
+    );
+}

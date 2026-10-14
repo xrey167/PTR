@@ -151,3 +151,45 @@ fn wrong_store_kind_is_refused() {
         Err(JournalError::KindMismatch { .. })
     ));
 }
+
+#[test]
+fn append_past_max_file_bytes_is_refused_and_the_file_stays_reopenable() {
+    let file = TempJournal::new("jr-filecap");
+    let options = JournalOptions {
+        max_record_bytes: 64,
+        max_file_bytes: 8 + 2 * (8 + 16),
+        sync_on_append: false,
+    };
+    let (mut journal, _) = MemoryJournal::open(&file.0, JournalKind::Memory, options).unwrap();
+    journal.append(&[1; 16]).unwrap();
+    journal.append(&[2; 16]).unwrap();
+    let len = fs::metadata(&file.0).unwrap().len();
+    assert!(matches!(
+        journal.append(&[3; 16]),
+        Err(JournalError::FileTooLarge { max, .. }) if max == options.max_file_bytes
+    ));
+    assert_eq!(fs::metadata(&file.0).unwrap().len(), len, "nothing written");
+    drop(journal);
+    let (_, recovery) = MemoryJournal::open(&file.0, JournalKind::Memory, options).unwrap();
+    assert_eq!(recovery.records.len(), 2);
+}
+
+#[test]
+fn rewrite_past_max_file_bytes_is_refused_and_keeps_the_old_journal() {
+    let file = TempJournal::new("jr-rewritecap");
+    let options = JournalOptions {
+        max_record_bytes: 64,
+        max_file_bytes: 8 + 8 + 16,
+        sync_on_append: false,
+    };
+    let (mut journal, _) = MemoryJournal::open(&file.0, JournalKind::Memory, options).unwrap();
+    journal.append(&[1; 16]).unwrap();
+    let payloads = vec![vec![2; 16], vec![3; 16]];
+    assert!(matches!(
+        journal.rewrite(&payloads),
+        Err(JournalError::FileTooLarge { .. })
+    ));
+    drop(journal);
+    let (_, recovery) = MemoryJournal::open(&file.0, JournalKind::Memory, options).unwrap();
+    assert_eq!(recovery.records, vec![vec![1; 16]]);
+}
