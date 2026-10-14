@@ -36,6 +36,29 @@
 //! | `fact.oversize` | yes | `format-repair` | too many claims, or a field beyond the bound |
 //! | `fact.unknown` | no | none | the snapshot holds nothing for the claim (`Unknown`, not `Fail`) |
 //! | `fact.stale_snapshot` | no | none | the snapshot is not the live revision (`Unknown`) |
+//! | `binding.missing` | yes | `format-repair` | a claim carries no revision or no generation |
+//! | `revision.stale` | yes | `value-repair` | claimed revision is older than the current snapshot |
+//! | `revision.future` | yes | `value-repair` | claimed revision is newer than the current snapshot |
+//! | `generation.stale` | yes | `value-repair` | claimed generation is superseded |
+//! | `generation.future` | yes | `value-repair` | claimed generation is newer than the current one |
+//! | `snapshot.mismatch` | yes | `value-repair` | a bound verifier judged another snapshot than the fabric requires |
+//! | `promotion.malformed` | yes | `format-repair` | claim text, evidence id or source is empty, oversize or has control characters |
+//! | `promotion.oversize` | yes | `format-repair` | more evidence than the policy accepts |
+//! | `promotion.no_evidence` | yes | `schema-repair` | promotion cites no evidence |
+//! | `promotion.derived_only` | yes | `schema-repair` | all evidence is search, index or learned output (invariant 5) |
+//! | `promotion.uncommitted` | yes | `schema-repair` | cited evidence is not committed (invariant 4) |
+//! | `promotion.insufficient_sources` | yes | `schema-repair` | fewer independent committed sources than the policy needs |
+//! | `promotion.no_ledger_evidence` | yes | `schema-repair` | authoritative promotion without committed ledger evidence |
+//! | `promotion.contradicted` | yes | `schema-repair` | a hard deterministic finding contradicts the claim (invariant 11) |
+//! | `process.malformed` | yes | `format-repair` | empty argument vector or a NUL byte in an argument |
+//! | `process.oversize` | yes | `format-repair` | too many arguments or an argument beyond the bound |
+//! | `process.not_allowed` | yes | `format-repair` | the executable is not in the allowlist |
+//! | `process.exit_nonzero` | yes | `value-repair` | the command exited with a configured failure code |
+//! | `process.timeout` | yes | `value-repair` | the command exceeded its wall-clock budget and was killed |
+//! | `process.exit_unmapped` | no | none | exit code that is neither success nor a configured failure (`Unknown`) |
+//! | `process.signal` | no | none | the command was ended by a signal (`Unknown`) |
+//! | `process.spawn` | no | none | the command could not be started or waited on (`Unknown`) |
+//! | `process.output_truncated` | no | none | output beyond the capture bound was discarded |
 //!
 //! Notes on individual rows:
 //!
@@ -48,7 +71,17 @@
 //!   the test visible (`TestVisibility`), so a repair Pod cannot read held-out answers from it.
 //! * `json.truncated` follows the capped violations only if a further violation exists.
 //! * `fact.*` messages name the snapshot revision; the structured revision is
-//!   `FactVerifier::verify_bound`, because `VerificationReport` has no field for it.
+//!   `FactVerifier::verify_bound` (and, with the generation, `BoundVerifier`), because
+//!   `VerificationReport` has no field for it.
+//! * `binding.*`, `revision.*`, `generation.*`, `snapshot.mismatch`, `promotion.*` and
+//!   `process.*` reuse the existing six repair roles, because adding a role variant would break
+//!   exhaustive matches downstream. Their assignment is therefore approximate, and the
+//!   `fact-repair`, `code-repair` and `resource-repair` lists are deliberately left as they were
+//!   (`ptr-router` pins them in a test): an absent binding and a refused or ill-formed request
+//!   are rewritten (`format-repair`); a stale or future binding and a command that exits with a
+//!   failure code or times out are recomputed (`value-repair`); a promotion without admissible
+//!   evidence must be made to satisfy the promotion policy (`schema-repair`). The soft
+//!   `process.*` codes mean the command could not be judged and are never repaired.
 //!
 //! `ptr-router` builds its code routes from this table
 //! (`RepairRoleAssignments` in `ptr-router`).
@@ -151,6 +184,29 @@ pub const CODE_TABLE: &[CodeSpec] = &[
     hard("fact.oversize", RepairRole::Format),
     soft("fact.unknown"),
     soft("fact.stale_snapshot"),
+    hard("binding.missing", RepairRole::Format),
+    hard("revision.stale", RepairRole::Value),
+    hard("revision.future", RepairRole::Value),
+    hard("generation.stale", RepairRole::Value),
+    hard("generation.future", RepairRole::Value),
+    hard("snapshot.mismatch", RepairRole::Value),
+    hard("promotion.malformed", RepairRole::Format),
+    hard("promotion.oversize", RepairRole::Format),
+    hard("promotion.no_evidence", RepairRole::Schema),
+    hard("promotion.derived_only", RepairRole::Schema),
+    hard("promotion.uncommitted", RepairRole::Schema),
+    hard("promotion.insufficient_sources", RepairRole::Schema),
+    hard("promotion.no_ledger_evidence", RepairRole::Schema),
+    hard("promotion.contradicted", RepairRole::Schema),
+    hard("process.malformed", RepairRole::Format),
+    hard("process.oversize", RepairRole::Format),
+    hard("process.not_allowed", RepairRole::Format),
+    hard("process.exit_nonzero", RepairRole::Value),
+    hard("process.timeout", RepairRole::Value),
+    soft("process.exit_unmapped"),
+    soft("process.signal"),
+    soft("process.spawn"),
+    soft("process.output_truncated"),
 ];
 
 /// The row of `code`, if it is one of the table's codes.

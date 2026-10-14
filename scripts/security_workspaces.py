@@ -13,6 +13,26 @@ EXTERNAL_OR_GENERATED = {".git", "target", "vendor", ".venv", "node_modules"}
 EXPECTED = {"Cargo.toml", "model/burn-a0/Cargo.toml", "fuzz/Cargo.toml", "templates/rust-crate/Cargo.toml"}
 TEXT_OUTPUT = {"encoding": "utf-8", "errors": "replace"}
 
+# Advisories cargo-audit may ignore, per workspace. Only for a lockfile that
+# frozen experiment records pin and that therefore may not be updated, and
+# only for a package no target and no feature of that workspace builds. Each
+# entry names the exact locked package: once the lockfile no longer pins it,
+# the entry is stale and the scan fails until it is removed. cargo-deny is
+# never given an exception (deny.toml keeps advisories.ignore empty).
+AUDIT_EXCEPTIONS = {
+    "model/burn-a0/Cargo.toml": {
+        "package": ("rustls", "0.23.45"),
+        "advisories": ("RUSTSEC-2026-0346", "RUSTSEC-2026-0347",
+                       "RUSTSEC-2026-0348", "RUSTSEC-2026-0349"),
+        "reason": (
+            "model/burn-a0 (Cargo.lock included) is pinned by "
+            "implementation_tree_git_digest in frozen M001/M002/M003 records; "
+            "rustls is in its lockfile but `cargo tree --target all "
+            "--all-features -i rustls` finds no path to it, so it is never built"
+        ),
+    },
+}
+
 
 def workspaces(root: Path) -> list[Path]:
     found = []
@@ -43,8 +63,12 @@ def workspaces(root: Path) -> list[Path]:
 
 def scanner_command(kind: str, manifest: Path, root: Path) -> list[str]:
     if kind == "audit":
-        return ["cargo", "+stable", "audit", "--file",
-                str(manifest.with_name("Cargo.lock")), "--json"]
+        command = ["cargo", "+stable", "audit", "--file",
+                   str(manifest.with_name("Cargo.lock")), "--json"]
+        exception = AUDIT_EXCEPTIONS.get(manifest.relative_to(root).as_posix())
+        for advisory in exception["advisories"] if exception else ():
+            command += ["--ignore", advisory]
+        return command
     if kind == "deny":
         # cargo-deny 0.20 (the version .github/workflows/security.yml installs):
         # --config is a root option, before the subcommand. After `check` it is
@@ -54,6 +78,20 @@ def scanner_command(kind: str, manifest: Path, root: Path) -> list[str]:
                 "--manifest-path", str(manifest), "--config",
                 str(root / "deny.toml"), "check"]
     raise ValueError(f"unsupported security scanner: {kind}")
+
+
+def stale_audit_exceptions(root: Path) -> list[str]:
+    """Exceptions whose workspace or exact locked package no longer exists."""
+    stale = []
+    for manifest, exception in sorted(AUDIT_EXCEPTIONS.items()):
+        lock = root / manifest
+        lock = lock.with_name("Cargo.lock")
+        name, version = exception["package"]
+        packages = (tomllib.loads(lock.read_text(encoding="utf-8")).get("package", [])
+                    if lock.is_file() else [])
+        if not any(p.get("name") == name and p.get("version") == version for p in packages):
+            stale.append(f"{manifest}: {name} {version} is no longer locked")
+    return stale
 
 
 def workspace_name(relative: Path) -> str:
@@ -69,6 +107,10 @@ def scan(kind: str, output: Path, root: Path = ROOT) -> int:
     output.mkdir(parents=True, exist_ok=True)
     records = []
     failed = False
+    if kind == "audit":
+        stale = stale_audit_exceptions(root)
+        if stale:
+            raise ValueError(f"stale audit exceptions, remove them: {stale}")
     for relative in workspaces(root):
         name = workspace_name(relative)
         manifest = root / relative
@@ -91,8 +133,11 @@ def scan(kind: str, output: Path, root: Path = ROOT) -> int:
             failed |= result.returncode != 0
         after = hashlib.sha256(lock.read_bytes()).hexdigest()
         failed |= before != after
-        records.append({"manifest": relative.as_posix(), "lock_sha256": before,
-                        "lock_unchanged": before == after, "exit_codes": statuses})
+        record = {"manifest": relative.as_posix(), "lock_sha256": before,
+                  "lock_unchanged": before == after, "exit_codes": statuses}
+        if kind == "audit" and relative.as_posix() in AUDIT_EXCEPTIONS:
+            record["ignored_advisories"] = AUDIT_EXCEPTIONS[relative.as_posix()]
+        records.append(record)
     def version(command: list[str]) -> str:
         return subprocess.check_output(command, cwd=root, **TEXT_OUTPUT).strip()
     report = {"source_sha": version(["git", "rev-parse", "HEAD"]), "rust": version(["rustc", "+stable", "-Vv"]),

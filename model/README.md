@@ -12,7 +12,7 @@ This directory contains model-level configs, modification specifications, kernel
 
 `model/modifications/MOD-001 ... MOD-012` defines hypotheses, implementation points, signals, ablations and falsification criteria.
 
-The production/runtime contract is `crates/ptr-model-api`; `crates/ptr-core` holds the model-side Rust types (a research scaffold), and the only executable neural implementation is `model/burn-a0`, which no runtime path reaches yet.
+The production/runtime contract is `crates/ptr-model-api`; `crates/ptr-core` holds the model-side Rust types and an untrained deterministic f32 CPU reference forward pass (no task training, no parity with A0), and the only trainable neural implementation is `model/burn-a0`, which no runtime path reaches yet.
 
 ## Burn A0 executable prototype
 

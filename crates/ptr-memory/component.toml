@@ -1,7 +1,7 @@
 version = 1
 id = "ptr-memory"
-maturity = "scaffold"
-last_reviewed = "2026-10-13"
+maturity = "prototype"
+last_reviewed = "2026-10-14"
 
 implemented = [
   "KnowledgeObject::digest and content_digest hash length-prefixed, count-prefixed fields and a fixed binary validity (presence byte and two u64), so no choice of strings in a retrieval key, relation or provenance note can make two different objects collide; digests differ from those of earlier builds (nothing committed pins them)",
@@ -22,20 +22,32 @@ implemented = [
   "Ingestion pipeline traits (SemanticTokenizer, EntityExtractor, NamespaceResolver, KnowledgeObjectBuilder) with deterministic reference implementations: whitespace tokenizer, SHA-256-derived entity ids, first-namespace resolver and a builder producing a generation-1 Hot KnowledgeObject with the event as source and provenance; these are placeholders without semantic extraction",
   "InMemoryKvStateRuntime behind the KvStateRuntime trait: continue_state chains states from a CompiledContext digest, invalidate_dependencies marks matching states and all their descendants Invalidated, an invalidated state cannot be continued and must be recomputed",
   "KV continuation is authorized only by an opaque KvStateHandle bound to its creating runtime (ForeignHandle for another runtime's handle); callers get read-only KvStateMetadata and cannot submit edited session/revision/model/adapter/dependency fields",
+  "MemoryJournal: append-only file of framed records (u32 length, in-crate IEEE CRC-32, opaque payload) with a kind-tagged header; open recovers a torn tail (incomplete or CRC-failing final frame is truncated), reports mid-file damage as a typed JournalError::Corrupt without touching the file, bounds record size and total file size (an append or rewrite that would exceed max_file_bytes is refused with FileTooLarge before anything is written), truncates a failed append (write, flush or sync error) back to the pre-append length through a separate write(true) handle (the append handle cannot be truncated on Windows) so the frame never becomes visible on a later open and the journal stays usable for a retry, poisons itself only when that rollback also fails (typed Poisoned until reopen; a cfg(test) fault seam injects sync and truncate failures), and compacts by writing a temporary sibling file and renaming it over the journal; a max_file_bytes below the 8-byte header is refused on open with FileTooLarge before any file is created (test: journal::tests::a_cap_below_the_header_is_refused_before_anything_is_written)",
+  "DurableKnowledgeStore wraps KnowledgeStore: each successful mutation is appended to the journal in a hand-written binary encoding and replayed on open, so state_digest() after reopen equals the digest before close (checked over deterministic pseudo-random operation sequences, including across compaction); rejected operations are not journaled; when an append fails the in-memory store is rebuilt from the intact journal so readers never see a change whose call returned an error (an append that failed on I/O is rolled back in the journal and leaves the wrapper usable, so a retry applies exactly once; the wrapper is poisoned only when the journal could not roll back); state_digest length-prefixes every variable field and tags optional tool call/result presence; compaction rewrites the journal as a snapshot including lifecycle records and revision counters",
+  "DurableMemoryStore keeps typed MemoryRecord values for the semantic, episodic, procedural and epistemic classes in one journaled store: every mutation is one atomic frame (committed revision horizon, logical clock, full new value of each changed record) written before memory is changed, with per-class capacity and field-size bounds and optional automatic compaction",
+  "Record lifecycle is an explicit state machine (Provisional, Authoritative, NeedsRevalidation, Retired, Revoked): only allowed transitions succeed, others return InvalidTransition { id, from, to }, Revoked is terminal, and Authoritative additionally requires a committed observation (Invariant 4) so derived or search support alone can never grant authority (Invariant 5)",
+  "Revocation propagation: revoking a record flags every transitive derived_from dependent as NeedsRevalidation with the revoked ancestor recorded, using a breadth-first, cycle-safe traversal bounded by depth and visited count that changes nothing when a bound is hit; the result is persisted through the journal and a flagged record cannot be re-authorised while a revoked ancestor stands",
+  "Revoked ancestry is inherited along derivation: insert and add_derivation copy the parent's revoked_ancestors markers into the new record (and, for add_derivation, into every transitive dependent), flag it NeedsRevalidation, and the authority gate (also used by promote) refuses it with RevokedAncestor; the markers are part of the existing record codec, so the journal format is unchanged (tests/memory_lifecycle.rs record_derived_from_a_flagged_record_inherits_the_revoked_ancestry, adding_a_derivation_from_a_flagged_record_flags_the_record_and_its_dependents, promotion_cannot_make_a_record_with_revoked_ancestry_authoritative)",
+  "ConsolidationPolicy is a deterministic rule set, not a learned model: an episodic record is promoted to semantic and authoritative after observations from N distinct sources at or below the committed revision, a typed Contradiction rejects promotion regardless of any learned score (Invariant 11), derived/search-only support is rejected (Invariant 5), uncommitted observations defer (Invariant 4); retention forgets stale unpinned episodic records by logical-clock TTL and demotes contradicted authoritative records (a contradiction outranks pinning, pinning only prevents forgetting); promotion into the semantic class is refused with CapacityExceeded at max_records_per_class",
+  "SemanticObject (Goal, Constraint, KnownFact, Hypothesis, Unknown, Relation) with lossless conversion to and from the six String buckets of SemanticCapsule (relations use the text form `subject -[predicate]-> object`); the existing capsule types are unchanged and malformed relation strings are a typed error",
+  "DurableKnowledgeStore journals KnowledgeObject.validity (presence byte and u64 per bound, after token_cost), so a bounded validity survives reopen and compaction (tests/durable_knowledge.rs bounded_validity_survives_reopen_and_compaction); journals written before this field are not readable, which affects no released data because the journal is new in this change",
+  "Automatic compaction in DurableMemoryStore and DurableKnowledgeStore is best effort after the commit: when the journal rewrite fails the already durable mutation still returns success, the failure is exposed through compaction_failures() and last_compaction_error() (cleared by the next successful compaction), and compaction is retried on later commits",
+  "DurableMemoryStore::open revalidates the replayed records against the configured MemoryLimits (id, body, support and derivation bounds, per-class capacity) and rejects a journal written under more permissive limits with RecoveredRecordInvalid or RecoveredCapacityExceeded, leaving the journal file untouched",
+  "Deterministic Markdown mirrors (render_memory_mirror, render_knowledge_mirror): sorted, stable output with escaped free text; sensitive record bodies are written as [REDACTED] and raw events appear only as size and SHA-256 digest, and session ids are written only as a truncated SHA-256 digest (session:sha256:<16 hex>) because they may carry client tokens; raw event, object and entity ids are still written escaped",
 ]
 
 missing = [
-  "Persistent semantic/episodic/procedural/epistemic stores: KnowledgeStore and InMemoryKvStateRuntime are in-memory only",
-  "Lifecycle enforcement and revocation propagation beyond the in-memory KnowledgeStore and KV runtime: nothing is durable and nothing is wired to a ptr-state repository",
-  "Consolidation/promotion policies",
+  "Wiring into a ptr-state repository: the journals are standalone files, not projections of committed ledger events, and nothing proves a record's revision was committed beyond the horizon the caller declares",
+  "KnowledgeObject-level consolidation: promotion/demotion policy covers MemoryRecord only; KnowledgeStore objects and the SemanticCapsule/VerifiedProcedure types are not stored in DurableMemoryStore",
+  "Contradictions are caller-supplied inputs per decision and are not persisted or tracked as unresolved state in the store",
+  "Encryption at rest: sensitive record bodies are redacted in Debug and mirrors but are stored in clear text in the journal",
   "A trained retention model and real semantic tokenization/entity extraction: the reference implementations are deterministic placeholders",
-  "Shared typed semantic objects instead of separate String buckets for goals/constraints/known/hypotheses/unknowns/relations",
-  "Multi-vector/late-interaction representations and human-readable mirror",
+  "Multi-vector/late-interaction representations",
 ]
 
 next = [
   "Replace string payload buckets with shared ptr-types semantic-role/epistemic wrappers while keeping SemanticCapsule aggregate ownership in ptr-memory",
-  "Implement capsule lifecycle repository on ptr-state",
+  "Implement capsule lifecycle repository on ptr-state and drive the committed horizon of DurableMemoryStore from ledger commits",
   "Evaluate editable-memory superiority against strong RAG in E002/E004",
 ]
 
@@ -64,5 +76,13 @@ checks = [
   "ptr-memory tests/retention.rs: retention_preserves_pinned_objects, retention_drops_result_before_dropping_call, retention_rejects_duplicate_scores",
   "ptr-memory tests/retention.rs: context_compiler_rejects_missing_dependencies_and_budget_overflow, dropped_dependency_cannot_satisfy_an_active_object, context_digest_is_independent_of_equal_priority_input_order",
   "ptr-memory tests/retention.rs: kv_runtime_continues_and_requires_recompute_on_dependency_invalidation, kv_handles_are_owned_by_their_runtime, deterministic_ingestion_builds_typed_knowledge_object",
+  "ptr-memory tests/journal.rs: every_torn_tail_length_recovers_the_intact_prefix, mid_file_corruption_is_a_typed_error_and_leaves_the_file_alone, corrupt_last_frame_is_a_torn_write, rewrite_compacts_and_survives_reopen",
+  "ptr-memory tests/durable_knowledge.rs: state_after_reopen_equals_state_before_close_over_a_deterministic_sequence, compaction_shrinks_the_journal_and_preserves_state, rejected_operations_are_not_journaled, durable_store_keeps_invalidation_cascades_across_restart",
+  "ptr-memory tests/memory_lifecycle.rs: only_allowed_transitions_succeed_with_typed_errors_otherwise, authority_requires_a_committed_observation_invariant_4, derived_or_search_support_never_grants_authority_invariant_5, revocation_propagates_to_transitive_dependents_and_is_persisted, revocation_is_cycle_safe, revocation_depth_and_breadth_are_bounded_and_atomic",
+  "ptr-memory tests: contradiction_demotes_a_pinned_authoritative_record, promotion_respects_the_semantic_class_capacity, append_past_max_file_bytes_is_refused_and_the_file_stays_reopenable, rewrite_past_max_file_bytes_is_refused_and_keeps_the_old_journal, state_digest_distinguishes_tool_call_presence_and_field_boundaries, rejected_journal_write_leaves_no_observable_state_change",
+  "ptr-memory tests/consolidation.rs: promotes_after_enough_independent_committed_sources, derived_or_search_only_support_is_rejected_invariant_5, verifier_contradiction_blocks_promotion_whatever_the_score_invariant_11, retention_forgets_stale_unpinned_episodes_and_demotes_contradicted_authority",
+  "ptr-memory tests/semantic_mirror.rs: capsule_buckets_convert_to_typed_objects_and_back_exactly, memory_mirror_is_deterministic_sorted_and_independent_of_insert_order, sensitive_bodies_are_never_written_to_the_mirror",
+  "ptr-memory tests/memory_lifecycle.rs: reopening_with_a_stricter_class_capacity_is_rejected_and_keeps_the_journal, reopening_with_stricter_field_limits_is_rejected_per_violation",
+  "ptr-memory unit tests (journal.rs, durable_knowledge_fault_tests.rs, memory_store_fault_tests.rs): sync_failure_rolls_the_frame_back_and_keeps_the_journal_usable, sync_failure_is_invisible_and_a_retry_applies_exactly_once (both stores), failed_rollback_poisons_the_journal, failed_rollback_poisons_the_wrapper_and_stops_appends, failed_rollback_poisons_and_stops_appends",
   "workspace fmt/check/test/clippy",
 ]

@@ -1,4 +1,9 @@
+mod cli;
+mod events;
+mod ingest;
+mod json;
 mod seal;
+mod trace;
 
 use ptr_config::PtrConfig;
 use std::path::{Path, PathBuf};
@@ -20,6 +25,9 @@ fn main() {
             0
         }
         "seal" => seal_command(args.collect()),
+        "ingest" => ingest::command(args.collect()),
+        "events" => events::command(args.collect()),
+        "trace" => trace::command(args.collect()),
         _ => {
             eprintln!("usage: ptrctl [doctor [repo-root]|layout|seal <options>]");
             2

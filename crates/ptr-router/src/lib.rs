@@ -1,20 +1,35 @@
 mod attention_schema;
+mod candidate;
+mod constraints;
+mod degradation;
 mod findings;
 mod learned;
 mod learning;
 mod ope;
 #[cfg(test)]
 mod ope_tests;
+mod policies;
 mod policy_book;
 mod propensity;
+mod recipe;
 mod router;
 mod sampling;
 mod self_model;
+mod telemetry;
 mod verifier_roles;
 
 pub use attention_schema::{
     AttentionSchema, BalanceStrength, ControlArm, ControlConfig, ControlledScorer, SchemaError,
     SchemaLimits, SchemaReport, TargetPower,
+};
+pub use candidate::CheckedCandidate;
+pub use constraints::{
+    ConstrainedSelector, ConstraintError, ConstraintsOutcome, Criterion, Infeasibility, Objective,
+    Offer, Rejection, RouteConstraints, RouteOption, Selection, Weights, MAX_OPTIONS,
+};
+pub use degradation::{
+    Alternative, AvailabilityView, BackendState, DegradationEscalation, DegradationLevel,
+    FallbackPlan, FallbackPlanner, Resolution, StageChain, StaticAvailability,
 };
 pub use findings::{
     classify, Accepted, AdmissibleScorer, CodeRoute, EligibilitySnapshot, EscalationReason,
@@ -39,11 +54,22 @@ pub use ope::{
     PolicyEstimate, PromotionEvidence, PromotionGate, PromotionRefusal, PromotionRule, Verdict,
     MIN_EFFECTIVE_SAMPLE_FLOOR, MIN_RECORDS_FLOOR, Z_FLOOR,
 };
+pub use policies::{
+    ModelPolicy, PlanError, PlannedRoute, PodPolicy, PodUse, PolicyError, PolicyInputs, PolicyKind,
+    PolicySet, ReasoningMode, ReasoningPolicy, ReferenceModelPolicy, ReferencePodPolicy,
+    ReferenceReasoningPolicy, ReferenceSearchPolicy, SearchMode, SearchPolicy,
+};
 pub use policy_book::{
     ActiveScorer, PolicyAction, PolicyBook, PolicyBookError, PolicyEvent, PolicySink, MAX_EVENTS,
     MAX_VERSIONS,
 };
 pub use propensity::{Propensity, PropensityError};
+pub use recipe::{
+    BackendCapability, BackendId, BackendIdError, BackendRequirement, CapabilitySet, ContextMode,
+    ExecutionRecipe, PlanInputs, PlannerBudgets, RecipeError, RecipePlanner, RequestProfile,
+    RetrievalSource, Stage, StageBudget, StageEffect, StageKind, SymbolicStep,
+    MAX_BACKEND_ID_BYTES, MAX_STAGES,
+};
 pub use router::{
     route_checked, AbstentionReason, AdmittedRepresentation, CheckedRouter, DistributionError,
     PolicyFailure, RouteDistribution, RouteError, RouteFeatures, RouteRequest, RoutedChoice,
@@ -56,6 +82,10 @@ pub use self_model::{
     LinearProbe, LoggedPrediction, LookupTableProbe, PodRef, PrequentialReport, ReliabilityBin,
     SelfContext, SelfModel, SelfModelHint, SelfModelLimits, SelfModelReport, SelfOutcome,
     SelfPrediction, SelfRole, SelfTraceStep, TraceLearner, OVERSIZED_CODE,
+};
+pub use telemetry::{
+    JsonLinesSink, MemorySink, RoutingRecord, RoutingTelemetry, TelemetryError, MAX_FIELD_BYTES,
+    MAX_MEMORY_SINK_RECORDS,
 };
 pub use verifier_roles::{finding_codes_for_role, RepairRoleAssignments};
 
