@@ -404,6 +404,18 @@ pub fn run_with_deadline(
     shape: ThreadedShape,
     deadline: Duration,
 ) -> Result<Outcome, String> {
+    run_gated(seed, shape, deadline, None)
+}
+
+/// `run_with_deadline` with an optional start gate: the coordinator waits for one message on it
+/// before it starts, and leaves without running when the gate's sender is dropped instead. A
+/// test that holds the gate closed gets the timeout path whatever the scheduler does.
+fn run_gated(
+    seed: u64,
+    shape: ThreadedShape,
+    deadline: Duration,
+    start_gate: Option<std::sync::mpsc::Receiver<()>>,
+) -> Result<Outcome, String> {
     let started = Instant::now();
     let stride = shape.fill_rounds * shape.fill_per_producer
         + shape.contend_per_producer
@@ -428,6 +440,11 @@ pub fn run_with_deadline(
     std::thread::Builder::new()
         .name("r001-coordinator".to_string())
         .spawn(move || {
+            if let Some(gate) = start_gate {
+                if gate.recv().is_err() {
+                    return;
+                }
+            }
             let _ = done.send(coordinate(&coordinator));
         })
         .map_err(|error| format!("could not start the coordinator thread: {error}"))?;
@@ -765,9 +782,13 @@ mod tests {
     #[test]
     fn a_stage_that_misses_its_deadline_is_a_hang_not_a_harness_fault() {
         let shape = params::THREADED_REDUCED;
-        // A zero deadline times out before the coordinator can report: a 1 ms wait is rounded
-        // up to the timer period on Windows (about 15 ms), long enough for the reduced run.
-        let out = run_with_deadline(17, shape, Duration::ZERO).expect("an outcome");
+        // The start gate stays closed until the run has returned, so the coordinator cannot report
+        // before the deadline on any scheduler or timer resolution; dropping the gate afterwards
+        // lets the coordinator thread leave without running.
+        let (gate, start_gate) = std::sync::mpsc::channel();
+        let out =
+            run_gated(17, shape, Duration::from_millis(10), Some(start_gate)).expect("an outcome");
+        drop(gate);
         assert_eq!(out.product_hangs, 1);
         assert_eq!(out.offered, 0);
         assert_eq!(out.producers, 4);

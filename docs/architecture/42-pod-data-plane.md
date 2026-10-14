@@ -208,11 +208,13 @@ Rules, each the same as the one already enforced for frames and KV pages, restat
    before every importer has called `cuIpcCloseMemHandle` is undefined behaviour, and a crashing
    producer's context would free its own allocations. The producer imports its staging buffer
    from the supervisor and writes the tensor into it. The producer is therefore an importer too:
-   staging buffers form a pool per (producer, consumer) pair, reused only for that pair, and the
-   supervisor frees a buffer only after **both** the producer's and the consumer's domains have
-   been reaped since it was exported (an import that a reaped process held is closed by the
-   kernel and the driver); while both live, the buffer is reused, never freed, and counts against
-   both quotas (rule 3b). Where no broker is available for a producer, the
+   staging buffers form a pool per (producer, consumer) pair, and the supervisor frees a buffer
+   only after **both** the producer's and the consumer's domains have been reaped since it was
+   exported (an import that a reaped process held is closed by the kernel and the driver); until
+   then it counts against both quotas (rule 3b). A buffer is handed out again only for that pair
+   and only after the consumer that imported it has been reaped, because a consumer that lies
+   about `Consumed` may still map it; while that consumer lives, every new handle gets a fresh
+   buffer. Where no broker is available for a producer, the
    CUDA carriers are disabled for it. E009's GPU cell also runs a live producer that keeps its import open after publishing (the buffer must stay allocated and charged to both quotas until both domains are reaped), and kills the producer during the consumer's
    import and during its copy, and the consumer must either complete a digest-verified copy or
    refuse the handle, never read freed memory.
@@ -277,8 +279,12 @@ Rules, each the same as the one already enforced for frames and KV pages, restat
    endpoint of each reaped worker, receiving and closing every descriptor still queued on it
    (a worker can send one with `SCM_RIGHTS` just before it is recycled, and that reference
    would otherwise survive outside its domain). Only then are the buffers freed and the quotas
-   recredited. CUDA staging buffers of that quota are reused only for later handles addressed to
-   the same consumer, so a lying acknowledgement exposes to a consumer only its own later inputs.
+   recredited. CUDA staging allocations are **never reused while an import of them may be live**: each
+   handle gets a fresh allocation, and an allocation returns to the pool only after the
+   consumer that imported it has been terminated and reaped (the release rule above). A
+   consumer that acknowledges `Consumed` but keeps its VMM mapping therefore cannot read a
+   later tensor through it, not even one addressed to itself before that tensor has passed
+   admission.
    When a consumer's quota is exhausted, new handles to it are refused, and the supervisor
    recycles the **pair**: it lets the current operations finish or cancels them at their
    deadline plus skew, then terminates, reaps and respawns both the consumer and the producer
@@ -531,8 +537,10 @@ is enforced by the receiver in two steps. Before it accepts the first chunk, it 
 reserves** the grant nonce, so a second transfer under the same grant, concurrent or later, is
 refused before any buffer or receiver capacity is reserved for it. Consuming the grant and
 publishing the replica are then **one atomic step** that turns the reservation into a completion
-tombstone; an abandoned or failed transfer turns it into an abandonment tombstone; tombstones are bounded per issuing authority
-(a typed saturation refusal when full) and retained until the grant's deadline plus skew, and
+tombstone; an abandoned or failed transfer turns it into an abandonment tombstone; reservations and tombstones are bounded per issuing authority
+**and receiver-wide** (a count and an encoded-byte cap over all authorities together, so many
+authorities each under their own cap cannot exhaust the receiver; a typed saturation refusal
+when either cap is full, before any buffer is reserved) and retained until the grant's deadline plus skew, and
 grant deadlines are bounded like handle deadlines, so the table cannot grow without limit. Each
 grant also names the receiver's **session id**, a random value the receiver draws at every
 start, so a grant issued before a restart is refused after it even though the tombstones were not
