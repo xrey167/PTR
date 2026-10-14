@@ -1,23 +1,25 @@
-# Desktop setup: Ubuntu 24.04 with two RTX 3090 (originally written for one RTX 4090)
+# Desktop setup: Ubuntu 24.04 on two single-GPU PCs (one RTX 3090, one RTX 4090)
 
-**Kurzfassung (Deutsch).** Dieses Runbook richtet einen frisch installierten Desktop
-(Ubuntu 24.04 LTS, native, kein WSL2; eine NVIDIA RTX 4090 mit 24 GB) für PTR-Experimente
-mit Claude Code ein. Reihenfolge: Ubuntu installieren (Secure Boot: MOK-Schlüssel beim
-Neustart bestätigen; mindestens 200 GB frei), Treiber `nvidia-driver-580-open` installieren
-und mit `nvidia-smi` prüfen, `git` und Repository klonen, `make desktop-setup`, danach
-`make gpu-doctor`, Hugging-Face-Login und OLMoE-Download (ca. 14 GB, fester Revisions-Hash),
-dann `make smoke-gpu`, `make olmoe-sft-smoke` und zuletzt M011. Claude Code startet man im
-Repo-Verzeichnis; der Skill `experiment-run` führt Läufe im Hintergrund aus und überwacht
-sie. Die Smoke-Läufe sind **Pipeline-Belege, keine Evidenz**: ohne Falsifikationskriterien,
-Seeds und Baselines des jeweiligen Experiments wird kein Forschungsergebnis behauptet. Der
-Rest dieses Dokuments ist auf Englisch, wie die übrigen Docs.
+**Kurzfassung (Deutsch).** Dieses Runbook richtet einen frisch installierten Desktop (Ubuntu
+24.04 LTS, native, kein WSL2; je PC eine Karte mit 24 GB, RTX 3090 oder RTX 4090) für
+PTR-Experimente mit Claude Code ein. Reihenfolge: Ubuntu installieren (Secure Boot:
+MOK-Schlüssel beim Neustart bestätigen; mindestens 200 GB frei), Treiber
+`nvidia-driver-580-open` installieren und mit `nvidia-smi` prüfen, `git` und Repository klonen,
+`make desktop-setup`, danach `make gpu-doctor`, Hugging-Face-Login und OLMoE-Download (ca. 14
+GB, fester Revisions-Hash), dann `make smoke-gpu`, `make olmoe-sft-smoke` und zuletzt M011.
+Claude Code startet man im Repo-Verzeichnis; der Skill `experiment-run` führt Läufe im
+Hintergrund aus und überwacht sie. Die Smoke-Läufe sind **Pipeline-Belege, keine Evidenz**: ohne
+Falsifikationskriterien, Seeds und Baselines des jeweiligen Experiments wird kein
+Forschungsergebnis behauptet. Der Rest dieses Dokuments ist auf Englisch, wie die übrigen Docs.
 
 Target: a fresh Ubuntu 24.04 LTS desktop (native, not WSL2) with one NVIDIA RTX 4090
 (24 GiB, Ada, sm_89). The hardware profile is `hardware/rtx4090.toml`. Nothing here
 claims a research result: the smoke runs are pipeline evidence only (see step 7).
 
-**The owner's machine is two RTX 3090, not one 4090.** The text below says 4090 where it was
-written for the reference card; section 10 states what changes for two RTX 3090 (24 GiB each).
+**The owner has two PCs with one card each: an RTX 3090 (`hardware/rtx3090.toml`) and an RTX
+4090 (`hardware/rtx4090.toml`).** Follow steps 1 to 9 on each PC with that PC's profile. The text
+below says 4090 where it was written for the reference card; on the 3090 PC use the `-rtx3090`
+variants named in section 10. Section 10 also keeps the notes for the superseded two-3090 machine.
 
 Everything below was written and unit-tested on a machine without a GPU. The commands that
 need the GPU (driver install, `make smoke-gpu`, `make olmoe-sft-smoke`) have not been run
