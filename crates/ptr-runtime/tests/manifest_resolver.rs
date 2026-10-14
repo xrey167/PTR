@@ -585,3 +585,68 @@ fn the_knowledge_backed_validity_check_refuses_once_a_bound_object_ends() {
         .ensure_valid_at(&digest, ptr_types::Timestamp(15))
         .is_err());
 }
+
+/// A bound object `top` (always valid) that depends on `dep`, which holds in [10, 20).
+fn knowledge_with_a_bounded_dependency() -> (KnowledgeStore, KnowledgeObject, KnowledgeObject) {
+    let (_, template) = knowledge();
+    let mut dep = template.clone();
+    dep.id = KnowledgeObjectId::from("dep");
+    dep.validity = ptr_types::KnowledgeValidity {
+        valid_from: Some(ptr_types::Timestamp(10)),
+        valid_until: Some(ptr_types::Timestamp(20)),
+    };
+    let mut top = template;
+    top.id = KnowledgeObjectId::from("top");
+    top.dependencies = vec![ptr_memory::KnowledgeKey {
+        logical_id: dep.id.clone(),
+        generation: dep.generation,
+    }];
+    let mut store = KnowledgeStore::default();
+    store.register_object(dep.clone()).unwrap();
+    store.register_object(top.clone()).unwrap();
+    (store, top, dep)
+}
+
+#[test]
+fn an_expired_dependency_blocks_admission_and_later_resolution_of_the_manifest() {
+    let (knowledge, top, dep) = knowledge_with_a_bounded_dependency();
+    let pod = descriptor();
+    let mut artifacts = InMemoryArtifactCatalog::default();
+    artifacts.admit(pod.clone()).unwrap();
+    let candidate = manifest(&top, &pod);
+
+    // The bound object always holds, its dependency ended: admission refuses, naming the
+    // dependency.
+    let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+    let refused = runtime.admit_execution_manifest(
+        candidate.clone(),
+        &knowledge,
+        &artifacts,
+        ptr_types::Timestamp(25),
+    );
+    match refused {
+        Err(ptr_runtime::RuntimeManifestError::ExpiredKnowledgeGeneration { key, .. }) => {
+            assert_eq!(key.logical_id, dep.id);
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(runtime.committed_events().is_empty());
+
+    // Admitted while the dependency held; it ends afterwards.
+    runtime
+        .admit_execution_manifest(
+            candidate.clone(),
+            &knowledge,
+            &artifacts,
+            ptr_types::Timestamp(15),
+        )
+        .unwrap();
+    let digest = candidate.manifest_digest;
+    assert!(runtime
+        .resolve_execution_manifest_at(&digest, &knowledge, ptr_types::Timestamp(19))
+        .is_ok());
+    assert!(matches!(
+        runtime.resolve_execution_manifest_at(&digest, &knowledge, ptr_types::Timestamp(20)),
+        Err(ptr_runtime::RuntimeManifestError::ExpiredKnowledgeGeneration { .. })
+    ));
+}

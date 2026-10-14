@@ -2065,6 +2065,8 @@ fn check_egress_refused(event: &LedgerEvent) -> Result<(), io::Error> {
         || *count == 0
         // Saturation means "at least u32::MAX": nothing else is a saturated count.
         || (*saturated && *count != u32::MAX)
+        // `*` stands for several traces, so one refusal cannot carry it.
+        || (trace_id.0 == "*" && *count < 2)
         || !target_ok
         || match source {
             EgressRefusalSource::Pod(source) => source.validate().is_err(),
@@ -3362,6 +3364,22 @@ mod effect_record_tests {
         let count_at = small.len() - 2 - 4;
         small[count_at..count_at + 4].copy_from_slice(&7u32.to_le_bytes());
         assert!(decode_event(&small).is_err());
+    }
+
+    #[test]
+    fn the_many_traces_marker_needs_a_count_of_at_least_two() {
+        for (count, accepted) in [(1u32, false), (2, true), (u32::MAX, true)] {
+            let mut event = egress_refused_event(EgressRefusalReason::RateLimited);
+            if let LedgerEvent::EgressRefused {
+                trace_id, count: c, ..
+            } = &mut event
+            {
+                *trace_id = TraceId("*".into());
+                *c = count;
+            }
+            assert_eq!(check_encodable(&event).is_ok(), accepted, "count {count}");
+            assert_eq!(decode_event(&encode_event(&event)).is_ok(), accepted);
+        }
     }
 
     #[test]

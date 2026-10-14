@@ -10,10 +10,11 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-13  
-**Code footprint:** 9 Rust source files · 9348 nonblank source lines · 16 integration-test files · 202 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 9 Rust source files · 9365 nonblank source lines · 16 integration-test files · 203 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
+- EgressRefused accepts the trace * (several traces) only with a count of at least two
 - LedgerEvent::EgressRefused carries saturated: a count of u32::MAX that stands for at least that many; the flag is one codec byte before the reason code and check_encodable refuses it with any other count
 - EgressRefused carries a count (at least one) and a bounded trace; reason code 5 TopicRequired
 - LedgerEvent::EgressRefused (tag 33): trace, source (EgressRefusalSource: a Pod revision, or Overflow with target * only; tag byte 0/1), redacted target (`*`, host:<16 hex>:<len>:<port> or topic:<16 hex>:<len>, nothing else) and a pinned reason code; the codec and check_encodable refuse every non-canonical form
@@ -127,6 +128,7 @@
 
 ### Current automated checks
 
+- src/lib.rs: the_many_traces_marker_needs_a_count_of_at_least_two
 - src/lib.rs: a_saturated_egress_count_round_trips_and_an_unknown_flag_is_refused
 - effect_record_tests: count zero and an over-long trace are refused
 - effect_record_tests: egress_refusal_round_trips_under_tag_33_and_the_codes_are_pinned and egress_refusal_refuses_every_non_canonical_form

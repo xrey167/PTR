@@ -23,21 +23,45 @@ impl ValidatedExecutionManifest {
         now: Timestamp,
     ) -> Result<(), RuntimeManifestError> {
         for key in &self.knowledge {
-            let Some(object) = knowledge.object_at(key) else {
-                return Err(RuntimeManifestError::MissingKnowledgeGeneration { key: key.clone() });
-            };
-            if object.lifecycle == KnowledgeLifecycle::Invalidated {
-                return Err(RuntimeManifestError::RevokedKnowledgeGeneration { key: key.clone() });
-            }
-            if !object.is_valid_at(now) {
-                return Err(RuntimeManifestError::ExpiredKnowledgeGeneration {
-                    key: key.clone(),
-                    now,
-                });
-            }
+            ensure_closure_valid_at(knowledge, key, now)?;
         }
         Ok(())
     }
+}
+
+/// The most objects one bound object's dependency closure may hold; a larger closure is
+/// refused rather than walked.
+pub const MAX_DEPENDENCY_CLOSURE: usize = 4096;
+
+/// Check, at `now`, that `root` and everything it depends on, transitively, exists, is not
+/// invalidated and holds. An expired dependency names itself in the error, so the caller sees
+/// which object ended.
+fn ensure_closure_valid_at(
+    knowledge: &KnowledgeStore,
+    root: &KnowledgeKey,
+    now: Timestamp,
+) -> Result<(), RuntimeManifestError> {
+    let mut seen = BTreeSet::new();
+    let mut pending = vec![root.clone()];
+    while let Some(key) = pending.pop() {
+        if !seen.insert(key.clone()) {
+            continue;
+        }
+        if seen.len() > MAX_DEPENDENCY_CLOSURE {
+            return Err(RuntimeManifestError::InvalidKnowledgeDependency { key: root.clone() });
+        }
+        let Some(object) = knowledge.object_at(&key) else {
+            return Err(RuntimeManifestError::MissingKnowledgeGeneration { key });
+        };
+        if object.lifecycle == KnowledgeLifecycle::Invalidated {
+            return Err(RuntimeManifestError::RevokedKnowledgeGeneration { key });
+        }
+        if !object.is_valid_at(now) {
+            return Err(RuntimeManifestError::ExpiredKnowledgeGeneration { key, now });
+        }
+        pending.extend(object.dependencies.iter().cloned());
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -642,6 +666,8 @@ pub fn validate_and_build(
         }) {
             return Err(RuntimeManifestError::InvalidKnowledgeDependency { key });
         }
+        // Whatever the object depends on, transitively, must hold at `now` too.
+        ensure_closure_valid_at(knowledge, &key, now)?;
         if object.generation.0 > 1
             && object.supersedes.as_ref().is_none_or(|supersedes| {
                 supersedes.logical_id != object.id

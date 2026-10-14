@@ -17,6 +17,10 @@
 //! At most [`MAX_TRACKED_EGRESS_PODS`] Pods are tracked at once; a new Pod beyond that flushes
 //! the table first.
 //!
+//! Refusals of one `(reason, target)` that came from different traces share a counter; its
+//! event then carries the trace [`MANY_TRACES`] (`*`), which the ledger accepts only with a
+//! count of at least two. Refusals of one trace keep that trace.
+//!
 //! A counter is memory until it is flushed, so a crash loses the refusals of the open window.
 //! That is the price of the bound, and it is acceptable here because a refusal had no effect:
 //! the audit trail is complete for every closed window.
@@ -35,6 +39,10 @@ pub const EGRESS_WINDOW_MILLIS: u64 = 60_000;
 
 /// The most distinct `(reason, target)` pairs counted separately per Pod and window.
 pub const MAX_EGRESS_KEYS_PER_POD: usize = 8;
+
+/// The trace of a counter that stands for refusals from more than one trace. The ledger
+/// accepts it only with a count of at least two.
+pub const MANY_TRACES: &str = "*";
 
 /// The target a refusal is counted under once a Pod has used up its distinct pairs.
 pub const OVERFLOW_TARGET: &str = "*";
@@ -90,8 +98,13 @@ impl Counter {
         }
     }
 
-    /// Add `count` refusals; going past `u32::MAX` pins the count there and says so.
-    fn merge(&mut self, count: u32, saturated: bool) {
+    /// Add `count` refusals of `trace`; going past `u32::MAX` pins the count there and says so.
+    /// Refusals of different traces share one counter, whose trace then reads
+    /// [`MANY_TRACES`]: the event stands for several traces, not for the first of them.
+    fn merge(&mut self, count: u32, saturated: bool, trace: &TraceId) {
+        if self.trace_id != *trace {
+            self.trace_id = TraceId::from(MANY_TRACES);
+        }
         match self.count.checked_add(count) {
             Some(total) => self.count = total,
             None => {
@@ -265,8 +278,8 @@ impl EgressRefusalWindows {
                 self.overflow_window = window;
                 self.overflow
                     .entry(reason.code())
-                    .or_insert_with(|| Counter::new(trace_id))
-                    .merge(count, saturated);
+                    .or_insert_with(|| Counter::new(trace_id.clone()))
+                    .merge(count, saturated, &trace_id);
                 return;
             }
         };
@@ -279,8 +292,8 @@ impl EgressRefusalWindows {
         let key = bounded_key(&pod.counters, reason.code(), &target);
         pod.counters
             .entry(key)
-            .or_insert_with(|| Counter::new(trace_id))
-            .merge(count, saturated);
+            .or_insert_with(|| Counter::new(trace_id.clone()))
+            .merge(count, saturated, &trace_id);
     }
 
     /// Count `count` refusals; return the events of whatever window this closed.
@@ -325,7 +338,7 @@ impl EgressRefusalWindows {
         pod.counters
             .entry(key)
             .or_insert_with(|| Counter::new(trace_id.clone()))
-            .merge(count, false);
+            .merge(count, false, trace_id);
         closed
     }
 }
@@ -691,6 +704,39 @@ mod tests {
             })
             .sum();
         assert_eq!(committed + total(&runtime.egress_refusals), refusals);
+    }
+
+    #[test]
+    fn refusals_from_different_traces_share_a_counter_that_says_so() {
+        let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+        let mut one = record(0, 1);
+        one.trace_id = TraceId::from("trace-a");
+        let mut two = record(0, 2);
+        two.trace_id = TraceId::from("trace-b");
+        runtime.record_egress_refusal(one).unwrap();
+        runtime.record_egress_refusal(two).unwrap();
+        // Same trace twice for another Pod: the trace stays.
+        for _ in 0..2 {
+            let mut same = record(1, 3);
+            same.trace_id = TraceId::from("trace-c");
+            runtime.record_egress_refusal(same).unwrap();
+        }
+        runtime.flush_egress_refusals().unwrap();
+        let mut seen: Vec<(String, u32)> = egress_events(&runtime)
+            .iter()
+            .map(|event| match event {
+                LedgerEvent::EgressRefused {
+                    trace_id, count, ..
+                } => (trace_id.0.clone(), *count),
+                _ => unreachable!(),
+            })
+            .collect();
+        seen.sort();
+        assert_eq!(seen, vec![("*".to_owned(), 2), ("trace-c".to_owned(), 2)]);
+        // One refusal cannot claim to be several traces.
+        let mut forged = record(2, 4);
+        forged.trace_id = TraceId::from(MANY_TRACES);
+        assert!(runtime.record_egress_refusal(forged).is_err());
     }
 
     #[test]
