@@ -2,9 +2,13 @@
 //! debugging. Rendering only: nothing here parses JSON and no wire format depends on it.
 //!
 //! Output is compact, keys appear in a fixed order, strings are escaped per RFC 8259 and
-//! byte strings are lowercase hex. A payload longer than [`MAX_INLINE_PAYLOAD_BYTES`] is not
-//! printed; its length and SHA-256 digest are, so a log line stays small and bounded and a
-//! payload can still be matched against a digest.
+//! byte strings are lowercase hex. By default no payload byte is printed: a payload is
+//! rendered as its length and SHA-256 digest only, so a log line stays small and bounded, a
+//! payload can still be matched against a digest, and a credential carried in a Call or Reply
+//! never reaches a log (Invariant 13). Raw hex of payloads of at most
+//! [`MAX_INLINE_PAYLOAD_BYTES`] bytes is an explicit opt-in:
+//! [`render_control_frame_with`] with [`PayloadRendering::RawHex`]. Larger payloads are
+//! always digest-only.
 
 use std::fmt::Write as _;
 
@@ -14,8 +18,20 @@ use crate::control::ControlFrame;
 use crate::negotiation::{FeatureSet, NegotiatedSession, ProtocolVersion, VersionOffer};
 use crate::TypedPayload;
 
-/// Payloads up to this many bytes are rendered as hex; longer ones are elided.
+/// With [`PayloadRendering::RawHex`], payloads up to this many bytes are rendered as hex;
+/// longer ones are always elided to length and digest.
 pub const MAX_INLINE_PAYLOAD_BYTES: usize = 64;
+
+/// How payload bytes appear in rendered frames.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum PayloadRendering {
+    /// Length and SHA-256 digest only. The default; safe for logs.
+    #[default]
+    DigestOnly,
+    /// Hex of payloads of at most [`MAX_INLINE_PAYLOAD_BYTES`] bytes. Reversible: only for
+    /// payloads known not to be secret (local debugging, tests).
+    RawHex,
+}
 
 /// A JSON string literal (with quotes) for `text`.
 pub fn json_string(text: &str) -> String {
@@ -61,13 +77,13 @@ fn features(set: FeatureSet) -> String {
     format!("[{}]", names.join(","))
 }
 
-fn payload(p: &TypedPayload) -> String {
+fn payload(p: &TypedPayload, mode: PayloadRendering) -> String {
     let head = format!(
         "{{\"type_id\":{},\"len\":{}",
         json_string(&p.type_id.0),
         p.bytes.len()
     );
-    if p.bytes.len() <= MAX_INLINE_PAYLOAD_BYTES {
+    if mode == PayloadRendering::RawHex && p.bytes.len() <= MAX_INLINE_PAYLOAD_BYTES {
         format!("{head},\"bytes\":\"{}\"}}", hex(&p.bytes))
     } else {
         let digest: [u8; 32] = Sha256::digest(&p.bytes).into();
@@ -95,8 +111,14 @@ pub fn render_negotiated(session: &NegotiatedSession) -> String {
     )
 }
 
-/// Renders a control frame as one JSON object with a `"frame"` discriminator first.
+/// Renders a control frame as one JSON object with a `"frame"` discriminator first. Payloads
+/// are digest-only ([`PayloadRendering::DigestOnly`]).
 pub fn render_control_frame(frame: &ControlFrame) -> String {
+    render_control_frame_with(frame, PayloadRendering::DigestOnly)
+}
+
+/// As [`render_control_frame`], with an explicit payload rendering mode.
+pub fn render_control_frame_with(frame: &ControlFrame, mode: PayloadRendering) -> String {
     let kind = json_string(frame.kind().name());
     match frame {
         ControlFrame::Hello {
@@ -136,12 +158,12 @@ pub fn render_control_frame(frame: &ControlFrame) -> String {
         } => format!(
             "{{\"frame\":{kind},\"seq\":{seq},\"idempotency_key\":{},\"payload\":{}}}",
             json_string(idempotency_key.as_str()),
-            payload(p)
+            payload(p, mode)
         ),
         ControlFrame::Reply { seq, payload: p } => {
             format!(
                 "{{\"frame\":{kind},\"seq\":{seq},\"payload\":{}}}",
-                payload(p)
+                payload(p, mode)
             )
         }
     }
@@ -169,31 +191,61 @@ mod tests {
     }
 
     #[test]
-    fn small_payload_is_hex_and_large_payload_is_elided_with_a_digest() {
+    fn raw_hex_is_opt_in_and_large_payload_is_always_elided_with_a_digest() {
         let frame = ControlFrame::Reply {
             seq: 4,
             payload: typed(vec![0x00, 0xAB, 0xFF]),
         };
         assert_eq!(
-            render_control_frame(&frame),
+            render_control_frame_with(&frame, PayloadRendering::RawHex),
             r#"{"frame":"REPLY","seq":4,"payload":{"type_id":"T\"x","len":3,"bytes":"00abff"}}"#
         );
 
         let big = vec![7u8; MAX_INLINE_PAYLOAD_BYTES + 1];
-        let rendered = render_control_frame(&ControlFrame::Reply {
-            seq: 4,
-            payload: typed(big.clone()),
-        });
+        let rendered = render_control_frame_with(
+            &ControlFrame::Reply {
+                seq: 4,
+                payload: typed(big.clone()),
+            },
+            PayloadRendering::RawHex,
+        );
         let digest: [u8; 32] = Sha256::digest(&big).into();
         assert!(rendered.contains("\"len\":65,\"elided\":true"));
         assert!(rendered.contains(&format!("\"sha256\":\"{}\"", hex(&digest))));
         assert!(!rendered.contains("\"bytes\""));
         // The bound is inclusive.
-        let edge = render_control_frame(&ControlFrame::Reply {
-            seq: 1,
-            payload: typed(vec![1u8; MAX_INLINE_PAYLOAD_BYTES]),
-        });
+        let edge = render_control_frame_with(
+            &ControlFrame::Reply {
+                seq: 1,
+                payload: typed(vec![1u8; MAX_INLINE_PAYLOAD_BYTES]),
+            },
+            PayloadRendering::RawHex,
+        );
         assert!(edge.contains("\"bytes\""));
+    }
+
+    #[test]
+    fn default_rendering_never_contains_small_secret_payload_bytes() {
+        let secret = b"hunter2-api-key".to_vec();
+        let digest: [u8; 32] = Sha256::digest(&secret).into();
+        for frame in [
+            ControlFrame::Reply {
+                seq: 1,
+                payload: typed(secret.clone()),
+            },
+            ControlFrame::Call {
+                seq: 2,
+                idempotency_key: crate::control::IdempotencyKey::new("k").unwrap(),
+                payload: typed(secret.clone()),
+            },
+        ] {
+            let rendered = render_control_frame(&frame);
+            assert!(!rendered.contains(&hex(&secret)), "{rendered}");
+            assert!(!rendered.contains("hunter2"), "{rendered}");
+            assert!(!rendered.contains("\"bytes\""), "{rendered}");
+            assert!(rendered.contains(&format!("\"len\":{}", secret.len())));
+            assert!(rendered.contains(&format!("\"sha256\":\"{}\"", hex(&digest))));
+        }
     }
 
     #[test]
@@ -245,7 +297,7 @@ mod tests {
                 idempotency_key: key,
                 payload: typed(vec![]),
             }),
-            r#"{"frame":"CALL","seq":1,"idempotency_key":"k-1","payload":{"type_id":"T\"x","len":0,"bytes":""}}"#
+            r#"{"frame":"CALL","seq":1,"idempotency_key":"k-1","payload":{"type_id":"T\"x","len":0,"elided":true,"sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}}"#
         );
     }
 

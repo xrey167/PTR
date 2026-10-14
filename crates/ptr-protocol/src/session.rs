@@ -34,6 +34,16 @@ use crate::TypedPayload;
 
 pub const DEFAULT_WINDOW: usize = 8;
 pub const DEFAULT_COMPLETED_CAPACITY: usize = 64;
+/// Hard maximum for [`SessionConfig::window`]; larger values are refused with
+/// [`SessionError::WindowTooLarge`] so a host cannot turn the bounded call state into an
+/// effectively unbounded one.
+pub const MAX_WINDOW: usize = 1024;
+/// Hard maximum for [`SessionConfig::completed_capacity`]; larger values are refused with
+/// [`SessionError::CompletedCapacityTooLarge`].
+pub const MAX_COMPLETED_CAPACITY: usize = 65_536;
+/// Hard maximum frames per direction of a [`LoopbackTransport`]; a larger `capacity` passed to
+/// [`LoopbackTransport::pair`] is clamped to this.
+pub const MAX_TRANSPORT_CAPACITY: usize = 65_536;
 /// Most frames [`ProtocolSession::pump`] holds after a failed send: one applied frame produces
 /// at most two (Hello and Decl) and `pump` stops receiving until they are out.
 pub const MAX_UNSENT_FRAMES: usize = 2;
@@ -80,6 +90,16 @@ impl SessionConfig {
 pub enum SessionError {
     ZeroWindow,
     ZeroCompletedCapacity,
+    /// `window` exceeds [`MAX_WINDOW`].
+    WindowTooLarge {
+        requested: usize,
+        max: usize,
+    },
+    /// `completed_capacity` exceeds [`MAX_COMPLETED_CAPACITY`].
+    CompletedCapacityTooLarge {
+        requested: usize,
+        max: usize,
+    },
     /// `frame` is not legal while the session is in `state` (sent or received).
     IllegalTransition {
         state: SessionState,
@@ -242,6 +262,18 @@ impl ProtocolSession {
         }
         if config.completed_capacity == 0 {
             return Err(SessionError::ZeroCompletedCapacity);
+        }
+        if config.window > MAX_WINDOW {
+            return Err(SessionError::WindowTooLarge {
+                requested: config.window,
+                max: MAX_WINDOW,
+            });
+        }
+        if config.completed_capacity > MAX_COMPLETED_CAPACITY {
+            return Err(SessionError::CompletedCapacityTooLarge {
+                requested: config.completed_capacity,
+                max: MAX_COMPLETED_CAPACITY,
+            });
         }
         Ok(Self {
             config,
@@ -835,8 +867,10 @@ pub struct LoopbackTransport {
 }
 
 impl LoopbackTransport {
-    /// Two connected ends; each direction holds at most `capacity` frames.
+    /// Two connected ends; each direction holds at most `capacity` frames, with `capacity`
+    /// clamped to [`MAX_TRANSPORT_CAPACITY`].
     pub fn pair(capacity: usize) -> (Self, Self) {
+        let capacity = capacity.min(MAX_TRANSPORT_CAPACITY);
         let a_to_b: Queue = Arc::default();
         let b_to_a: Queue = Arc::default();
         (
@@ -960,6 +994,51 @@ mod tests {
         assert_eq!(
             ProtocolSession::new(config).unwrap_err(),
             SessionError::ZeroCompletedCapacity
+        );
+    }
+
+    #[test]
+    fn oversize_bounds_are_refused_and_the_maximum_is_accepted() {
+        for window in [usize::MAX, MAX_WINDOW + 1] {
+            let mut config = SessionConfig::new("a", offer(1), 1);
+            config.window = window;
+            assert_eq!(
+                ProtocolSession::new(config).unwrap_err(),
+                SessionError::WindowTooLarge {
+                    requested: window,
+                    max: MAX_WINDOW
+                }
+            );
+        }
+        for cap in [usize::MAX, MAX_COMPLETED_CAPACITY + 1] {
+            let mut config = SessionConfig::new("a", offer(1), 1);
+            config.completed_capacity = cap;
+            assert_eq!(
+                ProtocolSession::new(config).unwrap_err(),
+                SessionError::CompletedCapacityTooLarge {
+                    requested: cap,
+                    max: MAX_COMPLETED_CAPACITY
+                }
+            );
+        }
+        let mut config = SessionConfig::new("a", offer(1), 1);
+        config.window = MAX_WINDOW;
+        config.completed_capacity = MAX_COMPLETED_CAPACITY;
+        assert!(ProtocolSession::new(config).is_ok());
+    }
+
+    #[test]
+    fn transport_capacity_is_clamped() {
+        let (mut left, _right) = LoopbackTransport::pair(usize::MAX);
+        let bye = ControlFrame::Bye { reason: "x".into() };
+        for _ in 0..MAX_TRANSPORT_CAPACITY {
+            left.send(&bye).unwrap();
+        }
+        assert_eq!(
+            left.send(&bye),
+            Err(TransportError::Full {
+                capacity: MAX_TRANSPORT_CAPACITY
+            })
         );
     }
 
