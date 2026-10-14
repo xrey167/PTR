@@ -128,7 +128,8 @@ pub struct PromptOptions {
     pub max_tokens: u32,
     /// The model's answer is cut to this many characters.
     pub max_output_chars: usize,
-    /// The task and previous candidate placed in a prompt are cut to fit this many characters.
+    /// Whole-prompt cap in characters: the task, previous candidate and issue list are cut so the
+    /// finished prompt, template included, never exceeds it.
     pub max_prompt_chars: usize,
 }
 
@@ -159,32 +160,18 @@ pub struct PromptedStats {
     pub last_error: Option<TextModelError>,
 }
 
-/// The generation prompt for the `draw`-th (0-based) request.
-pub fn generation_prompt(task: &str, draw: u32, options: &PromptOptions) -> String {
+/// Line that stands for issues left out of a repair prompt.
+const ISSUES_OMITTED_LINE: &str = "- (further issues omitted)\n";
+
+fn generation_text(task: &str, draw: u32, task_budget: usize) -> String {
     format!(
         "You propose one candidate solution.\n\nTask:\n{}\n\nDraw number: {draw}\n\
          Reply with the candidate only, no commentary.",
-        truncate_chars(task, options.max_prompt_chars)
+        truncate_chars(task, task_budget)
     )
 }
 
-/// The repair prompt for `previous` and the verifier issues named by `issues`.
-pub fn repair_prompt(
-    task: &str,
-    previous: &str,
-    issues: &[String],
-    options: &PromptOptions,
-) -> String {
-    let mut listed = String::new();
-    for issue in issues.iter().take(MAX_PROMPT_ISSUES) {
-        listed.push_str("- ");
-        listed.push_str(truncate_chars(issue, MAX_ISSUE_CHARS));
-        listed.push('\n');
-    }
-    if issues.len() > MAX_PROMPT_ISSUES {
-        listed.push_str("- (further issues omitted)\n");
-    }
-    let budget = options.max_prompt_chars / 2;
+fn repair_text(task: &str, previous: &str, listed: &str, budget: usize) -> String {
     format!(
         "You repair one candidate solution.\n\nTask:\n{}\n\nPrevious candidate:\n{}\n\n\
          The verifier reported these issues:\n{listed}\n\
@@ -192,6 +179,65 @@ pub fn repair_prompt(
         truncate_chars(task, budget),
         truncate_chars(previous, budget)
     )
+}
+
+/// The issue list, at most `budget` characters: lines that do not fit are replaced by a marker.
+fn list_issues(issues: &[String], budget: usize) -> String {
+    let marker = ISSUES_OMITTED_LINE.chars().count();
+    let mut listed = String::new();
+    let mut used = 0;
+    for (index, issue) in issues.iter().take(MAX_PROMPT_ISSUES).enumerate() {
+        let line = format!("- {}\n", truncate_chars(issue, MAX_ISSUE_CHARS));
+        let more = index + 1 < issues.len();
+        let width = line.chars().count();
+        if used + width + if more { marker } else { 0 } > budget {
+            break;
+        }
+        used += width;
+        listed.push_str(&line);
+    }
+    let dropped = issues.len() > MAX_PROMPT_ISSUES || listed.lines().count() < issues.len();
+    if dropped && used + marker <= budget {
+        listed.push_str(ISSUES_OMITTED_LINE);
+    }
+    listed
+}
+
+/// The generation prompt for the `draw`-th (0-based) request, at most
+/// `options.max_prompt_chars` characters.
+pub fn generation_prompt(task: &str, draw: u32, options: &PromptOptions) -> String {
+    let max = options.max_prompt_chars;
+    let prompt = generation_text(task, draw, max);
+    let over = prompt.chars().count().saturating_sub(max);
+    if over == 0 {
+        return prompt;
+    }
+    let task_chars = task.chars().count().min(max);
+    let shrunk = generation_text(task, draw, task_chars.saturating_sub(over));
+    truncate_chars(&shrunk, max).to_owned()
+}
+
+/// The repair prompt for `previous` and the verifier issues named by `issues`, at most
+/// `options.max_prompt_chars` characters. A prompt that fits the budget with the task and the
+/// previous candidate each cut to half of it is returned as built; otherwise the template's
+/// fixed text is subtracted from the budget and the rest is split between the issue list (a
+/// third, with a marker for dropped issues), the task and the previous candidate.
+pub fn repair_prompt(
+    task: &str,
+    previous: &str,
+    issues: &[String],
+    options: &PromptOptions,
+) -> String {
+    let max = options.max_prompt_chars;
+    let first = repair_text(task, previous, &list_issues(issues, usize::MAX), max / 2);
+    if first.chars().count() <= max {
+        return first;
+    }
+    let free = max.saturating_sub(repair_text("", "", "", 0).chars().count());
+    let listed = list_issues(issues, free / 3);
+    let rest = free.saturating_sub(listed.chars().count());
+    let shrunk = repair_text(task, previous, &listed, rest / 2);
+    truncate_chars(&shrunk, max).to_owned()
 }
 
 fn clean(answer: &str, options: &PromptOptions) -> String {
@@ -472,6 +518,67 @@ mod tests {
                 .chars()
                 .count()
                 < 500
+        );
+    }
+
+    #[test]
+    fn the_repairer_never_sends_more_than_the_prompt_budget() {
+        let o = PromptOptions {
+            max_prompt_chars: 256,
+            ..options()
+        };
+        let model = ScriptedTextModel::from_texts(["fixed"]);
+        let mut repairer =
+            PromptedRepairer::<_, String>::new(&model, &"t".repeat(5000), o).unwrap();
+        let previous = Candidate {
+            id: CandidateId::from("c0"),
+            value: "p".repeat(5000),
+            verification: None,
+        };
+        let critique = Critique {
+            candidate: previous.id.clone(),
+            issues: (0..32).map(|i| format!("{i}{}", "x".repeat(500))).collect(),
+            repairable: true,
+        };
+        assert!(repairer.repair(&previous, &critique).is_some());
+        let prompt = &model.prompts()[0].0;
+        assert!(
+            prompt.chars().count() <= 256,
+            "{} chars",
+            prompt.chars().count()
+        );
+    }
+
+    #[test]
+    fn prompts_fit_the_budget_for_every_small_budget_and_multibyte_text() {
+        let issues: Vec<String> = (0..40)
+            .map(|i| format!("é{i}{}", "ß".repeat(300)))
+            .collect();
+        for max in [256usize, 300, 400, 777, 1000, 4000] {
+            let o = PromptOptions {
+                max_prompt_chars: max,
+                ..options()
+            };
+            let r = repair_prompt(&"日".repeat(9000), &"本".repeat(9000), &issues, &o);
+            assert!(
+                r.chars().count() <= max,
+                "repair {max}: {}",
+                r.chars().count()
+            );
+            let g = generation_prompt(&"日".repeat(9000), 12345, &o);
+            assert!(g.chars().count() <= max, "gen {max}: {}", g.chars().count());
+        }
+    }
+
+    #[test]
+    fn prompts_under_the_budget_are_unchanged() {
+        let o = options();
+        let r = repair_prompt("task", "prev", &["a".to_owned(), "b".to_owned()], &o);
+        assert_eq!(
+            r,
+            "You repair one candidate solution.\n\nTask:\ntask\n\nPrevious candidate:\nprev\n\n\
+             The verifier reported these issues:\n- a\n- b\n\n\
+             Reply with the corrected candidate only, no commentary."
         );
     }
 }
