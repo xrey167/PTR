@@ -66,7 +66,13 @@ impl RequestTracing {
             ..OtlpFileConfig::default()
         };
         Ok(Self {
-            tracer: Tracer::new(TracerConfig::default(), clock),
+            tracer: Tracer::new(
+                TracerConfig {
+                    id_seed: instance_seed(epoch_ns),
+                    ..TracerConfig::default()
+                },
+                clock,
+            ),
             exporter: OtlpJsonFileExporter::new(options.export_path, config),
             max_bytes: options.max_export_bytes,
             written: Mutex::new(existing),
@@ -175,6 +181,21 @@ impl RequestTracing {
 /// can be a low-entropy credential (`hunter2`) that the redactor's entropy threshold does not
 /// recognise, so no value is trusted as plain. The same id always maps to the same digest, so
 /// traces stay correlatable; the raw value is never recorded.
+/// A trace-id seed unique to this tracing instance, so a restarted server appending to the same
+/// export file never repeats the previous process's `traceId`/`spanId` sequence: wall clock, process
+/// id and a process-wide counter, mixed through SHA-256.
+fn instance_seed(epoch_ns: u64) -> u64 {
+    static INSTANCES: AtomicU64 = AtomicU64::new(0);
+    let mut hasher = Sha256::new();
+    hasher.update(epoch_ns.to_le_bytes());
+    hasher.update(std::process::id().to_le_bytes());
+    hasher.update(INSTANCES.fetch_add(1, Ordering::Relaxed).to_le_bytes());
+    let digest = hasher.finalize();
+    let mut seed = [0u8; 8];
+    seed.copy_from_slice(&digest[..8]);
+    u64::from_le_bytes(seed)
+}
+
 fn hashed_id(id: &str) -> String {
     let digest = Sha256::digest(id.as_bytes());
     let hex: String = digest.iter().take(8).map(|b| format!("{b:02x}")).collect();
@@ -381,6 +402,30 @@ mod tests {
             "no write once poisoned"
         );
         assert_eq!(tracing.export_errors(), 3);
+        let _ = std::fs::remove_file(path);
+    }
+
+    fn first_trace_id(path: &std::path::Path, line: usize) -> String {
+        let text = std::fs::read_to_string(path).unwrap();
+        let value: serde_json::Value =
+            serde_json::from_str(text.lines().nth(line).unwrap()).unwrap();
+        value["resourceSpans"][0]["scopeSpans"][0]["spans"][0]["traceId"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    }
+
+    #[test]
+    fn a_restarted_server_appending_to_the_same_file_never_reuses_trace_ids() {
+        let path = temp_file("restart");
+        // Two instances one after the other on the same export file, like a restart.
+        let first = tracing_at(&path, 1 << 20);
+        emit(&first, "a");
+        drop(first);
+        let second = tracing_at(&path, 1 << 20);
+        emit(&second, "b");
+        assert_well_formed(&path, 2);
+        assert_ne!(first_trace_id(&path, 0), first_trace_id(&path, 1));
         let _ = std::fs::remove_file(path);
     }
 }
