@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 
-use crate::node::InspectNode;
+use crate::node::{structural_eq, InspectNode};
 use crate::path::{InspectPath, PathSegment};
 use crate::render::key_label;
 
@@ -50,6 +50,33 @@ pub fn diff(old: &InspectNode, new: &InspectNode) -> Vec<Change> {
     changes
 }
 
+const BEYOND_DEPTH_NOTE: &str = "<subtree beyond diff depth limit>";
+
+/// Owned copy of `node` for a [`Change`]. A subtree nested deeper than [`MAX_DIFF_DEPTH`] is
+/// replaced by an opaque note: the derived `Clone` and `Drop` of such a tree recurse once per
+/// level, so copying it into a result the caller will drop could overflow the stack.
+fn snapshot(node: &InspectNode) -> InspectNode {
+    let mut stack = vec![(node, 0usize)];
+    while let Some((current, depth)) = stack.pop() {
+        let children: Vec<&InspectNode> = match current {
+            InspectNode::Struct { fields, .. } | InspectNode::Enum { fields, .. } => {
+                fields.iter().map(|(_, v)| v).collect()
+            }
+            InspectNode::List(items) => items.iter().collect(),
+            InspectNode::Map(entries) => entries.iter().flat_map(|(k, v)| [k, v]).collect(),
+            _ => Vec::new(),
+        };
+        if children.is_empty() {
+            continue;
+        }
+        if depth >= MAX_DIFF_DEPTH {
+            return InspectNode::text(BEYOND_DEPTH_NOTE);
+        }
+        stack.extend(children.into_iter().map(|child| (child, depth + 1)));
+    }
+    node.clone()
+}
+
 fn push(changes: &mut Vec<Change>, path: &InspectPath, kind: ChangeKind) {
     changes.push(Change {
         path: path.clone(),
@@ -85,7 +112,7 @@ fn diff_at(
     }
     if depth >= MAX_DIFF_DEPTH {
         if old != new {
-            let note = InspectNode::text("<subtree beyond diff depth limit>");
+            let note = InspectNode::text(BEYOND_DEPTH_NOTE);
             let kind = ChangeKind::Changed {
                 from: note.clone(),
                 to: note,
@@ -121,8 +148,8 @@ fn diff_at(
                 diff_fields(old_fields, new_fields, path, depth, changes);
             } else {
                 let kind = ChangeKind::Changed {
-                    from: old.clone(),
-                    to: new.clone(),
+                    from: snapshot(old),
+                    to: snapshot(new),
                 };
                 push(changes, path, kind);
             }
@@ -132,8 +159,8 @@ fn diff_at(
                 path.push(PathSegment::Index(index));
                 match (old_items.get(index), new_items.get(index)) {
                     (Some(a), Some(b)) => diff_at(a, b, path, depth + 1, changes),
-                    (Some(a), None) => push(changes, path, ChangeKind::Removed(a.clone())),
-                    (None, Some(b)) => push(changes, path, ChangeKind::Added(b.clone())),
+                    (Some(a), None) => push(changes, path, ChangeKind::Removed(snapshot(a))),
+                    (None, Some(b)) => push(changes, path, ChangeKind::Added(snapshot(b))),
                     (None, None) => {}
                 }
                 path.pop();
@@ -146,16 +173,16 @@ fn diff_at(
             || matches!(old, InspectNode::Struct { .. } | InspectNode::Enum { .. }) =>
         {
             let kind = ChangeKind::TypeChanged {
-                from: old.clone(),
-                to: new.clone(),
+                from: snapshot(old),
+                to: snapshot(new),
             };
             push(changes, path, kind);
         }
         _ => {
             if !scalar_equal(old, new) {
                 let kind = ChangeKind::Changed {
-                    from: old.clone(),
-                    to: new.clone(),
+                    from: snapshot(old),
+                    to: snapshot(new),
                 };
                 push(changes, path, kind);
             }
@@ -174,14 +201,14 @@ fn diff_fields(
         path.push(PathSegment::Field(name.clone()));
         match new_fields.iter().find(|(n, _)| n == name) {
             Some((_, new_value)) => diff_at(old_value, new_value, path, depth + 1, changes),
-            None => push(changes, path, ChangeKind::Removed(old_value.clone())),
+            None => push(changes, path, ChangeKind::Removed(snapshot(old_value))),
         }
         path.pop();
     }
     for (name, new_value) in new_fields {
         if !old_fields.iter().any(|(n, _)| n == name) {
             path.push(PathSegment::Field(name.clone()));
-            push(changes, path, ChangeKind::Added(new_value.clone()));
+            push(changes, path, ChangeKind::Added(snapshot(new_value)));
             path.pop();
         }
     }
@@ -215,14 +242,14 @@ fn diff_map(
                 matched[i] = true;
                 diff_at(old_value, &new_entries[i].1, path, depth + 1, changes);
             }
-            None => push(changes, path, ChangeKind::Removed(old_value.clone())),
+            None => push(changes, path, ChangeKind::Removed(snapshot(old_value))),
         }
         path.pop();
     }
     for (index, (key, new_value)) in new_entries.iter().enumerate() {
         if !matched[index] {
             path.push(PathSegment::Key(key_label(key)));
-            push(changes, path, ChangeKind::Added(new_value.clone()));
+            push(changes, path, ChangeKind::Added(snapshot(new_value)));
             path.pop();
         }
     }
@@ -230,48 +257,9 @@ fn diff_map(
 
 /// Exact structural equality of two map keys (NaN equals NaN, as in `scalar_equal`). Two
 /// redaction markers are equal, so redacted keys never reveal or compare hidden content.
+/// Iterative, so a map key nested arbitrarily deep cannot overflow the stack.
 fn key_equal(a: &InspectNode, b: &InspectNode) -> bool {
-    match (a, b) {
-        (InspectNode::List(x), InspectNode::List(y)) => {
-            x.len() == y.len() && x.iter().zip(y).all(|(p, q)| key_equal(p, q))
-        }
-        (InspectNode::Map(x), InspectNode::Map(y)) => {
-            x.len() == y.len()
-                && x.iter()
-                    .zip(y)
-                    .all(|((k1, v1), (k2, v2))| key_equal(k1, k2) && key_equal(v1, v2))
-        }
-        (
-            InspectNode::Struct {
-                name: n1,
-                fields: f1,
-            },
-            InspectNode::Struct {
-                name: n2,
-                fields: f2,
-            },
-        ) => n1 == n2 && fields_equal(f1, f2),
-        (
-            InspectNode::Enum {
-                name: n1,
-                variant: v1,
-                fields: f1,
-            },
-            InspectNode::Enum {
-                name: n2,
-                variant: v2,
-                fields: f2,
-            },
-        ) => n1 == n2 && v1 == v2 && fields_equal(f1, f2),
-        _ => scalar_equal(a, b),
-    }
-}
-
-fn fields_equal(a: &[(String, InspectNode)], b: &[(String, InspectNode)]) -> bool {
-    a.len() == b.len()
-        && a.iter()
-            .zip(b)
-            .all(|((n1, v1), (n2, v2))| n1 == n2 && key_equal(v1, v2))
+    structural_eq(a, b, true)
 }
 
 #[cfg(test)]

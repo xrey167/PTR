@@ -422,3 +422,72 @@ fn unencodable_cancel_close_and_reply_do_not_mutate_session_state() {
     assert_eq!(e.queued_calls(), 0);
     assert_eq!(e.completed_keys(), 0);
 }
+
+fn bad_configs() -> Vec<(&'static str, SessionConfig)> {
+    let empty_id = SessionConfig::new("", offer(), 1);
+    let long_id = SessionConfig::new(
+        "n".repeat(ptr_protocol::control::MAX_STRING_BYTES + 1),
+        offer(),
+        1,
+    );
+    let mut malformed = offer();
+    malformed.supported.clear();
+    let bad_offer = SessionConfig::new("node-bad", malformed, 1);
+    let mut many_caps = SessionConfig::new("node-caps", offer(), 1);
+    many_caps.capabilities =
+        vec![CapabilityId::from("c"); ptr_protocol::control::MAX_CAPABILITIES + 1];
+    vec![
+        ("empty node id", empty_id),
+        ("oversized node id", long_id),
+        ("malformed offer", bad_offer),
+        ("oversized capability list", many_caps),
+    ]
+}
+
+#[test]
+fn start_with_an_unencodable_config_is_refused_and_leaves_the_session_idle() {
+    for (name, config) in bad_configs() {
+        let mut bad = ProtocolSession::new(config).unwrap();
+        assert!(
+            matches!(bad.start(), Err(SessionError::Encode(_))),
+            "{name}: start must be refused with Encode"
+        );
+        assert_eq!(bad.state(), SessionState::Idle, "{name}");
+        // Still Idle, so it is refused the same way again rather than IllegalTransition.
+        assert!(
+            matches!(bad.start(), Err(SessionError::Encode(_))),
+            "{name}"
+        );
+    }
+    // A session with a fixed config starts and negotiates over loopback.
+    let ((a, _ta), (b, _tb)) = handshake();
+    assert_eq!(a.state(), SessionState::Negotiated);
+    assert_eq!(b.state(), SessionState::Negotiated);
+}
+
+#[test]
+fn responding_to_a_hello_with_an_unencodable_config_does_not_negotiate() {
+    let mut peer = session("node-a", "predict");
+    let hello = peer.start().unwrap();
+    for (name, config) in bad_configs() {
+        let mut bad = ProtocolSession::new(config).unwrap();
+        if name == "malformed offer" {
+            // The negotiation itself refuses an invalid local offer: a typed handshake
+            // failure that closes with a farewell, not an unsendable reply.
+            assert!(matches!(
+                bad.on_frame(hello.clone()),
+                Err(SessionError::Negotiation(_))
+            ));
+            assert_eq!(bad.state(), SessionState::Closed);
+            assert!(bad.take_farewell().is_some());
+            continue;
+        }
+        assert!(
+            matches!(bad.on_frame(hello.clone()), Err(SessionError::Encode(_))),
+            "{name}: reply to Hello must be refused with Encode"
+        );
+        assert_eq!(bad.state(), SessionState::Idle, "{name}");
+        assert!(bad.negotiated().is_none(), "{name}");
+        assert!(bad.peer_node_id().is_none(), "{name}");
+    }
+}

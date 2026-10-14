@@ -15,7 +15,7 @@ use ptr_types::{
     VerificationLevel, ZoneId,
 };
 
-use crate::node::{InspectNode, Inspectable};
+use crate::node::{fingerprint_label, fnv1a64, InspectNode, Inspectable};
 
 impl Inspectable for bool {
     fn inspect(&self) -> InspectNode {
@@ -267,12 +267,44 @@ macro_rules! inspect_newtype {
 inspect_newtype!(
     Revision => 0, Generation => 0, CommitIndex => 0, FencingToken => 0, Timestamp => 0,
     ProjectId => 0, CapsuleId => 0, ArtifactId => 0, CapabilityId => 0, TypeId => 0,
-    PodId => 0, PodIdentity => 0, CandidateId => 0, RequestId => 0, NodeId => 0,
+    PodId => 0, PodIdentity => 0, CandidateId => 0, NodeId => 0,
     EvidenceId => 0, KnowledgeObjectId => 0, NamespaceId => 0, RawEventId => 0, StateId => 0,
-    ScopeId => 0, SessionId => 0, ModelVersion => 0, AdapterVersion => 0, PolicyVersion => 0,
-    EntityId => 0, RetrievalKey => 0, DeviceId => 0, ExecutorIdentity => 0, KeyId => 0,
-    RegionId => 0, ZoneId => 0, PeerId => 0, TraceId => 0, NetworkId => 0, InvitationId => 0,
-    PrincipalId => 0,
+    ScopeId => 0, ModelVersion => 0, AdapterVersion => 0, PolicyVersion => 0,
+    EntityId => 0, DeviceId => 0, ExecutorIdentity => 0, KeyId => 0,
+    RegionId => 0, ZoneId => 0, PeerId => 0, NetworkId => 0, PrincipalId => 0,
+);
+
+/// Digest text for a client-controlled string: `<label>:fnv1a64:<16 hex>`. Deterministic, so the
+/// same value correlates across renderings, but the content is not shown. FNV-1a 64 is not a
+/// cryptographic digest (`ptr-inspect` has no hash dependency): it hides a high-entropy
+/// credential, not a low-entropy value an attacker can enumerate.
+fn client_digest(label: &str, value: &str) -> InspectNode {
+    InspectNode::text(format!(
+        "{label}:{}",
+        fingerprint_label(fnv1a64(value.as_bytes()))
+    ))
+}
+
+/// Identifiers whose content a client chooses or carries (a session id can be a bearer
+/// credential, a request or trace id arrives in headers, an invitation id is a join token, a
+/// retrieval key is derived from user text), so they render as a digest, never verbatim.
+/// System-assigned identifiers stay readable in `inspect_newtype!` above.
+macro_rules! inspect_client_digest {
+    ($($ty:ident => $label:literal),* $(,)?) => {$(
+        impl Inspectable for $ty {
+            fn inspect(&self) -> InspectNode {
+                InspectNode::new_struct(stringify!($ty), vec![("value", client_digest($label, &self.0))])
+            }
+        }
+    )*};
+}
+
+inspect_client_digest!(
+    SessionId => "session",
+    RequestId => "request",
+    TraceId => "trace",
+    InvitationId => "invitation",
+    RetrievalKey => "retrieval",
 );
 
 macro_rules! inspect_unit_enum {
@@ -332,7 +364,12 @@ impl Inspectable for ProvenanceRef {
             "ProvenanceRef",
             vec![
                 ("source", self.source.inspect()),
-                ("note", Inspectable::inspect(&self.note)),
+                (
+                    "note",
+                    self.note
+                        .as_deref()
+                        .map_or(InspectNode::Null, |note| client_digest("note", note)),
+                ),
             ],
         )
     }

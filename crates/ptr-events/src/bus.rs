@@ -680,7 +680,8 @@ impl EventProducer for InMemoryBus {
         validate_new(&record, self.config.max_record_bytes)?;
         self.compact();
         let size = record.topic.len() + record.key.len() + record.payload.len();
-        let drops = self.config.policies.telemetry() == BackpressurePolicy::DropOldestTelemetry;
+        let drops =
+            self.config.policies.for_class(record.class) == BackpressurePolicy::DropOldestTelemetry;
         loop {
             match self.check_room(size) {
                 Ok(()) => break,
@@ -870,7 +871,7 @@ mod tests {
         bus.register("c", Offset(0)).unwrap();
         bus.publish(rec(EventClass::Telemetry, "a")).unwrap();
         bus.publish(rec(EventClass::Projection, "b")).unwrap();
-        bus.publish(rec(EventClass::Projection, "c")).unwrap();
+        bus.publish(rec(EventClass::Telemetry, "c")).unwrap();
         assert_eq!(bus.low_water(), Offset(1));
         assert_eq!(bus.dropped("c"), Ok(1));
         assert_eq!(bus.total_dropped(), 1);

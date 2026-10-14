@@ -304,6 +304,10 @@ impl ProtocolSession {
     /// Opens the session from this end: `Idle -> HelloSent`.
     pub fn start(&mut self) -> Result<ControlFrame, SessionError> {
         self.require(&[SessionState::Idle], FrameKind::Hello)?;
+        // The Hello and the Decl that follows it both come from the config: refuse an
+        // unencodable one now, while the session is still Idle, rather than hand back a frame
+        // the caller cannot send after the state has moved on.
+        self.ensure_handshake_encodable()?;
         self.state = SessionState::HelloSent;
         Ok(self.hello())
     }
@@ -581,6 +585,8 @@ impl ProtocolSession {
             Ok(negotiated) => negotiated,
             Err(error) => return Err(self.fail_handshake(SessionError::Negotiation(error))),
         };
+        // Answering needs this end's Hello and Decl on the wire; check before any state moves.
+        self.ensure_handshake_encodable()?;
         self.negotiated = Some(negotiated);
         self.peer_node = Some(node_id);
         self.peer_nonce = Some(nonce);
@@ -664,6 +670,14 @@ impl ProtocolSession {
         Ok(Handled {
             send: Vec::new(),
             event: SessionEvent::CallQueued { seq },
+        })
+    }
+
+    /// The two frames this end's config produces during the handshake must be encodable.
+    fn ensure_handshake_encodable(&self) -> Result<(), SessionError> {
+        ensure_encodable(&self.hello())?;
+        ensure_encodable(&ControlFrame::Decl {
+            capabilities: self.config.capabilities.clone(),
         })
     }
 

@@ -9,7 +9,7 @@ pub const MAX_BYTES_PREVIEW: usize = 32;
 ///
 /// Integers are kept lossless (`Int` holds every `i64`/`i128`, `UInt` every `u64`/`u128`);
 /// `Number` is for floating point only. `Redacted` and `RedactedWith` never carry content.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub enum InspectNode {
     Null,
     Bool(bool),
@@ -38,6 +38,91 @@ pub enum InspectNode {
     Redacted,
     /// A redacted value that still says what kind of value was withheld.
     RedactedWith(RedactionHint),
+}
+
+/// `PartialEq` of `InspectNode` is written with an explicit stack instead of derived recursion,
+/// so comparing trees nested hundreds of thousands of levels deep cannot overflow the call stack.
+impl PartialEq for InspectNode {
+    fn eq(&self, other: &Self) -> bool {
+        structural_eq(self, other, false)
+    }
+}
+
+/// Iterative structural equality with the semantics of a derived `PartialEq` (floats compare
+/// with `==`, so NaN differs from NaN) unless `nan_equal`, which also treats two NaNs as equal.
+/// The explicit stack is heap-allocated, so tree depth cannot overflow the call stack.
+pub(crate) fn structural_eq(a: &InspectNode, b: &InspectNode, nan_equal: bool) -> bool {
+    fn fields_match<'a>(
+        x: &'a [(String, InspectNode)],
+        y: &'a [(String, InspectNode)],
+        stack: &mut Vec<(&'a InspectNode, &'a InspectNode)>,
+    ) -> bool {
+        if x.len() != y.len() || x.iter().zip(y).any(|((n1, _), (n2, _))| n1 != n2) {
+            return false;
+        }
+        stack.extend(x.iter().zip(y).map(|((_, v1), (_, v2))| (v1, v2)));
+        true
+    }
+    let mut stack = vec![(a, b)];
+    while let Some((x, y)) = stack.pop() {
+        let equal = match (x, y) {
+            (InspectNode::Null, InspectNode::Null)
+            | (InspectNode::Redacted, InspectNode::Redacted) => true,
+            (InspectNode::Bool(p), InspectNode::Bool(q)) => p == q,
+            (InspectNode::Number(p), InspectNode::Number(q)) => {
+                p == q || (nan_equal && p.is_nan() && q.is_nan())
+            }
+            (InspectNode::Int(p), InspectNode::Int(q)) => p == q,
+            (InspectNode::UInt(p), InspectNode::UInt(q)) => p == q,
+            (InspectNode::Text(p), InspectNode::Text(q)) => p == q,
+            (InspectNode::Bytes(p), InspectNode::Bytes(q)) => p == q,
+            (InspectNode::RedactedWith(p), InspectNode::RedactedWith(q)) => p == q,
+            (
+                InspectNode::Struct {
+                    name: n1,
+                    fields: f1,
+                },
+                InspectNode::Struct {
+                    name: n2,
+                    fields: f2,
+                },
+            ) => n1 == n2 && fields_match(f1, f2, &mut stack),
+            (
+                InspectNode::Enum {
+                    name: n1,
+                    variant: v1,
+                    fields: f1,
+                },
+                InspectNode::Enum {
+                    name: n2,
+                    variant: v2,
+                    fields: f2,
+                },
+            ) => n1 == n2 && v1 == v2 && fields_match(f1, f2, &mut stack),
+            (InspectNode::List(p), InspectNode::List(q)) => {
+                let same_len = p.len() == q.len();
+                if same_len {
+                    stack.extend(p.iter().zip(q));
+                }
+                same_len
+            }
+            (InspectNode::Map(p), InspectNode::Map(q)) => {
+                let same_len = p.len() == q.len();
+                if same_len {
+                    for ((k1, v1), (k2, v2)) in p.iter().zip(q) {
+                        stack.push((k1, k2));
+                        stack.push((v1, v2));
+                    }
+                }
+                same_len
+            }
+            _ => false,
+        };
+        if !equal {
+            return false;
+        }
+    }
+    true
 }
 
 /// Length, fingerprint and a bounded prefix of a byte string.
@@ -252,6 +337,35 @@ pub(crate) fn hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn equality_keeps_derived_semantics() {
+        let nan = InspectNode::Number(f64::NAN);
+        assert_ne!(nan, nan.clone());
+        assert!(structural_eq(&nan, &nan, true));
+        let a = InspectNode::new_struct(
+            "S",
+            vec![("x", InspectNode::List(vec![InspectNode::Int(1)]))],
+        );
+        assert_eq!(a, a.clone());
+        assert_ne!(
+            a,
+            InspectNode::new_struct(
+                "S",
+                vec![("y", InspectNode::List(vec![InspectNode::Int(1)]))]
+            )
+        );
+        assert_ne!(
+            a,
+            InspectNode::new_struct(
+                "T",
+                vec![("x", InspectNode::List(vec![InspectNode::Int(1)]))]
+            )
+        );
+        assert_ne!(InspectNode::Int(1), InspectNode::UInt(1));
+        assert_eq!(InspectNode::Redacted, InspectNode::Redacted);
+        assert_ne!(InspectNode::Redacted, InspectNode::Null);
+    }
 
     #[test]
     fn fnv_matches_published_vectors() {

@@ -87,15 +87,15 @@ fn drop_oldest_telemetry_counts_drops_per_consumer() {
     bus.publish(telemetry("t2")).unwrap();
     // b has acknowledged t1; a has not. Depth counts from the slowest consumer (a).
     bus.commit("b", Offset(1)).unwrap();
-    bus.publish(projection("p2")).unwrap();
-    assert_eq!(keys(&bus.poll("a", 10).unwrap()), ["p1", "t2", "p2"]);
+    bus.publish(telemetry("t3")).unwrap();
+    assert_eq!(keys(&bus.poll("a", 10).unwrap()), ["p1", "t2", "t3"]);
     assert_eq!(bus.dropped("a"), Ok(1));
     assert_eq!(bus.dropped("b"), Ok(0));
     assert_eq!(bus.total_dropped(), 1);
-    bus.publish(projection("p3")).unwrap();
+    bus.publish(telemetry("t4")).unwrap();
     assert_eq!(bus.dropped("a"), Ok(2));
     assert_eq!(bus.dropped("b"), Ok(1));
-    assert_eq!(keys(&bus.poll("b", 10).unwrap()), ["p1", "p2", "p3"]);
+    assert_eq!(keys(&bus.poll("b", 10).unwrap()), ["p1", "t3", "t4"]);
 }
 
 #[test]
@@ -121,15 +121,40 @@ fn authoritative_records_are_never_dropped_even_under_a_dropping_policy() {
 }
 
 #[test]
-fn a_projection_publish_may_evict_telemetry_but_never_the_reverse() {
+fn a_telemetry_publish_may_evict_telemetry_but_a_projection_publish_never_does() {
     let mut bus = dropping(2);
     bus.register("c", Offset(0)).unwrap();
     bus.publish(telemetry("t")).unwrap();
     bus.publish(projection("p1")).unwrap();
-    bus.publish(projection("p2")).unwrap();
-    assert_eq!(keys(&bus.poll("c", 10).unwrap()), ["p1", "p2"]);
+    bus.publish(telemetry("t2")).unwrap();
+    assert_eq!(keys(&bus.poll("c", 10).unwrap()), ["p1", "t2"]);
     assert_eq!(bus.dropped("c"), Ok(1));
     assert_eq!(bus.low_water(), Offset(1));
+    assert!(matches!(
+        bus.publish(projection("p2")),
+        Err(BusError::Full { .. })
+    ));
+    assert_eq!(bus.dropped("c"), Ok(1));
+}
+
+#[test]
+fn a_full_bus_applies_the_incoming_records_class_policy() {
+    let mut bus = dropping(2);
+    bus.register("c", Offset(0)).unwrap();
+    bus.publish(telemetry("t1")).unwrap();
+    bus.publish(telemetry("t2")).unwrap();
+    // Projection is configured `Reject`: it must not evict unacknowledged telemetry.
+    assert!(matches!(
+        bus.publish(projection("p")),
+        Err(BusError::Full { .. })
+    ));
+    assert_eq!(bus.total_dropped(), 0);
+    assert_eq!(bus.low_water(), Offset(0));
+    assert_eq!(keys(&bus.poll("c", 10).unwrap()), ["t1", "t2"]);
+    // A telemetry publish in the same state still evicts the oldest telemetry.
+    bus.publish(telemetry("t3")).unwrap();
+    assert_eq!(bus.total_dropped(), 1);
+    assert_eq!(keys(&bus.poll("c", 10).unwrap()), ["t2", "t3"]);
 }
 
 #[test]
