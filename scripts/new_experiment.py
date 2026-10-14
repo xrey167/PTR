@@ -166,6 +166,17 @@ def create(
     registered = tomllib.loads(registry_text).get("experiment", [])
     if any(entry["id"] == exp_id for entry in registered):
         raise ValueError(f"experiment id {exp_id} is already registered")
+    if successor:
+        # A successor names an experiment it succeeds: the base id must be registered, in the
+        # same area, or the version suffix would mint an id that succeeds nothing.
+        base = exp_id.split("-", 1)[0]
+        if not any(
+            entry["id"] == base and str(entry.get("path", "")).split("/", 1)[0] == area
+            for entry in registered
+        ):
+            raise ValueError(
+                f"successor {exp_id} needs its base experiment {base} registered in area {area!r}"
+            )
     target = experiments / area / name
     if target.exists():
         raise ValueError(f"experiments/{area}/{name} already exists")

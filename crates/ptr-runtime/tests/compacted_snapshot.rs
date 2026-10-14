@@ -943,3 +943,118 @@ fn a_snapshot_without_scopes_keeps_the_earlier_execution_layout() {
     let section = 80 + semantic + lifecycle;
     assert_eq!(&bytes[section..section + 8], b"PTREX002");
 }
+
+fn plain_scope(id: &str, session: &str, project: &str) -> ptr_runtime::ExecutionScope {
+    ptr_runtime::ExecutionScope {
+        id: ptr_types::ScopeId::from(id),
+        parent: None,
+        session: ptr_types::SessionId::from(session),
+        project: ptr_types::ProjectId::from(project),
+        created_at: ptr_types::Timestamp(1),
+        deadline: None,
+        state: ptr_runtime::ScopeState::Created,
+        cancellation_requested: false,
+    }
+}
+
+/// Review of #141 (P1): a long history of created and released scopes still exports and
+/// restores, and a released id stays taken after the restore.
+#[test]
+fn many_created_and_released_scopes_still_export_and_restore() {
+    use ptr_runtime::ScopeState;
+    use ptr_types::{ScopeId, ScopeLeaseBinding};
+
+    let mut runtime = fixture();
+    let count = 2_000;
+    for i in 0..count {
+        let id = ScopeId(format!("scope-{i:05}"));
+        runtime
+            .create_scope(
+                plain_scope(&id.0, "session", "project"),
+                ScopeLeaseBinding::default(),
+            )
+            .unwrap();
+        for next in [ScopeState::Cancelled, ScopeState::Released] {
+            runtime
+                .transition_scope(&id, next, ScopeLeaseBinding::default(), None)
+                .unwrap();
+        }
+    }
+    assert!(runtime.scopes().snapshot_bytes() <= ptr_runtime::MAX_SCOPE_SNAPSHOT_BYTES);
+    let snapshot = runtime.export_compacted_snapshot().unwrap();
+    let mut restored = PtrRuntime::restore_compacted(
+        PtrConfig::default(),
+        snapshot.bytes(),
+        snapshot.anchor(),
+        &[],
+    )
+    .unwrap();
+    assert!(restored.scopes().recoverable_scopes().is_empty());
+    assert_eq!(
+        restored.scopes().snapshot_bytes(),
+        runtime.scopes().snapshot_bytes()
+    );
+    assert!(restored
+        .create_scope(
+            plain_scope("scope-00007", "session", "project"),
+            ScopeLeaseBinding::default()
+        )
+        .is_err());
+}
+
+/// Review of #141 (P1): at the bound the next scope is refused with a typed error and nothing
+/// is committed; the export keeps working, before and after the refusal.
+#[test]
+fn at_the_scope_bound_creation_is_refused_and_the_export_keeps_working() {
+    use ptr_runtime::{ScopeError, MAX_SCOPE_SNAPSHOT_BYTES};
+    use ptr_types::ScopeLeaseBinding;
+
+    let mut runtime = fixture();
+    // Long ids reach the byte bound after a few hundred scopes.
+    let long = |tag: &str, i: usize| format!("{tag}-{i:05}-{}", "x".repeat(3_000));
+    let mut created = 0;
+    let refusal = loop {
+        let scope = plain_scope(
+            &long("id", created),
+            &long("session", 0),
+            &long("project", 0),
+        );
+        let events = runtime.committed_events().len();
+        match runtime.create_scope(scope, ScopeLeaseBinding::default()) {
+            Ok(_) => created += 1,
+            Err(error) => {
+                assert_eq!(
+                    runtime.committed_events().len(),
+                    events,
+                    "nothing committed"
+                );
+                break error;
+            }
+        }
+        assert!(created < 10_000, "the bound was never reached");
+    };
+    assert!(
+        matches!(
+            refusal,
+            RuntimeError::Scope(ScopeError::CapacityExceeded { bytes, .. })
+                if bytes > MAX_SCOPE_SNAPSHOT_BYTES
+        ),
+        "{refusal:?}"
+    );
+    assert!(created > 100);
+    assert!(runtime.scopes().snapshot_bytes() <= MAX_SCOPE_SNAPSHOT_BYTES);
+    let snapshot = runtime.export_compacted_snapshot().unwrap();
+    let restored = PtrRuntime::restore_compacted(
+        PtrConfig::default(),
+        snapshot.bytes(),
+        snapshot.anchor(),
+        &[],
+    )
+    .unwrap();
+    assert_eq!(restored.scopes().recoverable_scopes().len(), created);
+    // The refusal is a creation refusal: the registry still answers for every scope it holds.
+    assert!(restored
+        .scopes()
+        .get(&ptr_types::ScopeId(long("id", 0)))
+        .is_ok());
+}

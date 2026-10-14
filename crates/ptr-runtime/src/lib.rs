@@ -100,7 +100,7 @@ pub use sandbox::{
 };
 pub use scopes::{
     CleanupError, ExecutionScope, ScopeCleanupCoordinator, ScopeError, ScopeEvent, ScopeEventKind,
-    ScopeRegistry, ScopeState,
+    ScopeRegistry, ScopeState, MAX_SCOPES, MAX_SCOPE_SNAPSHOT_BYTES,
 };
 pub use split_stage::{
     admit_frame, prefix_key, revalidate_chain, AdmittedFrame, ChainFault, RuntimeStageLiveness,
@@ -1803,6 +1803,13 @@ impl PtrRuntime {
             return Err(RuntimeError::ExecutionFenced);
         }
         validate_new_record(&event)?;
+        // A new scope must still fit a compacted snapshot (invariant 8). Only new records are
+        // held to it; replay accepts a history written before the bound.
+        if let LedgerEvent::ScopeLifecycle(scope_event) = &event {
+            self.scopes
+                .check_capacity(scope_event)
+                .map_err(RuntimeError::Scope)?;
+        }
         self.validate_lifecycle_event(&event)?;
         let semantic = self.prepare_semantic_event(None, &event)?;
         self.append_prepared(event, semantic)
@@ -2154,7 +2161,7 @@ impl PtrRuntime {
         }
         // Approximate-KV taint is decided before the verifier runs: a tainted output of a
         // promoting or acting kind must not even be judged, and nothing is appended.
-        let output_digest = request.output.digest();
+        let output_digest = self.admission_output_digest(&request);
         let bindings: Vec<&ptr_pods::LineageBinding> = request
             .manifest
             .knowledge
@@ -2412,6 +2419,30 @@ impl PtrRuntime {
                         &output_digest,
                     ),
                 }),
+        }
+    }
+
+    /// The digest an admission of `request.output` is recorded and looked up under: version 2
+    /// ([`ptr_pods::PodOutput::digest`]), unless the ledger already holds an admission of the
+    /// same request and Pod under the version-1 digest of this very output (committed before
+    /// version 2, issue #141). Then the retry keeps that digest, so it is recognised as the same
+    /// output and its taint lookup, follow-up and keys are the ones the earlier attempt used. A
+    /// different output matches neither digest and is still refused as a reused request id.
+    fn admission_output_digest(&self, request: &PodOutputAdmissionRequest) -> ptr_types::Digest {
+        let legacy = request.output.legacy_v1_digest();
+        let admitted_under_legacy = self.committed_events().iter().any(|committed| {
+            matches!(
+                &committed.event,
+                LedgerEvent::PodOutputAdmitted { request_id, pod_id, output_digest, .. }
+                    if request_id == &request.request_id
+                        && pod_id == &request.pod_id
+                        && *output_digest == legacy
+            )
+        });
+        if admitted_under_legacy {
+            legacy
+        } else {
+            request.output.digest()
         }
     }
 

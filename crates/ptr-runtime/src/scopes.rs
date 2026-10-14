@@ -69,12 +69,62 @@ pub enum ScopeError {
     Unknown(ScopeId),
     ParentMissing(ScopeId),
     ParentScopeMismatch,
-    InvalidTransition { from: ScopeState, to: ScopeState },
+    InvalidTransition {
+        from: ScopeState,
+        to: ScopeState,
+    },
     Terminal(ScopeState),
     RecoveryRequired(ScopeId),
     InvalidCommittedEvent,
     InvalidLeaseBinding,
     InvalidRevision,
+    /// Creating this scope would take the registry past what a compacted snapshot can carry
+    /// ([`MAX_SCOPES`] scopes or [`MAX_SCOPE_SNAPSHOT_BYTES`] encoded bytes). Nothing was
+    /// committed. Every scope ever created is kept (its id cannot be reused and a released one
+    /// can still be named), so the bound is a refusal at creation, never a failing export.
+    CapacityExceeded {
+        scopes: usize,
+        bytes: usize,
+    },
+}
+
+/// Most scopes a runtime's history may create (released ones included). Below the item bound
+/// of a compacted section (65,536), so the scope block can always be counted.
+pub const MAX_SCOPES: usize = 16_384;
+/// Most bytes the scope block of a compacted snapshot may take: half of one section
+/// ([`MAX_SECTION_BYTES`](crate::compacted::MAX_SECTION_BYTES)), the rest staying for the
+/// execution obligations it shares the section with.
+pub const MAX_SCOPE_SNAPSHOT_BYTES: usize = crate::compacted::MAX_SECTION_BYTES / 2;
+/// The bytes of a scope block around its entries: magic, count and the optional revision.
+pub(crate) const SCOPE_BLOCK_OVERHEAD: usize = 8 + 4 + 8 + 8;
+
+/// The exact number of bytes one scope takes in a compacted scope block
+/// (`compacted::encode_scope_block`): length-prefixed strings, an 8-byte presence flag per
+/// optional field, 8-byte numbers and a 16-byte fencing token.
+pub(crate) fn compacted_scope_entry_bytes(
+    id: &ScopeId,
+    parent: Option<&ScopeId>,
+    session: &SessionId,
+    project: &ProjectId,
+    deadline: Option<Timestamp>,
+    lease: &ScopeLeaseBinding,
+) -> usize {
+    let field = |text: &str| 4 + text.len();
+    let optional = |inner: Option<usize>| 8 + inner.unwrap_or(0);
+    field(&id.0)
+        + optional(parent.map(|p| field(&p.0)))
+        + field(&session.0)
+        + field(&project.0)
+        + 8 // created_at
+        + optional(deadline.map(|_| 8))
+        + 8 // state
+        + 8 // cancellation flag
+        + optional(lease.state_id.as_ref().map(|v| field(&v.0)))
+        + optional(lease.pod_id.as_ref().map(|v| field(&v.0)))
+        + optional(lease.placement_epoch.map(|_| 8))
+        + optional(lease.fencing_token.map(|_| 16))
+        + optional(lease.generation.map(|_| 8))
+        + optional(lease.resource_lease_id.as_ref().map(|v| field(v)))
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -103,6 +153,8 @@ pub struct ScopeRegistry {
     recovery_required: BTreeSet<ScopeId>,
     leases: BTreeMap<ScopeId, ScopeLeaseBinding>,
     last_revision: Option<ptr_types::Revision>,
+    /// Bytes the scopes take in a compacted scope block, overhead included once a scope exists.
+    snapshot_bytes: usize,
 }
 
 impl ScopeRegistry {
@@ -132,7 +184,9 @@ impl ScopeRegistry {
             }
         }
         let id = scope.id.clone();
-        self.leases.insert(id.clone(), ScopeLeaseBinding::default());
+        let lease = ScopeLeaseBinding::default();
+        self.account(&scope, &lease);
+        self.leases.insert(id.clone(), lease);
         self.scopes.insert(id.clone(), scope);
         self.record(id, ScopeEventKind::Created);
         Ok(())
@@ -242,6 +296,7 @@ impl ScopeRegistry {
                     return Err(ScopeError::ParentScopeMismatch);
                 }
             }
+            self.account(&scope, &event.lease);
             self.scopes.insert(scope.id.clone(), scope);
             self.leases
                 .insert(event.scope_id.clone(), event.lease.clone());
@@ -379,6 +434,46 @@ impl ScopeRegistry {
         Ok(())
     }
 
+    /// Whether a scope created by `event` still fits the bounds a compacted snapshot can carry
+    /// ([`MAX_SCOPES`], [`MAX_SCOPE_SNAPSHOT_BYTES`]). Checked before a new record is committed,
+    /// never on replay: a history written before the bound existed still replays.
+    pub fn check_capacity(&self, event: &ScopeLifecycleEvent) -> Result<(), ScopeError> {
+        if state_from_kind(event.kind) != ScopeState::Created {
+            return Ok(());
+        }
+        let bytes = self.snapshot_bytes.max(SCOPE_BLOCK_OVERHEAD)
+            + compacted_scope_entry_bytes(
+                &event.scope_id,
+                event.parent_id.as_ref(),
+                &event.session_id,
+                &event.project_id,
+                event.deadline,
+                &event.lease,
+            );
+        let scopes = self.scopes.len() + 1;
+        if scopes > MAX_SCOPES || bytes > MAX_SCOPE_SNAPSHOT_BYTES {
+            return Err(ScopeError::CapacityExceeded { scopes, bytes });
+        }
+        Ok(())
+    }
+
+    /// Bytes the scope block of a compacted snapshot of this registry takes (0 without a scope).
+    pub fn snapshot_bytes(&self) -> usize {
+        self.snapshot_bytes
+    }
+
+    fn account(&mut self, scope: &ExecutionScope, lease: &ScopeLeaseBinding) {
+        self.snapshot_bytes = self.snapshot_bytes.max(SCOPE_BLOCK_OVERHEAD)
+            + compacted_scope_entry_bytes(
+                &scope.id,
+                scope.parent.as_ref(),
+                &scope.session,
+                &scope.project,
+                scope.deadline,
+                lease,
+            );
+    }
+
     /// Every scope the committed history holds, released ones included, with its lease binding,
     /// in id order; and the revision of the last applied scope record. This is what a compacted
     /// snapshot carries across its floor (issue #141): without it a restored runtime forgets
@@ -447,6 +542,7 @@ impl ScopeRegistry {
             ..Self::default()
         };
         for (id, (scope, lease)) in scopes {
+            registry.account(&scope, &lease);
             registry.leases.insert(id.clone(), lease);
             registry.scopes.insert(id, scope);
         }
@@ -656,5 +752,59 @@ mod tests {
             registry.get(&ScopeId::from("root")).unwrap().state,
             ScopeState::Released
         );
+    }
+}
+
+#[cfg(test)]
+mod capacity_tests {
+    use super::*;
+    use ptr_types::{Revision, ScopeLifecycleKind};
+
+    fn scope(i: usize) -> ExecutionScope {
+        ExecutionScope {
+            id: ScopeId(format!("s{i:05}")),
+            parent: None,
+            session: SessionId::from("session"),
+            project: ProjectId::from("project"),
+            created_at: Timestamp(1),
+            deadline: None,
+            state: ScopeState::Released,
+            cancellation_requested: true,
+        }
+    }
+
+    /// Review of #141 (P1): at [`MAX_SCOPES`] the next creation is refused with a typed error.
+    #[test]
+    fn the_scope_count_is_bounded_with_a_typed_refusal() {
+        let full: CompactedScopes = (0..MAX_SCOPES)
+            .map(|i| {
+                (
+                    scope(i).id.clone(),
+                    (scope(i), ScopeLeaseBinding::default()),
+                )
+            })
+            .collect();
+        let registry = ScopeRegistry::from_compacted_parts(full, Some(Revision(1))).unwrap();
+        assert!(registry.snapshot_bytes() <= MAX_SCOPE_SNAPSHOT_BYTES);
+        let mut next = scope(MAX_SCOPES);
+        next.state = ScopeState::Created;
+        next.cancellation_requested = false;
+        let event = lifecycle_event(
+            &next,
+            None,
+            ScopeState::Created,
+            Revision(1),
+            ScopeLeaseBinding::default(),
+            None,
+        );
+        assert_eq!(event.kind, ScopeLifecycleKind::Created);
+        assert!(matches!(
+            registry.check_capacity(&event),
+            Err(ScopeError::CapacityExceeded { scopes, .. }) if scopes == MAX_SCOPES + 1
+        ));
+        // A transition never grows the registry.
+        let mut transition = event.clone();
+        transition.kind = ScopeLifecycleKind::Admitted;
+        assert!(registry.check_capacity(&transition).is_ok());
     }
 }

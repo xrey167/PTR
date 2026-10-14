@@ -713,3 +713,76 @@ fn a_hypothesis_record_replays_under_the_current_or_the_legacy_output_digest_onl
     let mut forged = runtime_with_only_the_admission_record(&first);
     assert!(forged.commit(with_digest([7; 32])).is_err());
 }
+
+/// Review of #141 (P1): a ledger written before version 2 holds an admission under the
+/// version-1 output digest. An identical retry after the upgrade must be recognised as the same
+/// output, complete the missing follow-up under the stored digest and then be idempotent; a
+/// different output under the same request id is still refused.
+#[test]
+fn a_retry_of_an_admission_recorded_under_the_legacy_digest_is_the_same_output() {
+    let legacy = request(PodOutputKind::Observation)
+        .output
+        .legacy_v1_digest();
+    // The admission record an earlier build wrote: same fields, version-1 digest.
+    let mut first = runtime_with_scope();
+    first
+        .admit_pod_output(request(PodOutputKind::Observation), &Pass)
+        .unwrap();
+    let mut record = first
+        .committed_events()
+        .iter()
+        .find_map(|committed| match &committed.event {
+            event @ ptr_ledger::LedgerEvent::PodOutputAdmitted { .. } => Some(event.clone()),
+            _ => None,
+        })
+        .unwrap();
+    let ptr_ledger::LedgerEvent::PodOutputAdmitted { output_digest, .. } = &mut record else {
+        unreachable!();
+    };
+    *output_digest = legacy;
+    // Crash between the admission record and its promotion: only the record is in the ledger.
+    let mut runtime = runtime_with_scope();
+    runtime.commit(record).unwrap();
+    let admissions = |runtime: &PtrRuntime| {
+        runtime
+            .committed_events()
+            .iter()
+            .filter(|c| matches!(c.event, ptr_ledger::LedgerEvent::PodOutputAdmitted { .. }))
+            .count()
+    };
+
+    let retried = runtime
+        .admit_pod_output(request(PodOutputKind::Observation), &Pass)
+        .unwrap();
+    let PodOutputAdmission::ObservationCandidate { semantic_key, .. } = &retried else {
+        panic!("expected a candidate, got {retried:?}");
+    };
+    // The follow-up was completed under the stored digest, and no second admission was written.
+    assert_eq!(
+        semantic_key,
+        &ptr_runtime::semantic::pod_candidate_key(
+            &RequestId::from("request"),
+            &ptr_types::PodId::from("pod"),
+            &legacy,
+        )
+    );
+    assert_eq!(admissions(&runtime), 1);
+    assert!(runtime.snapshot().payload(semantic_key).is_some());
+    // Idempotent from here on.
+    let events = runtime.committed_events().len();
+    let again = runtime
+        .admit_pod_output(request(PodOutputKind::Observation), &Pass)
+        .unwrap();
+    assert_eq!(again, retried);
+    assert_eq!(runtime.committed_events().len(), events);
+
+    // A different output under the same request id still conflicts.
+    let mut other = request(PodOutputKind::Observation);
+    other.output.payload.bytes = b"another output".to_vec();
+    let refused = runtime.admit_pod_output(other, &Pass);
+    assert!(
+        matches!(&refused, Err(ptr_runtime::RuntimeError::PodOutputAdmission(message)) if message.contains("different output")),
+        "{refused:?}"
+    );
+    assert_eq!(runtime.committed_events().len(), events);
+}

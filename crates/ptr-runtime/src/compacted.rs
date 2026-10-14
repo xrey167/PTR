@@ -3055,3 +3055,56 @@ mod authority_tests {
         ));
     }
 }
+
+#[cfg(test)]
+mod scope_block_tests {
+    use super::*;
+    use crate::scopes::SCOPE_BLOCK_OVERHEAD;
+
+    /// The registry's byte accounting is exactly what the scope block encodes, so the capacity
+    /// check bounds the real export.
+    #[test]
+    fn the_registry_accounts_exactly_the_bytes_the_scope_block_takes() {
+        let mut scopes = CompactedScopes::new();
+        for (i, parent, lease) in [
+            (0, None, ScopeLeaseBinding::default()),
+            (
+                1,
+                Some("s0"),
+                ScopeLeaseBinding {
+                    state_id: Some(StateId::from("state")),
+                    pod_id: Some(PodId::from("pod")),
+                    placement_epoch: Some(3),
+                    fencing_token: Some(7),
+                    generation: Some(Generation(2)),
+                    resource_lease_id: Some("lease-xyz".into()),
+                },
+            ),
+        ] {
+            let id = ScopeId(format!("s{i}"));
+            scopes.insert(
+                id.clone(),
+                (
+                    ExecutionScope {
+                        id,
+                        parent: parent.map(ScopeId::from),
+                        session: SessionId::from("session"),
+                        project: ProjectId::from("project"),
+                        created_at: Timestamp(1),
+                        deadline: (i == 1).then_some(Timestamp(9)),
+                        state: ScopeState::Created,
+                        cancellation_requested: false,
+                    },
+                    lease,
+                ),
+            );
+        }
+        let registry =
+            ScopeRegistry::from_compacted_parts(scopes.clone(), Some(Revision(1))).unwrap();
+        let mut out = Writer(Vec::new());
+        encode_scope_block(&mut out, &scopes, Some(Revision(1))).unwrap();
+        assert_eq!(out.0.len(), registry.snapshot_bytes());
+        assert!(registry.snapshot_bytes() > SCOPE_BLOCK_OVERHEAD);
+        assert_eq!(ScopeRegistry::default().snapshot_bytes(), 0);
+    }
+}

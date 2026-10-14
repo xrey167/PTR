@@ -131,14 +131,23 @@ class Scaffold(unittest.TestCase):
                 registry[-1],
                 {"id": "M001-v2", "path": "model/M001-v2-existing-again", "status": "planned"},
             )
-            # The same successor id twice, a bare suffix and a malformed suffix are refused.
+            # The same successor id twice, a bare suffix, a malformed suffix, a successor of an
+            # experiment that is not registered and one in another area than its base are
+            # refused, and nothing is written for any of them.
+            (root / "experiments/feedback").mkdir()
+            before = snapshot(root)
             for path in [
                 "model/M001-v2-twice",
                 "model/M001-v3-",
                 "model/M001-v0-name",
+                "model/M999-v2-orphan",
+                "feedback/M001-v3-elsewhere",
             ]:
                 with self.assertRaises(ValueError, msg=path):
                     scaffold.create(root, path, **FIELDS)
+            self.assertEqual(snapshot(root), before)
+            with self.assertRaisesRegex(ValueError, "base experiment M999"):
+                scaffold.create(root, "model/M999-v2-orphan", **FIELDS)
 
     def test_text_that_needs_escaping_round_trips(self):
         """Preserve special characters, Unicode, and seed order through TOML serialization."""
