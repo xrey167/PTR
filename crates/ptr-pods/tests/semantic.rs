@@ -602,3 +602,47 @@ fn pod_kind_names_are_pinned_because_they_are_hashed_into_identities() {
         assert_eq!(manifest.identity_descriptor().kind, name);
     }
 }
+
+#[test]
+fn a_link_trace_is_bounded_so_every_refusal_of_it_can_be_recorded() {
+    let mut link = PodLink {
+        trace_id: "t".repeat(ptr_pods::MAX_TRACE_ID_BYTES),
+        source: PodAddress::new(
+            ProjectId::from("project"),
+            NamespaceId::from("ns"),
+            PodId::from("source"),
+        )
+        .unwrap(),
+        target: revision_address(Generation(1)),
+        artifact_id: ArtifactId::from("artifact"),
+        execution_manifest: [7; 32],
+        protocol: ProtocolBinding::Ssh,
+        capability: CapabilityId::from("infer"),
+        acl: Vec::new(),
+        deadline: Timestamp(20),
+        hop_limit: 3,
+        visited: Vec::new(),
+        attestation: [9; 32],
+        egress_policy: EgressPolicy {
+            hosts: vec!["worker".into()],
+            ports: vec![22],
+            topics: vec![],
+        },
+    };
+    let check = |link: &PodLink| {
+        link.validate(
+            &ArtifactId::from("artifact"),
+            &[CapabilityId::from("infer")],
+            &PrincipalId::from("alice"),
+            Timestamp(1),
+        )
+    };
+    assert_eq!(check(&link), Ok(()));
+    link.trace_id.push('x');
+    assert_eq!(check(&link), Err(ptr_pods::PodLinkError::InvalidTrace));
+    link.trace_id.clear();
+    assert_eq!(check(&link), Err(ptr_pods::PodLinkError::InvalidTrace));
+    // `*` is the recorded trace of a refusal that stands for several traces.
+    link.trace_id = "*".into();
+    assert_eq!(check(&link), Err(ptr_pods::PodLinkError::InvalidTrace));
+}

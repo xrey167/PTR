@@ -66,3 +66,46 @@ fn a_non_rising_head_move_is_refused_before_any_byte_is_appended() {
     drop(ledger);
     let _ = std::fs::remove_file(path);
 }
+
+#[test]
+fn egress_refusals_and_pod_head_moves_round_trip_side_by_side_in_one_log() {
+    use ptr_ledger::EgressRefusalSource;
+    use ptr_types::{EgressRefusalReason, TraceId};
+
+    let path = temp_path("tags-37-38");
+    let refusal = LedgerEvent::EgressRefused {
+        trace_id: TraceId::from("trace"),
+        source: EgressRefusalSource::Pod(address(1)),
+        target: "*".into(),
+        count: 2,
+        saturated: false,
+        reason: EgressRefusalReason::HostNotAllowed,
+    };
+    let head = LedgerEvent::PodHeadAdvanced {
+        identity: PodIdentity::from("pod:stable"),
+        old: None,
+        new: address(1),
+    };
+    let overflow = LedgerEvent::EgressRefused {
+        trace_id: TraceId::from("*"),
+        source: EgressRefusalSource::Overflow,
+        target: "*".into(),
+        count: 2,
+        saturated: false,
+        reason: EgressRefusalReason::RateLimited,
+    };
+    // The ledger alone does not judge whether a head move names the current head, so the same
+    // first move can appear twice; the runtime is what refuses that.
+    let sequence = vec![refusal, head.clone(), overflow, head];
+    {
+        let mut ledger = FileLedger::open(&path).unwrap();
+        for event in &sequence {
+            ledger.append_durable(event.clone()).unwrap();
+        }
+    }
+    let ledger = FileLedger::open(&path).unwrap();
+    let events: Vec<_> = ledger.events().iter().map(|e| e.event.clone()).collect();
+    assert_eq!(events, sequence);
+    drop(ledger);
+    let _ = std::fs::remove_file(path);
+}

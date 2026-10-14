@@ -9,6 +9,12 @@ version = 1
 # real-model step), (3) this config (SFT + GSPO + SAPO). This file still names the 3090 hardware
 # profile and sets neither gradient checkpointing nor allow_unselected_backend, so `--execute`
 # refuses it until a step-3 config is derived deliberately from the SFT smoke's measured memory.
+# Memory estimate (`python -m ptr_training.moe.memory --config <this file>`, not measured): as
+# written, SFT runs WITHOUT gradient checkpointing, and PEFT keeps the merged expert tensors of
+# every layer for backward (768 MiB per layer, 12 GiB for 16 layers): about 28.9 GiB allocated,
+# which does not fit a 24 GiB card. With `[moe.sft] gradient_checkpointing = true` the estimated
+# peak is about 17 GiB (the RL update; RL arms are checkpointed through
+# `[moe.rl] gradient_checkpointing`, default true). The derived step-3 config needs it.
 [codebook]
 version = 1
 fingerprint = "2b6f8175a7a7bb648910e7acb17dcfcff5149834f2fe87355c5d2c4524c113a3"

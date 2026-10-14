@@ -1,5 +1,5 @@
 use crate::retention::{KnowledgeKey, KnowledgeLifecycle, KnowledgeObject, RawEvent};
-use ptr_types::{Generation, KnowledgeObjectId, RawEventId};
+use ptr_types::{Generation, KnowledgeObjectId, RawEventId, Timestamp};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -23,6 +23,22 @@ pub enum KnowledgeStoreError {
     UnknownSource(RawEventId),
     InvalidDependency(KnowledgeObjectId),
     GenerationExhausted(KnowledgeObjectId),
+    /// The object's validity ends no later than it starts, so it holds at no instant.
+    InvalidValidity {
+        valid_from: Option<Timestamp>,
+        valid_until: Option<Timestamp>,
+    },
+}
+
+fn check_validity(object: &KnowledgeObject) -> Result<(), KnowledgeStoreError> {
+    if object.validity.is_well_formed() {
+        Ok(())
+    } else {
+        Err(KnowledgeStoreError::InvalidValidity {
+            valid_from: object.validity.valid_from,
+            valid_until: object.validity.valid_until,
+        })
+    }
 }
 
 #[derive(Default)]
@@ -59,6 +75,7 @@ impl KnowledgeStore {
     }
 
     pub fn register_object(&mut self, object: KnowledgeObject) -> Result<(), KnowledgeStoreError> {
+        check_validity(&object)?;
         let key = KnowledgeKey {
             logical_id: object.id.clone(),
             generation: object.generation,
@@ -79,6 +96,7 @@ impl KnowledgeStore {
     /// Admission path used by promotion: every raw source and dependency must
     /// already be present in this store.
     pub fn admit_object(&mut self, object: KnowledgeObject) -> Result<(), KnowledgeStoreError> {
+        check_validity(&object)?;
         for source in &object.sources {
             if !self.raw.contains_key(source) {
                 return Err(KnowledgeStoreError::UnknownSource(source.clone()));

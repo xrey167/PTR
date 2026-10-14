@@ -505,9 +505,33 @@ impl<S: AdmissibleScorer> VcwLoop<S> {
         // to make room can retry a failed enrolment. Enrolment and the removal of the entry
         // then follow with no fallible step in between that could lose the entry.
         let removed = self.retire_dead_experts(project, registry)?;
-        for (pod, _) in &results {
-            if !self.repairers.contains_key(pod) && self.repairers.len() >= MAX_ROSTER {
-                return Err(VcwError::Config("more than 256 repair experts"));
+        // Every refusal enrolment can meet is checked here, for all experts together, so it
+        // either enrols every expert for every code or changes nothing: room in the roster for
+        // all new experts at once, and each registration tried on a copy of the router's
+        // registry. A refusal part way through would leave an expert routable for some of its
+        // codes while the request stays outstanding.
+        let new: BTreeSet<&PodId> = results
+            .iter()
+            .map(|(pod, _)| pod)
+            .filter(|pod| !self.repairers.contains_key(*pod))
+            .collect();
+        if self.repairers.len().saturating_add(new.len()) > MAX_ROSTER {
+            return Err(VcwError::Config("more than 256 repair experts"));
+        }
+        let mut trial = self.router.registry().clone();
+        for (pod, codes) in &results {
+            for code in codes {
+                let update = RegistryUpdate {
+                    expected: trial.generation(),
+                    change: RegistryChange::AddRepair {
+                        code: code.clone(),
+                        pod: pod.clone(),
+                    },
+                };
+                match trial.apply(update) {
+                    Ok(_) | Err(RegistryError::AlreadyRegistered) => {}
+                    Err(error) => return Err(VcwError::Registry(error)),
+                }
             }
         }
         let enrolled = self.enrol(&results)?;
@@ -819,6 +843,83 @@ mod tests {
             vcw.sync_roster(&project(), &registry, &proposal),
             Err(VcwError::UnknownOperation)
         ));
+    }
+
+    #[test]
+    fn a_registry_refusal_part_way_through_enrols_nothing() {
+        // Code `y` already has as many repair Pods as the router's registry holds per code
+        // (64), so the second of the expert's two codes is refused.
+        let full: Vec<String> = (0..64).map(|i| format!("r{i}")).collect();
+        let roster: Vec<(&str, &[&str])> = full.iter().map(|p| (p.as_str(), &["y"][..])).collect();
+        let mut vcw = make_loop(1, &roster, only(NONE_PLUS_BIRTH));
+        let proposal = birth_proposal("born");
+        let key = *proposal.operation_id().as_bytes();
+        vcw.outstanding.by_operation.insert(
+            key,
+            Outstanding {
+                key,
+                created_window: vcw.counters.windows_closed,
+                results: vec![(PodId::from("born"), codes(&["x", "y"]))],
+                holds: codes(&["x"]),
+            },
+        );
+        let registry = projection(&[("born", ExpertState::Serving)]);
+        let before = vcw.router.registry().generation();
+
+        let refused = vcw.sync_roster(&project(), &registry, &proposal);
+        assert!(matches!(
+            refused,
+            Err(VcwError::Registry(RegistryError::CapacityExceeded))
+        ));
+        // Nothing of the enrolment happened: not routable for `x`, not in the roster, and the
+        // request is still outstanding.
+        assert_eq!(vcw.router.registry().generation(), before);
+        assert!(vcw
+            .router
+            .registry()
+            .repair_pods(&FindingCode::from("x"))
+            .is_empty());
+        assert!(!vcw.repairers.contains_key(&PodId::from("born")));
+        assert_eq!(vcw.outstanding_requests(), 1);
+    }
+
+    #[test]
+    fn a_roster_without_room_for_every_new_expert_enrols_none() {
+        let full: Vec<String> = (0..MAX_ROSTER - 1).map(|i| format!("r{i}")).collect();
+        let mut vcw = make_loop(1, &[], only(NONE_PLUS_BIRTH));
+        // The roster itself is filled directly: the router's registry holds at most 64 Pods per
+        // code, and only the roster's count matters here.
+        for pod in &full {
+            vcw.repairers
+                .insert(PodId::from(pod.as_str()), codes(&["z"]));
+        }
+        let proposal = birth_proposal("born");
+        let key = *proposal.operation_id().as_bytes();
+        vcw.outstanding.by_operation.insert(
+            key,
+            Outstanding {
+                key,
+                created_window: vcw.counters.windows_closed,
+                results: vec![
+                    (PodId::from("born"), codes(&["x"])),
+                    (PodId::from("twin"), codes(&["x"])),
+                ],
+                holds: codes(&["x"]),
+            },
+        );
+        let registry = projection(&[
+            ("born", ExpertState::Serving),
+            ("twin", ExpertState::Serving),
+        ]);
+        let refused = vcw.sync_roster(&project(), &registry, &proposal);
+        assert!(matches!(refused, Err(VcwError::Config(_))));
+        assert!(!vcw.repairers.contains_key(&PodId::from("born")));
+        assert!(vcw
+            .router
+            .registry()
+            .repair_pods(&FindingCode::from("x"))
+            .is_empty());
+        assert_eq!(vcw.outstanding_requests(), 1);
     }
 
     const NONE_PLUS_BIRTH: EnabledOps = EnabledOps {

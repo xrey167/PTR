@@ -1,4 +1,5 @@
 use crate::{KnowledgeKey, KnowledgeLifecycle, KnowledgeObject, RetentionAction};
+use ptr_types::Timestamp;
 use sha2::{Digest, Sha256};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -23,6 +24,10 @@ pub struct CompiledContext {
     pub entries: Vec<ContextEntry>,
     pub token_cost: u32,
     pub digest: [u8; 32],
+    /// How many candidates the time rule left out because their validity did not hold at the
+    /// instant the context was compiled for ([`compile_selected_at`]). Always zero for the
+    /// audit path without a time rule ([`compile_selected`]).
+    pub omitted_expired: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -54,6 +59,34 @@ impl ContextCompiler for StructuredContextCompiler {
     }
 }
 
+/// [`compile_structured`] for the instant `now` (milliseconds since the Unix epoch): objects
+/// whose validity does not hold at `now` are left out and counted in
+/// [`CompiledContext::omitted_expired`]. An object that depends on an omitted one is refused
+/// ([`ContextCompileError::MissingDependency`]) rather than compiled without its basis.
+pub fn compile_structured_at(
+    objects: &[KnowledgeObject],
+    budget: TokenBudget,
+    now: Timestamp,
+) -> Result<CompiledContext, ContextCompileError> {
+    compile_candidates(&structured_candidates(objects), budget, Some(now))
+}
+
+fn structured_candidates(objects: &[KnowledgeObject]) -> Vec<ContextCandidate> {
+    objects
+        .iter()
+        .cloned()
+        .map(|object| ContextCandidate {
+            object,
+            action: RetentionAction::KeepStructured,
+            verbatim: None,
+            pinned: false,
+        })
+        .collect()
+}
+
+/// Compile with **no time rule**: every object is eligible whatever its validity. This is the
+/// audit and replay path; a context that feeds an answer is compiled with
+/// [`compile_structured_at`].
 pub fn compile_structured(
     objects: &[KnowledgeObject],
     budget: TokenBudget,
@@ -73,14 +106,42 @@ pub fn compile_structured(
     )
 }
 
+/// [`compile_selected`] for the instant `now` (milliseconds since the Unix epoch): candidates
+/// whose object validity does not hold at `now` (half-open, `valid_from <= now <
+/// valid_until`) are left out and counted in [`CompiledContext::omitted_expired`].
+pub fn compile_selected_at(
+    candidates: &[ContextCandidate],
+    budget: TokenBudget,
+    now: Timestamp,
+) -> Result<CompiledContext, ContextCompileError> {
+    compile_candidates(candidates, budget, Some(now))
+}
+
+/// Compile with **no time rule**: the audit and replay path. See [`compile_selected_at`].
 pub fn compile_selected(
     candidates: &[ContextCandidate],
     budget: TokenBudget,
 ) -> Result<CompiledContext, ContextCompileError> {
+    compile_candidates(candidates, budget, None)
+}
+
+fn compile_candidates(
+    candidates: &[ContextCandidate],
+    budget: TokenBudget,
+    now: Option<Timestamp>,
+) -> Result<CompiledContext, ContextCompileError> {
     let mut token_cost: u32 = 0;
     let mut bytes = Vec::new();
     let mut entries = Vec::new();
-    let mut ordered = candidates.iter().collect::<Vec<_>>();
+    let mut omitted_expired: u32 = 0;
+    let mut ordered = Vec::new();
+    for candidate in candidates {
+        if now.is_some_and(|now| !candidate.object.validity.is_valid_at(now)) {
+            omitted_expired = omitted_expired.saturating_add(1);
+        } else {
+            ordered.push(candidate);
+        }
+    }
     ordered.sort_by_key(|candidate| {
         (
             !candidate.pinned,
@@ -161,6 +222,7 @@ pub fn compile_selected(
         entries,
         token_cost,
         digest: Sha256::digest(bytes).into(),
+        omitted_expired,
     })
 }
 

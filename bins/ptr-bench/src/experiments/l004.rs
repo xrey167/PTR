@@ -1102,6 +1102,7 @@ fn expected_topic(event: &LedgerEvent) -> &'static str {
         LedgerEvent::KvTaintCommitted { .. } => "kv.taint_committed",
         LedgerEvent::InputInvalidated { .. } => "expert.input_invalidated",
         LedgerEvent::ExpertAuthorityChanged { .. } => "expert.authority_changed",
+        LedgerEvent::EgressRefused { .. } => "egress.refused",
         LedgerEvent::PodHeadAdvanced { .. } => "pod.head_advanced",
     }
 }
@@ -1191,6 +1192,18 @@ fn expected_subject(record: &CommittedEvent) -> String {
                 ptr_state::expert_authority_kind_name(*kind)
             )
         }
+        LedgerEvent::EgressRefused {
+            source: ptr_ledger::EgressRefusalSource::Pod(source),
+            ..
+        } => format!(
+            "egress:{}/{}/{}",
+            source.address.project, source.address.namespace, source.address.pod_id
+        ),
+        // Not of the `egress:p/n/pod` form, so no Pod can share it.
+        LedgerEvent::EgressRefused {
+            source: ptr_ledger::EgressRefusalSource::Overflow,
+            ..
+        } => "egress-overflow".to_owned(),
         LedgerEvent::PodHeadAdvanced { identity, .. } => format!("pod-head:{identity}"),
     }
 }

@@ -1,6 +1,6 @@
 use ptr_ledger::{
-    CommittedEvent, ExpertAuthorityClass, ExpertAuthorityKind, ExpertFenceAction,
-    ExpertFenceResume, InputInvalidationKind, KvTaintChange, LedgerEvent,
+    CommittedEvent, EgressRefusalSource, ExpertAuthorityClass, ExpertAuthorityKind,
+    ExpertFenceAction, ExpertFenceResume, InputInvalidationKind, KvTaintChange, LedgerEvent,
 };
 use ptr_pods::{ExpertCommitRecord, ExpertState, OutcomeKind, RetiredReason};
 use std::collections::BTreeMap;
@@ -361,6 +361,22 @@ pub fn projection_entries(committed: &CommittedEvent) -> Vec<(String, String)> {
         | LedgerEvent::TierBackendLifecycle { .. }
         | LedgerEvent::TierObjectCommitted { .. }
         | LedgerEvent::TierReplicaLifecycle { .. } => Vec::new(),
+        // The latest refusal per Pod, so the projection stays bounded by the number of Pods
+        // however often one is refused; the full sequence is the ledger's.
+        LedgerEvent::EgressRefused {
+            source,
+            target,
+            count,
+            saturated,
+            reason,
+            ..
+        } => vec![(
+            match source {
+                EgressRefusalSource::Pod(source) => egress_refusal_key(&source.address),
+                EgressRefusalSource::Overflow => EGRESS_REFUSAL_OVERFLOW_KEY.to_owned(),
+            },
+            egress_refusal_entry(index, *reason, *count, *saturated, target),
+        )],
         // The head of a stable pod identity: `pod-head:<identity>` holds the canonical revision
         // address of the current head. The ledger codec already refused a malformed address, so
         // the fallback to an empty value is unreachable for a committed event.
@@ -373,6 +389,39 @@ pub fn projection_entries(committed: &CommittedEvent) -> Vec<(String, String)> {
                 .unwrap_or_else(|_| POD_HEAD_UNRENDERABLE.to_owned()),
         )],
     }
+}
+
+/// The one key of the refusals the runtime folded because it could not track their Pods
+/// ([`EgressRefusalSource::Overflow`]). It is not under [`EGRESS_REFUSAL_PREFIX`], so no Pod
+/// address can name it.
+pub const EGRESS_REFUSAL_OVERFLOW_KEY: &str = "egress-refusal-overflow";
+
+/// The prefix of every egress refusal key ([`egress_refusal_key`]).
+pub const EGRESS_REFUSAL_PREFIX: &str = "egress-refused:";
+
+/// The materialized key of a Pod's latest egress refusal:
+/// `egress-refused:<project>/<namespace>/<pod>`. Address segments are restricted to
+/// `[A-Za-z0-9._:-]`, so no two Pods share a key.
+pub fn egress_refusal_key(address: &ptr_types::PodAddress) -> String {
+    format!(
+        "{EGRESS_REFUSAL_PREFIX}{}/{}/{}",
+        address.project, address.namespace, address.pod_id
+    )
+}
+
+/// The value of an egress refusal key: `<commit index>:<reason name>:<count>:<target>`, the
+/// count followed by `+` when the runtime stopped counting at `u32::MAX` (at least that many).
+/// The target is a redacted `host:` or `topic:` digest and may itself contain `:`, so it comes
+/// last.
+pub fn egress_refusal_entry(
+    index: u64,
+    reason: ptr_types::EgressRefusalReason,
+    count: u32,
+    saturated: bool,
+    target: &str,
+) -> String {
+    let more = if saturated { "+" } else { "" };
+    format!("{index}:{}:{count}{more}:{target}", reason.name())
 }
 
 /// The projected value of a head whose address cannot be rendered. The ledger codec refuses such

@@ -4,6 +4,9 @@ maturity = "prototype"
 last_reviewed = "2026-10-13"
 
 implemented = [
+  "The egress refusal entry marks a saturated count with a trailing + (<index>:<reason>:<count>+:<target>)",
+  "Egress refusal projection value carries the count",
+  "Projection of LedgerEvent::EgressRefused: the latest refusal per Pod under egress-refused:<project>/<namespace>/<pod> (bounded by the number of Pods), the overflow source under the fixed key egress-refusal-overflow",
   "ATTESTED_MARKER (semdb:attested) and MERGED_BRANCH_PREFIX (branch-merge:) name the materialized keys that record attributed semantic records and merged branches: every attributed semantic record projects the marker and every merge record its branch's key, and ptr-runtime refuses a compacted snapshot in the pre-attestation lifecycle layout (PTRLC001) that carries either",
   "Semantic transaction position and revision materialization without duplicated payload ownership; every semantic record with an attributed origin also projects the semdb:attested marker (value 1), and ptr-runtime replays a record without an origin only in the absence of that marker",
   "A merge record projects merged_branch_key(branch), branch-merge:<byte length>:<id>, so no branch id aliases another's key, with merged_branch_entry(index, plan), the commit index and the plan digest in lowercase hexadecimal; merged_branch_of and parse_merged_branch_entry read back exactly what a merge projects and nothing else, and ptr-runtime refuses a second merge of a branch whose key is present",
@@ -57,6 +60,9 @@ decisions = [
 ]
 
 checks = [
+  "ptr-runtime/tests/egress_refusal.rs pins the projected entry",
+  "ptr-runtime/tests/egress_refusal.rs checks the projected entry",
+  "ptr-runtime/tests/egress_refusal.rs: the refusal appears in the projection and survives replay; a flood does not grow it",
   "an attributed semantic record of each ingress and host kind projects the revision and the semdb:attested marker, never its payload",
   "a merge projects its branch's key with its index and plan digest (a_merge_projects_its_branch_key_with_its_index_and_plan), and merge keys are length-delimited: ids that share a character prefix or a length written into them project distinct keys, and merged_branch_of and parse_merged_branch_entry refuse every other spelling (branch_merge_keys_are_length_delimited)",
   "replay ordering/idempotency integration test",

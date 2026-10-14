@@ -14,10 +14,16 @@ warning, so the CPU smoke path can still be checked; with it, it is a failure.
     python3 scripts/gpu_doctor.py --require-gpu    # what `make desktop-setup` ends with
     python3 scripts/gpu_doctor.py --offline --json out.json
 
-Every visible card is checked (name, memory, compute capability, a small torch allocation and
-matmul on each device). RTX 3090 and RTX 4090 are the tested cards; any other card is reported
-as an untested profile (a warning). The matching hardware profile file is printed:
+Every visible card is checked (name, memory, compute capability, free memory, a small torch
+allocation and matmul on each device). RTX 3090 and RTX 4090 are the tested cards; any other card
+is reported as an untested profile (a warning). The matching hardware profile file is printed:
 hardware/rtx3090.toml, hardware/rtx4090.toml, or hardware/dual-rtx3090.toml for two 3090.
+
+Beyond the GPU it checks what the OLMoE and M011 runs need: the `moe` extra pins (transformers,
+peft, trl, datasets, accelerate against training/uv.lock), bubblewrap able to create a sandbox
+(M011 scores HumanEval by running generated code and refuses without it), a card of at least
+20 GiB (a failure with --require-gpu) and at least 22 GiB free on every visible card (the
+estimated peaks are 17 to 21 GiB plus the CUDA context: `python -m ptr_training.moe.memory`).
 
 `ptrctl doctor` checks no GPU; this is the GPU-side counterpart.
 """
@@ -43,6 +49,11 @@ MIN_FREE_GB = 60.0
 # Minimum driver major version for the CUDA major version of the torch wheel.
 MIN_DRIVER_FOR_CUDA = {13: 580, 12: 525}
 MIN_VRAM_MIB = 20 * 1024
+# Estimated peaks of the OLMoE SFT smoke and the M011 arms are about 17-21 GiB plus the CUDA
+# context (ptr_training.moe.memory); a card with less free memory is likely shared.
+MIN_FREE_VRAM_MIB = 22 * 1024
+# Packages of the `moe` extra compared with training/uv.lock (torch is reported separately).
+VERSIONED = ("transformers", "peft", "trl", "datasets", "accelerate")
 HF_URL = "https://huggingface.co"
 # bf16 tensor-core math needs compute capability 8.0 or newer: Ampere (RTX 3090 is sm_86) and
 # Ada (RTX 4090 is sm_89) both qualify.
@@ -64,7 +75,7 @@ VENV_PROBE = r"""
 import json, sys
 from importlib import metadata
 out = {"python": sys.version.split()[0]}
-for name in ("transformers", "peft", "trl"):
+for name in ("transformers", "peft", "trl", "datasets", "accelerate"):
     try:
         out[name] = metadata.version(name)
     except Exception as exc:
@@ -83,6 +94,7 @@ try:
             try:
                 d["capability"] = list(torch.cuda.get_device_capability(i))
                 d["total_memory_mib"] = int(torch.cuda.get_device_properties(i).total_memory // (1024 * 1024))
+                d["free_mib"] = int(torch.cuda.mem_get_info(i)[0] // (1024 * 1024))
                 with torch.cuda.device(i):
                     d["bf16"] = bool(torch.cuda.is_bf16_supported())
                 dev = "cuda:%d" % i
@@ -261,6 +273,8 @@ def check_nvidia_smi(opts: Options) -> tuple[list[Check], list[dict]]:
         detail = f"{g['name']}, {g['memory_mib']} MiB" + (f", sm_{cap[0]}{cap[1]}" if cap else "")
         small = g["memory_mib"] < MIN_VRAM_MIB
         status = WARN if small or not card_kind(g["name"]) else OK
+        if small and opts.require_gpu:
+            status = FAIL
         hint = ""
         if small:
             hint = "less than 20 GiB: the OLMoE SFT smoke config targets a 24 GiB card"
@@ -323,16 +337,38 @@ def check_venv(opts: Options) -> Check:
 
 
 def lock_versions(root: Path) -> dict[str, list[str]]:
-    """Versions of the packages we compare, as locked in training/uv.lock (several per name)."""
+    """Versions of the packages we compare, as training/uv.lock resolves them for the `moe`
+    extra of the root package `ptr-training`.
+
+    The lock holds several versions of some packages (the `cpt` and `moe` extras fork the
+    resolution, e.g. datasets 4.8.4 and 5.0.1), so collecting every occurrence would accept a
+    version the moe extra does not allow. The root package's `optional-dependencies.moe`
+    entries name the version when the name is ambiguous; an entry without one means the lock
+    has a single version of that package. A lock without that table (older format) falls
+    back to every occurrence."""
     path = root / "training" / "uv.lock"
     found: dict[str, list[str]] = {}
     try:
         data = tomllib.loads(path.read_text(encoding="utf-8"))
     except (OSError, tomllib.TOMLDecodeError):
         return found
+    wanted = ("torch", *VERSIONED)
+    every: dict[str, list[str]] = {}
     for pkg in data.get("package", []):
-        if pkg.get("name") in ("torch", "transformers", "peft", "trl"):
-            found.setdefault(pkg["name"], []).append(pkg.get("version", ""))
+        if pkg.get("name") in wanted:
+            every.setdefault(pkg["name"], []).append(pkg.get("version", ""))
+    root_pkg = next((p for p in data.get("package", []) if p.get("name") == "ptr-training"), None)
+    moe = (root_pkg or {}).get("optional-dependencies", {}).get("moe")
+    if not moe:
+        return every
+    for dep in moe:
+        name = dep.get("name")
+        if name not in wanted:
+            continue
+        if dep.get("version"):
+            found[name] = [dep["version"]]
+        elif len(set(every.get(name, []))) == 1:
+            found[name] = [every[name][0]]
     return found
 
 
@@ -423,6 +459,23 @@ def check_torch(opts: Options, probe: dict | None, why: str, gpus: list[dict]) -
                 "(Ada, sm_89) both support it, so check the driver and the torch CUDA build",
             )
         )
+    known = [d for d in devices if d.get("free_mib") is not None]
+    if known:
+        low = [d for d in known if d["free_mib"] < MIN_FREE_VRAM_MIB]
+        if low:
+            checks.append(
+                Check(
+                    "free vram",
+                    WARN,
+                    "; ".join(f"cuda:{d['index']} has {d['free_mib']} MiB free" for d in low),
+                    "another process holds memory on that card (nvidia-smi lists it); the OLMoE runs "
+                    "are estimated at 17-21 GiB plus the CUDA context (python -m ptr_training.moe.memory)",
+                )
+            )
+        else:
+            checks.append(
+                Check("free vram", OK, ", ".join(f"cuda:{d['index']} {d['free_mib']} MiB" for d in known))
+            )
     bad = [d for d in devices if not (d.get("matmul_ok") and d.get("alloc_ok", True))]
     if not bad:
         checks.append(Check("cuda matmul", OK, f"256x256 float32 finite and 64 MiB allocation on {len(devices)} device(s)"))
@@ -443,10 +496,10 @@ def check_torch(opts: Options, probe: dict | None, why: str, gpus: list[dict]) -
 
 def check_versions(opts: Options, probe: dict | None) -> list[Check]:
     if probe is None:
-        return [Check(n, SKIP, "venv not probed") for n in ("transformers", "peft", "trl")]
+        return [Check(n, SKIP, "venv not probed") for n in VERSIONED]
     locked = lock_versions(opts.root)
     checks = []
-    for name in ("transformers", "peft", "trl"):
+    for name in VERSIONED:
         have = probe.get(name)
         want = locked.get(name, [])
         if have is None:
@@ -477,6 +530,37 @@ def check_ptr_py(probe: dict | None) -> Check:
     if "ptr_py_error" in probe:
         return Check("ptr_py", FAIL, probe["ptr_py_error"], hint)
     return Check("ptr_py", OK, str(probe["ptr_py"]))
+
+
+def bwrap_probe_command(exe: str) -> list[str]:
+    """A minimal sandbox like the M011 HumanEval one: only /usr, fresh /proc and /dev, every
+    namespace unshared (no network)."""
+    cmd = [exe, "--ro-bind", "/usr", "/usr"]
+    for top in ("bin", "lib", "lib64", "sbin"):
+        cmd += ["--symlink", f"usr/{top}", f"/{top}"]
+    return cmd + ["--proc", "/proc", "--dev", "/dev", "--unshare-all", "--die-with-parent",
+                  "--", "/usr/bin/true"]
+
+
+def check_bwrap(opts: Options) -> Check:
+    """M011 scores HumanEval by running model-generated code; without a working bubblewrap
+    sandbox the entrypoint refuses to start (unless PTR_M011_ALLOW_UNSANDBOXED=1)."""
+    hint = (
+        "sudo apt install bubblewrap; if it is installed but cannot sandbox, check "
+        "`sysctl kernel.apparmor_restrict_unprivileged_userns` and the bwrap AppArmor profile "
+        "(M011 refuses to score HumanEval without it)"
+    )
+    exe = which("bwrap")
+    if exe is None:
+        return gpu_missing(opts, "bwrap not found", hint, "bubblewrap")
+    code, out, err = run(bwrap_probe_command(exe), timeout=20)
+    if code == 0:
+        return Check("bubblewrap", OK, f"{exe} creates a sandbox (no network)")
+    reason = (err or out).strip().splitlines()[:1]
+    return gpu_missing(
+        opts, f"{exe} cannot create a sandbox: " + (reason[0] if reason else f"exit {code}"), hint,
+        "bubblewrap",
+    )
 
 
 def nearest_existing(path: Path) -> Path:
@@ -578,6 +662,7 @@ def collect(opts: Options) -> list[Check]:
     else:
         checks.append(Check("torch", SKIP, "no training venv"))
     checks += check_versions(opts, probe)
+    checks.append(check_bwrap(opts))
     checks.append(check_ptr_py(probe))
     checks += check_disk(opts)
     checks.append(check_hf(opts))

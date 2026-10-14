@@ -10,10 +10,19 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-13  
-**Code footprint:** 5 Rust source files · 5097 nonblank source lines · 4 integration-test files · 78 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 5 Rust source files · 5531 nonblank source lines · 5 integration-test files · 106 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
+- Both receive paths ask the request deadline again with a fresh clock after the manifest and validity checks, right before the Pod runs; a replayed session answer is refused past its request deadline (DeadlineExceeded { sent: false })
+- A binding taken from the runtime (with_runtime_execution_manifest, bind_v2_runtime_admitted) carries its ManifestValidity and asks it on every request it serves, whether or not the host has a manifest registry attached
+- PodAddressBinding::forward_to puts the sending Pod on the visited trail and refuses a hop to any visited Pod, so A to B and back to A, or A to B to C to A, is refused
+- PodHost::with_runtime_manifest_registry and bind_v2_runtime_admitted require a ptr_runtime::ManifestValidity: both receive paths (serve_once_v2, serve_v2_incoming) check it with the host clock after the registry resolved the digest, and a failure refuses the request before the Pod is invoked (PodWireError::ManifestNoLongerValid)
+- A request whose remaining time equals the configured timeout is deadline-bound: its timeout is DeadlineExceeded { sent: true }, not a transport error
+- The one-shot PodClient::request_v2 checks an answer with the same validation as PodSession::request_v2 (validate_answer_v2): the echoed address binding, including its deadline, must equal the request's, so a responder cannot strip or extend a deadline
+- PodWireError::DeadlineExceeded carries sent (false: expired before anything left, safe to retry with a new deadline; true: expired while waiting, the host may have run it); forward_to takes the relay clock and gives a deadline-less parent a V4 child with origin_ts; unix_millis_now reads a clock before the epoch as u64::MAX so every deadline is past
+- PodAddressBinding::for_link / for_route build a binding from a link or a resolved route without converting the deadline (milliseconds since the epoch throughout the path), PodAddressBinding::forward_to is the relay step (hop budget, visited trail, deadline only shrinks, checked against the parent), unix_millis_now is the one clock
+- FORMAT_V4: an absolute deadline and origin timestamp in the address binding; V3 and V2 stay readable; expiry refused before execution, the request wait bounded by the deadline (uncertain on timeout), a deadline only shrinks across hops (narrowed_deadline, ensure_deadline_within); PodWireError::DeadlineExceeded
 - PodHost and PodClient carry one Pod invocation and its answer over ALPN_PODWIRE, composing ptr-pods' registry with ptr-net's transport so neither has to know about the other
 - A request frame carries no project field: the project a request resolves in comes from the host's access policy keyed by the authenticated peer, because resolution inside a project is the only thing standing between a request and a Pod's data and a requester that named its project would be choosing which project's Pods it reaches
 - A V1 request frame has no field naming its sender and none naming a session (the V2 frame below carries an identity digest and session id as binding fields, but the sender is still the connection's authenticated peer), so who is asking is the authenticated connection's answer and a session stays a capability the host holds rather than a string a caller presents
@@ -86,6 +95,15 @@
 
 ### Current automated checks
 
+- tests/wire.rs: a_deadline_that_passes_during_the_checks_is_asked_again_before_the_pod_runs, a_cached_session_answer_is_not_replayed_past_the_requests_deadline
+- tests/wire.rs: a_runtime_backed_binding_asks_its_validity_on_every_request_without_a_host_registry
+- tests/frame_v4.rs: a_hop_back_to_the_pod_that_sent_the_request_is_refused
+- tests/wire.rs: a manifest that still holds is served; a failing validity check refuses the request with the Pod not invoked; revocation still blocks
+- src/endpoint.rs budget_tests: a wait that ends exactly at the deadline is the deadline's own
+- tests/wire.rs: a one-shot V4 request whose answer echoes a stripped or an extended deadline is rejected
+- tests/wire.rs: the one-shot client tells a timeout after the send from an expiry before it; tests/frame_v4.rs: forward_to on a binding without a deadline; src/frame.rs unit tests: a clock before the epoch expires every deadline
+- tests/frame_v4.rs: trailing bytes after a V4 frame, forward_to, and one link deadline carried through the frame to the native executor with the same number at the end; an expired millisecond deadline refused by the builder and the executor
+- tests/frame_v4.rs: round trips, V3 compatibility, prefixes, invalid deadlines, shrinking across hops; tests/wire.rs (podwire-backend): a future deadline is served in V4, an expired one is refused by the client and by the host before the Pod runs, a deadline bounds the wait and leaves the request uncertain
 - two peers send byte-identical frames over two real connections to one host and reach two different projects' Pods, each Pod running exactly once
 - an admitted peer reaches its project's Pod over a real ALPN_PODWIRE connection and the peer the host served is the connection's, not a value from the payload
 - a Pod in another project is refused with a refusal asserted equal to the one for a capability nobody serves, with the same Pod reachable from inside its own project as the control

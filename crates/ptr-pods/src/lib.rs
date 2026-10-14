@@ -10,6 +10,7 @@ mod attention;
 mod cache;
 #[cfg(feature = "candle-cuda")]
 mod candle;
+mod egress;
 mod evidence;
 mod expert;
 mod hypothesis;
@@ -44,6 +45,10 @@ pub use cache::{PodCache, PodCacheKey};
 pub use candle::{
     CandleDenseExecutor, CandleExecutorError, CandleGpuTierBackend, CandleKvCache,
     CandleKvSnapshotLease, CandleKvTensorBackend, CandlePagedKvBackend, CandlePagedKvCache,
+};
+pub use egress::{
+    is_concrete_topic, is_valid_topic_filter, redact_endpoint, redact_topic, topic_filter_matches,
+    FrameRateLimit, FrameRateLimiter, RateLimitError, MAX_RATE_WINDOW, MAX_TOPIC_BYTES,
 };
 pub use evidence::{
     Ed25519EvidenceSigner, Ed25519EvidenceVerifier, EvidenceError, EvidenceSigner,
@@ -91,7 +96,7 @@ pub use paged_kv::{
 pub use protocol::{
     ConnectionScope, DeliveryMode, EgressPolicy, MessagePattern, NativeProtocolExecutor,
     NativeProtocolRequest, NativeProtocolResponse, NetworkEndpoint, PodLink, PodLinkError,
-    ProtocolBinding, ProtocolError, ProtocolProfile,
+    ProtocolBinding, ProtocolError, ProtocolProfile, MAX_TRACE_ID_BYTES,
 };
 pub use qwen::{
     Qwen2Activation, Qwen2DecoderInput, Qwen2DecoderOutput, Qwen2DecoderWeights, Qwen2LayerConfig,

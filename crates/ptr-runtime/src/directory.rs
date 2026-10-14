@@ -87,6 +87,7 @@ impl PodDirectory for InMemoryPodDirectory {
         address: &PodRevisionAddress,
         constraints: &RouteConstraints,
     ) -> Result<PodRoute, ResolveError> {
+        constraints.validate()?;
         let endpoint = self.endpoints.get(address).ok_or(ResolveError::NotFound)?;
         if !endpoint.healthy {
             return Err(ResolveError::StaleRoute);
@@ -163,7 +164,7 @@ impl PodDirectory for InMemoryPodDirectory {
             output_type,
             trace_id: "directory".into(),
             request_id: "directory-resolve".into(),
-            deadline: ptr_types::Timestamp(0),
+            deadline: constraints.deadline,
             hop_limit: 16,
             visited: Vec::new(),
             placement_epoch: endpoint.endpoint_epoch,

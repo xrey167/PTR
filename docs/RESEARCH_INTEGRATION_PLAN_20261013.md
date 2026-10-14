@@ -14,7 +14,7 @@ Decisions: all five priorities as a roadmap; training in `training/` (Python), i
 |---|---|---|---|---|
 | 1 | Pod linking: identity, head resolver, Dragonfly addresses | `claude/wp1-pod-linking` | in review | ledger tag 38 `PodHeadAdvanced`; [doc 40](architecture/40-pod-linking.md); [ADR-0023](../research/decisions/ADR-0023-learned-pod-addresses-advisory.md); experiment R015 (R002 design note); evaluation `pod-routing` |
 | 2 | Reflex, failover and honest counters | `claude/wp2-reflex-failover` | planned | metrics in R015; section in doc 40 |
-| 3 | Retrieval filters, wire deadline, egress refusals | `claude/wp3-retrieval-filters-wire-deadline` | planned | ledger tag 37; doc 33 extended; ADR-0024 |
+| 3 | Retrieval filters, wire deadline, egress refusals | `claude/wp3-retrieval-filters-wire-deadline` | merged (#145, a2a0688c) | ledger tag 37; doc 33 extended; ADR-0024 |
 | 4 | Training integrity and executable layering | `claude/wp4-training-integrity-layering` | planned | doc 41 |
 | 5 | Serving and promotion: batcher, adapter events, self-improvement contract | `claude/wp5-serving-promotion` | planned | ledger tags 39, 40, 41; doc 42; ADR-0025; experiments E009, R004, F008 |
 

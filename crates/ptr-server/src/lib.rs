@@ -638,7 +638,7 @@ fn process_request(state: &ServerState, input: ApiRequest) -> Result<Response, A
         let session = runtime
             .register_execution_session("http", grants, std::time::Duration::from_secs(30))
             .map_err(|error| ApiError::Effect(format!("session: {error:?}")))?;
-        let permit = runtime
+        let executed = runtime
             .prepare_execution_once(
                 &session,
                 &ProjectId::from("demo"),
@@ -646,10 +646,12 @@ fn process_request(state: &ServerState, input: ApiRequest) -> Result<Response, A
                 std::time::Duration::from_secs(30),
                 key,
             )
-            .map_err(ApiError::execution)?;
-        let output = runtime
-            .execute_prepared(&session, permit)
-            .map_err(ApiError::execution)?;
+            .and_then(|permit| runtime.execute_prepared(&session, permit));
+        // The session belongs to this request alone. It is ended whatever the outcome, so the
+        // runtime's bounded session table never fills with the sessions of finished requests.
+        // A session already gone (expired) is no error of this request.
+        let _ = runtime.revoke_execution_session(&session);
+        let output = executed.map_err(ApiError::execution)?;
         Some(effect_receipt(runtime.committed_events(), key, &output)?)
     } else {
         None
@@ -956,6 +958,56 @@ mod tests {
             type_id: TypeId::from(type_id),
             bytes: bytes.to_vec(),
         }
+    }
+
+    #[test]
+    fn mutating_requests_do_not_accumulate_execution_sessions() {
+        use ptr_ledger::LedgerEvent;
+        use ptr_types::{CapsuleId, Generation};
+        let data_dir = std::env::temp_dir().join(format!(
+            "ptr-server-sessions-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let mut runtime = PtrRuntime::new(ptr_config::PtrConfig::default()).unwrap();
+        runtime
+            .commit(LedgerEvent::CapsuleCommitted {
+                project: "demo".into(),
+                capsule: CapsuleId::from(DEMO_NOTE_TARGET),
+                generation: Generation(1),
+            })
+            .unwrap();
+        runtime.permissions_mut().allow_mutation = true;
+        runtime
+            .permissions_mut()
+            .capabilities
+            .insert(CapabilityId::from(DEMO_NOTE_CAPABILITY));
+        let state = ServerState::with_dependencies(
+            runtime,
+            Arc::new(ptr_model_api::ScenarioBackend),
+            Arc::new(NoPods),
+            Arc::new(PodRegistry::default()),
+            default_verifier(),
+            demo_effect_grants(&data_dir),
+        );
+        // More mutating requests than the runtime holds sessions at once, well inside one
+        // session lifetime: each request's session must end with the request.
+        for attempt in 0..1100 {
+            let response = process_request(
+                &state,
+                ApiRequest {
+                    id: "effect".into(),
+                    text: "hello".into(),
+                    idempotency_key: Some("key".into()),
+                },
+            );
+            assert!(response.is_ok(), "request {attempt}: {:?}", response.err());
+        }
+        let _ = std::fs::remove_dir_all(&data_dir);
     }
 
     #[test]

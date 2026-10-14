@@ -1,6 +1,6 @@
 use ptr_types::{
-    EntityId, EventRole, Generation, KnowledgeObjectId, NamespaceId, PolicyVersion, Probability,
-    ProvenanceRef, RawEventId, RetrievalKey, SessionId, Timestamp,
+    EntityId, EventRole, Generation, KnowledgeObjectId, KnowledgeValidity, NamespaceId,
+    PolicyVersion, Probability, ProvenanceRef, RawEventId, RetrievalKey, SessionId, Timestamp,
 };
 use sha2::{Digest, Sha256};
 
@@ -141,6 +141,9 @@ pub struct KnowledgeObject {
     pub lifecycle: KnowledgeLifecycle,
     pub retrieval_keys: Vec<RetrievalKey>,
     pub token_cost: u32,
+    /// When this object holds, half-open (`valid_from <= now < valid_until`). The default
+    /// holds always. Always part of the digest, as a fixed binary field.
+    pub validity: KnowledgeValidity,
 }
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -162,61 +165,89 @@ impl KnowledgeObject {
     }
 
     fn digest_with_lifecycle(&self, include_lifecycle: bool) -> [u8; 32] {
-        let mut canonical = String::new();
-        macro_rules! field {
-            ($name:expr, $value:expr) => {{
-                canonical.push_str($name);
-                canonical.push('=');
-                canonical.push_str(&$value.to_string());
-                canonical.push('\n');
-            }};
+        // Every variable-length field is length-prefixed (u64 LE) and every list is
+        // count-prefixed, and the validity is a fixed binary field, so no choice of strings
+        // (a retrieval key holding a newline, a colon, text that looks like another field) can
+        // make two different objects hash alike.
+        fn put_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
+            out.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
+            out.extend_from_slice(bytes);
         }
-        field!("id", self.id.0);
-        field!("namespace", self.namespace.0);
-        field!("generation", self.generation.0);
-        field!(
-            "supersedes",
-            self.supersedes
-                .as_ref()
-                .map(|key| format!("{}:{}", key.logical_id.0, key.generation.0))
-                .unwrap_or_default()
-        );
-        field!("confidence", self.confidence.get());
-        field!("relevance", self.relevance.get());
-        field!("freshness", format!("{:?}", self.freshness));
-        field!("conflict", format!("{:?}", self.conflict));
+        fn put_str(out: &mut Vec<u8>, value: &str) {
+            put_bytes(out, value.as_bytes());
+        }
+        fn put_count(out: &mut Vec<u8>, count: usize) {
+            out.extend_from_slice(&(count as u64).to_le_bytes());
+        }
+        fn put_optional_time(out: &mut Vec<u8>, time: Option<Timestamp>) {
+            match time {
+                Some(time) => {
+                    out.push(1);
+                    out.extend_from_slice(&time.0.to_le_bytes());
+                }
+                None => {
+                    out.push(0);
+                    out.extend_from_slice(&0u64.to_le_bytes());
+                }
+            }
+        }
+        let mut out = Vec::new();
+        put_str(&mut out, "ptr.knowledge-object.v2");
+        put_str(&mut out, &self.id.0);
+        put_str(&mut out, &self.namespace.0);
+        out.extend_from_slice(&self.generation.0.to_le_bytes());
+        match &self.supersedes {
+            Some(key) => {
+                out.push(1);
+                put_str(&mut out, &key.logical_id.0);
+                out.extend_from_slice(&key.generation.0.to_le_bytes());
+            }
+            None => out.push(0),
+        }
+        put_str(&mut out, &self.confidence.get().to_string());
+        put_str(&mut out, &self.relevance.get().to_string());
+        put_str(&mut out, &format!("{:?}", self.freshness));
+        put_str(&mut out, &format!("{:?}", self.conflict));
         if include_lifecycle {
-            field!("lifecycle", format!("{:?}", self.lifecycle));
+            put_str(&mut out, &format!("{:?}", self.lifecycle));
         }
-        field!("token_cost", self.token_cost);
+        out.extend_from_slice(&self.token_cost.to_le_bytes());
+        put_count(&mut out, self.entities.len());
         for entity in &self.entities {
-            field!("entity", entity.0);
+            put_str(&mut out, &entity.0);
         }
+        put_count(&mut out, self.relations.len());
         for relation in &self.relations {
-            field!(
-                "relation",
-                format!("{}:{}", relation.predicate, relation.target)
-            );
+            put_str(&mut out, &relation.predicate.to_string());
+            put_str(&mut out, &relation.target.to_string());
         }
+        put_count(&mut out, self.sources.len());
         for source in &self.sources {
-            field!("source", source.0);
+            put_str(&mut out, &source.0);
         }
+        put_count(&mut out, self.provenance.len());
         for provenance in &self.provenance {
-            field!(
-                "provenance",
-                format!("{:?}:{:?}", provenance.source, provenance.note)
-            );
+            put_str(&mut out, &format!("{:?}", provenance.source));
+            put_str(&mut out, &format!("{:?}", provenance.note));
         }
+        put_count(&mut out, self.dependencies.len());
         for dependency in &self.dependencies {
-            field!(
-                "dependency",
-                format!("{}:{}", dependency.logical_id.0, dependency.generation.0)
-            );
+            put_str(&mut out, &dependency.logical_id.0);
+            out.extend_from_slice(&dependency.generation.0.to_le_bytes());
         }
+        put_count(&mut out, self.retrieval_keys.len());
         for key in &self.retrieval_keys {
-            field!("retrieval_key", key.0);
+            put_str(&mut out, &key.0);
         }
-        Sha256::digest(canonical.as_bytes()).into()
+        put_optional_time(&mut out, self.validity.valid_from);
+        put_optional_time(&mut out, self.validity.valid_until);
+        Sha256::digest(&out).into()
+    }
+
+    /// Whether this object holds at `now`: the half-open validity check every reader of
+    /// knowledge repeats at the moment it relies on the object, not only when it retrieved it.
+    pub fn is_valid_at(&self, now: Timestamp) -> bool {
+        self.validity.is_valid_at(now)
     }
 }
 

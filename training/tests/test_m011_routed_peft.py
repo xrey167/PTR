@@ -1,5 +1,6 @@
 """M011 arm topologies: shapes, parameter counts, freezing, routing (torch + transformers + peft)."""
 
+import math
 import os
 import tomllib
 import unittest
@@ -15,6 +16,11 @@ if HAVE:
 
     from ptr_training.moe import routed_peft as rp
     from ptr_training.moe import routing_metrics as rm
+
+
+M011_CONFIG = (
+    Path(__file__).resolve().parents[2] / "experiments" / "model" / "M011-routed-peft" / "config.toml"
+)
 
 
 def tiny_model(seed=0, experts=8, top_k=2):
@@ -78,9 +84,9 @@ class ParameterCountTests(unittest.TestCase):
                 )
 
     def test_arm_table_matches_config_when_available(self):
-        path = os.environ.get("PTR_M011_CONFIG")
-        if not path or not Path(path).is_file():
-            self.skipTest("PTR_M011_CONFIG not set")
+        path = os.environ.get("PTR_M011_CONFIG") or str(M011_CONFIG)
+        if not Path(path).is_file():
+            self.skipTest("M011 config.toml not found")
         cfg = tomllib.loads(Path(path).read_text())["pinned_thresholds"]
         for arm, spec in rp.ARMS.items():
             pinned = cfg["arm_lora"][arm]
@@ -88,6 +94,27 @@ class ParameterCountTests(unittest.TestCase):
                 (spec.num_experts, spec.router_top_k, spec.rank, spec.alpha, spec.pinned_trainable_params),
                 (pinned["num_experts"], pinned["router_top_k"], pinned["rank"], pinned["alpha"], pinned["trainable_params"]),
             )
+            # the pinned tensors: count_per_layer x prod(shape) x layers is the pinned total,
+            # and the instantiated arm on the real shapes has exactly those tensors
+            from_tensors = pinned["layers"] * sum(
+                t["count_per_layer"] * math.prod(t["shape"]) for t in pinned["target_tensors"]
+            )
+            self.assertEqual(from_tensors, pinned["trainable_params"], arm)
+            inst = rp.install_arm(real_shape_model(), arm)
+            self.assertEqual(rp.count_trainable_parameters(inst.model), from_tensors, arm)
+            # per layer: one stacked parameter per pinned tensor kind (count_per_layer copies)
+            got = sorted(
+                p.numel() for n, p in inst.model.named_parameters()
+                if p.requires_grad and ".layers.0." in n
+            )
+            want = sorted(t["count_per_layer"] * math.prod(t["shape"]) for t in pinned["target_tensors"])
+            self.assertEqual(got, want, arm)
+        self.assertEqual(
+            cfg["arm_lora_common_target"], rp.COMMON_TARGET
+        )
+        self.assertEqual(cfg["trainable_params_relative_tolerance"], rp.RELATIVE_TOLERANCE)
+        for arm in rp.ARMS.values():
+            self.assertTrue(rp.within_tolerance(arm.pinned_trainable_params))
         self.assertEqual(rp.PRESCRIBED_ASSIGNMENT, cfg["prescribed_expert_domain_assignment"])
         self.assertEqual(
             rp.PRESCRIBED_ASSIGNMENT_DIGEST, cfg["expert_domain_assignment_expected_digest"]

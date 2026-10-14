@@ -15,16 +15,16 @@ use ptr_pods::{
 };
 use ptr_podwire::{
     decode_answer, decode_request, decode_request_v2, encode_answer, encode_answer_v2,
-    encode_request, request_digest, PodAccessPolicy, PodAddressBinding, PodAnswer, PodAnswerV2,
-    PodClient, PodHost, PodOutcome, PodRequest, PodRequestV2, PodScope, PodWireError, RefusalCode,
-    MAX_BODY_BYTES,
+    encode_request, encode_request_v2, request_digest, PodAccessPolicy, PodAddressBinding,
+    PodAnswer, PodAnswerV2, PodClient, PodHost, PodOutcome, PodRequest, PodRequestV2, PodScope,
+    PodWireError, RefusalCode, FORMAT_V4, MAX_BODY_BYTES,
 };
 use ptr_protocol::TypedPayload;
 use ptr_runtime::{ExecutionManifestRegistry, ValidatedExecutionManifest};
 use ptr_types::{
     ArtifactId, CapabilityId, Effect, Generation, NodeId, PodId, PrincipalId, Probability,
-    ProjectId, Revision, ScopeId, SessionId, StatefulRequestRecovery, TypeId, UncertainRequest,
-    VerificationLevel,
+    ProjectId, Revision, ScopeId, SessionId, StatefulRequestRecovery, Timestamp, TypeId,
+    UncertainRequest, VerificationLevel,
 };
 use ptr_verifier::{VerificationReport, VerificationStatus, Verifier};
 use std::sync::{Arc, Mutex};
@@ -224,6 +224,8 @@ fn address_binding(generation: Generation, semantic_revision: [u8; 32]) -> PodAd
         visited: Vec::new(),
         protocol: None,
         mesh: None,
+        deadline: None,
+        origin_ts: None,
     }
 }
 
@@ -377,6 +379,235 @@ async fn v2_rejects_a_stale_generation_before_invoking_the_pod() {
     );
     assert_eq!(served.refused, Some(PodWireError::V2BindingUnavailable));
     assert_eq!(*invocations.lock().unwrap(), 0);
+}
+
+fn wall_clock_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
+}
+
+fn with_deadline(mut asked: PodRequestV2, deadline: u64) -> PodRequestV2 {
+    let address = asked.address.as_mut().unwrap();
+    address.deadline = Some(Timestamp(deadline));
+    address.origin_ts = Some(Timestamp(1));
+    asked
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn v4_request_with_a_future_deadline_is_served_in_the_v4_layout() {
+    let client = PodClient::bind().await.unwrap();
+    let invocations = Arc::new(Mutex::new(0));
+    let admitted = pod("alpha", &invocations);
+    let manifest = admitted.manifest().clone();
+    let mut registry = PodRegistry::default();
+    registry.register(admitted);
+    let mut policy = PodAccessPolicy::new();
+    policy
+        .admit(NodeId(client.identity().public_key), scope("alpha"))
+        .unwrap();
+    let host = PodHost::bind(registry, policy, Pass).await.unwrap();
+    let binding = host
+        .bind_v2_addressed(
+            &ProjectId::from("alpha"),
+            &PodId::from("summarizer"),
+            ArtifactId::from("summarizer-artifact"),
+            Generation(2),
+            Revision(9),
+        )
+        .unwrap()
+        .with_execution_manifest(execution_manifest(&manifest, Generation(2), Revision(9)))
+        .unwrap();
+    let asked = with_deadline(
+        request_v2(
+            host.identity().public_key,
+            301,
+            &manifest,
+            Generation(2),
+            Revision(9),
+        ),
+        wall_clock_millis() + 60_000,
+    );
+    let frame = encode_request_v2(&asked).unwrap();
+    assert_eq!(u16::from_le_bytes([frame[8], frame[9]]), FORMAT_V4);
+    let address = host.address();
+    let (answered, served) = tokio::join!(
+        client.request_v2(located(address), &asked),
+        host.serve_once_v2(&binding)
+    );
+    let answered = answered.unwrap();
+    assert!(matches!(answered.outcome, PodOutcome::Answered { .. }));
+    assert_eq!(answered.address, asked.address, "the deadline is echoed");
+    assert_eq!(served.unwrap().refused, None);
+    assert_eq!(*invocations.lock().unwrap(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn v4_client_refuses_an_expired_deadline_without_sending_anything() {
+    let client = PodClient::bind().await.unwrap();
+    let invocations = Arc::new(Mutex::new(0));
+    let admitted = pod("alpha", &invocations);
+    let manifest = admitted.manifest().clone();
+    let raw = IrohTransport::bind(&[ALPN_PODWIRE]).await.unwrap();
+    let asked = with_deadline(
+        request_v2(
+            raw.identity().public_key.clone(),
+            302,
+            &manifest,
+            Generation(2),
+            Revision(9),
+        ),
+        2,
+    );
+    let refused = client.request_v2(located(raw.direct_addr()), &asked).await;
+    assert!(
+        matches!(
+            refused,
+            Err(PodWireError::DeadlineExceeded { sent: false, .. })
+        ),
+        "{refused:?}"
+    );
+    assert_eq!(*invocations.lock().unwrap(), 0);
+    raw.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn v4_host_refuses_an_expired_deadline_before_invoking_the_pod() {
+    // Sent through a raw transport, because the client would have refused it first.
+    let raw = IrohTransport::bind(&[ALPN_PODWIRE]).await.unwrap();
+    let invocations = Arc::new(Mutex::new(0));
+    let admitted = pod("alpha", &invocations);
+    let manifest = admitted.manifest().clone();
+    let mut registry = PodRegistry::default();
+    registry.register(admitted);
+    let mut policy = PodAccessPolicy::new();
+    policy
+        .admit(NodeId(raw.identity().public_key), scope("alpha"))
+        .unwrap();
+    let host = PodHost::bind(registry, policy, Pass).await.unwrap();
+    let binding = host
+        .bind_v2_addressed(
+            &ProjectId::from("alpha"),
+            &PodId::from("summarizer"),
+            ArtifactId::from("summarizer-artifact"),
+            Generation(2),
+            Revision(9),
+        )
+        .unwrap()
+        .with_execution_manifest(execution_manifest(&manifest, Generation(2), Revision(9)))
+        .unwrap();
+    let asked = with_deadline(
+        request_v2(
+            host.identity().public_key,
+            303,
+            &manifest,
+            Generation(2),
+            Revision(9),
+        ),
+        2,
+    );
+    let frame = encode_request_v2(&asked).unwrap();
+    let sending = raw.request(host.address(), ALPN_PODWIRE, &frame, 1 << 20);
+    let (response, served) = tokio::join!(sending, host.serve_once_v2(&binding));
+    let answered = ptr_podwire::decode_answer_v2(&response.unwrap()).unwrap();
+    assert_eq!(
+        answered.outcome,
+        PodOutcome::Refused {
+            code: RefusalCode::Unavailable
+        },
+        "the peer learns nothing a clock would not tell it"
+    );
+    assert!(
+        matches!(
+            served.unwrap().refused,
+            Some(PodWireError::DeadlineExceeded { sent: true, .. })
+        ),
+        "the operator sees the real reason"
+    );
+    assert_eq!(*invocations.lock().unwrap(), 0);
+    raw.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn v4_deadline_bounds_the_wait_and_leaves_the_request_uncertain() {
+    let client = PodClient::bind().await.unwrap();
+    let raw = IrohTransport::bind(&[ALPN_PODWIRE]).await.unwrap();
+    let address = located(raw.direct_addr());
+    let session_task = tokio::spawn(async move {
+        let session = raw.accept_session().await.unwrap();
+        let _incoming = session.accept_request(1 << 20).await.unwrap();
+        // Never answered: the requester's deadline, not this peer, ends the wait.
+        tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+        session.wait_closed().await;
+    });
+    let session = client.connect_session(address, 1).await.unwrap();
+    let manifest = pod("alpha", &Arc::new(Mutex::new(0))).manifest().clone();
+    let asked = with_deadline(
+        request_v2(
+            session.peer().public_key.clone(),
+            304,
+            &manifest,
+            Generation(2),
+            Revision(9),
+        ),
+        wall_clock_millis() + 400,
+    );
+    let started = std::time::Instant::now();
+    let result = session.request_v2(&asked).await;
+    assert!(
+        matches!(
+            result,
+            Err(PodWireError::DeadlineExceeded { sent: true, .. })
+        ),
+        "{result:?}"
+    );
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(3),
+        "the wait ended at the deadline rather than at the 5 s transport default"
+    );
+    assert_eq!(session.uncertain_requests(), (Vec::new(), vec![304]));
+    session.close().await;
+    session_task.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn v4_one_shot_client_tells_a_timeout_after_the_send_from_an_expiry_before_it() {
+    let client = PodClient::bind().await.unwrap();
+    let raw = IrohTransport::bind(&[ALPN_PODWIRE]).await.unwrap();
+    let address = located(raw.direct_addr());
+    let manifest = pod("alpha", &Arc::new(Mutex::new(0))).manifest().clone();
+    let responder = tokio::spawn(async move {
+        let session = raw.accept_session().await.unwrap();
+        let _incoming = session.accept_request(1 << 20).await.unwrap();
+        // Never answered: the requester's deadline ends the wait.
+        tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+    });
+    let sent = with_deadline(
+        request_v2("peer".into(), 305, &manifest, Generation(2), Revision(9)),
+        wall_clock_millis() + 400,
+    );
+    let after_send = client.request_v2(address.clone(), &sent).await;
+    assert!(
+        matches!(
+            after_send,
+            Err(PodWireError::DeadlineExceeded { sent: true, .. })
+        ),
+        "{after_send:?}"
+    );
+    let expired = with_deadline(
+        request_v2("peer".into(), 306, &manifest, Generation(2), Revision(9)),
+        2,
+    );
+    let before_send = client.request_v2(address, &expired).await;
+    assert!(
+        matches!(
+            before_send,
+            Err(PodWireError::DeadlineExceeded { sent: false, .. })
+        ),
+        "{before_send:?}"
+    );
+    responder.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1018,8 +1249,40 @@ async fn v2_session_reuses_one_authenticated_connection() {
     assert_eq!(*invocations.lock().unwrap(), 1);
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn live_manifest_revocation_blocks_an_existing_binding_before_invoke() {
+/// A validity check a test can flip, standing in for the runtime's knowledge-backed one.
+struct SwitchedValidity(Mutex<Option<ptr_runtime::RuntimeManifestError>>);
+
+impl ptr_runtime::ManifestValidity for SwitchedValidity {
+    fn ensure_valid_at(
+        &self,
+        _digest: &[u8; 32],
+        _now: Timestamp,
+    ) -> Result<(), ptr_runtime::RuntimeManifestError> {
+        match self.0.lock().unwrap().clone() {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+}
+
+/// Serve one request against a host with a runtime manifest registry attached: the manifest is
+/// admitted, then optionally revoked, and the validity check answers as given. Returns the
+/// outcome and how many times the Pod ran.
+async fn serve_with_runtime_manifest(
+    revoke: bool,
+    validity: Arc<SwitchedValidity>,
+) -> (PodOutcome, usize) {
+    let (outcome, ran) = serve_with_runtime_manifest_deadline(revoke, validity, None).await;
+    (outcome.unwrap(), ran)
+}
+
+/// [`serve_with_runtime_manifest`] with a request that carries an absolute deadline
+/// `deadline_after_ms` from now.
+async fn serve_with_runtime_manifest_deadline(
+    revoke: bool,
+    validity: Arc<dyn ptr_runtime::ManifestValidity>,
+    deadline_after_ms: Option<u64>,
+) -> (Result<PodOutcome, PodWireError>, usize) {
     let client = PodClient::bind().await.unwrap();
     let invocations = Arc::new(Mutex::new(0));
     let admitted = pod("alpha", &invocations);
@@ -1047,7 +1310,7 @@ async fn live_manifest_revocation_blocks_an_existing_binding_before_invoke() {
     let host = PodHost::bind(pods, policy, Pass)
         .await
         .unwrap()
-        .with_runtime_manifest_registry(Arc::clone(&registry));
+        .with_runtime_manifest_registry(Arc::clone(&registry), validity);
     let binding = host
         .bind_v2_stateful_addressed(
             &ProjectId::from("alpha"),
@@ -1062,26 +1325,176 @@ async fn live_manifest_revocation_blocks_an_existing_binding_before_invoke() {
         .with_execution_manifest(execution_manifest)
         .unwrap();
 
-    registry.write().unwrap().revoke(digest).unwrap();
+    if revoke {
+        registry.write().unwrap().revoke(digest).unwrap();
+    }
 
     let host_identity = host.identity().public_key.clone();
     let address = located(host.address());
-    let server = tokio::spawn(async move { host.serve_session_v2(&binding, 1).await.unwrap() });
+    let server = tokio::spawn(async move { host.serve_session_v2(&binding, 1).await });
     let session = client.connect_session(address, 1).await.unwrap();
     let mut request = request_v2(host_identity, 100, &manifest, Generation(7), Revision(12));
     request.placement_epoch = Some(3);
     request.fencing_token = Some(55);
-    let answer = session.request_v2(&request).await.unwrap();
+    if let Some(after) = deadline_after_ms {
+        request = with_deadline(request, wall_clock_millis() + after);
+    }
+    let answer = session
+        .request_v2(&request)
+        .await
+        .map(|answer| answer.outcome);
+    session.close().await;
+    let served = server.await.unwrap();
+    if deadline_after_ms.is_none() {
+        assert_eq!(served.unwrap().len(), 1);
+    }
+    let ran = *invocations.lock().unwrap();
+    (answer, ran)
+}
 
+/// A validity check that takes a while, as a slow lookup would.
+struct SlowValidity(std::time::Duration);
+
+impl ptr_runtime::ManifestValidity for SlowValidity {
+    fn ensure_valid_at(
+        &self,
+        _digest: &[u8; 32],
+        _now: Timestamp,
+    ) -> Result<(), ptr_runtime::RuntimeManifestError> {
+        std::thread::sleep(self.0);
+        Ok(())
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_deadline_that_passes_during_the_checks_is_asked_again_before_the_pod_runs() {
+    // Valid when the request arrives, expired by the time the checks are done. The requester's
+    // own wait is bounded by the same deadline, so it reports a sent timeout; what matters is
+    // that the host did not run the Pod.
+    let (outcome, ran) = serve_with_runtime_manifest_deadline(
+        false,
+        Arc::new(SlowValidity(std::time::Duration::from_millis(900))),
+        Some(600),
+    )
+    .await;
+    assert!(
+        matches!(
+            outcome,
+            Err(PodWireError::DeadlineExceeded { sent: true, .. })
+        ),
+        "{outcome:?}"
+    );
+    assert_eq!(ran, 0, "the Pod is not invoked");
+    // The same check with room to spare serves it.
+    let (outcome, ran) = serve_with_runtime_manifest_deadline(
+        false,
+        Arc::new(SlowValidity(std::time::Duration::from_millis(10))),
+        Some(30_000),
+    )
+    .await;
+    assert!(
+        matches!(outcome, Ok(PodOutcome::Answered { .. })),
+        "{outcome:?}"
+    );
+    assert_eq!(ran, 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_cached_session_answer_is_not_replayed_past_the_requests_deadline() {
+    let client = PodClient::bind().await.unwrap();
+    let invocations = Arc::new(Mutex::new(0));
+    let admitted = pod("alpha", &invocations);
+    let manifest = admitted.manifest().clone();
+    let mut pods = PodRegistry::default();
+    pods.register(admitted);
+    let mut policy = PodAccessPolicy::new();
+    policy
+        .admit(NodeId(client.identity().public_key), scope("alpha"))
+        .unwrap();
+    let host = PodHost::bind(pods, policy, Pass).await.unwrap();
+    let binding = host
+        .bind_v2_stateful_addressed(
+            &ProjectId::from("alpha"),
+            &PodId::from("summarizer"),
+            ArtifactId::from("summarizer-artifact"),
+            Generation(7),
+            Revision(12),
+            3,
+            55,
+        )
+        .unwrap()
+        .with_execution_manifest(execution_manifest(&manifest, Generation(7), Revision(12)))
+        .unwrap();
+    let host_identity = host.identity().public_key.clone();
+    let address = located(host.address());
+    let server = tokio::spawn(async move { host.serve_session_v2(&binding, 1).await.unwrap() });
+    let session = client.connect_session(address, 1).await.unwrap();
+    let mut request = with_deadline(
+        request_v2(host_identity, 100, &manifest, Generation(7), Revision(12)),
+        wall_clock_millis() + 1_500,
+    );
+    request.placement_epoch = Some(3);
+    request.fencing_token = Some(55);
+    let first = session.request_v2(&request).await.unwrap();
+    assert!(matches!(first.outcome, PodOutcome::Answered { .. }));
+    // Inside the deadline a replay returns the cached answer.
+    assert_eq!(session.request_v2(&request).await.unwrap(), first);
+    tokio::time::sleep(std::time::Duration::from_millis(1_700)).await;
+    let replay = session.request_v2(&request).await;
+    assert!(
+        matches!(
+            replay,
+            Err(PodWireError::DeadlineExceeded { sent: false, .. })
+        ),
+        "{replay:?}"
+    );
+    session.close().await;
+    assert_eq!(server.await.unwrap().len(), 1);
+    assert_eq!(*invocations.lock().unwrap(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn live_manifest_revocation_blocks_an_existing_binding_before_invoke() {
+    let (outcome, ran) =
+        serve_with_runtime_manifest(true, Arc::new(SwitchedValidity(Mutex::new(None)))).await;
     assert_eq!(
-        answer.outcome,
+        outcome,
         PodOutcome::Refused {
             code: RefusalCode::Unavailable
         }
     );
-    assert_eq!(*invocations.lock().unwrap(), 0);
-    session.close().await;
-    assert_eq!(server.await.unwrap().len(), 1);
+    assert_eq!(ran, 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_manifest_that_still_holds_is_served() {
+    let (outcome, ran) =
+        serve_with_runtime_manifest(false, Arc::new(SwitchedValidity(Mutex::new(None)))).await;
+    assert!(
+        matches!(outcome, PodOutcome::Answered { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(ran, 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failing_validity_check_refuses_the_request_before_the_pod_is_invoked() {
+    for error in [
+        ptr_runtime::RuntimeManifestError::PolicyRevisionMissing,
+        ptr_runtime::RuntimeManifestError::InvalidManifest,
+        ptr_runtime::RuntimeManifestError::UnknownManifestDigest([3; 32]),
+    ] {
+        let (outcome, ran) =
+            serve_with_runtime_manifest(false, Arc::new(SwitchedValidity(Mutex::new(Some(error)))))
+                .await;
+        assert_eq!(
+            outcome,
+            PodOutcome::Refused {
+                code: RefusalCode::Unavailable
+            }
+        );
+        assert_eq!(ran, 0, "the Pod is not invoked");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1299,4 +1712,157 @@ async fn v2_binding_rejects_a_manifest_digest_that_is_not_the_registered_manifes
         Some(PodWireError::V2BindingUnavailable)
     );
     assert_eq!(*invocations.lock().unwrap(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn v4_one_shot_client_rejects_an_answer_whose_address_binding_was_changed() {
+    let client = PodClient::bind().await.unwrap();
+    let raw = IrohTransport::bind(&[ALPN_PODWIRE]).await.unwrap();
+    let responder = raw.identity().public_key.clone();
+    let address = located(raw.direct_addr());
+    let manifest = pod("alpha", &Arc::new(Mutex::new(0))).manifest().clone();
+    let responder_task = tokio::spawn(async move {
+        for tamper in 0..2 {
+            let session = raw.accept_session().await.unwrap();
+            let incoming = session.accept_request(1 << 20).await.unwrap();
+            let request = decode_request_v2(&incoming.payload).unwrap();
+            let mut bound = request.address.clone();
+            if tamper == 0 {
+                // The deadline is stripped from the echoed binding.
+                bound.as_mut().unwrap().deadline = None;
+                bound.as_mut().unwrap().origin_ts = None;
+            } else {
+                // The deadline is extended in the echoed binding.
+                let echoed = bound.as_mut().unwrap();
+                echoed.deadline = Some(Timestamp(echoed.deadline.unwrap().0 + 3_600_000));
+            }
+            let answer = PodAnswerV2 {
+                address: bound,
+                execution_manifest: request.execution_manifest,
+                responder: responder.clone(),
+                request_id: request.request_id,
+                request_digest: request_digest(&incoming.payload),
+                generation: request.generation,
+                revision: request.revision,
+                placement_epoch: request.placement_epoch,
+                fencing_token: request.fencing_token,
+                identity_digest: request.identity_digest,
+                session_id: request.session_id.clone(),
+                policy_revision: request.policy_revision,
+                outcome: PodOutcome::Refused {
+                    code: RefusalCode::Unavailable,
+                },
+            };
+            incoming
+                .respond(&encode_answer_v2(&answer).unwrap())
+                .await
+                .unwrap();
+            session.wait_closed().await;
+        }
+    });
+    for request_id in [901, 902] {
+        let asked = with_deadline(
+            request_v2(
+                "peer".into(),
+                request_id,
+                &manifest,
+                Generation(2),
+                Revision(9),
+            ),
+            wall_clock_millis() + 60_000,
+        );
+        let answered = client.request_v2(address.clone(), &asked).await;
+        assert!(
+            matches!(answered, Err(PodWireError::V2BindingUnavailable)),
+            "{request_id}: {answered:?}"
+        );
+    }
+    responder_task.abort();
+}
+
+/// A host with no manifest registry attached serving a binding taken from the runtime: the
+/// binding's own validity check runs on every request. Returns the outcome and the number of
+/// Pod invocations, after `expire` has run once the binding exists.
+async fn serve_runtime_backed_binding(
+    expire: Option<ptr_runtime::RuntimeManifestError>,
+) -> (PodOutcome, usize) {
+    let client = PodClient::bind().await.unwrap();
+    let invocations = Arc::new(Mutex::new(0));
+    let admitted = pod("alpha", &invocations);
+    let manifest = admitted.manifest().clone();
+    let execution_manifest = execution_manifest(&manifest, Generation(7), Revision(12));
+    let digest = execution_manifest.manifest_digest;
+
+    let runtime = ptr_runtime::PtrRuntime::new(ptr_config::PtrConfig::default()).unwrap();
+    runtime
+        .execution_manifest_registry()
+        .write()
+        .unwrap()
+        .admit(ValidatedExecutionManifest {
+            manifest: execution_manifest,
+            knowledge: vec![],
+            artifacts: vec![],
+            runtime_revision: Revision(12),
+        })
+        .unwrap();
+
+    let mut pods = PodRegistry::default();
+    pods.register(admitted);
+    let mut policy = PodAccessPolicy::new();
+    policy
+        .admit(NodeId(client.identity().public_key), scope("alpha"))
+        .unwrap();
+    let host = PodHost::bind(pods, policy, Pass).await.unwrap();
+    let validity = Arc::new(SwitchedValidity(Mutex::new(None)));
+    let binding = host
+        .bind_v2_stateful_addressed(
+            &ProjectId::from("alpha"),
+            &PodId::from("summarizer"),
+            ArtifactId::from("summarizer-artifact"),
+            Generation(7),
+            Revision(12),
+            3,
+            55,
+        )
+        .unwrap()
+        .with_runtime_execution_manifest(&runtime, validity.clone(), &digest)
+        .unwrap();
+    // The bound object ends after the binding was made.
+    *validity.0.lock().unwrap() = expire;
+
+    let host_identity = host.identity().public_key.clone();
+    let address = located(host.address());
+    let server = tokio::spawn(async move { host.serve_session_v2(&binding, 1).await.unwrap() });
+    let session = client.connect_session(address, 1).await.unwrap();
+    let mut request = request_v2(host_identity, 100, &manifest, Generation(7), Revision(12));
+    request.placement_epoch = Some(3);
+    request.fencing_token = Some(55);
+    request.execution_manifest = Some(digest);
+    let answer = session.request_v2(&request).await.unwrap();
+    session.close().await;
+    assert_eq!(server.await.unwrap().len(), 1);
+    let ran = *invocations.lock().unwrap();
+    (answer.outcome, ran)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_runtime_backed_binding_asks_its_validity_on_every_request_without_a_host_registry() {
+    let (outcome, ran) = serve_runtime_backed_binding(None).await;
+    assert!(
+        matches!(outcome, PodOutcome::Answered { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(ran, 1);
+
+    let (outcome, ran) = serve_runtime_backed_binding(Some(
+        ptr_runtime::RuntimeManifestError::PolicyRevisionMissing,
+    ))
+    .await;
+    assert_eq!(
+        outcome,
+        PodOutcome::Refused {
+            code: RefusalCode::Unavailable
+        }
+    );
+    assert_eq!(ran, 0, "the Pod is not invoked");
 }

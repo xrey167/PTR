@@ -10,10 +10,11 @@
 
 **Maturity:** `scaffold`  
 **Last reviewed:** 2026-10-13  
-**Code footprint:** 3 Rust source files · 957 nonblank source lines · 2 integration-test files · 30 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 3 Rust source files · 967 nonblank source lines · 2 integration-test files · 31 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
+- PodCall.deadline_ms (proto field 7, optional) converted to CallFrame.deadline, zero refused (ProtocolError::ZeroDeadline)
 - PodWire v1 semantic version constant
 - Prost-generated network schemas compiled with vendored protoc
 - TypedPayload, CallFrame and CALL/RET/ERR/EVT/REVOKE domain frames
@@ -56,6 +57,7 @@
 
 ### Current automated checks
 
+- tests/prost.rs pins the deadline_ms wire bytes; tests/validation.rs: zero deadline refused, absent and explicit values converted
 - prost roundtrip and malformed PodCall validation tests
 - a compile-fail doctest that starts compiling, and therefore fails, if session_id is ever restored to PodCall
 - workspace fmt/check/test/clippy
