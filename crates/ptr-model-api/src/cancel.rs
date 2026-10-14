@@ -16,7 +16,24 @@ struct TokenState {
     parent: Option<Arc<TokenState>>,
 }
 
+impl Drop for TokenState {
+    /// Unlink the ancestor chain iteratively: the default recursive drop of `parent` would
+    /// overflow the stack on a deep (but legal) chain of uniquely owned ancestors.
+    /// `Arc::into_inner` hands the state to exactly one dropper, so a chain shared with a
+    /// still-live token or racing drops stops (or continues) exactly once.
+    fn drop(&mut self) {
+        let mut next = self.parent.take();
+        while let Some(parent) = next {
+            next = match Arc::into_inner(parent) {
+                Some(mut state) => state.parent.take(),
+                None => None,
+            };
+        }
+    }
+}
+
 impl TokenState {
+    /// Walks the ancestor chain, so the cost is linear in the depth the caller built.
     fn is_cancelled(&self) -> bool {
         let mut node = self;
         loop {
@@ -265,6 +282,29 @@ mod tests {
         assert!(!parent.is_cancelled() && !sibling.is_cancelled());
         parent.cancel();
         assert!(sibling.is_cancelled());
+    }
+
+    #[test]
+    fn deep_child_chain_drops_without_stack_overflow() {
+        const DEPTH: usize = 1_000_000;
+        let handle = std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(|| {
+                let root = CancellationToken::new();
+                let mut token = root.child();
+                for _ in 0..DEPTH {
+                    token = token.child();
+                }
+                root.cancel();
+                assert!(
+                    token.is_cancelled(),
+                    "ancestor cancellation reaches the deepest token"
+                );
+                drop(root);
+                drop(token);
+            })
+            .expect("spawn small-stack thread");
+        handle.join().expect("deep chain dropped without overflow");
     }
 
     #[test]
