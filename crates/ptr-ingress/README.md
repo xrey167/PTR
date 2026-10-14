@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-14  
-**Code footprint:** 9 Rust source files · 3584 nonblank source lines · 5 integration-test files · 90 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 9 Rust source files · 3682 nonblank source lines · 6 integration-test files · 95 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -24,6 +24,7 @@
 - Pluggable SemanticClassifier trait with a rule-based lexicon reference classifier (task, reasoning and read-only/write/network/exec effect labels, normalized probabilities) and a document-shape prior classifier as a second opinion
 - Span-level provenance: every segment and label evidence carries a RawSpan into the original raw bytes, verified to round-trip for UTF-8, UTF-16 and CRLF input
 - Risk/disagreement verification policy producing Agree/SampleVerified/Disputed/NeedsFullCheck with typed reasons (kind/extension mismatch, invalid or too-deep JSON, classifier disagreement, probability divergence, lossy decoding, always full check for write/network/exec effects)
+- PolicyConfig::validate and IngressPipeline::try_new reject NaN, infinite or out-of-[0, 1] policy thresholds with a typed PolicyConfigError; IngressPipeline::new and evaluate_policy stay infallible but fail closed by replacing an invalid threshold with the strictest valid value (0.0 risk/divergence, 1.0 minimum sniff confidence)
 - IngressPipeline producing an IngressRecord that keeps the untouched raw input next to kind, normalized text, segments, proposal, evidence and decision, with a configurable input size bound and typed errors
 
 ### Missing for the target architecture
