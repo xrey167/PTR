@@ -12,6 +12,7 @@ use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::record::{RecordError, TrajectoryRecord, MAX_LINE_BYTES};
 
@@ -91,9 +92,14 @@ pub struct ReadOutcome {
 }
 
 /// The append side of a trajectory log.
+///
+/// Clones share one lock, so the size check, the rotation and the write of an append are
+/// serialized across threads that use clones of the same log. Two logs opened independently for
+/// the same path (or in different processes) are not coordinated with each other.
 #[derive(Clone, Debug)]
 pub struct TrajectoryLog {
     config: LogConfig,
+    guard: Arc<Mutex<()>>,
 }
 
 /// Path of the `n`-th rotated file of `base`: `base.n`.
@@ -113,26 +119,36 @@ impl TrajectoryLog {
         if config.path.file_name().is_none() {
             return Err(LogError::InvalidPath);
         }
-        Ok(Self { config })
+        Ok(Self {
+            config,
+            guard: Arc::new(Mutex::new(())),
+        })
     }
 
     pub fn config(&self) -> &LogConfig {
         &self.config
     }
 
-    /// Encode (and so redact and bound) `record` and append it as one line.
+    /// Encode (and so redact and bound) `record` and append it as one line. The size check,
+    /// rotation and write run under the lock shared by clones of this log.
     ///
     /// # Errors
     /// [`LogError::Record`] when the record does not encode, [`LogError::Io`] otherwise.
     pub fn append(&self, record: &TrajectoryRecord) -> Result<AppendReport, LogError> {
         let mut line = record.encode().map_err(LogError::Record)?;
         line.push('\n');
+        let _held: MutexGuard<'_, ()> = self
+            .guard
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let path = &self.config.path;
         let size = match fs::metadata(path) {
             Ok(meta) => meta.len(),
             Err(error) if error.kind() == io::ErrorKind::NotFound => 0,
             Err(error) => return Err(error.into()),
         };
+        #[cfg(test)]
+        test_seam::after_size_check();
         let rotated = size > 0 && size + line.len() as u64 > self.config.max_bytes;
         if rotated {
             self.rotate()?;
@@ -165,6 +181,29 @@ impl TrajectoryLog {
         }
         fs::rename(base, rotated_path(base, 1))?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod test_seam {
+    use std::cell::RefCell;
+
+    type Hook = Box<dyn Fn()>;
+
+    thread_local! {
+        static AFTER_SIZE_CHECK: RefCell<Option<Hook>> = const { RefCell::new(None) };
+    }
+
+    pub(super) fn set(hook: Hook) {
+        AFTER_SIZE_CHECK.with(|slot| *slot.borrow_mut() = Some(hook));
+    }
+
+    pub(super) fn after_size_check() {
+        AFTER_SIZE_CHECK.with(|slot| {
+            if let Some(hook) = slot.borrow().as_ref() {
+                hook();
+            }
+        });
     }
 }
 
@@ -380,6 +419,57 @@ mod tests {
         assert_eq!(ids(&rotated_path(base, 1)), ["r6", "r7"]);
         assert_eq!(ids(&rotated_path(base, 2)), ["r4", "r5"]);
         assert!(!rotated_path(base, 3).exists(), "beyond keep is dropped");
+    }
+
+    #[test]
+    fn clones_serialize_the_size_check_rotation_and_append() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        // Long ids so that a valid (>= MIN_ROTATION_BYTES) limit still holds only one line.
+        let id = |tag: &str| format!("{}{tag}", "x".repeat(200));
+        let dir = TempDir::new();
+        let line_len = record(&id("r0")).encode().unwrap().len() as u64 + 1;
+        assert!(line_len > MIN_ROTATION_BYTES / 2, "two lines must not fit");
+        let max_bytes = (line_len + 10).max(MIN_ROTATION_BYTES);
+        let log = TrajectoryLog::open(config(&dir, max_bytes, 1)).unwrap();
+        log.append(&record(&id("r0"))).unwrap();
+
+        let (at_check_tx, at_check_rx) = mpsc::channel::<()>();
+        let (b_done_tx, b_done_rx) = mpsc::channel::<()>();
+        let a_log = log.clone();
+        let a = std::thread::spawn(move || {
+            // Pause A between its size check and its rotation until B has finished (or, when B
+            // is correctly held back by the shared lock, until the wait times out).
+            test_seam::set(Box::new(move || {
+                let _ = at_check_tx.send(());
+                let _ = b_done_rx.recv_timeout(Duration::from_millis(300));
+            }));
+            a_log.append(&record(&id("rA")))
+        });
+        at_check_rx.recv().unwrap();
+        let b_log = log.clone();
+        let b = std::thread::spawn(move || {
+            let result = b_log.append(&record(&id("rB")));
+            let _ = b_done_tx.send(());
+            result
+        });
+        let a_report = a.join().unwrap().unwrap();
+        let b_report = b.join().unwrap().unwrap();
+        assert!(a_report.rotated && b_report.rotated);
+
+        let ids = |path: &Path| -> Vec<String> {
+            read_log(path, ReadMode::Strict)
+                .unwrap()
+                .records
+                .into_iter()
+                .map(|r| r.run_id)
+                .collect()
+        };
+        let base = &log.config().path;
+        // A ran first (rotated r0 away), then B rotated A's record to .1.
+        assert_eq!(ids(base), [id("rB")]);
+        assert_eq!(ids(&rotated_path(base, 1)), [id("rA")]);
     }
 
     #[test]
