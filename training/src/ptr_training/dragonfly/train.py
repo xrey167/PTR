@@ -41,6 +41,8 @@ from .numeric import ordered_sum
 class PodTrainingSpec:
     """Trusted, independently authored training inputs of one pod generation."""
 
+    #: The project whose registry the pod belongs to; the router keys addresses by project and pod.
+    project: str
     pod_id: str
     descriptor: PodIdentityDescriptor
     generation: int
@@ -123,6 +125,8 @@ def _check_inputs(spec: PodTrainingSpec, positives: Sequence[str], negatives: Se
         raise ValueError("generation must be at least 1")
     if not spec.pod_id:
         raise ValueError("pod_id is required")
+    if not spec.project:
+        raise ValueError("project is required")
     spec.descriptor.validate()
     if not spec.positives or not negatives:
         raise ValueError("positive and negative address examples are required")

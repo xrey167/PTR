@@ -18,13 +18,32 @@ use std::sync::Arc;
 
 /// What a [`PodSampler`] may derive request features from: the scope of one Pod request and its
 /// payload. It carries no key, nonce or registry.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 pub struct RouteQuery<'a> {
     pub project: &'a ProjectId,
     pub capability: &'a CapabilityId,
     pub input_type: &'a TypeId,
     pub request_id: &'a RequestId,
     pub payload: &'a [u8],
+}
+
+/// The payload of a Pod request can hold user text, so it is never printed: `Debug` shows its
+/// length and the first eight bytes of its SHA-256 (Invariant 13).
+impl std::fmt::Debug for RouteQuery<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let digest = Sha256::digest(self.payload);
+        f.debug_struct("RouteQuery")
+            .field("project", self.project)
+            .field("capability", self.capability)
+            .field("input_type", self.input_type)
+            .field("request_id", self.request_id)
+            .field("payload_len", &self.payload.len())
+            .field(
+                "payload_sha256_prefix",
+                &format_args!("{:02x?}", &digest[..8]),
+            )
+            .finish()
+    }
 }
 
 /// Turns a Pod request into the query vector a learned router scores candidates with. The encoder

@@ -126,10 +126,18 @@ fn main() {
         // The harness of R013: `<seed>` (the pinned scale), `<cases> <seed>` (the mutation
         // checker's form) or `--preflight`; no default seed, and a typo stops the run.
         "self-modification-authority" => experiments::r013::run(&args[2..]),
-        // The harness of R015 (Dragonfly pod addressing): one seed per run, no default seed. It
-        // reads the world the training step wrote; see `experiments::r015`.
+        // The harness of R015 (Dragonfly pod addressing): `<seed>` or `<seed> --smoke`, no default
+        // seed. It generates and consumes the seed's world itself; see `experiments::r015`.
         "dragonfly-addressing" => {
-            experiments::r015::run(strict_or_exit(seed_arg(&args, "dragonfly-addressing")))
+            let seed = strict_or_exit(seed_arg(&args, "dragonfly-addressing"));
+            let smoke = match args.get(3).map(String::as_str) {
+                None => false,
+                Some("--smoke") if args.len() == 4 => true,
+                Some(other) => strict_or_exit(Err(format!(
+                    "dragonfly-addressing <seed> [--smoke]: unexpected argument {other:?}"
+                ))),
+            };
+            experiments::r015::run(seed, smoke)
         }
         // Not an R005 result: an exactness smoke run of the CPU reference backend.
         "kv-reuse-smoke" => experiments::kv_reuse_smoke::run(strict_or_exit(parse_strict_usize(

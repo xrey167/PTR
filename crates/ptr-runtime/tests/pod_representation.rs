@@ -50,6 +50,7 @@ fn address(pod: &str, generation: u64) -> PodRevisionAddress {
 
 fn representation(pod: &str, z: Vec<f32>, generation: u64) -> PodRepresentation {
     PodRepresentation::new(PodRepresentationParts {
+        project: ProjectId::from("demo"),
         pod: PodId::from(pod),
         identity: PodIdentity::from(format!("pod:{pod}").as_str()),
         cluster_key: ClusterKey([3; 32]),
@@ -204,8 +205,14 @@ fn revoking_one_pod_generation_denies_exactly_that_representation() {
 
     let admitted = runtime.admitted_representations(encoder(), &cache);
     assert_eq!(admitted.store.len(), 1);
-    assert!(admitted.store.get(&PodId::from("beta")).is_some());
-    assert!(admitted.store.get(&PodId::from("alpha")).is_none());
+    assert!(admitted
+        .store
+        .get(&ProjectId::from("demo"), &PodId::from("beta"))
+        .is_some());
+    assert!(admitted
+        .store
+        .get(&ProjectId::from("demo"), &PodId::from("alpha"))
+        .is_none());
     assert_eq!(admitted.refused.len(), 1);
     let (key, refusal) = &admitted.refused[0];
     assert_eq!(key, "alpha");
@@ -229,8 +236,14 @@ fn a_new_pod_generation_denies_the_old_representation_until_it_is_retrained() {
         })
         .unwrap();
     let admitted = runtime.admitted_representations(encoder(), &cache);
-    assert!(admitted.store.get(&PodId::from("alpha")).is_some());
-    assert!(admitted.store.get(&PodId::from("beta")).is_none());
+    assert!(admitted
+        .store
+        .get(&ProjectId::from("demo"), &PodId::from("alpha"))
+        .is_some());
+    assert!(admitted
+        .store
+        .get(&ProjectId::from("demo"), &PodId::from("beta"))
+        .is_none());
     assert!(matches!(
         &admitted.refused[0].1,
         RepresentationRefusal::Admission(RepresentationDenial::State(
@@ -291,6 +304,7 @@ fn an_admitted_representation_that_is_not_activated_stays_out_of_the_router_stor
 
 fn parts_of(representation: &PodRepresentation) -> PodRepresentationParts {
     PodRepresentationParts {
+        project: representation.project().clone(),
         pod: representation.pod().clone(),
         identity: representation.identity().clone(),
         cluster_key: representation.cluster_key(),
@@ -444,7 +458,12 @@ fn after_a_revocation_the_runtime_abstains_instead_of_routing_to_the_revoked_pod
             generation: Generation(1),
         })
         .unwrap();
-    let sampler = sampler(runtime.admitted_representations(encoder(), &cache).store);
+    let admitted = runtime.admitted_representations(encoder(), &cache);
+    let kept_beta = admitted
+        .store
+        .get(&ProjectId::from("demo"), &PodId::from("beta"))
+        .is_some();
+    let sampler = sampler(admitted.store);
     // The alpha question no longer finds alpha's address; beta's does not match it either.
     let error = run(&mut runtime, b"alpha question", &sampler).unwrap_err();
     assert_eq!(
@@ -454,9 +473,18 @@ fn after_a_revocation_the_runtime_abstains_instead_of_routing_to_the_revoked_pod
         }
     );
     assert!(routed_pods(&runtime).is_empty());
-    // The other pod is unaffected.
-    run(&mut runtime, b"beta question", &sampler).unwrap();
-    assert_eq!(routed_pods(&runtime), ["beta"]);
+    // alpha is still a registry candidate but has no admitted address, so the field is only
+    // partly covered and beta's question abstains too instead of ranking part of it.
+    let error = run(&mut runtime, b"beta question", &sampler).unwrap_err();
+    assert_eq!(
+        error,
+        RuntimeError::RouteFailed {
+            reason: "routing abstained"
+        }
+    );
+    assert!(routed_pods(&runtime).is_empty());
+    // beta's own address is unaffected by alpha's revocation.
+    assert!(kept_beta);
 }
 
 #[test]
@@ -491,4 +519,28 @@ fn an_encoder_failure_or_a_wrongly_sized_query_is_a_pod_free_route_failure() {
         }
     );
     assert!(routed_pods(&runtime).is_empty());
+}
+
+#[test]
+fn the_debug_output_of_a_route_query_does_not_contain_the_payload() {
+    let (project, capability, input_type, request_id) = (
+        ProjectId::from("demo"),
+        CapabilityId::from("Echo<Text>"),
+        TypeId::from("Text"),
+        ptr_types::RequestId::from("request-1"),
+    );
+    let secret = b"my passport number is X1234567";
+    let query = RouteQuery {
+        project: &project,
+        capability: &capability,
+        input_type: &input_type,
+        request_id: &request_id,
+        payload: secret,
+    };
+    let shown = format!("{query:?} {query:#?}");
+    assert!(!shown.contains("passport"), "{shown}");
+    assert!(!shown.contains("X1234567"), "{shown}");
+    assert!(!shown.contains(&format!("{secret:?}")), "{shown}");
+    assert!(shown.contains("payload_len"));
+    assert!(shown.contains(&secret.len().to_string()));
 }

@@ -71,6 +71,7 @@
       "manifest": "dragonfly-pod-e62f215b1f72a8e1d1ccd61c159239caa8b66397376e60f4e6401d1b708160c1.json",
       "pod_id": "supplier-mueller",
       "pod_identity": "pod:e62f215b1f72a8e1d1ccd61c159239caa8b66397376e60f4e6401d1b708160c1",
+      "project": "demo",
       "status": "activated",
       "weights": "dragonfly-pod-e62f215b1f72a8e1d1ccd61c159239caa8b66397376e60f4e6401d1b708160c1.bin"
     },
@@ -80,6 +81,7 @@
       "manifest": "dragonfly-pod-b4d83d4da45bab1b666c5d4b319f00a121288cb82459c207c3b7224a8d88a58e.json",
       "pod_id": "supplier-schmidt",
       "pod_identity": "pod:b4d83d4da45bab1b666c5d4b319f00a121288cb82459c207c3b7224a8d88a58e",
+      "project": "demo",
       "status": "activated",
       "weights": "dragonfly-pod-b4d83d4da45bab1b666c5d4b319f00a121288cb82459c207c3b7224a8d88a58e.bin"
     },
@@ -89,6 +91,7 @@
       "manifest": "dragonfly-pod-cc07a7dd199cd2741ff53af9f61f8383213b610218ef41ca65c380bf2c43ca3d.json",
       "pod_id": "supplier-kowalski",
       "pod_identity": "pod:cc07a7dd199cd2741ff53af9f61f8383213b610218ef41ca65c380bf2c43ca3d",
+      "project": "demo",
       "status": "not-activated",
       "weights": "dragonfly-pod-cc07a7dd199cd2741ff53af9f61f8383213b610218ef41ca65c380bf2c43ca3d.bin"
     }

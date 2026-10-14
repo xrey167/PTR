@@ -36,6 +36,12 @@ pub enum PodHeadError {
         expected: Option<PodRevisionAddress>,
         actual: Option<PodRevisionAddress>,
     },
+    /// The new generation is below the generation the lifecycle authority holds live for the pod.
+    BelowLiveGeneration {
+        identity: PodIdentity,
+        live: Generation,
+        requested: Generation,
+    },
     /// The new generation is not strictly above the current one.
     NotAdvancing {
         identity: PodIdentity,
@@ -63,6 +69,9 @@ pub enum PodHeadStatus<'a> {
     /// The head's generation carries a revocation tombstone. [`PtrRuntime::pod_head`] hides it,
     /// but it is still the committed head: a move names it as `expected`.
     Revoked(&'a PodRevisionAddress),
+    /// The lifecycle authority holds another generation live for the pod (or none): the head
+    /// describes a superseded or not yet live revision. [`PtrRuntime::pod_head`] hides it.
+    Stale(&'a PodRevisionAddress),
 }
 
 /// The heads, derived from the committed history.
@@ -124,40 +133,53 @@ impl crate::directory::PodHeadSource for PtrRuntime {
 }
 
 impl PtrRuntime {
-    /// The current head of `identity`, unless its generation is revoked.
+    /// Whether `head` may answer now: its generation is not revoked and is the one the lifecycle
+    /// authority holds live for the pod, as neural-state admission requires of a bound
+    /// generation. A generation that is not live (superseded, ahead of the lifecycle, or a pod
+    /// unknown to it) fails closed.
+    fn pod_head_is_current(&self, head: &PodRevisionAddress) -> bool {
+        let target = pod_lifecycle_target(head);
+        !self
+            .revoked_generations
+            .contains(&(target.clone(), head.generation))
+            && self.live_generations.get(&target) == Some(&head.generation)
+    }
+
+    /// The current head of `identity`, unless it may not answer.
     ///
-    /// A revocation tombstone on the head's generation hides the head instead of falling back to
-    /// an older one: which older revision may answer is a decision for a new committed head.
+    /// A head is hidden when its generation is revoked or is not the live generation of the pod
+    /// (superseded, or never made live). Nothing falls back to an older revision: which older
+    /// revision may answer is a decision for a new committed head.
     pub fn pod_head(&self, identity: &PodIdentity) -> Option<&PodRevisionAddress> {
         let head = self.pod_heads.get(identity)?;
-        let revoked = self
-            .revoked_generations
-            .contains(&(pod_lifecycle_target(head), head.generation));
-        (!revoked).then_some(head)
+        self.pod_head_is_current(head).then_some(head)
     }
 
-    /// The committed head of `identity` and whether its generation is revoked. Unlike
-    /// [`PtrRuntime::pod_head`] this shows a revoked head, so a writer can name it as `expected`
-    /// when it moves the identity to a new generation.
+    /// The committed head of `identity` and why it may or may not answer. Unlike
+    /// [`PtrRuntime::pod_head`] this shows a revoked or stale head, so a writer can name it as
+    /// `expected` when it moves the identity to a new generation.
     pub fn pod_head_status(&self, identity: &PodIdentity) -> Option<PodHeadStatus<'_>> {
         let head = self.pod_heads.get(identity)?;
-        let revoked = self
-            .revoked_generations
-            .contains(&(pod_lifecycle_target(head), head.generation));
-        Some(if revoked {
-            PodHeadStatus::Revoked(head)
-        } else {
-            PodHeadStatus::Live(head)
-        })
+        let target = pod_lifecycle_target(head);
+        Some(
+            if self
+                .revoked_generations
+                .contains(&(target.clone(), head.generation))
+            {
+                PodHeadStatus::Revoked(head)
+            } else if self.live_generations.get(&target) == Some(&head.generation) {
+                PodHeadStatus::Live(head)
+            } else {
+                PodHeadStatus::Stale(head)
+            },
+        )
     }
 
-    /// Every unrevoked head, ordered by identity.
+    /// Every head that may answer, ordered by identity.
     pub fn pod_heads(&self) -> impl Iterator<Item = (&PodIdentity, &PodRevisionAddress)> {
-        self.pod_heads.iter().filter(|(_, head)| {
-            !self
-                .revoked_generations
-                .contains(&(pod_lifecycle_target(head), head.generation))
-        })
+        self.pod_heads
+            .iter()
+            .filter(|(_, head)| self.pod_head_is_current(head))
     }
 
     /// Moves the head of `request.identity` to `request.new` through the ledger.
@@ -210,6 +232,17 @@ impl PtrRuntime {
             }
         }
         let target = pod_lifecycle_target(new);
+        if let Some(live) = self.live_generations.get(&target) {
+            if new.generation < *live {
+                return Err(RuntimeError::PodHead(Box::new(
+                    PodHeadError::BelowLiveGeneration {
+                        identity: identity.clone(),
+                        live: *live,
+                        requested: new.generation,
+                    },
+                )));
+            }
+        }
         if self
             .revoked_generations
             .contains(&(target.clone(), new.generation))

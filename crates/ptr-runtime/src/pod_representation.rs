@@ -37,6 +37,11 @@ pub struct BindPodRepresentation<'a> {
 /// Why a representation could not be bound.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PodRepresentationError {
+    /// The representation belongs to another project than `pod`.
+    ProjectMismatch {
+        representation: String,
+        address: String,
+    },
     /// The representation was trained for another pod than `pod`.
     PodMismatch {
         representation: String,
@@ -91,6 +96,14 @@ impl PtrRuntime {
             pod,
             codebook,
         } = request;
+        if representation.project() != &pod.address.project {
+            return Err(RuntimeError::PodRepresentation(
+                PodRepresentationError::ProjectMismatch {
+                    representation: representation.project().to_string(),
+                    address: pod.address.project.to_string(),
+                },
+            ));
+        }
         if representation.pod() != &pod.address.pod_id {
             return Err(RuntimeError::PodRepresentation(
                 PodRepresentationError::PodMismatch {
@@ -158,8 +171,7 @@ impl PtrRuntime {
             .generations
             .iter()
             .all(|(target, generation)| {
-                *generation == representation.generation()
-                    && target.rsplit('/').next() == Some(representation.pod().0.as_str())
+                *generation == representation.generation() && target_names(target, &representation)
             })
             && admitted.binding().generations.len() == 1;
         if !recorded || !bound_to_its_pod {
@@ -210,6 +222,16 @@ impl PtrRuntime {
         let state = NeuralState::new(admitted.binding().clone(), admitted.payload().to_vec());
         self.admit_pod_representation(&state)
     }
+}
+
+/// Whether the lifecycle target `pod:<project>/<namespace>/<pod>` names the representation's own
+/// project and pod.
+fn target_names(target: &str, representation: &PodRepresentation) -> bool {
+    let Some(rest) = target.strip_prefix("pod:") else {
+        return false;
+    };
+    let parts: Vec<&str> = rest.split('/').collect();
+    parts.len() == 3 && parts[0] == representation.project().0 && parts[2] == representation.pod().0
 }
 
 fn digest_hex(digest: &[u8; 32]) -> String {

@@ -218,6 +218,28 @@ impl fmt::Display for PolicyFailure {
     }
 }
 
+/// Why a learned router abstained.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum AbstentionReason {
+    /// The best candidate scored below the abstention threshold.
+    LowScore,
+    /// The best candidate did not lead the runner-up by the minimum margin.
+    SmallMargin,
+    /// Some eligible candidates have no learned representation, so the ranking would compare only
+    /// part of the field: choosing among the covered ones could hide the better, uncovered one.
+    PartialCoverage,
+}
+
+impl fmt::Display for AbstentionReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::LowScore => "low score",
+            Self::SmallMargin => "small margin",
+            Self::PartialCoverage => "partial coverage",
+        })
+    }
+}
+
 /// A router failure while candidates may exist. Distinct from `Ok(None)` (no candidate).
 #[derive(Debug)]
 #[non_exhaustive]
@@ -256,6 +278,8 @@ pub enum RouteError {
         best_score: f64,
         /// `best_score` minus the runner-up's score; `best_score` when there was no runner-up.
         margin: f64,
+        /// Why the router declined.
+        reason: AbstentionReason,
     },
     /// None of the eligible candidates has a learned representation, so a learned router has
     /// nothing to score. Distinct from [`RouteError::Abstained`]: no pod was scored at all.
@@ -306,9 +330,10 @@ impl fmt::Display for RouteError {
                 runner_up,
                 best_score,
                 margin,
+                reason,
             } => write!(
                 f,
-                "router abstained: best {best:?} scored {best_score:.4}, runner-up {runner_up:?}, margin {margin:.4}"
+                "router abstained ({reason}): best {best:?} scored {best_score:.4}, runner-up {runner_up:?}, margin {margin:.4}"
             ),
             Self::NoRepresentation { candidates } => write!(
                 f,

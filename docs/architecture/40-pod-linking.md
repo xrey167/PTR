@@ -45,15 +45,20 @@ predicate change moves both.
 
 - `new` must be a valid revision address; with an `old` its generation must rise strictly (the
   ledger codec refuses anything else on append and on decode);
-- the runtime commits it only if the committed head equals `old` (`None` for the first head) and
-  `new` is not a revoked pod generation, and checks the same on replay.
+- the runtime commits it only if the committed head equals `old` (`None` for the first head),
+  `new` is not a revoked pod generation and `new.generation` is not below the generation the
+  lifecycle authority holds live for that pod, and checks the same on replay.
 
 The head is projected to `pod-head:<identity>` in the materialized state, so replay, the Postgres
 projection and a compacted snapshot all reproduce it with no extra snapshot format. A restore
 fails closed on a malformed entry.
 
-`PtrRuntime::pod_head` returns the head unless its generation is revoked; it never falls back to an
-older revision. `advance_pod_head(AdvancePodHead { identity, expected, new })` commits through the
+`PtrRuntime::pod_head` (and `pod_heads`, and so `PodDirectory::resolve_head`) returns a head only
+while its generation is the one the lifecycle authority holds live for the pod, the same rule that
+admits a bound representation: a head whose generation was revoked, superseded, or is not (yet)
+live fails closed, including when the pod has no live generation. It never falls back to an older
+revision. `pod_head_status` still shows such a head (`Revoked` or `Stale`), so a writer can name
+it as `expected` and move the identity on. `advance_pod_head(AdvancePodHead { identity, expected, new })` commits through the
 ledger. `PodDirectory::resolve_head` resolves identity, then head, then the ordinary `resolve`.
 A pod generation is the lifecycle target `pod:<project>/<namespace>/<pod>` (`pod_lifecycle_target`).
 
@@ -89,19 +94,24 @@ manifest is at most `MAX_MANIFEST_BYTES` (64 KiB) before it is parsed; its minim
 stricter with `with_policy`, never weaker.
 
 **Router.** `LearnedPodRouter` implements `Router` and ranks only `registry.candidates(...)`;
-the trusted boundary still refuses anything outside that set. It returns a point mass on the best
-candidate (propensity 1), or abstains with `RouteError::Abstained { best, runner_up, best_score,
-margin }` when the best score is below 0.5 or the runner-up is within 0.15. `NoRepresentation`
-means no candidate had an address. The default `PodRouter` remains the router when none is
+the trusted boundary still refuses anything outside that set. Representations are keyed by
+`(ProjectId, PodId)`: two projects may use the same pod id and neither sees the other's address.
+It returns a point mass on the best candidate (propensity 1), or abstains with
+`RouteError::Abstained { best, runner_up, best_score, margin, reason }`: `LowScore` when the best
+score is below 0.5, `SmallMargin` when the runner-up is within 0.15, and `PartialCoverage` when
+some candidate has no address, because ranking only the covered ones would pick among part of the
+field. `NoRepresentation` means no candidate had an address. The default `PodRouter` remains the router when none is
 configured. The runtime reports an abstention as `RouteFailed { reason: "routing abstained" }`
 without naming a pod; the fallback and counters are work package 2.
 
 **Query vector.** `PodSampler::features` supplies `RouteFeatures::vector`; `EmbeddingSampler`
 wraps a `CheckedRouter` with a `QueryEmbedder`. PTR has no Rust encoder: the host provides one.
+`RouteQuery` carries the request payload, which can hold user text, so its `Debug` shows only the
+payload length and a digest prefix (Invariant 13).
 `ptrd` does not wire a learned router for that reason.
 
 **Artifact.** `dragonfly-<identity>.json` (manifest) and `.bin` (`dims` little-endian `f32` of `z`,
-then the bias). The manifest carries the encoder, dimension, generation, pod, identity, cluster
+then the bias). The manifest carries the encoder, dimension, generation, project, pod, identity, cluster
 key, scoring weights, the gate measurement, `weights_sha256` and a `digest` over every field and the
 weights. The Python exporter and the Rust loader share a committed fixture
 (`crates/ptr-router/tests/fixtures`): identities, cluster keys, weights bit for bit and every probe
@@ -118,6 +128,8 @@ binding is refused. `admitted_representations` builds the router store from the 
 what was refused and why.
 
 ## What is not here
+
+- **Trust in the artifact.** The activation gate is self-reported: the gate numbers are written by the exporter and re-checked only against the loader's minima, the manifest digest is unsigned (an integrity check against corruption, not authentication of the exporter), the gate is measured on the training data (a coverage check, not a held-out score), and `activated` is advisory (the store recomputes it from the numbers and never trusts the flag; ADR-0023).
 
 - **Symlink-LoRA.** A model that emits a link was a research idea; PTR keeps identity value-free
   and the head a ledger fact, so no link is learned in code. It is a candidate in

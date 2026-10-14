@@ -335,6 +335,8 @@ backward_transfer_min_permille = "int"
 # encoder is still to be chosen, which keeps R015 in `planned`; the accuracy margin is pinned at 0.
 [experiment.R015.required]
 seeds = "int-list"
+explorative_seeds = "int-list"
+pilot_seeds = "int-list"
 harness = "str"
 encoder_model = "str"
 encoder_revision = "str"
@@ -342,7 +344,11 @@ activation_alias_threshold_permille = "int"
 activation_negative_reject_permille = "int"
 abstain_below_permille = "int"
 abstain_margin_permille = "int"
+sweep_abstain_below_permille = "int-list"
+sweep_min_margin_permille = "int-list"
 accuracy_margin_permille = "int"
+preregistration_text = "file"
+criteria = "file"
 
 # The harness (bins/ptr-bench, m008) prints one JSON object per seed; aggregate.py judges the five
 # seeds under the criteria file, which is frozen with the table, as is the preregistration text. The

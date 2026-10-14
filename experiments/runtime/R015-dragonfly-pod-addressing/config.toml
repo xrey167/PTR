@@ -4,16 +4,22 @@ name = "R015-dragonfly-pod-addressing"
 path = "experiments/runtime/R015-dragonfly-pod-addressing"
 tests_dir = "tests"
 
-# Chronology: on 2026-10-13, before this criterion was fixed, the harness was run once on the
-# confirmatory seeds 17, 29, 43, 71 and 101 to see that it works. Those numbers are not used: the
-# criterion below comes from the plan, and tuning or pilots run on seeds >= 1001 only. The
-# confirmatory seeds are to run once, after the freeze.
+# Chronology: on 2026-10-13, before this criterion was fixed, the harness was run once on the seeds
+# 17, 29, 43, 71 and 101 to see that it works. Those seeds are therefore burned: their numbers were
+# seen and are not used, and they are listed below as `explorative_seeds`, never as confirmatory
+# ones. The confirmatory seeds are fresh (>= 2001) and have never been run in any form. Tuning and
+# pilots run on the pilot seeds (>= 1001) only, and each confirmatory seed runs once, after the
+# freeze.
 # Frozen before R015 leaves `planned` (experiments/preregistration.toml,
 # scripts/check_research_gates.py). A `must-be-pinned-…` value is still to be chosen.
 # The activation and abstention values restate crates/ptr-router/src/learned.rs.
 [preregistration]
-# The confirmatory seeds, as experiment.toml declares them.
-seeds = [17, 29, 43, 71, 101]
+# The confirmatory seeds, as experiment.toml declares them. Never run before.
+seeds = [2017, 2029, 2043, 2071, 2101]
+# Burned by the 2026-10-13 run above: explorative only, excluded from every confirmatory claim.
+explorative_seeds = [17, 29, 43, 71, 101]
+# Disjoint from both lists: for the smoke runs and for anything chosen from data.
+pilot_seeds = [1001, 1002]
 harness = "ptr-bench dragonfly-addressing"
 # The frozen sentence encoder of the confirmatory run. The synthetic smoke world uses the
 # deterministic stand-in encoder `hashed-bow-64` revision `1`, which is no evidence about a model.
@@ -26,7 +32,17 @@ activation_negative_reject_permille = 900
 # The router abstains below this best score, or when the runner-up is closer than the margin.
 abstain_below_permille = 500
 abstain_margin_permille = 150
+# The sensitivity sweep: pairs (sweep_abstain_below_permille[i], sweep_min_margin_permille[i]),
+# fixed before any confirmatory run. The sweep is reported, never used to pick a threshold.
+sweep_abstain_below_permille = [400, 500, 600, 500]
+sweep_min_margin_permille = [100, 150, 200, 300]
 # How far below the cosine baseline's routing_accuracy the learned router may fall and still count.
 # Derived from the plan, not from data: no margin. The criterion is routing_accuracy >= cosine_only
 # and false_route_rate < cosine_only on every confirmatory seed.
 accuracy_margin_permille = 0
+# The preregistered text and the decision criteria (criteria.toml) are frozen with this table. Their
+# digests are pinned at the freeze, together with the encoder, when R015 leaves `planned`.
+preregistration_text = "experiments/runtime/R015-dragonfly-pod-addressing/PREREGISTRATION.md"
+preregistration_text_sha256 = "must-be-pinned-at-freeze"
+criteria = "experiments/runtime/R015-dragonfly-pod-addressing/criteria.toml"
+criteria_sha256 = "must-be-pinned-at-freeze"

@@ -31,8 +31,8 @@
 //! that file and a digest over every field (see [`PodRepresentation::digest`]); a mismatch of
 //! either refuses the load.
 
-use crate::{RouteDistribution, RouteError, RouteRequest, Router};
-use ptr_types::{ClusterKey, Generation, PodId, PodIdentity};
+use crate::{AbstentionReason, RouteDistribution, RouteError, RouteRequest, Router};
+use ptr_types::{ClusterKey, Generation, PodId, PodIdentity, ProjectId};
 use sha2::{Digest as ShaDigest, Sha256};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -197,6 +197,8 @@ impl std::error::Error for RepresentationError {}
 /// The fields of a [`PodRepresentation`], before validation and hashing.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PodRepresentationParts {
+    /// The project whose registry the pod belongs to. Two projects may use the same pod id.
+    pub project: ProjectId,
     pub pod: PodId,
     pub identity: PodIdentity,
     pub cluster_key: ClusterKey,
@@ -325,6 +327,7 @@ impl PodRepresentation {
             hex_digest(text(root.get("digest"), "digest")?).ok_or_else(|| malformed("digest"))?;
 
         let representation = Self::new(PodRepresentationParts {
+            project: ProjectId(text(root.get("project"), "project")?.to_owned()),
             pod: PodId(text(root.get("pod_id"), "pod_id")?.to_owned()),
             identity: PodIdentity(text(root.get("pod_identity"), "pod_identity")?.to_owned()),
             cluster_key,
@@ -358,6 +361,7 @@ impl PodRepresentation {
             "encoder": {"id": self.parts.encoder.id, "revision": self.parts.encoder.revision},
             "dims": self.dims(),
             "generation": self.parts.generation.0,
+            "project": self.parts.project.0,
             "pod_id": self.parts.pod.0,
             "pod_identity": self.parts.identity.0,
             "cluster_key": self.parts.cluster_key.to_hex(),
@@ -413,6 +417,10 @@ impl PodRepresentation {
     /// `f32` as raw bits) followed by the weights file. Any changed field changes the digest.
     pub fn digest(&self) -> &[u8; 32] {
         &self.digest
+    }
+
+    pub fn project(&self) -> &ProjectId {
+        &self.parts.project
     }
 
     pub fn pod(&self) -> &PodId {
@@ -558,6 +566,7 @@ fn hex_digest(value: &str) -> Option<[u8; 32]> {
 
 fn validate_parts(parts: &PodRepresentationParts) -> Result<(), RepresentationError> {
     for (field, empty) in [
+        ("project", parts.project.0.is_empty()),
         ("pod", parts.pod.0.is_empty()),
         ("identity", parts.identity.0.is_empty()),
         ("encoder.id", parts.encoder.id.is_empty()),
@@ -650,6 +659,7 @@ fn digest_of(parts: &PodRepresentationParts) -> [u8; 32] {
     put_text(&mut bytes, &parts.encoder.revision);
     bytes.extend_from_slice(&(parts.z.len() as u32).to_le_bytes());
     bytes.extend_from_slice(&parts.generation.0.to_le_bytes());
+    put_text(&mut bytes, &parts.project.0);
     put_text(&mut bytes, &parts.pod.0);
     put_text(&mut bytes, &parts.identity.0);
     bytes.extend_from_slice(parts.cluster_key.digest());
@@ -676,7 +686,7 @@ fn digest_of(parts: &PodRepresentationParts) -> [u8; 32] {
 pub struct RepresentationStore {
     encoder: EncoderRef,
     policy: ActivationPolicy,
-    entries: BTreeMap<PodId, PodRepresentation>,
+    entries: BTreeMap<(ProjectId, PodId), PodRepresentation>,
 }
 
 impl RepresentationStore {
@@ -729,6 +739,7 @@ impl RepresentationStore {
         representation: PodRepresentation,
     ) -> Result<Option<PodRepresentation>, RouteError> {
         let pod = representation.pod().clone();
+        let key = (representation.project().clone(), pod.clone());
         let invalid = |error| RouteError::InvalidRepresentation {
             pod: pod.clone(),
             error,
@@ -757,12 +768,12 @@ impl RepresentationStore {
                 }));
             }
         }
-        if !self.entries.contains_key(&pod) && self.entries.len() >= MAX_REPRESENTATIONS {
+        if !self.entries.contains_key(&key) && self.entries.len() >= MAX_REPRESENTATIONS {
             return Err(invalid(RepresentationError::TooManyRepresentations {
                 max: MAX_REPRESENTATIONS,
             }));
         }
-        if let Some(current) = self.entries.get(&pod) {
+        if let Some(current) = self.entries.get(&key) {
             if representation.generation() <= current.generation() {
                 return Err(invalid(RepresentationError::StaleGeneration {
                     current: current.generation(),
@@ -770,16 +781,16 @@ impl RepresentationStore {
                 }));
             }
         }
-        Ok(self.entries.insert(pod, representation))
+        Ok(self.entries.insert(key, representation))
     }
 
     /// Drops the representation of `pod`; the others are untouched.
-    pub fn remove(&mut self, pod: &PodId) -> Option<PodRepresentation> {
-        self.entries.remove(pod)
+    pub fn remove(&mut self, project: &ProjectId, pod: &PodId) -> Option<PodRepresentation> {
+        self.entries.remove(&(project.clone(), pod.clone()))
     }
 
-    pub fn get(&self, pod: &PodId) -> Option<&PodRepresentation> {
-        self.entries.get(pod)
+    pub fn get(&self, project: &ProjectId, pod: &PodId) -> Option<&PodRepresentation> {
+        self.entries.get(&(project.clone(), pod.clone()))
     }
 
     pub fn encoder(&self) -> &EncoderRef {
@@ -854,12 +865,18 @@ impl LearnedPodRouter {
         self.config
     }
 
-    /// The learned score of `pod` for `query`; `None` when the pod has no representation.
+    /// The learned score of `pod` of `project` for `query`; `None` when that pod has no
+    /// representation.
     ///
     /// # Errors
     /// [`RouteError::InvalidFeatures`] for an empty, zero or wrongly sized query.
-    pub fn score(&self, pod: &PodId, query: &[f32]) -> Result<Option<f64>, RouteError> {
-        let Some(representation) = self.store.get(pod) else {
+    pub fn score(
+        &self,
+        project: &ProjectId,
+        pod: &PodId,
+        query: &[f32],
+    ) -> Result<Option<f64>, RouteError> {
+        let Some(representation) = self.store.get(project, pod) else {
             return Ok(None);
         };
         self.check_query(query)?;
@@ -887,9 +904,9 @@ impl LearnedPodRouter {
 }
 
 impl Router for LearnedPodRouter {
-    /// A point mass on the best-scoring candidate that has a representation, or
-    /// [`RouteError::Abstained`] when that candidate is not clearly the answer. Candidates
-    /// without a representation are not scored; with none scored the result is
+    /// A point mass on the best-scoring candidate, or [`RouteError::Abstained`] when it is not
+    /// clearly the answer: a low score, a small margin, or (`PartialCoverage`) a field in which
+    /// some candidate has no representation. With no candidate scored at all the result is
     /// [`RouteError::NoRepresentation`]. No candidate at all is the empty distribution.
     fn policy(&self, request: &RouteRequest<'_>) -> Result<RouteDistribution, RouteError> {
         let candidates =
@@ -902,7 +919,7 @@ impl Router for LearnedPodRouter {
         let query = request.features.vector();
         let mut scored: Vec<(PodId, f64)> = Vec::new();
         for pod in &candidates {
-            if let Some(score) = self.score(pod, query)? {
+            if let Some(score) = self.score(request.project, pod, query)? {
                 scored.push((pod.clone(), score));
             }
         }
@@ -916,14 +933,24 @@ impl Router for LearnedPodRouter {
         let (best, best_score) = scored[0].clone();
         let runner_up = scored.get(1).cloned();
         let margin = best_score - runner_up.as_ref().map_or(0.0, |(_, score)| *score);
-        let confident = best_score >= self.config.abstain_below
-            && (runner_up.is_none() || margin >= self.config.min_margin);
-        if !confident {
+        let reason = if scored.len() < candidates.len() {
+            // A candidate without an address might be the better answer; ranking only the
+            // covered ones would pick among part of the field with no margin to the rest.
+            Some(AbstentionReason::PartialCoverage)
+        } else if best_score < self.config.abstain_below {
+            Some(AbstentionReason::LowScore)
+        } else if runner_up.is_some() && margin < self.config.min_margin {
+            Some(AbstentionReason::SmallMargin)
+        } else {
+            None
+        };
+        if let Some(reason) = reason {
             return Err(RouteError::Abstained {
                 best,
                 runner_up: runner_up.map(|(pod, _)| pod),
                 best_score,
                 margin,
+                reason,
             });
         }
         Ok(RouteDistribution::certain(best))

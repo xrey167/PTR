@@ -34,6 +34,7 @@ ALIASES = {
 def spec(name="Mueller GmbH", *, extra_negatives=(), negative_aliases=None, generation=1):
     other = next(n for n in ALIASES if n != name)
     return PodTrainingSpec(
+        project="demo",
         pod_id=f"pod-{name.split()[0].lower()}",
         descriptor=PodIdentityDescriptor(
             domain="supply",

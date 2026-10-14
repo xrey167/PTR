@@ -1,32 +1,56 @@
 //! Experiment R015, Dragonfly pod addressing, as a harness: `ptr-bench dragonfly-addressing
-//! <seed>` routes the held-out questions of one seed's synthetic world with three routers and
-//! prints exactly one JSON object on stdout.
+//! <seed> [--smoke]` is the one provenance-tracked entrypoint of a run. It generates the seed's
+//! world itself, consumes it, and prints exactly one JSON object on stdout.
 //!
-//! The world is the output of the training step (`python3 -m ptr_training.dragonfly.experiment
-//! --seed <seed>`, default directory `target/dragonfly-addressing/<seed>`): one exported address
-//! per pod, the pods' description vectors and the probe questions with their labels. The arms:
+//! The world comes from the training step (`python3 -m ptr_training.dragonfly.experiment`), which
+//! the harness starts as a child process in a scratch directory of its own under the runner's
+//! temporary directory and removes afterwards: nothing has to exist in the checkout beforehand,
+//! so a clean checkout runs. The training step builds the encoder the experiment's `config.toml`
+//! pins and stops with exit status 2 while that pin is unset or the encoder is unavailable; the
+//! harness then exits 2 too. `--smoke` selects the deterministic stand-in encoder and marks the
+//! output `"evidence": "none (stand-in encoder)"`; a smoke run is a check that the machinery
+//! works, never a result.
 //!
-//! - `learned`: [`LearnedPodRouter`] over the activated addresses, through `route_checked`. It may
-//!   abstain, and an abstention is not a routed answer.
+//! The arms, over the same probes:
+//!
+//! - `learned`: [`LearnedPodRouter`] over the activated addresses, through `route_checked`, with
+//!   the preregistered thresholds. It may abstain, and an abstention is not a routed answer.
+//! - `learned_no_abstain`: the same addresses with both abstention thresholds at zero (partial
+//!   coverage still abstains: that is not a threshold).
+//! - `learned_no_bias`: the same addresses with every bias set to zero.
+//! - `sweep`: the same addresses at each pre-fixed `(abstain_below, min_margin)` pair.
 //! - `cosine_only`: the pod whose description vector is closest to the query, always answering.
 //! - `constant_score`: the registry's default [`PodRouter`] (every candidate scores 1.0).
+//! - `oracle`: the ceiling; routes to the probe's label and declines a probe that names no pod.
 //!
 //! Metrics per arm, over all probes: `routing_accuracy` (labelled probes routed to their pod, of
 //! all labelled probes), `abstain_rate` (probes the arm declined) and `false_route_rate` (probes
-//! routed to a wrong pod, or to any pod when the probe names none). The harness only measures; it
-//! judges nothing, and the experiment stays `planned` until its preregistration is frozen.
+//! routed to a wrong pod, or to any pod when the probe names none), each also as an integer
+//! permille rounded down. The harness only measures; `criteria.toml` judges, and the experiment
+//! stays `planned` until its preregistration is frozen.
 
 use ptr_pods::{DynPod, PodManifest, PodRegistry};
 use ptr_protocol::TypedPayload;
 use ptr_router::{
     route_checked, DecisionNonce, EncoderRef, LearnedPodRouter, LearnedRouterConfig,
-    PodRepresentation, PodRouter, RepresentationStore, RouteError, RouteFeatures, RouteRequest,
-    Router, SamplingKey,
+    PodRepresentation, PodRepresentationParts, PodRouter, RepresentationStore, RouteError,
+    RouteFeatures, RouteRequest, Router, SamplingKey,
 };
 use ptr_types::{CapabilityId, Effect, PodId, ProjectId, RequestId, TypeId};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::Arc;
+
+/// The preregistered thresholds of the `learned` arm, in permille. They restate
+/// `LearnedRouterConfig::default()` and `config.toml`'s `abstain_below_permille` and
+/// `abstain_margin_permille`.
+const ABSTAIN_BELOW_PERMILLE: u32 = 500;
+const MIN_MARGIN_PERMILLE: u32 = 150;
+
+/// The pre-fixed sensitivity sweep, `(abstain_below, min_margin)` in permille. They restate
+/// `config.toml`'s `sweep_abstain_below_permille` and `sweep_min_margin_permille`.
+const SWEEP: [(u32, u32); 4] = [(400, 100), (500, 150), (600, 200), (500, 300)];
 
 struct ProbePod(PodManifest);
 impl DynPod for ProbePod {
@@ -46,7 +70,7 @@ enum Outcome {
     Abstained,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Tally {
     labelled: u64,
     correct: u64,
@@ -76,15 +100,44 @@ impl Tally {
         }
     }
 
+    /// `numerator / denominator` as an integer permille rounded down.
+    fn permille(numerator: u64, denominator: u64) -> i64 {
+        if denominator == 0 {
+            0
+        } else {
+            (numerator * 1000 / denominator) as i64
+        }
+    }
+
+    fn accuracy_permille(&self) -> i64 {
+        Self::permille(self.correct, self.labelled)
+    }
+
+    fn false_route_permille(&self) -> i64 {
+        Self::permille(self.false_routes, self.probes)
+    }
+
     fn metrics(&self) -> Value {
         json!({
             "routing_accuracy": Self::rate(self.correct, self.labelled),
             "abstain_rate": Self::rate(self.abstained, self.probes),
             "false_route_rate": Self::rate(self.false_routes, self.probes),
+            "routing_accuracy_permille": self.accuracy_permille(),
+            "abstain_permille": Self::permille(self.abstained, self.probes),
+            "false_route_permille": self.false_route_permille(),
             "correct": self.correct,
             "abstained": self.abstained,
             "false_routes": self.false_routes,
         })
+    }
+}
+
+/// `(left - right) / probes` in permille, rounded down (towards minus infinity).
+fn gap_permille(left: u64, right: u64, probes: u64) -> i64 {
+    if probes == 0 {
+        0
+    } else {
+        ((left as i128 - right as i128) * 1000).div_euclid(probes as i128) as i64
     }
 }
 
@@ -101,18 +154,9 @@ fn nonce_of_index(index: usize) -> [u8; 16] {
     nonce
 }
 
-fn world_dir(seed: u64) -> PathBuf {
-    Path::new("target/dragonfly-addressing").join(seed.to_string())
-}
-
 fn read_json(path: &Path) -> Result<Value, String> {
-    let text = std::fs::read_to_string(path).map_err(|error| {
-        format!(
-            "cannot read {}: {error}; run the training step first: \
-             python3 -m ptr_training.dragonfly.experiment --seed <seed>",
-            path.display()
-        )
-    })?;
+    let text = std::fs::read_to_string(path)
+        .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
     serde_json::from_str(&text).map_err(|error| format!("{} is not JSON: {error}", path.display()))
 }
 
@@ -140,9 +184,109 @@ fn cosine(left: &[f32], right: &[f32]) -> f64 {
     dot / (norm(left) * norm(right))
 }
 
-fn run_seed(seed: u64) -> Result<Value, String> {
-    let dir = world_dir(seed);
+/// A scratch directory that is removed when it goes out of scope, also on an early return.
+struct Scratch(PathBuf);
+
+impl Scratch {
+    fn create(seed: u64) -> Result<Self, String> {
+        let path = std::env::temp_dir().join(format!("ptr-r015-{seed}-{}", std::process::id()));
+        if path.exists() {
+            return Err(format!("refusing to reuse {}", path.display()));
+        }
+        std::fs::create_dir(&path)
+            .map_err(|error| format!("cannot create {}: {error}", path.display()))?;
+        Ok(Self(path))
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Runs the training step for `seed` into `out`; a non-zero exit is a harness failure.
+fn generate_world(seed: u64, out: &Path, smoke: bool) -> Result<(), String> {
+    let training_source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../training/src");
+    let mut command = Command::new("python3");
+    command
+        .args(["-B", "-m", "ptr_training.dragonfly.experiment", "--seed"])
+        .arg(seed.to_string())
+        .arg("--out")
+        .arg(out)
+        .env("PYTHONPATH", &training_source)
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        // The harness prints exactly one JSON object on stdout; the training step's own report is
+        // not part of it (its world is read from the scratch directory).
+        .stdout(std::process::Stdio::null());
+    if smoke {
+        command.arg("--smoke");
+    }
+    let status = command
+        .status()
+        .map_err(|error| format!("cannot start the training step (python3): {error}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "the training step failed ({status}); a confirmatory run needs the encoder the \
+             preregistration pins"
+        ))
+    }
+}
+
+/// The same address with its bias replaced.
+fn without_bias(representation: &PodRepresentation) -> Result<PodRepresentation, String> {
+    PodRepresentation::new(PodRepresentationParts {
+        project: representation.project().clone(),
+        pod: representation.pod().clone(),
+        identity: representation.identity().clone(),
+        cluster_key: representation.cluster_key(),
+        encoder: representation.encoder().clone(),
+        generation: representation.generation(),
+        z: representation.z().to_vec(),
+        bias: 0.0,
+        weights: representation.weights(),
+        gate: representation.gate(),
+        activated: representation.activated(),
+    })
+    .map_err(|error| error.to_string())
+}
+
+fn learned_router(
+    encoder: &EncoderRef,
+    representations: &[PodRepresentation],
+    abstain_below_permille: u32,
+    min_margin_permille: u32,
+) -> Result<LearnedPodRouter, String> {
+    let mut store = RepresentationStore::new(encoder.clone());
+    for representation in representations {
+        match store.insert(representation.clone()) {
+            Ok(_) => {}
+            // A representation that failed its gate is a result, not an error.
+            Err(RouteError::InactiveRepresentation { .. }) => {}
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    LearnedPodRouter::new(
+        store,
+        LearnedRouterConfig {
+            abstain_below: f64::from(abstain_below_permille) / 1000.0,
+            min_margin: f64::from(min_margin_permille) / 1000.0,
+        },
+    )
+    .map_err(|error| error.to_string())
+}
+
+fn run_seed(seed: u64, smoke: bool) -> Result<Value, String> {
+    let scratch = Scratch::create(seed)?;
+    let dir = scratch.0.as_path();
+    generate_world(seed, dir, smoke)?;
     let world = read_json(&dir.join("world.json"))?;
+    let world_smoke = world["smoke"].as_bool().ok_or("world.smoke missing")?;
+    if world_smoke != smoke {
+        return Err("the world's smoke marker does not match the requested mode".into());
+    }
     let encoder = EncoderRef {
         id: world["encoder"]["id"]
             .as_str()
@@ -154,11 +298,10 @@ fn run_seed(seed: u64) -> Result<Value, String> {
             .to_owned(),
     };
 
-    let project = ProjectId::from("demo");
+    let project = ProjectId::from(world["project"].as_str().ok_or("project missing")?);
     let mut registry = PodRegistry::default();
-    let mut store = RepresentationStore::new(encoder);
+    let mut representations: Vec<PodRepresentation> = Vec::new();
     let mut descriptions: Vec<(PodId, Vec<f32>)> = Vec::new();
-    let (mut loaded, mut refused) = (0u64, 0u64);
     for pod in world["pods"].as_array().ok_or("pods missing")? {
         let pod_id = PodId::from(pod["pod_id"].as_str().ok_or("pod_id missing")?);
         registry.register(Arc::new(ProbePod(PodManifest {
@@ -186,23 +329,46 @@ fn run_seed(seed: u64) -> Result<Value, String> {
         );
         let weights = std::fs::read(&weights_path)
             .map_err(|error| format!("cannot read {}: {error}", weights_path.display()))?;
-        let representation = PodRepresentation::from_artifact(&manifest, &weights)
-            .map_err(|error| format!("{}: {error}", manifest_path.display()))?;
-        match store.insert(representation) {
-            Ok(_) => loaded += 1,
-            // A representation that failed its gate is a result, not an error.
-            Err(RouteError::InactiveRepresentation { .. }) => refused += 1,
-            Err(error) => return Err(error.to_string()),
-        }
+        representations.push(
+            PodRepresentation::from_artifact(&manifest, &weights)
+                .map_err(|error| format!("{}: {error}", manifest_path.display()))?,
+        );
     }
-    let learned = LearnedPodRouter::new(store, LearnedRouterConfig::default())
-        .map_err(|error| error.to_string())?;
+    let loaded = learned_router(&encoder, &representations, 500, 150)?
+        .store()
+        .len() as u64;
+    let refused = representations.len() as u64 - loaded;
+
+    let learned = learned_router(
+        &encoder,
+        &representations,
+        ABSTAIN_BELOW_PERMILLE,
+        MIN_MARGIN_PERMILLE,
+    )?;
+    let no_abstain = learned_router(&encoder, &representations, 0, 0)?;
+    let unbiased: Vec<PodRepresentation> = representations
+        .iter()
+        .map(without_bias)
+        .collect::<Result<_, _>>()?;
+    let no_bias = learned_router(
+        &encoder,
+        &unbiased,
+        ABSTAIN_BELOW_PERMILLE,
+        MIN_MARGIN_PERMILLE,
+    )?;
+    let sweep: Vec<LearnedPodRouter> = SWEEP
+        .iter()
+        .map(|(below, margin)| learned_router(&encoder, &representations, *below, *margin))
+        .collect::<Result<_, _>>()?;
 
     let key = SamplingKey::from_bytes([0x15; 32]);
     let capability = CapabilityId::from("answer");
     let input_type = TypeId::from("Text");
-    let (mut learned_tally, mut cosine_tally, mut constant_tally) =
+    let mut learned_tally = Tally::default();
+    let (mut no_abstain_tally, mut no_bias_tally) = (Tally::default(), Tally::default());
+    let (mut cosine_tally, mut constant_tally, mut oracle_tally) =
         (Tally::default(), Tally::default(), Tally::default());
+    let mut sweep_tallies = vec![Tally::default(); SWEEP.len()];
     for (index, probe) in world["probes"]
         .as_array()
         .ok_or("probes missing")?
@@ -227,6 +393,11 @@ fn run_seed(seed: u64) -> Result<Value, String> {
         let nonce = DecisionNonce::from_bytes(nonce_of_index(index));
 
         learned_tally.record(label.as_ref(), &route(&learned, &request, &key, &nonce)?);
+        no_abstain_tally.record(label.as_ref(), &route(&no_abstain, &request, &key, &nonce)?);
+        no_bias_tally.record(label.as_ref(), &route(&no_bias, &request, &key, &nonce)?);
+        for (router, tally) in sweep.iter().zip(&mut sweep_tallies) {
+            tally.record(label.as_ref(), &route(router, &request, &key, &nonce)?);
+        }
         constant_tally.record(label.as_ref(), &route(&PodRouter, &request, &key, &nonce)?);
         let best = descriptions
             .iter()
@@ -238,13 +409,29 @@ fn run_seed(seed: u64) -> Result<Value, String> {
             .map(|(pod, _)| Outcome::Routed(pod.clone()))
             .unwrap_or(Outcome::Abstained);
         cosine_tally.record(label.as_ref(), &best);
+        // The ceiling: the label when there is one, else a decline.
+        let ceiling = label.clone().map_or(Outcome::Abstained, Outcome::Routed);
+        oracle_tally.record(label.as_ref(), &ceiling);
     }
 
+    let sweep_report: Vec<Value> = SWEEP
+        .iter()
+        .zip(&sweep_tallies)
+        .map(|((below, margin), tally)| {
+            json!({
+                "abstain_below_permille": below,
+                "min_margin_permille": margin,
+                "metrics": tally.metrics(),
+            })
+        })
+        .collect();
     let accuracy = |tally: &Tally| Tally::rate(tally.correct, tally.labelled);
     let false_rate = |tally: &Tally| Tally::rate(tally.false_routes, tally.probes);
     Ok(json!({
         "experiment": "R015",
         "seed": seed,
+        "smoke": world_smoke,
+        "evidence": world["evidence"],
         "encoder": world["encoder"],
         "pods": world["pods"].as_array().map_or(0, Vec::len),
         "representations_loaded": loaded,
@@ -253,9 +440,24 @@ fn run_seed(seed: u64) -> Result<Value, String> {
         "labelled_probes": learned_tally.labelled,
         "arms": {
             "learned": learned_tally.metrics(),
+            "learned_no_abstain": no_abstain_tally.metrics(),
+            "learned_no_bias": no_bias_tally.metrics(),
             "cosine_only": cosine_tally.metrics(),
             "constant_score": constant_tally.metrics(),
+            "oracle": oracle_tally.metrics(),
         },
+        "sweep": sweep_report,
+        // Signed, rounded down: the primary criterion reads these as integers.
+        "accuracy_gap_permille": gap_permille(
+            learned_tally.correct,
+            cosine_tally.correct,
+            learned_tally.labelled,
+        ),
+        "false_route_gap_permille": gap_permille(
+            cosine_tally.false_routes,
+            learned_tally.false_routes,
+            learned_tally.probes,
+        ),
         "learned_accuracy_above_cosine": accuracy(&learned_tally) > accuracy(&cosine_tally),
         "learned_false_route_not_above_cosine":
             false_rate(&learned_tally) <= false_rate(&cosine_tally),
@@ -279,12 +481,76 @@ fn route<R: Router + ?Sized>(
 }
 
 /// Run the harness for one seed and print its JSON object; exit status 2 when it cannot run.
-pub fn run(seed: u64) {
-    match run_seed(seed) {
+pub fn run(seed: u64, smoke: bool) {
+    match run_seed(seed, smoke) {
         Ok(result) => println!("{result}"),
         Err(message) => {
             eprintln!("ptr-bench dragonfly-addressing: {message}");
             std::process::exit(2);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gaps_round_towards_minus_infinity() {
+        assert_eq!(gap_permille(1, 0, 3), 333);
+        assert_eq!(gap_permille(0, 1, 3), -334);
+        assert_eq!(gap_permille(5, 5, 7), 0);
+        assert_eq!(gap_permille(1, 0, 0), 0);
+    }
+
+    #[test]
+    fn the_compiled_thresholds_restate_config_toml() {
+        let config = include_str!(
+            "../../../../experiments/runtime/R015-dragonfly-pod-addressing/config.toml"
+        );
+        let list = |values: Vec<u32>| {
+            format!(
+                "[{}]",
+                values
+                    .iter()
+                    .map(u32::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
+        let line = |key: &str, value: String| format!("{key} = {value}");
+        for expected in [
+            line("abstain_below_permille", ABSTAIN_BELOW_PERMILLE.to_string()),
+            line("abstain_margin_permille", MIN_MARGIN_PERMILLE.to_string()),
+            line(
+                "sweep_abstain_below_permille",
+                list(SWEEP.iter().map(|pair| pair.0).collect()),
+            ),
+            line(
+                "sweep_min_margin_permille",
+                list(SWEEP.iter().map(|pair| pair.1).collect()),
+            ),
+        ] {
+            assert!(config.contains(&expected), "config.toml lacks `{expected}`");
+        }
+        let default = LearnedRouterConfig::default();
+        assert_eq!(
+            default.abstain_below,
+            f64::from(ABSTAIN_BELOW_PERMILLE) / 1000.0
+        );
+        assert_eq!(default.min_margin, f64::from(MIN_MARGIN_PERMILLE) / 1000.0);
+    }
+
+    #[test]
+    fn a_tally_counts_a_decline_on_a_distractor_as_correct_abstention_not_a_false_route() {
+        let mut tally = Tally::default();
+        tally.record(None, &Outcome::Abstained);
+        tally.record(None, &Outcome::Routed(PodId::from("a")));
+        tally.record(Some(&PodId::from("a")), &Outcome::Routed(PodId::from("a")));
+        assert_eq!((tally.probes, tally.labelled), (3, 1));
+        assert_eq!(
+            (tally.abstained, tally.false_routes, tally.correct),
+            (1, 1, 1)
+        );
     }
 }

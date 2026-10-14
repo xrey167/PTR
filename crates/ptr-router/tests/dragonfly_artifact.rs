@@ -93,6 +93,7 @@ fn every_exported_pod_loads_with_the_fields_the_exporter_wrote() {
         let (pod_id, manifest) = pod(entry);
         let representation = load(manifest).unwrap();
         assert_eq!(representation.pod(), &PodId::from(pod_id));
+        assert_eq!(representation.project(), &ProjectId::from("demo"));
         assert_eq!(
             representation.identity().0,
             entry["pod_identity"].as_str().unwrap()
@@ -140,7 +141,14 @@ fn scores_match_the_python_scores_for_every_probe() {
             .collect();
         for (pod_id, score) in probe["scores"].as_object().unwrap() {
             let python = score.as_f64().unwrap();
-            match router.score(&PodId::from(pod_id.as_str()), &query).unwrap() {
+            match router
+                .score(
+                    &ProjectId::from("demo"),
+                    &PodId::from(pod_id.as_str()),
+                    &query,
+                )
+                .unwrap()
+            {
                 Some(rust) => assert!(
                     (rust - python).abs() < 1e-9,
                     "{} / {pod_id}: rust {rust} python {python}",

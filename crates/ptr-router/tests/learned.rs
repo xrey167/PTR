@@ -4,9 +4,10 @@ mod common;
 
 use common::{key, nonce, registry, request, route};
 use ptr_router::{
-    ActivationPolicy, EncoderRef, GateReport, LearnedPodRouter, LearnedRouterConfig,
-    PodRepresentation, PodRepresentationParts, RepresentationError, RepresentationStore,
-    RouteError, RouteFeatures, Router, ScoreWeights, MAX_MANIFEST_BYTES, MAX_REPRESENTATIONS,
+    AbstentionReason, ActivationPolicy, EncoderRef, GateReport, LearnedPodRouter,
+    LearnedRouterConfig, PodRepresentation, PodRepresentationParts, RepresentationError,
+    RepresentationStore, RouteError, RouteFeatures, Router, ScoreWeights, MAX_MANIFEST_BYTES,
+    MAX_REPRESENTATIONS,
 };
 use ptr_types::{
     CapabilityId, ClusterKey, Generation, PodId, PodIdentity, PodIdentityDescriptor, ProjectId,
@@ -52,6 +53,7 @@ fn descriptor(pod: &str) -> PodIdentityDescriptor {
 fn parts(pod: &str, z: Vec<f32>, bias: f32, generation: u64) -> PodRepresentationParts {
     let descriptor = descriptor(pod);
     PodRepresentationParts {
+        project: ProjectId::from("demo"),
         pod: PodId::from(pod),
         identity: descriptor.identity(),
         cluster_key: descriptor.cluster_key(),
@@ -79,6 +81,10 @@ fn store(entries: Vec<PodRepresentation>) -> RepresentationStore {
 
 fn router(entries: Vec<PodRepresentation>) -> LearnedPodRouter {
     LearnedPodRouter::new(store(entries), LearnedRouterConfig::default()).unwrap()
+}
+
+fn demo() -> ProjectId {
+    ProjectId::from("demo")
 }
 
 fn sigmoid(logit: f64) -> f64 {
@@ -109,7 +115,7 @@ fn features(vector: Vec<f32>) -> RouteFeatures {
 fn the_score_is_the_sigmoid_of_weighted_cosine_plus_metadata_minus_bias() {
     let router = router(vec![representation("alpha", vec![1.0, 0.0, 0.0], 10.0, 1)]);
     let score = router
-        .score(&PodId::from("alpha"), &[1.0, 0.0, 0.0])
+        .score(&demo(), &PodId::from("alpha"), &[1.0, 0.0, 0.0])
         .unwrap()
         .unwrap();
     assert!(
@@ -118,14 +124,14 @@ fn the_score_is_the_sigmoid_of_weighted_cosine_plus_metadata_minus_bias() {
     );
     // Scaling the query does not change a cosine.
     let scaled = router
-        .score(&PodId::from("alpha"), &[5.0, 0.0, 0.0])
+        .score(&demo(), &PodId::from("alpha"), &[5.0, 0.0, 0.0])
         .unwrap()
         .unwrap();
     assert!((scaled - score).abs() < 1e-12);
     // A pod without a representation has no score.
     assert_eq!(
         router
-            .score(&PodId::from("beta"), &[1.0, 0.0, 0.0])
+            .score(&demo(), &PodId::from("beta"), &[1.0, 0.0, 0.0])
             .unwrap(),
         None
     );
@@ -197,7 +203,9 @@ fn the_router_abstains_when_the_margin_to_the_runner_up_is_below_the_minimum() {
             runner_up,
             best_score,
             margin,
+            reason,
         } => {
+            assert_eq!(*reason, AbstentionReason::SmallMargin);
             assert_eq!(best, &PodId::from("alpha"));
             assert_eq!(runner_up.as_ref(), Some(&PodId::from("beta")));
             assert!(*best_score > 0.5, "the best pod is confident on its own");
@@ -228,6 +236,7 @@ fn the_router_abstains_when_the_best_score_is_below_the_threshold() {
             runner_up: None,
             best_score,
             margin,
+            reason: AbstentionReason::LowScore,
             ..
         } if *best_score < 0.5 && (best_score - margin).abs() < 1e-12
     ));
@@ -286,6 +295,8 @@ fn a_router_without_representations_reports_that_nothing_was_scored() {
 
 #[test]
 fn candidates_without_a_representation_are_not_scored() {
+    // beta is covered and matches perfectly, alpha has no address: the field is only partly
+    // covered, so the router declines instead of ranking part of it.
     let scene = scene();
     let registry = registry(&scene.project, &["alpha", "beta"]);
     let router = router(vec![representation("beta", vec![0.0, 1.0, 0.0], 10.0, 1)]);
@@ -298,8 +309,121 @@ fn candidates_without_a_representation_are_not_scored() {
         &scene.request_id,
         &features,
     );
-    let choice = route(&router, &request).unwrap().unwrap();
-    assert_eq!(choice.route().pod_id, PodId::from("beta"));
+    let error = route(&router, &request).unwrap_err();
+    assert!(matches!(
+        error.error(),
+        RouteError::Abstained {
+            best,
+            reason: AbstentionReason::PartialCoverage,
+            ..
+        } if best == &PodId::from("beta")
+    ));
+}
+
+#[test]
+fn partial_coverage_is_its_own_abstention_reason_and_full_coverage_still_routes() {
+    let scene = scene();
+    let features = features(vec![0.0, 1.0, 0.0]);
+    let beta = || representation("beta", vec![0.0, 1.0, 0.0], 10.0, 1);
+    let alpha = || representation("alpha", vec![1.0, 0.0, 0.0], 10.0, 1);
+
+    // One of two candidates uncovered: partial coverage, whatever the covered score is.
+    let two = registry(&scene.project, &["alpha", "beta"]);
+    let partial = router(vec![beta()]);
+    let request_two = request(
+        &two,
+        &scene.project,
+        &scene.capability,
+        &scene.input_type,
+        &scene.request_id,
+        &features,
+    );
+    let reason = match partial.policy(&request_two).unwrap_err() {
+        RouteError::Abstained { reason, .. } => reason,
+        other => panic!("expected an abstention, got {other:?}"),
+    };
+    assert_eq!(reason, AbstentionReason::PartialCoverage);
+
+    // Covering the second candidate makes the same query a clear win for beta.
+    let full = router(vec![alpha(), beta()]);
+    assert_eq!(
+        route(&full, &request_two).unwrap().unwrap().route().pod_id,
+        PodId::from("beta")
+    );
+
+    // A registry that only lists the covered pod is fully covered.
+    let one = registry(&scene.project, &["beta"]);
+    let request_one = request(
+        &one,
+        &scene.project,
+        &scene.capability,
+        &scene.input_type,
+        &scene.request_id,
+        &features,
+    );
+    assert_eq!(
+        route(&partial, &request_one)
+            .unwrap()
+            .unwrap()
+            .route()
+            .pod_id,
+        PodId::from("beta")
+    );
+}
+
+#[test]
+fn two_projects_with_the_same_pod_id_do_not_collide_and_route_only_with_their_own() {
+    let other = ProjectId::from("other");
+    // Same pod id "alpha" in both projects, with opposite addresses.
+    let demo_alpha = representation("alpha", vec![1.0, 0.0, 0.0], 10.0, 1);
+    let mut other_parts = parts("alpha", vec![0.0, 1.0, 0.0], 10.0, 1);
+    other_parts.project = other.clone();
+    let other_alpha = PodRepresentation::new(other_parts).unwrap();
+    assert_ne!(demo_alpha.digest(), other_alpha.digest());
+
+    let mut store = RepresentationStore::new(encoder());
+    assert!(store.insert(demo_alpha.clone()).unwrap().is_none());
+    assert!(store.insert(other_alpha.clone()).unwrap().is_none());
+    assert_eq!(store.len(), 2);
+    assert_eq!(store.get(&demo(), &PodId::from("alpha")), Some(&demo_alpha));
+    assert_eq!(store.get(&other, &PodId::from("alpha")), Some(&other_alpha));
+
+    let router = LearnedPodRouter::new(store, LearnedRouterConfig::default()).unwrap();
+    let query = [1.0, 0.0, 0.0];
+    let in_demo = router
+        .score(&demo(), &PodId::from("alpha"), &query)
+        .unwrap()
+        .unwrap();
+    let in_other = router
+        .score(&other, &PodId::from("alpha"), &query)
+        .unwrap()
+        .unwrap();
+    assert!(in_demo > 0.9 && in_other < 0.5, "{in_demo} {in_other}");
+
+    // Routing in "other" uses only other's alpha: the query matches demo's alpha, not other's.
+    let scene = scene();
+    let other_registry = registry(&other, &["alpha"]);
+    let features = features(query.to_vec());
+    let request = request(
+        &other_registry,
+        &other,
+        &scene.capability,
+        &scene.input_type,
+        &scene.request_id,
+        &features,
+    );
+    assert!(matches!(
+        router.policy(&request).unwrap_err(),
+        RouteError::Abstained {
+            reason: AbstentionReason::LowScore,
+            ..
+        }
+    ));
+
+    // Removing one project's pod leaves the other's untouched.
+    let mut store = router.store().clone();
+    assert!(store.remove(&other, &PodId::from("alpha")).is_some());
+    assert!(store.get(&demo(), &PodId::from("alpha")).is_some());
 }
 
 #[test]
@@ -540,7 +664,10 @@ fn a_representation_replaces_only_a_strictly_older_generation() {
         .unwrap();
     assert_eq!(replaced.generation(), Generation(2));
     assert_eq!(
-        store.get(&PodId::from("alpha")).unwrap().generation(),
+        store
+            .get(&demo(), &PodId::from("alpha"))
+            .unwrap()
+            .generation(),
         Generation(3)
     );
 }
@@ -553,28 +680,39 @@ fn removing_one_pods_representation_leaves_the_others_scoring_identically() {
         representation("gamma", vec![0.0, 0.0, 1.0], 10.0, 1),
     ]);
     let query = [0.2, 0.7, 0.1];
-    let beta_before = router_before.score(&PodId::from("beta"), &query).unwrap();
-    let gamma_before = router_before.score(&PodId::from("gamma"), &query).unwrap();
+    let beta_before = router_before
+        .score(&demo(), &PodId::from("beta"), &query)
+        .unwrap();
+    let gamma_before = router_before
+        .score(&demo(), &PodId::from("gamma"), &query)
+        .unwrap();
 
     let mut revoked = router_before.store().clone();
-    assert!(revoked.remove(&PodId::from("alpha")).is_some());
+    assert!(revoked.remove(&demo(), &PodId::from("alpha")).is_some());
     let router_after = LearnedPodRouter::new(revoked, LearnedRouterConfig::default()).unwrap();
 
     assert_eq!(
-        router_after.score(&PodId::from("alpha"), &query).unwrap(),
+        router_after
+            .score(&demo(), &PodId::from("alpha"), &query)
+            .unwrap(),
         None
     );
     assert_eq!(
-        router_after.score(&PodId::from("beta"), &query).unwrap(),
+        router_after
+            .score(&demo(), &PodId::from("beta"), &query)
+            .unwrap(),
         beta_before
     );
     assert_eq!(
-        router_after.score(&PodId::from("gamma"), &query).unwrap(),
+        router_after
+            .score(&demo(), &PodId::from("gamma"), &query)
+            .unwrap(),
         gamma_before
     );
     // And routing still works for the pods that kept their representation.
     let scene = scene();
-    let registry = registry(&scene.project, &["alpha", "beta", "gamma"]);
+    let all_three = registry(&scene.project, &["alpha", "beta", "gamma"]);
+    let registry = registry(&scene.project, &["beta", "gamma"]);
     let features = features(vec![0.0, 1.0, 0.0]);
     let request = request(
         &registry,
@@ -586,6 +724,22 @@ fn removing_one_pods_representation_leaves_the_others_scoring_identically() {
     );
     let choice = route(&router_after, &request).unwrap().unwrap();
     assert_eq!(choice.route().pod_id, PodId::from("beta"));
+    // The revoked pod is still a candidate in its registry: the router no longer ranks that field.
+    let request = common::request(
+        &all_three,
+        &scene.project,
+        &scene.capability,
+        &scene.input_type,
+        &scene.request_id,
+        &features,
+    );
+    assert!(matches!(
+        router_after.policy(&request).unwrap_err(),
+        RouteError::Abstained {
+            reason: AbstentionReason::PartialCoverage,
+            ..
+        }
+    ));
 }
 
 #[test]

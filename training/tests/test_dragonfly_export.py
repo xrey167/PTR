@@ -30,6 +30,7 @@ def trained(**config):
         aliases=frozenset({"Alpha Corp"}),
     )
     spec = PodTrainingSpec(
+        project="demo",
         pod_id="pod-alpha",
         descriptor=descriptor,
         generation=2,

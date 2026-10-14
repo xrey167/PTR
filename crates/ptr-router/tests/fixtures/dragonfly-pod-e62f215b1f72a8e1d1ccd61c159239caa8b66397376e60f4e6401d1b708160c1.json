@@ -1,6 +1,6 @@
 {
   "cluster_key": "76d375c4bcf6a22fdca10c5c74d5b04302685d5995760fbc2fb1f3e793cb59ec",
-  "digest": "d6c77dca0e1417751b4e44e8a8ff00dc1eea661edf7ad9a4844b77699e97d892",
+  "digest": "c4f7d4c8bb15a9088da46df14c13bcbe9b4745db07c0c8bbb02849895e62a644",
   "dims": 32,
   "encoder": {
     "id": "hashed-bow-32",
@@ -19,6 +19,7 @@
   "kind": "dragonfly-pod-address",
   "pod_id": "supplier-mueller",
   "pod_identity": "pod:e62f215b1f72a8e1d1ccd61c159239caa8b66397376e60f4e6401d1b708160c1",
+  "project": "demo",
   "schema": 1,
   "scoring": {
     "cosine_weight": 12.0,

@@ -23,6 +23,7 @@ from .identity import PodIdentityDescriptor
 from .train import PodTrainingSpec, TrainConfig, TrainedAddress, train_pod_address
 
 ENCODER_DIMS = 32
+PROJECT = "demo"
 
 _QUESTIONS = {
     "mueller": [
@@ -76,6 +77,7 @@ def _spec(key: str) -> PodTrainingSpec:
     ]
     negative_aliases = [a for other in _ALIASES if other != key for a in _ALIASES[other]]
     return PodTrainingSpec(
+        project=PROJECT,
         pod_id=f"supplier-{key}",
         descriptor=_descriptor(key),
         generation=3,
@@ -110,6 +112,7 @@ def build_world(out_dir: Path) -> dict:
         json_path, _ = export_address(address, out_dir)
         pods.append(
             {
+                "project": address.spec.project,
                 "pod_id": address.spec.pod_id,
                 "pod_identity": address.spec.descriptor.identity(),
                 "cluster_key": address.spec.descriptor.cluster_key().hex(),

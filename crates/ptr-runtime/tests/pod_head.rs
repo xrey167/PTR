@@ -5,7 +5,8 @@ use ptr_runtime::{
     pod_lifecycle_target, AdvancePodHead, PodHeadError, PodHeadStatus, PtrRuntime, RuntimeError,
 };
 use ptr_types::{
-    Generation, NamespaceId, PodAddress, PodId, PodIdentity, PodRevisionAddress, ProjectId,
+    CapsuleId, Generation, NamespaceId, PodAddress, PodId, PodIdentity, PodRevisionAddress,
+    ProjectId,
 };
 
 fn identity() -> PodIdentity {
@@ -43,38 +44,61 @@ fn runtime() -> PtrRuntime {
     PtrRuntime::new(PtrConfig::default()).unwrap()
 }
 
+/// Makes `revision`'s generation the one the lifecycle authority holds live for its pod.
+fn make_live(runtime: &mut PtrRuntime, revision: &PodRevisionAddress) {
+    let target = pod_lifecycle_target(revision);
+    let event = match runtime.live_generation(&target) {
+        None => LedgerEvent::CapsuleCommitted {
+            project: "project".into(),
+            capsule: CapsuleId::from(target.as_str()),
+            generation: revision.generation,
+        },
+        Some(old) => LedgerEvent::CapsuleSuperseded {
+            capsule: CapsuleId::from(target.as_str()),
+            old,
+            new: revision.generation,
+        },
+    };
+    runtime.commit(event).unwrap();
+}
+
+/// Makes `new` live in the lifecycle, then moves the head to it.
+fn go(runtime: &mut PtrRuntime, expected: Option<PodRevisionAddress>, new: PodRevisionAddress) {
+    make_live(runtime, &new);
+    advance(runtime, expected, new).unwrap();
+}
+
 #[test]
 fn the_first_head_commits_and_reads_back() {
     let mut runtime = runtime();
     assert_eq!(runtime.pod_head(&identity()), None);
-    advance(&mut runtime, None, revision("reader", 1)).unwrap();
+    go(&mut runtime, None, revision("reader", 1));
     assert_eq!(runtime.pod_head(&identity()), Some(&revision("reader", 1)));
-    assert_eq!(runtime.committed_events().len(), 1);
+    // The lifecycle commit and the head move.
+    assert_eq!(runtime.committed_events().len(), 2);
 }
 
 #[test]
 fn a_move_names_the_head_it_observed() {
     let mut runtime = runtime();
-    advance(&mut runtime, None, revision("reader", 1)).unwrap();
-    advance(
+    go(&mut runtime, None, revision("reader", 1));
+    go(
         &mut runtime,
         Some(revision("reader", 1)),
         revision("reader", 2),
-    )
-    .unwrap();
+    );
     assert_eq!(runtime.pod_head(&identity()), Some(&revision("reader", 2)));
 }
 
 #[test]
 fn a_stale_expected_head_is_refused_and_appends_nothing() {
     let mut runtime = runtime();
-    advance(&mut runtime, None, revision("reader", 1)).unwrap();
-    advance(
+    go(&mut runtime, None, revision("reader", 1));
+    go(
         &mut runtime,
         Some(revision("reader", 1)),
         revision("reader", 2),
-    )
-    .unwrap();
+    );
     let committed = runtime.committed_events().len();
 
     // A writer that still believes generation 1 is the head.
@@ -108,7 +132,7 @@ fn a_stale_expected_head_is_refused_and_appends_nothing() {
 #[test]
 fn the_generation_must_rise_strictly() {
     let mut runtime = runtime();
-    advance(&mut runtime, None, revision("reader", 2)).unwrap();
+    go(&mut runtime, None, revision("reader", 2));
     for generation in [1, 2] {
         assert_eq!(
             advance(
@@ -131,7 +155,7 @@ fn the_generation_must_rise_strictly() {
 #[test]
 fn a_revoked_generation_cannot_become_the_head() {
     let mut runtime = runtime();
-    advance(&mut runtime, None, revision("reader", 1)).unwrap();
+    go(&mut runtime, None, revision("reader", 1));
     let candidate = revision("reader", 2);
     let target = pod_lifecycle_target(&candidate);
     runtime
@@ -156,13 +180,12 @@ fn a_revoked_generation_cannot_become_the_head() {
 #[test]
 fn a_revoked_head_is_not_returned_and_does_not_fall_back() {
     let mut runtime = runtime();
-    advance(&mut runtime, None, revision("reader", 1)).unwrap();
-    advance(
+    go(&mut runtime, None, revision("reader", 1));
+    go(
         &mut runtime,
         Some(revision("reader", 1)),
         revision("reader", 2),
-    )
-    .unwrap();
+    );
     runtime
         .commit(LedgerEvent::Revoked {
             subject: pod_lifecycle_target(&revision("reader", 2)),
@@ -177,7 +200,8 @@ fn a_revoked_head_is_not_returned_and_does_not_fall_back() {
 fn revoking_one_pod_leaves_the_heads_of_other_identities_live() {
     let mut runtime = runtime();
     let other = PodIdentity::from("pod:other");
-    advance(&mut runtime, None, revision("reader", 1)).unwrap();
+    go(&mut runtime, None, revision("reader", 1));
+    make_live(&mut runtime, &revision("writer", 1));
     runtime
         .advance_pod_head(AdvancePodHead {
             identity: other.clone(),
@@ -198,13 +222,12 @@ fn revoking_one_pod_leaves_the_heads_of_other_identities_live() {
 #[test]
 fn replay_reproduces_the_same_heads() {
     let mut runtime = runtime();
-    advance(&mut runtime, None, revision("reader", 1)).unwrap();
-    advance(
+    go(&mut runtime, None, revision("reader", 1));
+    go(
         &mut runtime,
         Some(revision("reader", 1)),
         revision("reader", 2),
-    )
-    .unwrap();
+    );
     let replayed = PtrRuntime::replay(PtrConfig::default(), runtime.committed_events()).unwrap();
     assert_eq!(replayed.pod_head(&identity()), Some(&revision("reader", 2)));
     assert_eq!(
@@ -216,11 +239,11 @@ fn replay_reproduces_the_same_heads() {
 #[test]
 fn replay_refuses_a_log_whose_head_move_does_not_match_the_head() {
     let mut runtime = runtime();
-    advance(&mut runtime, None, revision("reader", 1)).unwrap();
+    go(&mut runtime, None, revision("reader", 1));
     let mut forged = runtime.committed_events().to_vec();
     // The same first-head record twice: the second one names `None` while a head exists.
-    let mut duplicate = forged[0].clone();
-    duplicate.index = ptr_types::CommitIndex(2);
+    let mut duplicate = forged[1].clone();
+    duplicate.index = ptr_types::CommitIndex(3);
     forged.push(duplicate);
     let Err(RuntimeError::PodHead(error)) = PtrRuntime::replay(PtrConfig::default(), &forged)
     else {
@@ -232,15 +255,14 @@ fn replay_refuses_a_log_whose_head_move_does_not_match_the_head() {
 #[test]
 fn heads_survive_a_compacted_snapshot_and_moves_above_the_floor() {
     let mut runtime = runtime();
-    advance(&mut runtime, None, revision("reader", 1)).unwrap();
+    go(&mut runtime, None, revision("reader", 1));
     let snapshot = runtime.export_compacted_snapshot().unwrap();
     let floor = snapshot.anchor().floor;
-    advance(
+    go(
         &mut runtime,
         Some(revision("reader", 1)),
         revision("reader", 2),
-    )
-    .unwrap();
+    );
     let all = runtime.committed_events().to_vec();
     let above_floor = &all[floor.index.0 as usize..];
 
@@ -266,7 +288,7 @@ fn heads_survive_a_compacted_snapshot_and_moves_above_the_floor() {
 #[test]
 fn a_revoked_head_can_be_replaced_by_a_new_generation_naming_it_as_expected() {
     let mut runtime = runtime();
-    advance(&mut runtime, None, revision("reader", 1)).unwrap();
+    go(&mut runtime, None, revision("reader", 1));
     runtime
         .commit(LedgerEvent::Revoked {
             subject: pod_lifecycle_target(&revision("reader", 1)),
@@ -280,6 +302,7 @@ fn a_revoked_head_can_be_replaced_by_a_new_generation_naming_it_as_expected() {
     };
     assert_eq!(revoked, revision("reader", 1));
 
+    make_live(&mut runtime, &revision("reader", 2));
     // A writer that cannot see the revoked head believes there is none and is refused.
     assert!(advance(&mut runtime, None, revision("reader", 2)).is_err());
     // Naming the revoked head moves the identity on to a new, unrevoked generation.
@@ -289,4 +312,78 @@ fn a_revoked_head_can_be_replaced_by_a_new_generation_naming_it_as_expected() {
         runtime.pod_head_status(&identity()),
         Some(PodHeadStatus::Live(head)) if head == &revision("reader", 2)
     ));
+}
+
+#[test]
+fn a_head_whose_generation_was_superseded_is_hidden_until_the_head_moves() {
+    let mut runtime = runtime();
+    go(&mut runtime, None, revision("reader", 1));
+    assert_eq!(runtime.pod_head(&identity()), Some(&revision("reader", 1)));
+
+    // The lifecycle authority supersedes generation 1 before any PodHeadAdvanced follows.
+    make_live(&mut runtime, &revision("reader", 2));
+    assert_eq!(runtime.pod_head(&identity()), None);
+    assert_eq!(runtime.pod_heads().count(), 0);
+    let stale = match runtime.pod_head_status(&identity()) {
+        Some(PodHeadStatus::Stale(head)) => head.clone(),
+        other => panic!("expected the stale head to be visible, got {other:?}"),
+    };
+    assert_eq!(stale, revision("reader", 1));
+
+    // Replay gives the same answer.
+    let replayed = PtrRuntime::replay(PtrConfig::default(), runtime.committed_events()).unwrap();
+    assert_eq!(replayed.pod_head(&identity()), None);
+    assert_eq!(replayed.pod_heads().count(), 0);
+
+    // Naming the stale head moves the identity to the live generation.
+    advance(&mut runtime, Some(stale), revision("reader", 2)).unwrap();
+    assert_eq!(runtime.pod_head(&identity()), Some(&revision("reader", 2)));
+    let replayed = PtrRuntime::replay(PtrConfig::default(), runtime.committed_events()).unwrap();
+    assert_eq!(replayed.pod_head(&identity()), Some(&revision("reader", 2)));
+}
+
+#[test]
+fn a_head_for_a_pod_the_lifecycle_does_not_hold_live_fails_closed() {
+    let mut runtime = runtime();
+    advance(&mut runtime, None, revision("reader", 1)).unwrap();
+    assert_eq!(runtime.pod_head(&identity()), None);
+    assert!(matches!(
+        runtime.pod_head_status(&identity()),
+        Some(PodHeadStatus::Stale(_))
+    ));
+    // Once the lifecycle makes exactly that generation live, the head answers.
+    make_live(&mut runtime, &revision("reader", 1));
+    assert_eq!(runtime.pod_head(&identity()), Some(&revision("reader", 1)));
+}
+
+#[test]
+fn an_advance_below_the_live_generation_is_refused_and_appends_nothing() {
+    let mut runtime = runtime();
+    go(&mut runtime, None, revision("reader", 1));
+    make_live(&mut runtime, &revision("reader", 2));
+    make_live(&mut runtime, &revision("reader", 3));
+    let committed = runtime.committed_events().len();
+    assert_eq!(
+        advance(
+            &mut runtime,
+            Some(revision("reader", 1)),
+            revision("reader", 2)
+        ),
+        Err(RuntimeError::PodHead(Box::new(
+            PodHeadError::BelowLiveGeneration {
+                identity: identity(),
+                live: Generation(3),
+                requested: Generation(2),
+            }
+        )))
+    );
+    assert_eq!(runtime.committed_events().len(), committed);
+    // Moving to the live generation itself is allowed.
+    advance(
+        &mut runtime,
+        Some(revision("reader", 1)),
+        revision("reader", 3),
+    )
+    .unwrap();
+    assert_eq!(runtime.pod_head(&identity()), Some(&revision("reader", 3)));
 }

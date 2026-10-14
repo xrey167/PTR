@@ -43,6 +43,7 @@ def artifact_digest(manifest: dict, weights: bytes) -> bytes:
     put_text(out, manifest["encoder"]["revision"])
     out += struct.pack("<I", manifest["dims"])
     out += struct.pack("<Q", manifest["generation"])
+    put_text(out, manifest["project"])
     put_text(out, manifest["pod_id"])
     put_text(out, manifest["pod_identity"])
     out += bytes.fromhex(manifest["cluster_key"])
@@ -70,6 +71,7 @@ def build_manifest(trained: TrainedAddress, weights: bytes) -> dict:
         "encoder": {"id": trained.encoder_id, "revision": trained.encoder_revision},
         "dims": trained.dims,
         "generation": trained.spec.generation,
+        "project": trained.spec.project,
         "pod_id": trained.spec.pod_id,
         "pod_identity": descriptor.identity(),
         "cluster_key": descriptor.cluster_key().hex(),

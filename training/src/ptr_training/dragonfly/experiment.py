@@ -2,12 +2,17 @@
 
 `python3 -m ptr_training.dragonfly.experiment --seed S --out DIR` draws a world from the seed
 (supplier pods with names, spelling variants and templated questions), trains and exports one
-address per pod over the deterministic hashed encoder, and writes `world.json` for the Rust
-harness (`ptr-bench dragonfly-addressing S`), which routes held-out questions with the learned
-router and with two baselines. Held-out questions use phrasings the trainer never saw, so the
-experiment measures whether the address generalises beyond its training templates, not whether it
-memorised them. The encoder is a stand-in that needs no download; the claim under test is the
-routing mechanism, not any language model.
+address per pod, and writes `world.json` for the Rust harness (`ptr-bench dragonfly-addressing S`,
+which runs this module itself and consumes its output). Held-out questions use phrasings the
+trainer never saw, so the experiment measures whether the address generalises beyond its training
+templates, not whether it memorised them.
+
+The encoder is the one the experiment's `config.toml` pins (`encoder_model`, `encoder_revision`).
+While the pin is still a `must-be-pinned-...` placeholder, or when the pinned encoder cannot be
+built (its optional extra is not installed), the run stops with exit status 2: a confirmatory run
+never falls back to another encoder. `--smoke` selects the deterministic stand-in encoder
+(`hashed-bow-64`) instead and marks the world, and so the harness output, as no evidence about any
+language model.
 """
 
 from __future__ import annotations
@@ -16,9 +21,10 @@ import argparse
 import json
 import random
 import sys
+import tomllib
 from pathlib import Path
 
-from .encoder import HashedBagOfWordsEncoder, l2_normalize
+from .encoder import Encoder, HashedBagOfWordsEncoder, l2_normalize
 from .export import export_address
 from .gate import round_f32
 from .identity import PodIdentityDescriptor
@@ -26,6 +32,36 @@ from .train import PodTrainingSpec, TrainConfig, train_pod_address
 
 ENCODER_DIMS = 64
 POD_COUNT = 6
+PROJECT = "demo"
+CONFIG = (
+    Path(__file__).resolve().parents[4]
+    / "experiments/runtime/R015-dragonfly-pod-addressing/config.toml"
+)
+PLACEHOLDER_PREFIX = "must-be-pinned"
+
+
+class EncoderUnavailable(Exception):
+    """The encoder the preregistration names cannot be used; a confirmatory run stops."""
+
+
+def pinned_encoder(config: Path = CONFIG) -> Encoder:
+    """Build the encoder `config` pins, or raise [`EncoderUnavailable`] (never a stand-in)."""
+    table = tomllib.loads(config.read_text(encoding="utf-8"))["preregistration"]
+    model = str(table.get("encoder_model", ""))
+    revision = str(table.get("encoder_revision", ""))
+    if not model or not revision or model.startswith(PLACEHOLDER_PREFIX) or revision.startswith(
+        PLACEHOLDER_PREFIX
+    ):
+        raise EncoderUnavailable(
+            "the encoder is not pinned in the preregistration (encoder_model/encoder_revision); "
+            "use --smoke for a run that is no evidence"
+        )
+    from .encoder import SentenceTransformerEncoder
+
+    try:
+        return SentenceTransformerEncoder(model, revision)
+    except Exception as error:  # noqa: BLE001 - any failure to build the pinned encoder stops the run
+        raise EncoderUnavailable(f"{type(error).__name__}: {error}") from error
 
 _ONSETS = ["br", "ch", "dr", "fl", "gr", "kl", "kr", "pl", "sch", "st", "tr", "vol", "wen", "zi"]
 _VOWELS = ["a", "e", "i", "o", "u", "ei", "au"]
@@ -107,6 +143,7 @@ def _spec(pod: dict, others: list[dict]) -> PodTrainingSpec:
     negatives = [t.format(name=other["name"]) for other in others for t in TRAIN_TEMPLATES]
     negative_aliases = [a for other in others for a in other["aliases"]]
     return PodTrainingSpec(
+        project=PROJECT,
         pod_id=pod["pod_id"],
         descriptor=descriptor,
         generation=1,
@@ -117,10 +154,9 @@ def _spec(pod: dict, others: list[dict]) -> PodTrainingSpec:
     )
 
 
-def build(seed: int, out_dir: Path, *, steps: int = 300) -> dict:
-    """Train every pod of `seed`, export the artifacts and write `world.json`."""
+def build(seed: int, out_dir: Path, encoder: Encoder, *, steps: int = 300, smoke: bool = False) -> dict:
+    """Train every pod of `seed` with `encoder`, export the artifacts and write `world.json`."""
     pods = draw_world(seed)
-    encoder = HashedBagOfWordsEncoder(ENCODER_DIMS)
     entries = []
     for pod in pods:
         others = [p for p in pods if p is not pod]
@@ -163,7 +199,11 @@ def build(seed: int, out_dir: Path, *, steps: int = 300) -> dict:
     world = {
         "seed": seed,
         "encoder": {"id": encoder.encoder_id, "revision": encoder.encoder_revision},
-        "dims": ENCODER_DIMS,
+        "dims": encoder.dims,
+        "project": PROJECT,
+        # A smoke world is produced with the stand-in encoder and is no evidence about any model.
+        "smoke": smoke,
+        "evidence": "none (stand-in encoder)" if smoke else "candidate",
         "pods": entries,
         "probes": probes,
     }
@@ -183,9 +223,23 @@ def main(argv: list[str] | None = None) -> int:
         help="output directory (default: target/dragonfly-addressing/<seed>)",
     )
     parser.add_argument("--steps", type=int, default=300)
+    parser.add_argument(
+        "--smoke",
+        action="store_true",
+        help="use the deterministic stand-in encoder; the world is marked as no evidence",
+    )
+    parser.add_argument("--config", type=Path, default=CONFIG, help="preregistration config.toml")
     arguments = parser.parse_args(argv)
+    if arguments.smoke:
+        encoder: Encoder = HashedBagOfWordsEncoder(ENCODER_DIMS)
+    else:
+        try:
+            encoder = pinned_encoder(arguments.config)
+        except EncoderUnavailable as error:
+            print(f"ptr_training.dragonfly.experiment: {error}", file=sys.stderr)
+            return 2
     out = arguments.out or Path("target/dragonfly-addressing") / str(arguments.seed)
-    world = build(arguments.seed, out, steps=arguments.steps)
+    world = build(arguments.seed, out, encoder, steps=arguments.steps, smoke=arguments.smoke)
     activated = sum(1 for pod in world["pods"] if pod["status"] == "activated")
     print(f"seed {arguments.seed}: {activated}/{len(world['pods'])} pods activated -> {out}")
     return 0

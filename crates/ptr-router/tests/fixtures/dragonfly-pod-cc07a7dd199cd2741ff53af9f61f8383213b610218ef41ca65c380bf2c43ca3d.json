@@ -1,6 +1,6 @@
 {
   "cluster_key": "a0b2d2b88f74b1768cb37184a1805f72b9fd82ea848c2d0bffb5c1e4476d024d",
-  "digest": "54ef1f8b9d87a41f551396c0dd1650f9fb6b6fe91570df22ac6476c2d93a39b6",
+  "digest": "dfef6474eb83ada2911daec6c06949b4f604bc9befcc1ebfeb27e8f34a2c87b9",
   "dims": 32,
   "encoder": {
     "id": "hashed-bow-32",
@@ -19,6 +19,7 @@
   "kind": "dragonfly-pod-address",
   "pod_id": "supplier-kowalski",
   "pod_identity": "pod:cc07a7dd199cd2741ff53af9f61f8383213b610218ef41ca65c380bf2c43ca3d",
+  "project": "demo",
   "schema": 1,
   "scoring": {
     "cosine_weight": 12.0,
