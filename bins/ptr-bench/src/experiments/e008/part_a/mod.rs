@@ -94,20 +94,14 @@ impl Report {
         count(&self.validity, Status::Fail)
     }
 
-    pub fn clean(&self) -> bool {
-        self.coverage_unmet() == 0
-            && self.falsifiers_tripped() == 0
-            && self.validity_violated() == 0
-            && self.gaps.is_empty()
-    }
-
-    /// The exit status of the printed record: 2 when a validity counter is violated (whatever
-    /// else fired), else 1 when a falsifier is tripped, 1 when only a coverage prerequisite is
-    /// unmet or a metric has a gap, else 0.
+    /// The exit status of the printed record (AGENTS.md: 1 is a product finding, 2 a harness
+    /// failure): 2 when a validity counter is violated, a coverage prerequisite is unmet or a
+    /// metric has a gap (a vacuous or broken run, whatever else fired), else 1 when a
+    /// falsifier is tripped, else 0.
     pub fn exit_status(&self) -> i32 {
-        if self.validity_violated() > 0 {
+        if self.validity_violated() > 0 || self.coverage_unmet() > 0 || !self.gaps.is_empty() {
             2
-        } else if self.falsifiers_tripped() > 0 || !self.clean() {
+        } else if self.falsifiers_tripped() > 0 {
             1
         } else {
             0
@@ -694,12 +688,18 @@ mod tests {
     }
 
     #[test]
-    fn the_exit_status_puts_validity_before_a_falsifier_before_a_vacuous_run() {
+    fn the_exit_status_reserves_1_for_a_product_finding_and_2_for_a_harness_failure() {
         use Status::{Fail, Pass};
         assert_eq!(report_with(Pass, Pass, Pass).exit_status(), 0);
-        assert_eq!(report_with(Pass, Pass, Fail).exit_status(), 1);
         assert_eq!(report_with(Fail, Pass, Pass).exit_status(), 1);
+        // A vacuous run (unmet coverage) is the harness's failure, whatever else fired.
+        assert_eq!(report_with(Pass, Pass, Fail).exit_status(), 2);
+        assert_eq!(report_with(Fail, Pass, Fail).exit_status(), 2);
         assert_eq!(report_with(Fail, Fail, Fail).exit_status(), 2);
         assert_eq!(report_with(Pass, Fail, Pass).exit_status(), 2);
+        // So is a metric with a gap.
+        let mut gap = report_with(Fail, Pass, Pass);
+        gap.gaps.push(("m".to_string(), "no data".to_string()));
+        assert_eq!(gap.exit_status(), 2);
     }
 }

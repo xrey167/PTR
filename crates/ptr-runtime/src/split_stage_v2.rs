@@ -42,6 +42,7 @@ use ptr_types::{Generation, ProjectId, Validity};
 use sha2::{Digest as _, Sha256};
 use std::collections::BTreeMap;
 use std::convert::Infallible;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const KEY_DOMAIN: &[u8] = b"ptr.split.downstream-key.v2\0";
 const PROJECT_KEY_DOMAIN: &[u8] = b"ptr.split.downstream-key.v2.project\0";
@@ -178,8 +179,21 @@ fn revalidate_own(own: &UpstreamChain, live: &dyn StageLiveness) -> Result<(), F
     };
     revalidate(&own.stage)?;
     revalidate(&own.base_model)?;
-    for element in own.adapters.iter().chain(&own.experts) {
-        revalidate(element)?;
+    for adapter in &own.adapters {
+        revalidate(adapter)?;
+    }
+    // An own expert is fenced like an upstream one: a fence changes no generation validity, so
+    // the recorded epoch must still be the committed one (fail closed on an unrecorded epoch).
+    for expert in &own.experts {
+        revalidate(expert)?;
+        let current = live.fence_epoch(&expert.identity);
+        if expert.fence_epoch == 0 || current != Some(expert.fence_epoch) {
+            return Err(FrameFault::Chain(ChainFault::StaleFence {
+                identity: expert.identity.clone(),
+                recorded: expert.fence_epoch,
+                current,
+            }));
+        }
     }
     Ok(())
 }
@@ -463,11 +477,16 @@ pub enum UseFaultV2 {
     TooManyUses { limit: usize },
 }
 
-/// An open use of an entry.
+/// An open use of an entry, bound to the cache instance that issued it: a ticket of another
+/// cache never ends a use here (it would launder that cache's taint onto this one's output).
 #[derive(Debug, Eq, PartialEq)]
 pub struct UseTicketV2 {
+    cache: u64,
     id: u64,
 }
+
+/// Process-wide source of cache instance identities; never reused, never zero.
+static NEXT_CACHE_INSTANCE: AtomicU64 = AtomicU64::new(1);
 
 /// What a hit serves: the value and the taint every output derived from it carries.
 #[derive(Debug, Eq, PartialEq)]
@@ -531,6 +550,7 @@ pub struct SplitStageCacheV2<V> {
     namespaces: [BTreeMap<[u8; 32], Entry<V>>; 2],
     uses: BTreeMap<u64, OpenUse>,
     next_use: u64,
+    instance: u64,
     capacity: usize,
 }
 
@@ -540,6 +560,7 @@ impl<V> SplitStageCacheV2<V> {
             namespaces: [BTreeMap::new(), BTreeMap::new()],
             uses: BTreeMap::new(),
             next_use: 1,
+            instance: NEXT_CACHE_INSTANCE.fetch_add(1, Ordering::Relaxed),
             capacity,
         }
     }
@@ -720,7 +741,10 @@ impl<V> SplitStageCacheV2<V> {
                 cancelled: false,
             },
         );
-        Ok(UseTicketV2 { id })
+        Ok(UseTicketV2 {
+            cache: self.instance,
+            id,
+        })
     }
 
     /// End a use. The output of the use may be released only when this returns `Ok`, and it
@@ -732,6 +756,9 @@ impl<V> SplitStageCacheV2<V> {
         live: &dyn StageLiveness,
         inputs: &dyn InputLiveness,
     ) -> Result<KvReuseTaint, UseFaultV2> {
+        if ticket.cache != self.instance {
+            return Err(UseFaultV2::UnknownTicket);
+        }
         let open = self
             .uses
             .remove(&ticket.id)
@@ -748,6 +775,9 @@ impl<V> SplitStageCacheV2<V> {
 
     /// Give a use up without releasing any output.
     pub fn abandon_use(&mut self, ticket: UseTicketV2) -> Result<(), UseFaultV2> {
+        if ticket.cache != self.instance {
+            return Err(UseFaultV2::UnknownTicket);
+        }
         self.uses
             .remove(&ticket.id)
             .map(|_| ())
@@ -1255,8 +1285,84 @@ mod tests {
             Err(UseFaultV2::Cancelled)
         );
         assert_eq!(
-            cache.abandon_use(UseTicketV2 { id: 99 }),
+            cache.abandon_use(UseTicketV2 { cache: 0, id: 99 }),
             Err(UseFaultV2::UnknownTicket)
+        );
+    }
+
+    #[test]
+    fn a_fenced_expert_of_the_own_chain_ends_the_entry_without_the_revoke_message() {
+        let live = live();
+        live.commit("own-expert", 1);
+        live.fence.borrow_mut().insert("own-expert".to_owned(), 2);
+        let own = UpstreamChain {
+            experts: vec![ChainElement {
+                fence_epoch: 2,
+                ..element("own-expert", 1)
+            }],
+            ..own_chain()
+        };
+        let mut cache = SplitStageCacheV2::new(8);
+        let admitted = admit(&live, &frame(vec![], 1.0)).unwrap();
+        let key = cache.store(&[&admitted], &own, 7, &live, &live).unwrap();
+        let ticket = cache.begin_use(&key, &live, &live).unwrap();
+        // Fenced: the generation stays live, only the committed epoch moves.
+        live.fence.borrow_mut().insert("own-expert".to_owned(), 3);
+        let stale = FrameFault::Chain(ChainFault::StaleFence {
+            identity: "own-expert".to_owned(),
+            recorded: 2,
+            current: Some(3),
+        });
+        assert_eq!(
+            cache.finish_use(ticket, &live, &live),
+            Err(UseFaultV2::Stale(stale))
+        );
+        // The stale entry was evicted on the spot.
+        assert!(matches!(
+            cache.lookup(&key, &live, &live),
+            Err(UseFaultV2::Miss)
+        ));
+        // An own expert without a recorded epoch is never served (fail closed).
+        let unrecorded = UpstreamChain {
+            experts: vec![element("own-expert", 1)],
+            ..own_chain()
+        };
+        let key = cache
+            .store(&[&admitted], &unrecorded, 8, &live, &live)
+            .unwrap();
+        assert!(matches!(
+            cache.lookup(&key, &live, &live),
+            Err(UseFaultV2::Stale(FrameFault::Chain(
+                ChainFault::StaleFence { recorded: 0, .. }
+            )))
+        ));
+    }
+
+    #[test]
+    fn a_ticket_of_another_cache_ends_no_use_here() {
+        let live = live();
+        let mut exact = SplitStageCacheV2::new(8);
+        let mut approximate = SplitStageCacheV2::new(8);
+        let exact_key = stored(&live, &mut exact, &frame(vec![], 1.0), 1);
+        let approximate_key = stored(&live, &mut approximate, &approximate_frame(vec![]), 2);
+        let mine = exact.begin_use(&exact_key, &live, &live).unwrap();
+        let theirs = approximate
+            .begin_use(&approximate_key, &live, &live)
+            .unwrap();
+        // Both are the first use of their cache, so the ids collide; the cache does not.
+        assert_eq!(mine.id, theirs.id);
+        assert_eq!(
+            exact.finish_use(theirs, &live, &live),
+            Err(UseFaultV2::UnknownTicket)
+        );
+        assert_eq!(exact.open_uses(), 1);
+        let theirs = approximate
+            .begin_use(&approximate_key, &live, &live)
+            .unwrap();
+        assert_eq!(exact.abandon_use(theirs), Err(UseFaultV2::UnknownTicket));
+        assert_eq!(
+            exact.finish_use(mine, &live, &live),
+            Ok(KvReuseTaint::Exact)
         );
     }
 

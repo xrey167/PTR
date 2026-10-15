@@ -272,6 +272,7 @@ struct Assembly {
     sessions: BTreeSet<u64>,
 }
 
+#[derive(Clone, Copy)]
 enum Tombstone {
     Completed { retain_until_ms: u64 },
     Abandoned { retain_until_ms: u64 },
@@ -394,6 +395,31 @@ impl FrameAssembler {
         }
     }
 
+    /// A tombstone for `tuple` in a table of another principal id that holds this exact
+    /// `(key, stage_identity)`, a completion before an abandonment (the principal's own table
+    /// is checked first, on its own). Expired tombstones are already swept from every table.
+    fn sibling_tombstone(
+        &self,
+        principal: &str,
+        key: &VerifyingKey,
+        stage_identity: &str,
+        tuple: (u64, u64),
+    ) -> Option<Tombstone> {
+        let mut found = None;
+        for (_, table) in self.tables.iter().filter(|(name, table)| {
+            name.as_str() != principal
+                && table.key == *key
+                && table.stage_identity == stage_identity
+        }) {
+            match table.tombstones.get(&tuple) {
+                Some(completed @ Tombstone::Completed { .. }) => return Some(*completed),
+                Some(abandoned) => found = Some(*abandoned),
+                None => {}
+            }
+        }
+        found
+    }
+
     /// The unexpired tombstones of every table that holds this exact `(key, stage_identity)`,
     /// merged per tuple (the longer retention wins) and cut to
     /// `max_frame_tombstones_per_principal`, keeping the longest retained when it must cut.
@@ -482,6 +508,20 @@ impl FrameAssembler {
             Some(Tombstone::Abandoned { .. }) => return Err(Rejection::FrameAbandoned),
             None => {}
         }
+        // Replay state is shared by `(key, stage_identity)`: a tombstone written under another
+        // principal id of the same upstream runtime (an old endpoint identity whose frame
+        // completed after this one was registered) refuses the tuple here too.
+        let (key, stage) = (table.key, table.stage_identity.clone());
+        if let Some(tombstone) = self.sibling_tombstone(principal, &key, &stage, tuple) {
+            return Err(match tombstone {
+                Tombstone::Completed { .. } => Rejection::FrameReplayed,
+                Tombstone::Abandoned { .. } => Rejection::FrameAbandoned,
+            });
+        }
+        let table = self
+            .tables
+            .get_mut(principal)
+            .ok_or(Rejection::UnknownPrincipal)?;
         if is_expired(header.signed_absolute_deadline_ms, &policy, now_ms) {
             return Err(Rejection::Expired);
         }
@@ -1885,6 +1925,36 @@ mod tests {
         assert_eq!(assembler.incomplete_frames("reborn"), 0);
         let fresh = chunks(3, 2);
         assert!(offer_as(&mut assembler, "reborn", 10, &fresh[0]).is_ok());
+    }
+
+    #[test]
+    fn a_frame_completed_under_the_old_identity_after_the_new_one_registered_is_a_replay() {
+        let mut assembler = assembler();
+        let late = chunks(1, 0);
+        offer(&mut assembler, 0, &late[0]).unwrap();
+        // The new endpoint identity registers while the old connection is still delivering.
+        assembler.register_principal("reborn", key().verifying_key(), "stage-a");
+        assert_eq!(assembler.retained_tombstones("reborn"), 0);
+        for chunk in &late[1..] {
+            offer(&mut assembler, 1, chunk).unwrap();
+        }
+        assert_eq!(assembler.retained_tombstones(PRINCIPAL), 1);
+        // Nothing was copied, yet the replay under the new identity is refused.
+        for chunk in &late {
+            assert_eq!(
+                offer_as(&mut assembler, "reborn", 2, chunk),
+                Err(Rejection::FrameReplayed)
+            );
+        }
+        // And the other way round: a frame abandoned under the new identity is refused under
+        // the old one.
+        let other = chunks(2, 1);
+        offer_as(&mut assembler, "reborn", 3, &other[0]).unwrap();
+        assembler.abandon(4, "reborn", 100, 2).unwrap();
+        assert_eq!(
+            offer(&mut assembler, 5, &other[1]),
+            Err(Rejection::FrameAbandoned)
+        );
     }
 
     #[test]

@@ -218,13 +218,15 @@ pub struct Report {
 }
 
 impl Report {
-    /// 1 when a falsifier fired, a coverage prerequisite is unmet or a control did not trip, else 0.
+    /// AGENTS.md: 1 is a product finding, 2 a harness failure. 2 when a coverage prerequisite
+    /// is unmet or a control did not trip (a vacuous or broken run, whatever else fired), else
+    /// 1 when a falsifier fired, else 0.
     pub fn exit_status(&self) -> i32 {
-        i32::from(
-            !self.falsifiers_tripped.is_empty()
-                || !self.coverage_unmet.is_empty()
-                || !self.controls_dead.is_empty(),
-        )
+        if !self.coverage_unmet.is_empty() || !self.controls_dead.is_empty() {
+            2
+        } else {
+            i32::from(!self.falsifiers_tripped.is_empty())
+        }
     }
 }
 
