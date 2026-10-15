@@ -19,8 +19,8 @@ pub mod session;
 
 pub use handle::{
     content_digest, handle_digest, handle_payload, handle_signing_bytes, verify_content, Carrier,
-    CarrierLocator, CudaExport, HandleError, TensorHandle, MAX_HANDLE_BYTES, MAX_HANDLE_DIMS,
-    MAX_INLINE_BYTES, TENSOR_HANDLE_TYPE,
+    CarrierLocator, CudaExport, HandleError, InProcessHandle, TensorHandle, MAX_HANDLE_BYTES,
+    MAX_HANDLE_DIMS, MAX_INLINE_BYTES, TENSOR_HANDLE_TYPE,
 };
 
 use ptr_types::{CapabilityId, Generation, Revision, Timestamp, TypeId};

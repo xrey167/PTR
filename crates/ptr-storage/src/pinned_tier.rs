@@ -138,9 +138,10 @@ impl PinnedHostTierBackend {
         self.page
     }
 
-    /// Page-rounded footprint charged for a chunk of `length` bytes (at least one page).
-    pub fn footprint_for(&self, length: usize) -> usize {
-        length.div_ceil(self.page).max(1) * self.page
+    /// Page-rounded footprint charged for a chunk of `length` bytes (at least one page), or
+    /// `None` when the rounded size does not fit in `usize`.
+    pub fn footprint_for(&self, length: usize) -> Option<usize> {
+        length.div_ceil(self.page).max(1).checked_mul(self.page)
     }
 
     fn lock_state(&self) -> Result<std::sync::MutexGuard<'_, PinnedState>, TierError> {

@@ -4560,6 +4560,8 @@ dependencies = [
 name = "ptr-fabric"
 version = "0.1.0"
 dependencies = [
+ "cudarc 0.19.10",
+ "libc",
  "ptr-protocol",
  "ptr-types",
  "rustix 1.1.5",
@@ -4869,8 +4871,12 @@ dependencies = [
 name = "ptr-worker"
 version = "0.1.0"
 dependencies = [
+ "ed25519-dalek",
+ "libc",
+ "ptr-fabric",
  "ptr-pods",
  "ptr-protocol",
+ "ptr-runtime",
  "ptr-types",
 ]
 

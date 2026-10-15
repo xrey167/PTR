@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-14  
-**Code footprint:** 6 Rust source files · 2149 nonblank source lines · 7 integration-test files · 41 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 6 Rust source files · 2150 nonblank source lines · 7 integration-test files · 41 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -20,7 +20,7 @@
 - Typed multi-tier manifests with canonical chunk and root digests
 - Immutable CPU and atomic filesystem tier backends with verify-on-read
 - Optional OpenDAL memory, filesystem and S3-capable adapter; put_chunk over an existing object that fails its own content address overwrites it with the verified bytes (repair) instead of returning ImmutableConflict, which is kept only for a valid object with different bytes
-- PinnedHostTierBackend (feature tier-pinned, Linux only): a TierBackend over per-chunk anonymous mappings locked with mlock under a fixed byte budget charged with the page-rounded footprint; an over-budget put returns BudgetExceeded and an mlock refusal returns MemoryLock, both storing and charging nothing; same digest, validation and verify-on-read semantics as CpuTierBackend
+- PinnedHostTierBackend (feature tier-pinned, Linux only): a TierBackend over per-chunk anonymous mappings locked with mlock under a fixed byte budget charged with the page-rounded footprint (footprint_for returns None instead of wrapping when the rounded size overflows usize); an over-budget put returns BudgetExceeded and an mlock refusal returns MemoryLock, both storing and charging nothing; same digest, validation and verify-on-read semantics as CpuTierBackend
 - FileTierBackend direct read path (feature tier-direct-io, Linux only): FileTierBackend::with_options(FileTierOptions { read: FileReadMode::Direct }) reads chunk files with O_DIRECT into a page-aligned anonymous MAP_SHARED buffer (not heap memory, so a concurrent fork cannot corrupt it), with the offset and length alignment taken from statx(STATX_DIOALIGN) when the kernel reports it (4096 otherwise; a file needing more than a page, or reporting no direct-I/O support, is read buffered), falls back to a buffered read per call when the filesystem refuses O_DIRECT or the file changes size during the direct read, and counts both in FileReadStats (a fallback only once its buffered read succeeded); writes, chunk digests, AEAD and the on-disk format are unchanged and FileTierBackend::new stays buffered
 - AEAD-bound durable KV chunks with authenticated cross-generation anchors
 - Crash-safe protected-state replacement with unique writer temp files

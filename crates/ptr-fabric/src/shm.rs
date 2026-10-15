@@ -123,6 +123,43 @@ impl ShmExport {
     }
 }
 
+/// What the supervisor learns about a region a producer sent it, before it admits the handle.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ShmRegion {
+    /// The file size: exactly the tensor.
+    pub byte_len: u64,
+    /// The bytes the region costs the host: the file size rounded up to whole pages, for
+    /// `HandleAdmissionRequest::footprint_bytes`. Measured on the descriptor, never read from
+    /// the handle.
+    pub footprint_bytes: u64,
+}
+
+/// Inspect a received region: it must be a `memfd` that carries all four seals, and its size
+/// is measured. The supervisor calls this on the descriptor before it admits the handle, so
+/// the footprint it charges is the real one and a writable or resizable region never reaches a
+/// consumer.
+pub fn inspect_region(fd: BorrowedFd<'_>) -> Result<ShmRegion, FabricError> {
+    let held = fcntl_get_seals(fd).map_err(|error| match error {
+        rustix::io::Errno::INVAL => FabricError::NotSealable,
+        other => io_error(other),
+    })?;
+    for (seal, flag) in SEALS {
+        if !held.contains(flag) {
+            return Err(FabricError::MissingSeal(seal));
+        }
+    }
+    let stat = fstat(fd).map_err(io_error)?;
+    let byte_len = u64::try_from(stat.st_size).unwrap_or(0);
+    if byte_len == 0 {
+        return Err(FabricError::EmptyTensor);
+    }
+    let page = host_page_size();
+    Ok(ShmRegion {
+        byte_len,
+        footprint_bytes: byte_len.div_ceil(page).saturating_mul(page),
+    })
+}
+
 /// What the consumer expects of a region, taken from an admitted handle.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ShmExpectation {
@@ -140,6 +177,12 @@ impl ShmExpectation {
         let CarrierLocator::HostShm { offset, .. } = &handle.locator else {
             return Err(FabricError::WrongLocator);
         };
+        if handle.byte_len > MAX_HANDLE_BYTES {
+            return Err(FabricError::TooLarge {
+                len: handle.byte_len,
+                max: MAX_HANDLE_BYTES,
+            });
+        }
         Ok(Self {
             byte_len: handle.byte_len,
             offset: *offset,
@@ -157,12 +200,21 @@ pub struct ShmMapping {
 }
 
 impl ShmMapping {
-    /// Check the offset, the four seals and the file size, map `PROT_READ`, `MAP_SHARED`
+    /// Refuse a length above `MAX_HANDLE_BYTES` (before any system call), check the offset,
+    /// the four seals and the file size, map `PROT_READ`, `MAP_SHARED`
     /// exactly `byte_len` bytes, and verify the digest of the mapped bytes. On any failure
     /// nothing stays mapped. The descriptor is closed afterwards; the mapping outlives it.
     pub fn map(fd: OwnedFd, expected: &ShmExpectation) -> Result<Self, FabricError> {
         if expected.byte_len == 0 {
             return Err(FabricError::EmptyTensor);
+        }
+        // Before any system call on the descriptor: an expectation built by hand (its fields
+        // are public) cannot make the consumer size a mapping above the handle bound.
+        if expected.byte_len > MAX_HANDLE_BYTES {
+            return Err(FabricError::TooLarge {
+                len: expected.byte_len,
+                max: MAX_HANDLE_BYTES,
+            });
         }
         if expected.offset != 0 {
             return Err(FabricError::NonZeroOffset {

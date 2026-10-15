@@ -3,8 +3,8 @@
 use ptr_protocol::activation::{BoundaryDtype, ChainElement, UpstreamChain};
 use ptr_protocol::{
     content_digest, handle_digest, handle_payload, handle_signing_bytes, verify_content, Carrier,
-    CarrierLocator, CudaExport, HandleError, TensorHandle, MAX_HANDLE_BYTES, MAX_HANDLE_DIMS,
-    MAX_INLINE_BYTES, TENSOR_HANDLE_TYPE,
+    CarrierLocator, CudaExport, HandleError, InProcessHandle, TensorHandle, MAX_HANDLE_BYTES,
+    MAX_HANDLE_DIMS, MAX_INLINE_BYTES, TENSOR_HANDLE_TYPE,
 };
 use ptr_types::TypeId;
 
@@ -25,7 +25,8 @@ fn handle(locator: CarrierLocator) -> TensorHandle {
         | CarrierLocator::DevicePeer { .. }
         | CarrierLocator::PinnedHost { .. }
         | CarrierLocator::NvmeFile { .. }
-        | CarrierLocator::Remote { .. } => [6; 32],
+        | CarrierLocator::Remote { .. }
+        | CarrierLocator::InProcess => [6; 32],
     };
     TensorHandle {
         carrier: locator.carrier(),
@@ -125,6 +126,60 @@ fn an_in_process_handle_has_no_wire_form() {
     let mut local = shm();
     local.carrier = Carrier::InProcess;
     assert_eq!(local.encode(), Err(HandleError::InProcessNotEncodable));
+}
+
+fn local() -> TensorHandle {
+    handle(CarrierLocator::InProcess)
+}
+
+#[test]
+fn a_locator_free_in_process_handle_is_built_only_from_an_in_process_handle() {
+    let built = InProcessHandle::new(local()).expect("a well-formed local handle");
+    assert_eq!(built.as_tensor_handle().carrier, Carrier::InProcess);
+    assert_eq!(built.as_tensor_handle().locator, CarrierLocator::InProcess);
+    // It signs and digests like any handle, in bytes no wire handle can equal.
+    assert_eq!(built.signing_bytes(), handle_signing_bytes(&local()));
+    assert_eq!(built.digest(), handle_digest(&local()));
+    assert_ne!(built.signing_bytes(), handle_signing_bytes(&shm()));
+    // A wire handle is not one.
+    assert!(InProcessHandle::new(shm()).is_err());
+    // A locator that is not the carrier's is refused.
+    let mut mismatched = local();
+    mismatched.locator = CarrierLocator::NvmeFile {
+        chunk_digest: [1; 32],
+    };
+    assert_eq!(
+        InProcessHandle::new(mismatched),
+        Err(HandleError::LocatorMismatch {
+            carrier: Carrier::InProcess,
+            locator: Carrier::NvmeFile
+        })
+    );
+    // Every other field is checked as for a wire handle.
+    let mut bad_shape = local();
+    bad_shape.byte_len = 127;
+    assert!(matches!(
+        InProcessHandle::new(bad_shape),
+        Err(HandleError::ShapeMismatch { .. })
+    ));
+}
+
+#[test]
+fn the_locator_free_handle_still_has_no_wire_form() {
+    let tensor = local();
+    assert_eq!(tensor.validate(), Err(HandleError::InProcessNotEncodable));
+    assert_eq!(tensor.encode(), Err(HandleError::InProcessNotEncodable));
+    assert_eq!(
+        handle_payload(&tensor),
+        Err(HandleError::InProcessNotEncodable)
+    );
+    // The same bytes under a wire carrier code do not decode as an in-process handle either.
+    let mut wire = shm().encode().expect("encodes");
+    wire[8] = Carrier::InProcess.code();
+    assert_eq!(
+        TensorHandle::decode(&wire),
+        Err(HandleError::InProcessNotEncodable)
+    );
 }
 
 #[test]

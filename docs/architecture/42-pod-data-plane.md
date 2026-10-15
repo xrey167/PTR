@@ -118,7 +118,7 @@ generation, digest and fence epoch), the **payload types** the operation accepts
 **authority-derived project** (`ProjectId`) the operation runs in. Pod and stage ids are unique
 only within a project (`PodRegistry` allows the same Pod id in two projects), so every lookup of
 the record's placement, inputs and worker session is keyed by that project, and a handle whose
-consumer placement, inputs or worker session belong to another project is refused. Admission and
+consumer placement, inputs or worker session belong to another project is refused. The placement controller keys placements, leases and freezes by (`ProjectId`, `PodId`), and handle admission and consumption read the placement epoch for the project of the call (`StageLiveness::placement_epoch_in`), so a stage of the same name in another project is not this handle's stage. Admission and
 consumption both ask the authority whether the operation is known, every input is still live at
 the current committed anchor, every Raw ancestor is still present (not erased) with its recorded
 digest, the consumer stage still holds the recorded destination placement and epoch and is
@@ -397,7 +397,10 @@ therefore ships with `PinnedHost` as its working path and `DevicePeer` as a prob
 Peer access being available does not make it faster: some boards route peer traffic through
 the CPU root complex. Until E011's paired `DevicePeer` against `PinnedHost` claim has been
 measured, the carrier table picks `DevicePeer` for a device pair only when this host's own
-calibration record shows it faster than `PinnedHost` for that pair, and `PinnedHost` otherwise.
+calibration record shows it **strictly** faster than `PinnedHost` for that pair (a tie goes to
+`PinnedHost`), and `PinnedHost` otherwise. The probe and the calibration live in the per-host
+`CarrierTable` of `ptr-runtime` (`carrier_select.rs`), beside `NodeRecord`, one row per
+**ordered** device pair; peer access without a calibration is not enough.
 
 ## 3. The stages
 
@@ -451,8 +454,18 @@ carriers are disabled for that worker and its data goes by `Bytes`, a copy.
 
 **Build.** `PodPlacementController` already models several devices per node
 (`NodeRecord.devices`, `crates/ptr-runtime/src/placement.rs:33`). S2 adds a per-host **carrier
-table**: for each ordered device pair, whether `DevicePeer` is available (probed once at node
-registration, recorded in the `DeviceRecord`, never assumed) and otherwise `PinnedHost`. The
+table** (`CarrierTable` in `crates/ptr-runtime/src/carrier_select.rs`, a structure beside
+`NodeRecord`; `DeviceRecord`, `NodeRecord` and `Placement` are unchanged, because the frozen E007
+rig builds them by struct literal): for each ordered device pair, whether `DevicePeer` is available
+(probed once at node registration, recorded in the table, never assumed) with this host's
+calibration. `DevicePeer` is chosen only for a pair probed `Peer` whose calibration is strictly
+faster than `PinnedHost`; every other pair gets `PinnedHost`. A device that fails or vanishes
+loses its rows (`reconcile` after a heartbeat). `select_carrier` also fixes rows this document did
+not spell out: the same process across two devices uses the cross-process rows (the bytes still
+cross devices); a hop between host memory and a GPU is `PinnedHost`; an endpoint that is not fully
+confined (`Partial` or `None`) gets `Bytes` for every shared carrier; a failed or vanished device
+is a refusal, never a fallback; shared storage in one process is a `Bytes` copy, and `InProcess`
+needs moved unique ownership. The
 pipeline split of E007 gets its second half: stage k on device 0, stage k+1 on device 1, in two
 worker processes, frames carried by handle instead of bytes.
 
