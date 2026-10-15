@@ -210,7 +210,10 @@ leaves nothing for the default, while an abstention (nothing dispatched yet) can
    a pod; the verifier commits.
 
 A refused failover is `RuntimeError::FailoverRefused { miss, reason }` and names no pod; a default
-that fails or is contradicted returns that error and leaves the miss uncovered. A failover is not a
+that fails when invoked (`DefaultFailed`) or whose answer is not promoted (`DefaultRejected`: the
+verifier contradicted it, or a taint or type check refused it) is refused the same way, with the
+original miss, and not with the default pod's own error, which could name it. The miss stays counted
+and uncovered. A failover is not a
 sampled decision, so it logs no `PodRouted` propensity.
 
 **Counters.** `PtrRuntime::reflex_counters()` returns a snapshot of `ReflexCounters`: hits, misses,

@@ -828,12 +828,16 @@ mod with_a_default {
             &low_score_router(),
             &contradicting,
         );
+        // The refusal keeps the primary miss and names no pod (the verifier error would name
+        // the default).
         assert_eq!(
             outcome,
-            Err(RuntimeError::PodVerificationFailed {
-                pod: "fallback".into()
+            Err(RuntimeError::FailoverRefused {
+                miss: MissReason::Abstained(AbstentionReason::LowScore),
+                reason: UncoveredReason::DefaultRejected,
             })
         );
+        assert!(!format!("{outcome:?}").contains("fallback"));
         // The default pod ran, its output was judged by the verifier and refused: only the
         // request was committed, the output was not.
         assert_eq!(invocations(&counts, "fallback"), 1);
@@ -854,11 +858,11 @@ mod with_a_default {
         );
 
         let counters = runtime.reflex_counters();
-        assert_eq!(counters.failovers(), 0);
+        assert_eq!((counters.misses(), counters.failovers()), (1, 0));
         assert_eq!(
             counters
                 .uncovered_reasons()
-                .get(&UncoveredReason::DefaultFailed),
+                .get(&UncoveredReason::DefaultRejected),
             Some(&1)
         );
         assert!(!counters.all_misses_covered());
@@ -875,9 +879,23 @@ mod with_a_default {
         make_live(&mut runtime, &fallback);
         plan(&mut runtime, "fallback", 2, fallback);
         let outcome = run_routed(&mut runtime, "r1", &pods, &low_score_router(), &PASS);
-        assert_eq!(outcome, Err(RuntimeError::Pod("pod failed".into())));
+        assert_eq!(
+            outcome,
+            Err(RuntimeError::FailoverRefused {
+                miss: MissReason::Abstained(AbstentionReason::LowScore),
+                reason: UncoveredReason::DefaultFailed,
+            })
+        );
         assert_eq!(invocations(&counts, "fallback"), 1);
-        assert!(!runtime.reflex_counters().all_misses_covered());
+        let counters = runtime.reflex_counters();
+        assert_eq!((counters.misses(), counters.failovers()), (1, 0));
+        assert_eq!(
+            counters
+                .uncovered_reasons()
+                .get(&UncoveredReason::DefaultFailed),
+            Some(&1)
+        );
+        assert!(!counters.all_misses_covered());
     }
 
     #[test]

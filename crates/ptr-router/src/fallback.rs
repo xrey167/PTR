@@ -158,9 +158,11 @@ pub enum UncoveredReason {
     /// names and the lifecycle checked: a different namespace or generation, or one registered
     /// without them. The generation that was checked is not the code that would run.
     StaleFallback,
-    /// The default pod was dispatched and failed, or its output was not promoted (the verifier
-    /// refused it, or a taint or type check did).
+    /// The default pod was dispatched and failed.
     DefaultFailed,
+    /// The default pod answered and the answer was not promoted: the verifier contradicted it,
+    /// or a taint or type check refused it.
+    DefaultRejected,
 }
 
 impl UncoveredReason {
@@ -176,6 +178,7 @@ impl UncoveredReason {
             Self::EffectNotAllowed => "effect_not_allowed",
             Self::StaleFallback => "stale_fallback",
             Self::DefaultFailed => "default_failed",
+            Self::DefaultRejected => "default_rejected",
         }
     }
 }

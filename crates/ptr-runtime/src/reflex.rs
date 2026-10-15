@@ -448,12 +448,11 @@ impl PtrRuntime {
         }
         if !taint_recorded {
             if let Some(taint) = input_taint {
-                if let Err(taint_error) = self.record_input_request_taint(request.request_id, taint)
+                if self
+                    .record_input_request_taint(request.request_id, taint)
+                    .is_err()
                 {
-                    self.reflex
-                        .counters
-                        .record_uncovered(UncoveredReason::DefaultFailed);
-                    return Err(taint_error);
+                    return refuse(self, UncoveredReason::DefaultRejected);
                 }
             }
         }
@@ -463,12 +462,9 @@ impl PtrRuntime {
             bytes: request.payload.to_vec(),
         }) {
             Ok(output) => output,
-            Err(message) => {
-                self.reflex
-                    .counters
-                    .record_uncovered(UncoveredReason::DefaultFailed);
-                return Err(RuntimeError::Pod(message));
-            }
+            // The primary miss is kept and the default's own error is not propagated: it may
+            // name the default pod, and the refusal names none.
+            Err(_) => return refuse(self, UncoveredReason::DefaultFailed),
         };
         // The same verifier path as any pod output: a contradiction is never promoted.
         match self.promote_verified_pod_output(
@@ -490,12 +486,9 @@ impl PtrRuntime {
                     revision,
                 })
             }
-            Err(promote_error) => {
-                self.reflex
-                    .counters
-                    .record_uncovered(UncoveredReason::DefaultFailed);
-                Err(promote_error)
-            }
+            // A verifier contradiction (or a taint or type refusal) of the default's output: not
+            // promoted, the miss stays uncovered, and the refusal names no pod.
+            Err(_) => refuse(self, UncoveredReason::DefaultRejected),
         }
     }
 }
