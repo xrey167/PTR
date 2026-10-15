@@ -17,9 +17,10 @@ client --[u32 BE length | ControlFrame]--> ptr-worker serve --stdio
 ptr-worker                  print usage, exit 0
 ptr-worker pods             list the built-in Pods (name<TAB>contract summary)
 ptr-worker serve [--stdio]  serve one session on stdin/stdout
-ptr-worker serve --channel-fd <n> [--confined]
+ptr-worker serve --channel-fd <n> [--confined] [--staging fake|cuda]
                             serve one session over an inherited SOCK_SEQPACKET channel
-                            (Linux, feature data-plane)
+                            (Linux, feature data-plane); --staging serves the CudaIpc staged
+                            calls with the import that pairs with the guardian's --backend
 ptr-worker guardian --channel-fd <n> --backend fake|cuda
                             hold the staging buffers of the CUDA carriers for the supervisor
                             (Linux, feature data-plane; `cuda` needs cuda-ipc or cuda-ipc-core)
@@ -102,7 +103,8 @@ PodHost (supervisor side, lib: host)  --spawn/poll/reap-->  ptr_fabric::Supervis
 - **Seccomp is checked twice.** The kernel must show a filter (`Seccomp: 2`), and the worker's own
   `probe` must report `EPERM` for every forbidden call (a self-report of the image the host
   started, not a kernel proof); only then is the worker `Full`-confined.
-- **S1 limits.** The tensor travels inside the produce call (one 64 KiB frame, about 60 KiB) and
+- **S1 limits.** The tensor travels inside the produce call (one 64 KiB frame, about 60 KiB; the
+  `CudaIpc` path below carries it in a `memfd` instead) and
   a worker keeps at most 64 exports; no `PDEATHSIG`, so a SIGKILLed supervisor leaves its workers
   and `ptr-worker-*` cgroups behind.
 - **Failure policy.** Every wait has a deadline, every queue is bounded, every refusal is a typed
@@ -117,7 +119,7 @@ signature and a silent worker. Tests that need root skip with a printed reason; 
 `CI=true` they fail unless `PTR_WORKER_UNPRIVILEGED_CI=1`. CI job `pod-worker`
 (`make ci-pod-worker`) builds the test binaries as the runner user and runs them under
 `sudo -E` (`scripts/run_pod_worker_tests.py`). The `fault-injection` feature adds
-`--fault bad-signature|silent|carrier-swap|tamper-field|region-unsealed|region-wrong-size|region-not-memfd` to the worker, and the "keeps its mapping after `Consumed`" hook, for those tests and is never part of a release build.
+`--fault bad-signature|silent|carrier-swap|tamper-field|region-unsealed|region-wrong-size|region-not-memfd|staging-wrong-size|staging-wrong-device|staging-corrupt` to the worker, and the "keeps its mapping after `Consumed`" hook, for those tests and is never part of a release build.
 
 ## The CUDA staging lifecycle (stage S3, Linux, feature `data-plane`)
 
@@ -150,13 +152,97 @@ PodHost  --Supervisor-->  workers (own cgroup, uid, netns, seccomp)
   (a typed `StagingEvent::GuardianLost` names them), drops the pool, charges and records, and
   reaps the guardian's remains last. The loss is stored, so a worker reap that fails is retried by the next `watch`; a guardian that stops answering (request timeout) is killed and counts as lost. End a `StagingHost` with `shutdown` (a drop that still backs workers only warns). A producer-quota refusal comes with `recovery_plan`, and
   `recycle` reaps the producer and the listed consumers, oldest export first.
-- **Not built.** The staging host is not in `PodHost`'s produce/admit/consume path (no CUDA handle
-  is produced or consumed through it yet), there is no adapter from the pool's per-session
-  `FootprintSink` to `SharedHostQuota`, and the CUDA backend has never run on a GPU.
+- **In the `PodHost` path (CudaIpc).** See the next section. What is not built: the producer side
+  of the CUDA staging path (a worker writing through an imported VMM descriptor; `ptr-fabric` has
+  only the guardian's fill, at most about 64 KiB per call), the `FootprintSink` is not an adapter
+  onto `SharedHostQuota` (by decision, see below), and the CUDA backend has never run on a GPU.
 
-Tests: `tests/staging_guardian.rs` (feature `data-plane`, runs unprivileged and as root) uses a
-real guardian process and real workers; the GPU test in it is `#[ignore]`. CI: `pod-worker`
-(`scripts/run_pod_worker_tests.py`) and `fabric-cuda-check`.
+Tests: `tests/staging_guardian.rs` (feature `data-plane`, runs unprivileged and as root; the
+guardian-loss tests need `fault-injection`) uses a real guardian process and real workers; the
+GPU test in it is `#[ignore]`. CI: `pod-worker` (`scripts/run_pod_worker_tests.py`) and
+`fabric-cuda-check`.
+
+## The CudaIpc carrier through `PodHost` (doc 42 rules 1, 3, 3a, 3b; CPU double, Linux)
+
+```text
+start_produce_staged   lease (issue_export) -> template locator CudaIpc{device, Vmm{0, footprint}}
+   |                   -> ProduceStaged: [staging descriptor, sealed memfd with the tensor] --> producer
+   v                      the producer writes the tensor through the buffer, signs the template
+finish_produce         handle == template (locator included), no descriptor comes back
+   v
+admit_staged           ImportClaim{producer, consumer, parent_operation_id, device, alloc_size}
+   |                   -> admit_import (record consumed)  -- BEFORE -->  HandleTable::admit
+   v                   (footprint = the record's size; ledger charged here, once)
+consume_staged         fresh descriptor + export record -> the addressed consumer only
+                       -> ConsumeStaged: copy out, unmap, digest on the copy -> Consumed (frees nothing)
+```
+
+- **The host chooses.** `carrier_between_staged` answers `CudaIpc` only if the `StagingHost` is
+  passed in and usable, both workers were placed on the same `Some(device)` and started with the
+  guardian's import (`Placement::{device, staging}`, `StagingHost::import()`), and
+  `carrier_permitted(CudaIpc)` holds for both (full confinement); otherwise it answers exactly
+  what `carrier_between` answers (`HostShm`, then `Bytes`). The unstaged `start_produce`, `admit`
+  and `consume` never choose it and refuse a `CudaIpc` handle (`HostError::StagingRequired`).
+- **No 64 KiB limit on this path.** The tensor reaches the producer in a sealed `memfd` (the
+  second descriptor of the call), not in the control frame, and the producer writes it into the
+  staging buffer itself, so neither the frame size nor the guardian's fill limit applies. A
+  produced locator is checked against the template exactly: a worker that signs another device or
+  allocation size is a violation (fenced, reaped).
+- **Admission order.** A locator that finds no live record for its producer session, consumer
+  session, operation, device and size is `HostError::Staging(Registry(NoRecord))` and the table is
+  never reached; a replay or a second admission finds the record spent. If the table then refuses
+  the handle the record stays spent and the buffer stays leased until its workers are reaped (the
+  pool's rule, bounded by its limits).
+- **Charging, exactly once (for admitted bytes).** The host-wide ledger (`SharedHostQuota`) charges *session pairs*; the
+  pool's `FootprintSink` charges *single sessions*, so it cannot be an adapter onto the ledger.
+  Decision: the ledger is charged once per admitted handle by `HandleTable::admit` with the
+  record's footprint and released by the pair's verified teardown; the pool's sink is its own book
+  of leased buffers (use `ChargeBook` to watch it), bounded by the pool's caps and released when
+  the pool frees the buffer. `Consumed` and the reap of one side release nothing in either; both
+  reaps release both. One difference is deliberate and tested: a buffer reused for a new
+  consumer is one buffer in the pool and a second pair charge in the ledger until the producer is
+  reaped (an over-count of admitted bytes); a lease that is never admitted is in the pool's
+  book only. **The ledger bounds only admitted bytes**: leases that are never admitted are
+  bounded by `PoolLimits` alone, so `PoolLimits` must be at or below the ledger's caps.
+- **Reaps the host did itself** (a protocol violation) reach the pool through
+  `StagingHost::sync_reaped`, which `watch` and every staged call run first. It frees only a
+  session the host registers no more *and* remembers as reaped (`PodHost::is_reaped`, a bounded
+  list: a forgotten session is freed late, at `shutdown`, never early); a direct `PodHost::reap`
+  leaves the pool stale until the next `watch` or staged call. `StagingHost::issue_export_for`
+  refuses a lease for a session the host does not have.
+- **A CUDA import is not chosen yet.** While the CUDA producer cannot write through an imported
+  descriptor, `carrier_between_staged` falls back for a `--staging cuda` host (each attempt would
+  leave a device lease); two live leases of one key must be admitted in lease order
+  (`HostError::StagedExportMismatch` otherwise).
+- **Worker side.** `--staging fake` maps the staging `memfd` (`staging_import`); `--staging cuda`
+  uses `ptr_fabric::import_and_copy` for the consumer and refuses the producer with
+  `cuda-producer-write-not-built`. Nothing here has run on a GPU. A worker started without
+  `--staging` refuses staged calls with `staging-not-served`.
+
+Tests: `tests/cuda_ipc_flow.rs` (feature `data-plane,fault-injection`; the transfers need root and
+skip with a reason otherwise, the fallback tests run everywhere): an end-to-end transfer with the
+digest checked, a 1 MiB tensor, exact-once charging with a reading after each step in both reap
+orders, a forged locator (size, device), a claim by another consumer or producer, a replay, the
+unstaged calls refusing a `CudaIpc` handle, a consumer refusing corrupt bytes, reuse after the
+consumer's reap with the tail scrubbed, a producer crash after producing and during the call,
+and the fallbacks. Unit tests of the worker's staged calls are in `channel_serve`.
+
+## The GPU seccomp profile (`--gpu-profile`, builds with `cuda-ipc-core`)
+
+`serve --channel-fd <n> --confined --gpu-profile <device>` initialises CUDA on the device first
+(`prepare_gpu_worker`; the filter refuses `open`), then installs the weaker GPU filter
+(`install_gpu_filter`) and keeps the `GpuWorker` for its CUDA imports. A worker that cannot (no
+driver, no such device, a build without the feature) answers the challenge with a startup refusal
+(`gpu-no-driver`, `gpu-no-such-device`, `gpu-prepare-failed`, `gpu-filter-failed`,
+`gpu-not-built`) and the host reports `HostError::WorkerStartup(code)` and reaps it. Every
+confined worker answers `probe` with `probe_profile_calls`; the host classifies the filter
+(`observed_profile`), requires it to equal `Placement::profile` (`ProfileMismatch`,
+`ProfileUnproven` reap the worker), keeps it per worker (`PodHost::profile`), decides carriers with
+`carrier_permitted_for(carrier, &WorkerConfinement)` and exposes what a reduced profile gives up
+(`PodHost::profile_weakening`). The classification is a self-report of the image the host started.
+Nothing of it has run on a GPU; the `#[ignore]` test
+`a_gpu_profile_worker_runs_its_filter_and_is_classified_gpu_on_a_gpu` is in `docs/GPU_HANDOVER.md`
+section 12.2 step 4.
 
 ## What it does not do
 

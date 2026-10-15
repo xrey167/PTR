@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use ptr_protocol::content_digest;
-use rustix::fs::{memfd_create, MemfdFlags};
+use rustix::fs::{fcntl_add_seals, memfd_create, MemfdFlags, SealFlags};
 
 use crate::{host_page_size, ExportRecord};
 
@@ -206,6 +206,24 @@ impl Drop for FakeAllocation {
     }
 }
 
+/// A zeroed `memfd` of exactly `footprint` bytes whose size can no longer change
+/// (`F_SEAL_SHRINK | F_SEAL_GROW`), like a device allocation: a worker that holds a descriptor
+/// of it can write through it but cannot truncate it under another importer's mapping (that
+/// would be a `SIGBUS` for the importer). It stays writable, so the producer can fill it.
+fn new_fake_buffer(footprint: u64) -> Result<File, BackendError> {
+    let fd = memfd_create(
+        "ptr-fabric-fake-staging",
+        MemfdFlags::CLOEXEC | MemfdFlags::ALLOW_SEALING,
+    )
+    .map_err(|error| BackendError::new(format!("memfd_create: {error}")))?;
+    let file = File::from(fd);
+    file.set_len(footprint)
+        .map_err(|error| BackendError::new(format!("ftruncate: {error}")))?;
+    fcntl_add_seals(&file, SealFlags::SHRINK | SealFlags::GROW)
+        .map_err(|error| BackendError::new(format!("seal: {error}")))?;
+    Ok(file)
+}
+
 fn usize_of(value: u64) -> Result<usize, BackendError> {
     usize::try_from(value).map_err(|_| BackendError::new("size does not fit this host"))
 }
@@ -285,11 +303,7 @@ impl StagingBackend for FakeBackend {
             return Err(BackendError::new("allocation refused (injected)"));
         }
         let footprint = self.footprint_for(device, len)?;
-        let fd = memfd_create("ptr-fabric-fake-staging", MemfdFlags::CLOEXEC)
-            .map_err(|error| BackendError::new(format!("memfd_create: {error}")))?;
-        let file = File::from(fd);
-        file.set_len(footprint)
-            .map_err(|error| BackendError::new(format!("ftruncate: {error}")))?;
+        let file = new_fake_buffer(footprint)?;
         let state = &self.counters.state;
         state.live.fetch_add(1, Ordering::SeqCst);
         state.live_bytes.fetch_add(footprint, Ordering::SeqCst);
@@ -356,13 +370,7 @@ impl StagingBackend for FakeBackend {
             return Err(BackendError::new("the tensor does not fit the buffer"));
         }
         if self.retain_on_scrub {
-            let fresh = File::from(
-                memfd_create("ptr-fabric-fake-staging", MemfdFlags::CLOEXEC)
-                    .map_err(|error| BackendError::new(format!("memfd_create: {error}")))?,
-            );
-            fresh
-                .set_len(allocation.footprint)
-                .map_err(|error| BackendError::new(format!("ftruncate: {error}")))?;
+            let fresh = new_fake_buffer(allocation.footprint)?;
             if let Some(old) = allocation.file.replace(fresh) {
                 allocation.retired.push(old);
             }

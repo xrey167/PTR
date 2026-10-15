@@ -11,6 +11,8 @@
 //! - [`ExportRecord`](crate::ExportRecord) / [`ImportExpectation`]: the supervisor's record and the consumer's
 //!   expectation, with pure checks.
 //! - [`PinnedRegistration`]: a sealed `HostShm` mapping registered as pinned memory.
+//! - [`prepare_gpu_worker`] / [`GpuPrepared`]: the driver initialised and warmed before a GPU
+//!   worker installs its seccomp filter (the GPU profile of `confine`).
 //!
 //! The staging pool, the export registry and the guardian that owns the staging buffers are in
 //! [`staging`](crate) (`StagingPool`, `ExportRegistry`, `CudaBackend`). Not built here: event
@@ -21,6 +23,7 @@ mod driver;
 mod error;
 mod footprint;
 mod pinned;
+mod prepare;
 mod record;
 mod vmm;
 
@@ -29,6 +32,7 @@ pub use driver::{CudaDriver, CudaProbe, DeviceInfo, PeerLink};
 pub use error::CudaError;
 pub use footprint::{footprint_legacy, footprint_memfd, footprint_vmm, LEGACY_STAGING_UNIT};
 pub use pinned::PinnedRegistration;
+pub use prepare::{prepare_gpu_worker, GpuPrepared};
 pub use record::{check_extent, check_import, padding_is_zero, ImportExpectation};
 pub(crate) use vmm::allocation_granularity;
 pub use vmm::{

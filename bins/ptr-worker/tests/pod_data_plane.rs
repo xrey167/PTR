@@ -361,6 +361,9 @@ fn placement(principal: &str, stage: &str) -> Placement {
         stage_identity: stage.to_owned(),
         seccomp: true,
         extra_args: Vec::new(),
+        device: None,
+        staging: None,
+        profile: ptr_fabric::SeccompProfile::Cpu,
     }
 }
 

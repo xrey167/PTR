@@ -11,7 +11,7 @@ default = []
 # channel with descriptors) and the host module that supervises workers, admits their handles
 # and releases quota charges when a worker is reaped. Linux only; on every other target the
 # feature compiles to nothing, so enabling it never breaks a Windows or macOS build.
-data-plane = ["dep:ptr-fabric", "ptr-fabric/worker-supervisor", "dep:ptr-runtime", "dep:ed25519-dalek"]
+data-plane = ["dep:ptr-fabric", "ptr-fabric/worker-supervisor", "dep:ptr-runtime", "dep:ed25519-dalek", "dep:libc"]
 # The CUDA staging backend of the guardian (`ptr-worker guardian --backend cuda`), through
 # ptr-fabric. `cuda-ipc` is the toolkit-free dynamic-loading variant CI compiles; `cuda-ipc-core`
 # names no linking mode and is for a build that also links candle's CUDA. Never both with
@@ -31,7 +31,8 @@ ptr-protocol = { workspace = true }
 ptr-fabric = { workspace = true, optional = true }
 ptr-runtime = { workspace = true, optional = true }
 ed25519-dalek = { workspace = true, optional = true }
-# Only for the fault-injection modes that hand over a deliberately wrong memfd. Already locked.
+# mmap of the staging buffers (staging_import) and, with fault-injection, the modes that hand
+# over a deliberately wrong memfd. Already locked: Cargo.lock is unchanged.
 libc = { version = "=0.2.189", optional = true }
 
 [[test]]
@@ -42,4 +43,9 @@ required-features = ["data-plane"]
 [[test]]
 name = "pod_data_plane"
 path = "tests/pod_data_plane.rs"
+required-features = ["data-plane", "fault-injection"]
+
+[[test]]
+name = "cuda_ipc_flow"
+path = "tests/cuda_ipc_flow.rs"
 required-features = ["data-plane", "fault-injection"]

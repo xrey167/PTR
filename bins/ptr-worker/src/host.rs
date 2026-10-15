@@ -12,13 +12,36 @@
 //!   bad signature, a missing answer, or a seccomp filter the kernel does not show makes the
 //!   spawn fail and reaps the worker.
 //! * **Shared carriers only under full confinement.** [`PodHost::carrier_between`] answers
-//!   `HostShm` only if [`carrier_permitted`] holds for both the producer and the consumer, and
+//!   `HostShm` only if [`carrier_permitted_for`] holds for both the producer and the consumer
+//!   (the confinement *and* the seccomp profile the host observed), and
 //!   `Bytes` otherwise; [`PodHost::admit`] refuses a shared handle of a worker that does not
 //!   qualify.
+//! * **The seccomp profile is observed, not believed.** A worker is asked for the CPU profile
+//!   unless its [`Placement`] says [`SeccompProfile::Gpu`] (then `--gpu-profile <device>`, which
+//!   needs `seccomp` and a device). After the handshake the host classifies the worker's own probe
+//!   report ([`observed_profile`]) and requires it to equal the requested profile: a report that
+//!   proves neither ([`HostError::ProfileUnproven`]) or the other one
+//!   ([`HostError::ProfileMismatch`]) reaps the worker. A worker that cannot start in its
+//!   profile (no driver) refuses the challenge with a code ([`HostError::WorkerStartup`]). The
+//!   observed profile is kept per worker ([`PodHost::profile`]) and decides the carriers; what a
+//!   reduced profile gives up is [`PodHost::profile_weakening`]. The classification is a
+//!   self-report of the image the host started, as strong as the forbidden-call check.
 //! * **Admission before access.** [`PodHost::admit`] inspects the received `memfd` (all four
 //!   seals, size) to take the real footprint, then runs [`HandleTable::admit`]. Only
 //!   [`PodHost::consume`] forwards the descriptor, and only to the addressed, admitted consumer
 //!   worker, after [`HandleTable::consume`] revalidated.
+//! * **`CudaIpc` only through an attached staging host.** The host chooses `CudaIpc` only when
+//!   a [`StagingHost`] is passed to the staged calls ([`PodHost::start_produce_staged`],
+//!   [`PodHost::admit_staged`], [`PodHost::consume_staged`]), is usable, both workers serve the
+//!   guardian's staging import, the placement puts both on one device, and
+//!   [`carrier_permitted_for`] holds for both; otherwise the carrier is the one of
+//!   [`PodHost::carrier_between`]. The worker never chooses. The host leases the buffer and
+//!   issues the export record, hands the producer a descriptor of the buffer (and the tensor in a
+//!   sealed `memfd`, so the 64 KiB fill limit of the guardian does not apply), requires the
+//!   signed locator to equal its template, claims the record in [`PodHost::admit_staged`]
+//!   *before* the table sees the handle, and forwards a fresh descriptor and the record to the
+//!   addressed consumer only. The unstaged [`PodHost::admit`] and [`PodHost::consume`] refuse a
+//!   `CudaIpc` handle ([`HostError::StagingRequired`]).
 //! * **`Consumed` frees nothing.** [`HandleTable::finish`] returns no notice for a shared
 //!   carrier; the charge stays until the teardown below.
 //! * **Teardown.** A lost worker is fenced ([`HandleTable::unregister_producer`], so its open
@@ -38,14 +61,17 @@ use std::time::{Duration, Instant};
 
 use ed25519_dalek::{Signature, SigningKey, VerifyingKey};
 use ptr_fabric::{
-    carrier_permitted, export_bytes, fill_random, inspect_region, Channel, ChannelError,
-    Confinement, FabricError, ForbiddenCall, Frame, LostCause, Mechanism, ReapedWorker, SessionId,
-    SpawnRequest, Supervisor, SupervisorConfig, SupervisorError, SupervisorEvent,
-    REQUIRED_REFUSED_CALLS,
+    carrier_permitted_for, export_bytes, fill_random, inspect_region, observed_profile,
+    AcquireRequest, Channel, ChannelError, Confinement, ExportRecord, FabricError, ForbiddenCall,
+    Frame, ImportClaim, Lease, LostCause, Mechanism, ObservedProfile, ReapedWorker, SeccompProfile,
+    SessionId, ShmExport, SpawnRequest, Supervisor, SupervisorConfig, SupervisorError,
+    SupervisorEvent, WorkerConfinement, REQUIRED_REFUSED_CALLS,
 };
 use ptr_protocol::control::{decode, encode, CodecError, ControlFrame, IdempotencyKey};
 use ptr_protocol::session::{ProtocolSession, SessionConfig, SessionError, SessionEvent};
-use ptr_protocol::{content_digest, Carrier, CarrierLocator, TensorHandle, TypedPayload};
+use ptr_protocol::{
+    content_digest, Carrier, CarrierLocator, CudaExport, TensorHandle, TypedPayload,
+};
 use ptr_runtime::{
     AdmittedHandle, ConsumeRequest, HandleAdmissionRequest, HandlePolicy, HandlePolicyViolation,
     HandleRejection, HandleSource, HandleTable, HostQuotaPolicy, HostQuotaPolicyViolation,
@@ -55,10 +81,12 @@ use ptr_runtime::{
 use ptr_types::ProjectId;
 
 use crate::data_wire::{
-    challenge_message, decode_response, encode_challenge, wipe, DataReply, DataRequest,
-    DataWireError, KeyFrame, NONCE_BYTES,
+    challenge_message, decode_handshake, encode_challenge, wipe, DataReply, DataRequest,
+    DataWireError, Handshake, KeyFrame, WireExportRecord, NONCE_BYTES,
 };
+use crate::guardian::BackendChoice;
 use crate::serve::worker_offer;
+use crate::staging_host::{IssuedExport, StagingError, StagingHost};
 use crate::wire::{WireError, WorkerCall, WorkerReply};
 
 /// Node id the host announces in its Hello.
@@ -117,6 +145,16 @@ pub struct Placement {
     pub seccomp: bool,
     /// Further arguments for the worker program (for example `--fault silent` in tests).
     pub extra_args: Vec<OsString>,
+    /// The device ordinal the worker's tensors live on. Two workers with the same `Some` device
+    /// may exchange a `CudaIpc` handle; `None` (no GPU) never does.
+    pub device: Option<u32>,
+    /// The staging import the worker serves (`--staging`), which must be the one of the
+    /// guardian ([`StagingHost::import`]) for the worker to take part in a `CudaIpc` handle.
+    pub staging: Option<BackendChoice>,
+    /// The seccomp profile the worker is asked to run: [`SeccompProfile::Cpu`] (the default of
+    /// every worker) or the weaker GPU profile, which needs `seccomp` and a `device`. The host
+    /// checks it against what the worker's probe shows and records the observed one.
+    pub profile: SeccompProfile,
 }
 
 /// Why a host call failed. Nothing panics; every refusal is typed.
@@ -138,6 +176,22 @@ pub enum HostError {
     KeyChallengeBadSignature,
     /// The worker was asked to confine itself and the kernel does not show a filter.
     SeccompNotInForce,
+    /// The worker's probe report shows a filter of the other profile than the one requested.
+    ProfileMismatch {
+        requested: SeccompProfile,
+        observed: SeccompProfile,
+    },
+    /// The worker's probe report shows a filter of neither profile (a forbidden call not
+    /// refused, or no profile entry).
+    ProfileUnproven {
+        requested: SeccompProfile,
+    },
+    /// The worker could not start as asked and said why instead of signing the challenge, for
+    /// example `gpu-no-driver` or `gpu-not-built`.
+    WorkerStartup(String),
+    /// The placement asks for a profile it cannot get (for example the GPU profile without a
+    /// device, or without `seccomp`).
+    ProfileMisplaced(&'static str),
     UnknownWorker(WorkerSession),
     /// The worker was lost or fenced.
     WorkerFenced(WorkerSession),
@@ -154,8 +208,24 @@ pub enum HostError {
     Worker(String),
     /// A reply did not carry the descriptor it should.
     MissingDescriptor,
-    /// A worker failed its handshake (`cause`) and could not be reaped even on a retry (`reap`):
-    /// it is still registered in the supervisor and has no host entry.
+    /// The staging host refused (the pool, the export registry, the guardian). A `CudaIpc` locator
+    /// that finds no live export record for its producer, consumer, operation, device and size is
+    /// `Staging(Registry(NoRecord))`.
+    Staging(Box<StagingError>),
+    /// A `CudaIpc` handle reached a call that has no staging host attached.
+    StagingRequired,
+    /// The locator of a `CudaIpc` handle is not the VMM form the staging path serves.
+    StagedLocator,
+    /// A `CudaIpc` produce came without the lease the host made for it.
+    MissingStagedExport,
+    /// The record the registry handed out belongs to another lease than the handle's: two live
+    /// leases of one producer, consumer, operation, device and size were admitted out of order.
+    /// The record is spent; the buffers stay leased until the reaps.
+    StagedExportMismatch,
+    /// A worker failed its handshake or its seccomp/profile check (`cause`) and could not be
+    /// reaped even on a retry (`reap`): it is still registered in the supervisor. After a failed
+    /// handshake it has no host entry; after a failed check it keeps a fenced one, so nothing
+    /// is admitted from or to it and [`PodHost::reap`] can be called again.
     StrandedWorker {
         session: WorkerSession,
         cause: String,
@@ -221,6 +291,15 @@ impl From<SessionError> for HostError {
     }
 }
 
+impl From<StagingError> for HostError {
+    fn from(error: StagingError) -> Self {
+        match error {
+            StagingError::Host(inner) => inner,
+            other => Self::Staging(Box::new(other)),
+        }
+    }
+}
+
 impl From<HandleRejection> for HostError {
     fn from(error: HandleRejection) -> Self {
         Self::Rejected(error)
@@ -232,6 +311,10 @@ struct HostWorker {
     principal: String,
     stage_identity: String,
     key: VerifyingKey,
+    device: Option<u32>,
+    staging: Option<BackendChoice>,
+    /// The seccomp profile the worker's probe showed (CPU until the probe has run).
+    profile: SeccompProfile,
     proto: ProtocolSession,
     /// Replies read while waiting for another call's.
     replies: BTreeMap<u64, (TypedPayload, Vec<OwnedFd>)>,
@@ -253,6 +336,8 @@ pub struct PendingProduce {
     carrier: Carrier,
     /// What was sent: the signed handle must equal it in everything but the signature.
     template: TensorHandle,
+    /// The lease and export record of a `CudaIpc` produce.
+    staged: Option<IssuedExport>,
 }
 
 impl PendingProduce {
@@ -282,6 +367,16 @@ pub struct Produced {
     pub encoded: Vec<u8>,
     /// The sealed `memfd` of a `HostShm` handle, held by the host until it is forwarded.
     pub region: Option<OwnedFd>,
+    /// The lease and export record of a `CudaIpc` handle: the buffer is the supervisor's, the
+    /// worker holds no descriptor to forward, and nothing is released until the pool frees it.
+    pub staged: Option<IssuedExport>,
+}
+
+/// What the staged calls need besides the call itself: the staging host and the host's clock.
+pub struct StagedContext<'a> {
+    pub staging: &'a mut StagingHost,
+    /// The host's clock, for the expiry of the export record.
+    pub now_ms: u64,
 }
 
 /// What [`PodHost::admit`] needs besides the handle.
@@ -309,6 +404,8 @@ pub struct Transfer {
     consumer: WorkerSession,
     producer: WorkerSession,
     footprint_bytes: u64,
+    /// The leased buffer of a `CudaIpc` handle, whose record admission consumed.
+    staged: Option<Lease>,
 }
 
 impl Transfer {
@@ -418,6 +515,19 @@ impl PodHost {
         self.workers.keys().copied().collect()
     }
 
+    /// Whether the host still has the worker: it is dropped only after the supervisor reaped it
+    /// and drained its channel.
+    pub fn is_registered(&self, session: WorkerSession) -> bool {
+        self.workers.contains_key(&session)
+    }
+
+    /// Whether the host reaped the worker and still remembers it: registered no more, and in
+    /// the bounded list of retired sessions. A session that fell out of that list (or never was
+    /// the host's) answers `false`: whoever asks must then free late, never early.
+    pub fn is_reaped(&self, session: WorkerSession) -> bool {
+        !self.workers.contains_key(&session) && self.retired.contains_key(&session)
+    }
+
     pub fn is_fenced(&self, session: WorkerSession) -> bool {
         self.workers
             .get(&session)
@@ -425,6 +535,34 @@ impl PodHost {
     }
 
     /// The confinement the supervisor observed for the worker.
+    /// The seccomp profile the worker was observed to run (not the one requested).
+    pub fn profile(&self, session: WorkerSession) -> Result<SeccompProfile, HostError> {
+        self.workers
+            .get(&session)
+            .map(|worker| worker.profile)
+            .ok_or(HostError::UnknownWorker(session))
+    }
+
+    /// What the observed profile of the worker gives up against the CPU profile, or `None` for a
+    /// CPU worker. A host that runs a reduced profile records this where it records its
+    /// confinement.
+    pub fn profile_weakening(
+        &self,
+        session: WorkerSession,
+    ) -> Result<Option<&'static str>, HostError> {
+        Ok(self.profile(session)?.weakening())
+    }
+
+    /// The confinement the supervisor observed together with the profile the probe showed: what
+    /// [`carrier_permitted_for`] decides on.
+    pub fn worker_confinement(
+        &self,
+        session: WorkerSession,
+    ) -> Result<WorkerConfinement, HostError> {
+        let profile = self.profile(session)?;
+        Ok(WorkerConfinement::new(self.confinement(session)?, profile))
+    }
+
     pub fn confinement(&self, session: WorkerSession) -> Result<Confinement, HostError> {
         Ok(self.supervisor.confinement(SessionId(session.0))?)
     }
@@ -471,6 +609,27 @@ impl PodHost {
         if placement.seccomp {
             request = request.arg("--confined");
         }
+        match (placement.profile, placement.device, placement.seccomp) {
+            (SeccompProfile::Cpu, _, _) => {}
+            (SeccompProfile::Gpu, Some(device), true) => {
+                request = request.arg("--gpu-profile").arg(device.to_string());
+            }
+            (SeccompProfile::Gpu, None, _) => {
+                wipe(&mut secret);
+                return Err(HostError::ProfileMisplaced(
+                    "the GPU profile needs a device",
+                ));
+            }
+            (SeccompProfile::Gpu, Some(_), false) => {
+                wipe(&mut secret);
+                return Err(HostError::ProfileMisplaced(
+                    "the GPU profile is a seccomp filter: it needs seccomp",
+                ));
+            }
+        }
+        if let Some(staging) = placement.staging {
+            request = request.arg("--staging").arg(staging.name());
+        }
         request.args.extend(placement.extra_args.iter().cloned());
         let spawned = match self.supervisor.spawn(&request) {
             Ok(spawned) => spawned,
@@ -497,15 +656,30 @@ impl PodHost {
                 principal: placement.principal.clone(),
                 stage_identity: placement.stage_identity.clone(),
                 key: verifying,
+                device: placement.device,
+                staging: placement.staging,
+                profile: SeccompProfile::Cpu,
                 proto,
                 replies: BTreeMap::new(),
                 fenced: false,
             },
         );
         if placement.seccomp {
-            if let Err(error) = self.verify_seccomp(session) {
-                let _ = self.reap(session);
-                return Err(error);
+            if let Err(error) = self.verify_seccomp(session, placement.profile) {
+                // Like a failed handshake: the reap is retried once, and a worker that still
+                // cannot be reaped is named in the error instead of being dropped silently.
+                let reaped = match self.reap(session) {
+                    Ok(_) => Ok(()),
+                    Err(_) => self.reap(session).map(|_| ()),
+                };
+                return Err(match reaped {
+                    Ok(()) => error,
+                    Err(reap) => HostError::StrandedWorker {
+                        session,
+                        cause: format!("{error:?}"),
+                        reap: format!("{reap:?}"),
+                    },
+                });
             }
         }
         let stages: Vec<String> = self.tables.keys().cloned().collect();
@@ -557,8 +731,13 @@ impl PodHost {
     /// After the handshake: ask the worker to run its self-test and let the supervisor accept
     /// the seccomp filter only if the kernel shows one and the report shows every forbidden
     /// call refused. The report is a self-report of the worker image the host started.
-    fn verify_seccomp(&mut self, session: WorkerSession) -> Result<(), HostError> {
+    fn verify_seccomp(
+        &mut self,
+        session: WorkerSession,
+        requested: SeccompProfile,
+    ) -> Result<(), HostError> {
         let calls = self.probe(session)?;
+        let observed = observed_profile(calls.iter().map(|(name, errno)| (name.as_str(), *errno)));
         let report: Vec<ForbiddenCall> = calls
             .iter()
             .filter_map(|(name, errno)| {
@@ -576,6 +755,21 @@ impl PodHost {
             .confirm_seccomp(SessionId(session.0), &report)?;
         if confinement.missing().contains(&Mechanism::Seccomp) {
             return Err(HostError::SeccompNotInForce);
+        }
+        // The profile is what the probe shows, and it must be what was asked for.
+        let observed = match observed {
+            ObservedProfile::Cpu => SeccompProfile::Cpu,
+            ObservedProfile::Gpu => SeccompProfile::Gpu,
+            ObservedProfile::Unproven => return Err(HostError::ProfileUnproven { requested }),
+        };
+        if observed != requested {
+            return Err(HostError::ProfileMismatch {
+                requested,
+                observed,
+            });
+        }
+        if let Some(worker) = self.workers.get_mut(&session) {
+            worker.profile = observed;
         }
         Ok(())
     }
@@ -611,7 +805,10 @@ impl PodHost {
                         other => other,
                     },
                 )?;
-            let signature = decode_response(&frame.body).map_err(HostError::Wire)?;
+            let signature = match decode_handshake(&frame.body).map_err(HostError::Wire)? {
+                Handshake::Signed(signature) => signature,
+                Handshake::Refused(code) => return Err(HostError::WorkerStartup(code)),
+            };
             verifying
                 .verify_strict(
                     &challenge_message(session.0, &placement.stage_identity, &nonce),
@@ -649,15 +846,75 @@ impl PodHost {
         producer: WorkerSession,
         consumer: WorkerSession,
     ) -> Result<Carrier, HostError> {
-        let producer_confinement = self.confinement(producer)?;
-        let consumer_confinement = self.confinement(consumer)?;
-        if carrier_permitted(Carrier::HostShm, &producer_confinement)
-            && carrier_permitted(Carrier::HostShm, &consumer_confinement)
+        let producer_confinement = self.worker_confinement(producer)?;
+        let consumer_confinement = self.worker_confinement(consumer)?;
+        if carrier_permitted_for(Carrier::HostShm, &producer_confinement)
+            && carrier_permitted_for(Carrier::HostShm, &consumer_confinement)
         {
             Ok(Carrier::HostShm)
         } else {
             Ok(Carrier::Bytes)
         }
+    }
+
+    /// The device both workers share when a `CudaIpc` handle may travel between them through
+    /// `staging`: it is usable, both workers serve its import, the placement puts both on one
+    /// device, and the confinement of both permits the carrier.
+    fn staged_device(
+        &self,
+        producer: WorkerSession,
+        consumer: WorkerSession,
+        staging: &StagingHost,
+    ) -> Result<Option<u32>, HostError> {
+        let Some(import) = staging.import() else {
+            return Ok(None);
+        };
+        // REMOVE WHEN the CUDA producer can write through an imported VMM descriptor
+        // (`ptr-fabric` has only the guardian's fill today): a `--staging cuda` producer refuses
+        // every staged produce with `cuda-producer-write-not-built`, and each attempt would
+        // leave a device lease behind. Until then a CUDA import is never chosen.
+        if import == BackendChoice::Cuda {
+            return Ok(None);
+        }
+        if !staging.is_usable() {
+            return Ok(None);
+        }
+        let mut shared: Option<u32> = None;
+        for (index, session) in [producer, consumer].into_iter().enumerate() {
+            let worker = self
+                .workers
+                .get(&session)
+                .ok_or(HostError::UnknownWorker(session))?;
+            if worker.fenced || worker.staging != Some(import) {
+                return Ok(None);
+            }
+            let Some(device) = worker.device else {
+                return Ok(None);
+            };
+            if index == 1 && shared != Some(device) {
+                return Ok(None);
+            }
+            shared = Some(device);
+            if !carrier_permitted_for(Carrier::CudaIpc, &self.worker_confinement(session)?) {
+                return Ok(None);
+            }
+        }
+        Ok(shared)
+    }
+
+    /// Like [`Self::carrier_between`] for a host that has a staging host attached: `CudaIpc`
+    /// when the placement, the confinement and the staging host allow it, else exactly what
+    /// `carrier_between` answers.
+    pub fn carrier_between_staged(
+        &self,
+        producer: WorkerSession,
+        consumer: WorkerSession,
+        staging: &StagingHost,
+    ) -> Result<Carrier, HostError> {
+        if self.staged_device(producer, consumer, staging)?.is_some() {
+            return Ok(Carrier::CudaIpc);
+        }
+        self.carrier_between(producer, consumer)
     }
 
     /// Run a built-in Pod on the worker.
@@ -689,13 +946,43 @@ impl PodHost {
         }
     }
 
-    /// Send a produce call: the carrier is chosen by [`Self::carrier_between`].
+    /// Send a produce call: the carrier is chosen by [`Self::carrier_between`] (never `CudaIpc`;
+    /// that needs [`Self::start_produce_staged`]).
     pub fn start_produce(
         &mut self,
         producer: WorkerSession,
         consumer: WorkerSession,
         spec: ProduceSpec,
     ) -> Result<PendingProduce, HostError> {
+        self.start_produce_with(None, producer, consumer, spec)
+    }
+
+    /// Like [`Self::start_produce`] with a staging host attached: the carrier is chosen by
+    /// [`Self::carrier_between_staged`], so a `CudaIpc` handle is produced when the placement,
+    /// the confinement and the staging host allow it, and everything else is as without it.
+    pub fn start_produce_staged(
+        &mut self,
+        context: StagedContext<'_>,
+        producer: WorkerSession,
+        consumer: WorkerSession,
+        spec: ProduceSpec,
+    ) -> Result<PendingProduce, HostError> {
+        self.start_produce_with(Some(context), producer, consumer, spec)
+    }
+
+    fn start_produce_with(
+        &mut self,
+        staged: Option<StagedContext<'_>>,
+        producer: WorkerSession,
+        consumer: WorkerSession,
+        spec: ProduceSpec,
+    ) -> Result<PendingProduce, HostError> {
+        if let Some(context) = staged {
+            context.staging.sync_reaped(self);
+            if let Some(device) = self.staged_device(producer, consumer, context.staging)? {
+                return self.start_produce_cuda(context, device, producer, consumer, spec);
+            }
+        }
         let carrier = self.carrier_between(producer, consumer)?;
         let ProduceSpec {
             mut template,
@@ -728,6 +1015,79 @@ impl PodHost {
             call,
             carrier,
             template,
+            staged: None,
+        })
+    }
+
+    /// The `CudaIpc` produce (doc 42 rules 3, 3a, 3b): validate the template, lease a staging
+    /// buffer and issue its export record, put the real locator (device and the leased
+    /// footprint as the allocation size) in the template, and hand the producer two descriptors:
+    /// a descriptor of the staging buffer to write through, and a sealed `memfd` holding the
+    /// tensor. The tensor therefore is not bounded by the frame size (nor by the guardian's
+    /// fill limit); the staging buffer is written by the producer and is never filled by the
+    /// guardian.
+    ///
+    /// A lease that cannot be used after it was made (the descriptor cannot be exported, the
+    /// call cannot be sent) stays leased: the pool frees a buffer only when both of its workers
+    /// are reaped, and it is bounded by the pool's limits.
+    fn start_produce_cuda(
+        &mut self,
+        context: StagedContext<'_>,
+        device: u32,
+        producer: WorkerSession,
+        consumer: WorkerSession,
+        spec: ProduceSpec,
+    ) -> Result<PendingProduce, HostError> {
+        let StagedContext { staging, now_ms } = context;
+        let ProduceSpec {
+            mut template,
+            tensor,
+        } = spec;
+        let len = tensor.len() as u64;
+        template.carrier = Carrier::CudaIpc;
+        template.content_digest = content_digest(&tensor);
+        template.signature = [0; 64];
+        // Nothing is leased for a template that cannot be a handle: check it with a provisional
+        // allocation size (the real one is the leased footprint).
+        template.locator = cuda_locator(device, len);
+        template
+            .encode()
+            .map_err(|_| HostError::Unexpected("the template is not a valid handle"))?;
+        let source = ShmExport::create(&tensor).map_err(HostError::Region)?;
+        let lane = self
+            .workers
+            .get(&consumer)
+            .map(|worker| lane_of(&worker.stage_identity))
+            .ok_or(HostError::UnknownWorker(consumer))?;
+        let request = AcquireRequest {
+            producer_session: producer.0,
+            consumer_session: consumer.0,
+            consumer_lane: lane,
+            operation: template.parent_operation_id,
+            device,
+            len,
+        };
+        let expires_at_ms = template
+            .signed_absolute_deadline_ms
+            .saturating_add(self.config.handle_policy.max_clock_skew_ms);
+        let issued = staging.issue_export_for(self, &request, expires_at_ms, now_ms)?;
+        template.locator = cuda_locator(device, issued.lease.footprint);
+        let encoded = template
+            .encode()
+            .map_err(|_| HostError::Unexpected("the template is not a valid handle"))?;
+        let template = TensorHandle::decode(&encoded)
+            .map_err(|_| HostError::Unexpected("the template does not decode"))?;
+        let buffer = staging.export_descriptor(issued.lease.slot, &issued.lease.record)?;
+        let payload = DataRequest::ProduceStaged { template: encoded }.to_payload();
+        let call = self.send_call(producer, payload, &[buffer.as_fd(), source.fd()])?;
+        // The host keeps no descriptor of the buffer once the producer has its own.
+        drop(buffer);
+        drop(source);
+        Ok(PendingProduce {
+            call,
+            carrier: Carrier::CudaIpc,
+            template,
+            staged: Some(issued),
         })
     }
 
@@ -789,13 +1149,43 @@ impl PodHost {
             handle,
             encoded,
             region,
+            staged: pending.staged,
         })
     }
 
     /// Admit a produced handle into the consumer stage's table (doc 42 rule 1). A shared handle
     /// is admitted only if both workers are confined for it, and its footprint is measured on
-    /// the region the host holds.
+    /// the region the host holds. A `CudaIpc` handle is refused here
+    /// ([`HostError::StagingRequired`]): see [`Self::admit_staged`].
     pub fn admit(&mut self, request: AdmitRequest<'_>) -> Result<Transfer, HostError> {
+        self.admit_with(None, request)
+    }
+
+    /// Like [`Self::admit`] with the staging host attached. For a `CudaIpc` handle the host
+    /// claims the export record first (producer session, consumer session, the handle's
+    /// `parent_operation_id`, and the device and allocation size of its locator) and only then
+    /// lets the table see the handle, with the record's size as the footprint: a locator that
+    /// matches no live record (another consumer, another producer, another size or device, a
+    /// replay, an expired or reaped record) is refused as `Staging(Registry(NoRecord))` and the
+    /// table is never reached. The record is consumed by the claim; if the table then refuses
+    /// the handle (a bad signature, the quota, a replay of the nonce) the leased buffer stays
+    /// held until its workers are reaped, which is the pool's rule and bounds it.
+    ///
+    /// The footprint is charged to the host-wide ledger here, once, by the table; the pool's
+    /// own book is separate (see the module documentation of `staging_host`).
+    pub fn admit_staged(
+        &mut self,
+        staging: &mut StagingHost,
+        request: AdmitRequest<'_>,
+    ) -> Result<Transfer, HostError> {
+        self.admit_with(Some(staging), request)
+    }
+
+    fn admit_with(
+        &mut self,
+        staging: Option<&mut StagingHost>,
+        request: AdmitRequest<'_>,
+    ) -> Result<Transfer, HostError> {
         let AdmitRequest {
             produced,
             consumer,
@@ -808,6 +1198,10 @@ impl PodHost {
         } = request;
         // A worker that died since the last look is fenced now, not when somebody polls.
         self.refresh();
+        let mut staging = staging;
+        if let Some(staging) = staging.as_deref_mut() {
+            staging.sync_reaped(self);
+        }
         let producer = produced.producer;
         // The carrier is the host's choice, recorded in `Produced`; the handle must agree, and
         // a region exists only for a shared carrier.
@@ -824,13 +1218,14 @@ impl PodHost {
                 Some(worker) if worker.fenced => return Err(HostError::WorkerFenced(session)),
                 Some(_) => {}
             }
-            if !carrier_permitted(produced.carrier, &self.confinement(session)?) {
+            if !carrier_permitted_for(produced.carrier, &self.worker_confinement(session)?) {
                 return Err(HostError::CarrierNotPermitted {
                     carrier: produced.carrier,
                     worker: session,
                 });
             }
         }
+        let mut staged_lease: Option<Lease> = None;
         let footprint_bytes = match (&produced.carrier, &produced.region) {
             (Carrier::HostShm, Some(region)) => {
                 let info = inspect_region(region.as_fd()).map_err(HostError::Region)?;
@@ -843,6 +1238,24 @@ impl PodHost {
                 info.footprint_bytes
             }
             (Carrier::HostShm, None) => return Err(HostError::MissingDescriptor),
+            (Carrier::CudaIpc, _) => {
+                let Some(staging) = staging else {
+                    return Err(HostError::StagingRequired);
+                };
+                let issued = produced.staged.ok_or(HostError::MissingStagedExport)?;
+                let claim = import_claim(&produced, consumer)?;
+                // The claim comes before the table: a locator without a live record never
+                // reaches the signature check, the quota or the nonce.
+                let admitted = staging.admit_import(&claim, now_ms)?;
+                // Records of one key are interchangeable to the registry, which hands out the
+                // oldest; the buffer behind this handle must be the one it handed out, so two
+                // live leases of one key are admitted in lease order or not at all.
+                if admitted.slot != issued.lease.slot || admitted.record != issued.lease.record {
+                    return Err(HostError::StagedExportMismatch);
+                }
+                staged_lease = Some(issued.lease);
+                admitted.record.size
+            }
             _ => produced.handle.byte_len,
         };
         let principal = self
@@ -874,6 +1287,7 @@ impl PodHost {
             consumer,
             producer,
             footprint_bytes,
+            staged: staged_lease,
         })
     }
 
@@ -891,7 +1305,23 @@ impl PodHost {
         live: &dyn StageLiveness,
         operations: &dyn OperationLiveness,
     ) -> Result<ConsumeOutcome, HostError> {
-        self.consume_inner(transfer, now_ms, live, operations, false)
+        self.consume_inner(None, transfer, now_ms, live, operations, false)
+    }
+
+    /// Like [`Self::consume`] with the staging host attached, which a `CudaIpc` transfer needs:
+    /// a fresh descriptor of the leased buffer and the export record go to the addressed,
+    /// admitted consumer only, which copies the tensor into memory of its own and verifies the
+    /// digest on that copy. `Consumed` frees nothing: the buffer is released by the pool after
+    /// the reaps of both workers.
+    pub fn consume_staged(
+        &mut self,
+        staging: &mut StagingHost,
+        transfer: Transfer,
+        now_ms: u64,
+        live: &dyn StageLiveness,
+        operations: &dyn OperationLiveness,
+    ) -> Result<ConsumeOutcome, HostError> {
+        self.consume_inner(Some(staging), transfer, now_ms, live, operations, false)
     }
 
     /// Like [`Self::consume`], but the consumer keeps its mapping after it answers: a consumer
@@ -905,11 +1335,12 @@ impl PodHost {
         live: &dyn StageLiveness,
         operations: &dyn OperationLiveness,
     ) -> Result<ConsumeOutcome, HostError> {
-        self.consume_inner(transfer, now_ms, live, operations, true)
+        self.consume_inner(None, transfer, now_ms, live, operations, true)
     }
 
     fn consume_inner(
         &mut self,
+        staging: Option<&mut StagingHost>,
         transfer: Transfer,
         now_ms: u64,
         live: &dyn StageLiveness,
@@ -917,6 +1348,10 @@ impl PodHost {
         retain: bool,
     ) -> Result<ConsumeOutcome, HostError> {
         self.refresh();
+        let mut staging = staging;
+        if let Some(staging) = staging.as_deref_mut() {
+            staging.sync_reaped(self);
+        }
         let Transfer {
             admitted,
             encoded,
@@ -924,6 +1359,7 @@ impl PodHost {
             carrier,
             consumer_stage,
             consumer,
+            staged,
             ..
         } = transfer;
         let consumer_usable = self
@@ -940,6 +1376,22 @@ impl PodHost {
             let _ = table.abandon(admitted);
             return Err(HostError::WorkerFenced(consumer));
         }
+        if carrier == Carrier::CudaIpc && (staging.is_none() || staged.is_none()) {
+            let _ = table.abandon(admitted);
+            return Err(HostError::StagingRequired);
+        }
+        // The descriptor comes first: if the pool cannot export it (the consumer's session was
+        // reaped) the handle is given up instead of being left consumed and unanswered.
+        let mut buffer: Option<OwnedFd> = None;
+        if let (Carrier::CudaIpc, Some(staging), Some(lease)) = (carrier, staging, staged) {
+            match staging.export_descriptor(lease.slot, &lease.record) {
+                Ok(fd) => buffer = Some(fd),
+                Err(error) => {
+                    let _ = table.abandon(admitted);
+                    return Err(error.into());
+                }
+            }
+        }
         let consumed = table.consume(ConsumeRequest {
             now_ms,
             admitted,
@@ -953,15 +1405,26 @@ impl PodHost {
             Carrier::HostShm => region.iter().map(AsFd::as_fd).collect(),
             _ => Vec::new(),
         };
-        let pending = self.send_call(
-            consumer,
-            DataRequest::Consume {
-                handle: encoded,
-                retain,
+        let pending = match (carrier, buffer.as_ref(), staged) {
+            (Carrier::CudaIpc, Some(buffer), Some(lease)) => {
+                // A fresh descriptor, from the pool, for the session the record names.
+                let payload = DataRequest::ConsumeStaged {
+                    handle: encoded,
+                    record: wire_record(&lease.record),
+                }
+                .to_payload();
+                self.send_call(consumer, payload, &[buffer.as_fd()])?
             }
-            .to_payload(),
-            &borrowed,
-        )?;
+            _ => self.send_call(
+                consumer,
+                DataRequest::Consume {
+                    handle: encoded,
+                    retain,
+                }
+                .to_payload(),
+                &borrowed,
+            )?,
+        };
         // The host keeps no copy of the descriptor once it is forwarded.
         drop(borrowed);
         drop(region);
@@ -1253,6 +1716,59 @@ impl PodHost {
             .supervisor
             .channel(SessionId(session.0))?
             .wait_readable(Some(timeout))?)
+    }
+}
+
+/// The locator of a staged handle: the VMM form with the leased allocation size, the tensor at
+/// offset 0 of descriptor slot 0, and no event (nothing produces one yet).
+fn cuda_locator(device: u32, alloc_size: u64) -> CarrierLocator {
+    CarrierLocator::CudaIpc {
+        device,
+        export: CudaExport::Vmm {
+            fd_slot: 0,
+            alloc_size,
+        },
+        event_handle: [0; 64],
+    }
+}
+
+/// The stable identity of a consumer stage as the pool's lane: a consumer recycled onto the same
+/// stage keeps it, while its session changes.
+fn lane_of(stage_identity: &str) -> u64 {
+    let digest = content_digest(stage_identity.as_bytes());
+    let mut lane = [0u8; 8];
+    lane.copy_from_slice(&digest[..8]);
+    u64::from_be_bytes(lane)
+}
+
+/// What the claim on the export registry says, from facts the host knows: the session the handle
+/// came from, the session it is presented by, the operation the handle is signed for, and the
+/// device and allocation size of its locator.
+fn import_claim(produced: &Produced, consumer: WorkerSession) -> Result<ImportClaim, HostError> {
+    let CarrierLocator::CudaIpc {
+        device,
+        export: CudaExport::Vmm { alloc_size, .. },
+        ..
+    } = &produced.handle.locator
+    else {
+        return Err(HostError::StagedLocator);
+    };
+    Ok(ImportClaim {
+        producer_session: produced.producer.0,
+        consumer_session: consumer.0,
+        operation: produced.handle.parent_operation_id,
+        device: *device,
+        size: *alloc_size,
+    })
+}
+
+fn wire_record(record: &ExportRecord) -> WireExportRecord {
+    WireExportRecord {
+        producer_session: record.producer_session,
+        consumer_session: record.consumer_session,
+        operation: record.operation,
+        device: record.device,
+        size: record.size,
     }
 }
 
