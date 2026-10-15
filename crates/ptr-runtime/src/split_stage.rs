@@ -19,6 +19,7 @@
 use crate::placement::PlacementScope;
 use crate::{PodPlacementController, PtrRuntime};
 use ptr_model_api::KvReuseMode;
+use ptr_pods::ExpertState;
 use ptr_protocol::activation::{
     chain_bytes, frame_digest, ActivationFrame, ChainElement, UpstreamChain,
 };
@@ -90,11 +91,26 @@ impl StageLiveness for RuntimeStageLiveness<'_> {
             .map(|placement| placement.epoch.0)
     }
 
-    /// The runtime keeps no per-expert fence epoch for a split stage, so this answers `None`
-    /// and a chain that lists an expert is refused (fails closed, [`ChainFault::StaleFence`]).
-    /// The expert matrix rows belong to E008.
-    fn fence_epoch(&self, _expert: &str) -> Option<u64> {
-        None
+    /// The fence epoch the expert serves under now, from the runtime's expert registry (which
+    /// is rebuilt from the ledger on replay and carried by compacted snapshots). The identity
+    /// is the registry's `expert:{project}/{pod}` key, so the answer is scoped to the project it
+    /// names. The epoch is the expert's committed state version: it moves at every fence,
+    /// escalation and readmission (so a frame computed before a quarantine never revives) and
+    /// at any other state change, which only ever invalidates more. `None` for an identity that
+    /// is no registry key and for an expert that is not serving (`Serving` or `Frozen`), so a
+    /// fenced, retired or unknown expert fails closed ([`ChainFault::StaleFence`]).
+    fn fence_epoch(&self, expert: &str) -> Option<u64> {
+        // Project and pod ids never contain `/`, so the key has exactly one split; the same
+        // idiom as the registry's own parser (`highest_fenced_epoch`).
+        let (project, pod) = expert
+            .strip_prefix(ptr_state::EXPERT_PREFIX)?
+            .split_once('/')?;
+        let entry = self
+            .runtime
+            .expert_registry()
+            .get(&ProjectId::from(project), &ptr_types::PodId::from(pod))?;
+        matches!(entry.state, ExpertState::Serving | ExpertState::Frozen)
+            .then_some(entry.state_version)
     }
 }
 

@@ -5,6 +5,7 @@
 //! seeded generator and the JSON helper every harness shares are always built.
 
 pub mod e007;
+pub mod e008;
 pub mod f001;
 // Only the PostgreSQL harnesses use the two shared modules until another
 // harness builds without the feature.

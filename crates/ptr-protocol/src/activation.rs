@@ -223,6 +223,18 @@ pub enum SchemaError {
     },
     /// An identity that is empty or not UTF-8.
     BadIdentity,
+    /// A version 2 lineage input of a kind code that is not Semantic, Memory or Derived.
+    UnknownLineageKind(u8),
+    /// A version 2 frame of a reuse mode code that is not Exact or Approximate.
+    UnknownMode(u8),
+    /// A version 2 frame of a taint code that is not Exact or Approximate.
+    UnknownTaint(u8),
+    /// A version 2 frame whose mode and taint disagree (an Approximate mode without an
+    /// Approximate taint, or the reverse).
+    ModeTaintMismatch,
+    /// A version 2 lineage whose typed inputs are not strictly increasing by (kind, identity,
+    /// generation): the bytes of a lineage are canonical or they are refused.
+    NonCanonicalLineage,
 }
 
 impl fmt::Display for SchemaError {
@@ -641,6 +653,14 @@ impl<'a> Reader<'a> {
         Ok(array)
     }
 }
+
+// Version 2 of the frame (input lineage, mode, taint) and the dependency-kind checker live in
+// submodules; version 1 above is unchanged.
+mod kinds;
+mod lineage;
+
+pub use kinds::*;
+pub use lineage::*;
 
 #[cfg(test)]
 mod tests {

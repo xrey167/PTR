@@ -162,7 +162,11 @@ Rules, each the same as the one already enforced for frames and KV pages, restat
    reserves** `(principal, parent_operation_id, handle_nonce)` as an open slot before any
    locator is released, so a second admission of the same nonce, concurrent or later, is
    refused; consumption or abandonment turns the slot into a tombstone kept until the deadline
-   plus skew, like a chunk id (`FrameAssembler`'s reservations and tombstones, `chunk.rs:301`). After the deadline
+   plus skew, like a chunk id (`FrameAssembler`'s reservations and tombstones, `chunk.rs:301`);
+   the assembler's tombstones are carried over to a new principal id that brings the same key and
+   stage identity (the same runtime behind a new endpoint identity after a restart), and they are
+   in memory, so they do not survive a receiver restart, where a replay is bounded by the signed
+   deadline plus skew alone. After the deadline
    plus skew the handle can no longer be admitted or consumed, but the sender reclaims the
    buffer only once its teardown is verified as rule 3b requires (never on the deadline alone).
 3. **Ownership stays with the producer until teardown.** The producer keeps the buffer alive at
@@ -596,7 +600,9 @@ authoritative state: the ledger stays where it is.
 
 **Build.** The transport is E008 as registered (`experiments/registry.toml`, `E008`, planned):
 the signed chunking of `ptr-podwire::chunk` carried by `PodHost` and `PodClient` over Iroh QUIC.
-E008 part B runs that over **loopback** only and is therefore no evidence for two hosts; the
+E008 part B runs that over **loopback** only and is therefore no evidence for two hosts (its
+replay case covers a new endpoint identity with the same key and stage, and the assembler's
+tombstones are not durable across a receiver restart, only bounded by the deadline plus skew); the
 two-host arm is a separate experiment, E013 (section 6), run between the owner's two PCs. Both
 use the v1 frame's `placement_epoch` and, once implemented, the E008 fields (`input_lineage`,
 `mode`, `taint`). The data-plane contract of section 1 adds only that a `Remote` handle names the

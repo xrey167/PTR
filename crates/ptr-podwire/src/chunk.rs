@@ -341,9 +341,24 @@ impl FrameAssembler {
     /// skew, so no chunk signed under the new key completes a frame begun under the old one
     /// and a policy signed under a compromised old key stops binding. The tombstones are
     /// kept, so a replay stays refused.
+    ///
+    /// Registering a principal id the assembler has not seen, with a `(key, stage_identity)`
+    /// pair that an existing table holds, is the same upstream runtime behind a new endpoint
+    /// identity (a process restart draws a new one): the new table inherits that table's
+    /// tombstones that have not expired (bounded by `max_frame_tombstones_per_principal`), so a
+    /// captured frame is still refused as a replay. Policies and incomplete frames are not
+    /// inherited. Tombstones are in memory: a restarted receiver has none, and a replay is then
+    /// bounded by the signed deadline plus the skew. The model is one runtime per
+    /// `(key, stage_identity)`: two live principals that share both only see the tombstones of
+    /// those registered before them, which is harmless for a replay guard.
     pub fn register_principal(&mut self, principal: &str, key: VerifyingKey, stage_identity: &str) {
         let skew = self.policy.max_clock_skew_ms;
         let Some(table) = self.tables.get_mut(principal) else {
+            // A new principal id for a (key, stage) pair an existing table already holds is the
+            // same upstream runtime behind a new endpoint identity (a process restart draws a
+            // new one). It inherits the tombstones that have not expired, so a captured frame is
+            // still a replay; nothing else (policies, incomplete frames) is carried over.
+            let tombstones = self.inherited_tombstones(&key, stage_identity);
             self.tables.insert(
                 principal.to_owned(),
                 PrincipalTable {
@@ -351,7 +366,7 @@ impl FrameAssembler {
                     stage_identity: stage_identity.to_owned(),
                     policies: BTreeMap::new(),
                     assemblies: BTreeMap::new(),
-                    tombstones: BTreeMap::new(),
+                    tombstones,
                 },
             );
             return;
@@ -377,6 +392,51 @@ impl FrameAssembler {
                 );
             }
         }
+    }
+
+    /// The unexpired tombstones of every table that holds this exact `(key, stage_identity)`,
+    /// merged per tuple (the longer retention wins) and cut to
+    /// `max_frame_tombstones_per_principal`, keeping the longest retained when it must cut.
+    /// Tombstones live in memory only: a restarted receiver has none, and a replay is then
+    /// bounded by the signed deadline plus the skew alone.
+    fn inherited_tombstones(
+        &self,
+        key: &VerifyingKey,
+        stage_identity: &str,
+    ) -> BTreeMap<(u64, u64), Tombstone> {
+        let mut merged: BTreeMap<(u64, u64), Tombstone> = BTreeMap::new();
+        for table in self
+            .tables
+            .values()
+            .filter(|table| table.key == *key && table.stage_identity == stage_identity)
+        {
+            for (tuple, tombstone) in &table.tombstones {
+                let retain_until_ms = tombstone.retain_until();
+                if retain_until_ms <= self.clock_ms {
+                    continue;
+                }
+                let copy = match tombstone {
+                    Tombstone::Completed { .. } => Tombstone::Completed { retain_until_ms },
+                    Tombstone::Abandoned { .. } => Tombstone::Abandoned { retain_until_ms },
+                };
+                match merged.get(tuple) {
+                    Some(held) if held.retain_until() >= retain_until_ms => {}
+                    _ => {
+                        merged.insert(*tuple, copy);
+                    }
+                }
+            }
+        }
+        let limit = self.policy.max_frame_tombstones_per_principal;
+        if merged.len() > limit {
+            let mut by_retention: Vec<_> = merged.into_iter().collect();
+            by_retention.sort_by_key(|(tuple, tombstone)| {
+                (std::cmp::Reverse(tombstone.retain_until()), *tuple)
+            });
+            by_retention.truncate(limit);
+            merged = by_retention.into_iter().collect();
+        }
+        merged
     }
 
     /// Take one payload that arrived at time `now_ms` from `principal` over `session`.
@@ -1788,5 +1848,101 @@ mod tests {
         assert!(assembler
             .offer(2, "other", 1, &chunk_payload(&theirs[0]))
             .is_ok());
+    }
+
+    fn offer_as(
+        assembler: &mut FrameAssembler,
+        principal: &str,
+        now: u64,
+        chunk: &ActivationChunk,
+    ) -> Result<Offered, Rejection> {
+        assembler.offer(now, principal, 1, &chunk_payload(chunk))
+    }
+
+    #[test]
+    fn a_new_principal_id_with_the_same_key_and_stage_inherits_the_tombstones() {
+        let mut assembler = assembler();
+        let delivered = chunks(1, 0);
+        for chunk in &delivered {
+            offer(&mut assembler, 0, chunk).unwrap();
+        }
+        let abandoned = chunks(2, 1);
+        offer(&mut assembler, 0, &abandoned[0]).unwrap();
+        assembler.abandon(1, PRINCIPAL, 100, 2).unwrap();
+        // The same runtime behind a new endpoint identity (a restart).
+        assembler.register_principal("reborn", key().verifying_key(), "stage-a");
+        assert_eq!(assembler.retained_tombstones("reborn"), 2);
+        assert_eq!(
+            offer_as(&mut assembler, "reborn", 10, &delivered[0]),
+            Err(Rejection::FrameReplayed)
+        );
+        assert_eq!(
+            offer_as(&mut assembler, "reborn", 10, &abandoned[1]),
+            Err(Rejection::FrameAbandoned)
+        );
+        // Not carried: incomplete frames and policies, and a frame the old table never saw is
+        // new to the new one.
+        assert_eq!(assembler.incomplete_frames("reborn"), 0);
+        let fresh = chunks(3, 2);
+        assert!(offer_as(&mut assembler, "reborn", 10, &fresh[0]).is_ok());
+    }
+
+    #[test]
+    fn a_new_principal_with_another_key_or_another_stage_inherits_nothing() {
+        let mut assembler = assembler();
+        let delivered = chunks(1, 0);
+        for chunk in &delivered {
+            offer(&mut assembler, 0, chunk).unwrap();
+        }
+        let other = SigningKey::from_bytes(&[8; 32]);
+        assembler.register_principal("other-key", other.verifying_key(), "stage-a");
+        assembler.register_principal("other-stage", key().verifying_key(), "stage-b");
+        assert_eq!(assembler.retained_tombstones("other-key"), 0);
+        assert_eq!(assembler.retained_tombstones("other-stage"), 0);
+        // A captured chunk is judged on its own signature and stage, not as a replay.
+        assert_eq!(
+            offer_as(&mut assembler, "other-key", 10, &delivered[0]),
+            Err(Rejection::BadSignature)
+        );
+        assert_eq!(
+            offer_as(&mut assembler, "other-stage", 10, &delivered[0]),
+            Err(Rejection::StageNotBound)
+        );
+        // The original principal is unaffected.
+        assert_eq!(
+            offer(&mut assembler, 10, &delivered[0]),
+            Err(Rejection::FrameReplayed)
+        );
+    }
+
+    #[test]
+    fn inherited_tombstones_expire_with_their_retention_and_stay_within_the_bound() {
+        let limits = AssemblyPolicy {
+            max_frame_tombstones_per_principal: 3,
+            ..policy()
+        };
+        let mut assembler = FrameAssembler::new(limits).unwrap();
+        assembler.register_principal(PRINCIPAL, key().verifying_key(), "stage-a");
+        // Four deliveries into a table of three slots: the fourth is refused with no slot.
+        for id in 1..=3u64 {
+            for chunk in &chunks(id, 0) {
+                offer(&mut assembler, 0, chunk).unwrap();
+            }
+        }
+        assert_eq!(
+            offer(&mut assembler, 0, &chunks(4, 0)[0]),
+            Err(Rejection::FrameTableFull)
+        );
+        // A second table of the same pair already holds some of them; the merge never
+        // exceeds the bound.
+        assembler.register_principal("second", key().verifying_key(), "stage-a");
+        assembler.register_principal("third", key().verifying_key(), "stage-a");
+        assert_eq!(assembler.retained_tombstones("second"), 3);
+        assert_eq!(assembler.retained_tombstones("third"), 3);
+        assert!(assembler.reserved_slots("third") <= 3);
+        // Past the retention (deadline 4000 plus skew 1000) nothing is inherited.
+        assert!(assembler.expire(5_001).is_empty());
+        assembler.register_principal("late", key().verifying_key(), "stage-a");
+        assert_eq!(assembler.retained_tombstones("late"), 0);
     }
 }

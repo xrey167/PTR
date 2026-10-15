@@ -14,3 +14,29 @@ Each part is invalid (vacuous) and counts as falsified if any coverage prerequis
 
 ## Rule
 Record matched baselines, hardware, seeds and negative results. Do not change success criteria after observing results.
+
+## Harness
+Part A has a CPU harness in `bins/ptr-bench/src/experiments/e008/part_a/`. One seed is one run and prints exactly one JSON object on stdout:
+
+```
+cargo run -p ptr-bench --locked --release -- split-pod-extensions <seed>
+```
+
+`split-pod-extensions <cases> <seed>` is the form the mutation checker uses: `<cases>` scales the three seeded case families (raw ancestry, modes, persistence) and the record then says `"scale":"custom"` and is no evidence; the 45 matrix cells and the three controls always run in full. Exit status: 0 when every rule holds, 1 for a tripped falsifier or an unmet coverage prerequisite, 2 for a validity violation or a harness fault (a case that cannot run, a control that does not trip). Seeds not listed in `experiment.toml` print a dry-run note on stderr.
+
+The harness prints every Part A metric of this manifest (`reuse_after_raw_ancestor_removed` through `outputs_after_upstream_invalidation`, with `invalidation_matrix_cases` and `invalidation_matrix_stale_hits` per cell as `<kind>_<path>_<type>`), `control_trips` per control, a top-level mirror `stale_hits_in_<cell>` of every cell for the mutation checker, and its own reading of the coverage, falsifier and validity rules. E008 is `planned`: those lists are for the head to pin in the preregistration, and no part of this harness is frozen. Parts B and C are other harnesses.
+
+The three controls are external baselines (small caches written for the harness), not the product with one mechanism removed: a control that trips shows the probe can see the failure it names. `matrix_frame_bijection_violations` is mainly a coverage check (the slot/kind mapping is a bijection and every kind is reached by a frame the harness builds), not a falsifier of a stale or tainted serve.
+
+### Notes for the mutation plan (draft, not part of any freeze)
+The fence epoch of an expert is the runtime's own (`RuntimeStageLiveness::fence_epoch`, the expert registry's committed state version), and the harness fences and readmits its experts through the real authority path.
+
+`prefix_key_v2` repeats the mode, the taint, the Raw ancestry and the typed lineage on purpose, but the frame digest it also hashes already covers all of them. Removing one of those explicit terms alone changes no key, so it is an **equivalent mutant** and cannot be killed; planting it needs the digest's coverage removed too (an `also` edit). The killable mutations are in the digest, the admission and the use paths:
+- skip `write_lineage` or `write_mode_taint` in `ActivationFrameV2::to_bytes` (the digest stops covering them; the explicit key terms then still hold, so pair it with the key term for the Raw cells);
+- skip `revalidate_input` in `entry_fault`, or skip `entry_fault` in `live_entry` (lineage and chain revalidation at use);
+- collapse `namespace_index` to one table, or `namespace_of` to Exact (single namespace);
+- drop the cancel flag in `drop_entry` (an in-flight use survives the Revoke message);
+- `finish_use` without revalidation (an output released after the invalidation);
+- `finish_use` returning an Exact taint (taint dropped on release);
+- `clear()` keeping entries (restart);
+- `RuntimeStageLiveness::fence_epoch` answering the recorded epoch for any expert (the fence cells).
