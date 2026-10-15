@@ -972,7 +972,10 @@ impl Router for LearnedPodRouter {
     /// [`RouteError::NoRepresentation`]. No candidate at all is the empty distribution.
     ///
     /// A representation scores a candidate only when the registry names the candidate's
-    /// lifecycle namespace and it is the representation's own
+    /// lifecycle generation and it is the representation's ([`ptr_pods::PodRegistry::generation`]:
+    /// an address learned for one generation never ranks a superseded or newer implementation),
+    /// and when the registry names the candidate's lifecycle namespace and it is the
+    /// representation's own
     /// ([`ptr_pods::PodRegistry::namespace`]): the same pod id can be committed in several
     /// namespaces, and an address learned for one must not rank the implementation of another.
     /// A candidate registered without a namespace counts as one without a representation.
@@ -993,6 +996,18 @@ impl Router for LearnedPodRouter {
             let Some(namespace) = request.registry.namespace(request.project, pod) else {
                 continue;
             };
+            // The representation must be the one learned for the generation the registered
+            // implementation is; a candidate registered without a generation has none.
+            let registered_generation = request.registry.generation(request.project, pod);
+            let same_generation =
+                self.store
+                    .get(request.project, namespace, pod)
+                    .is_some_and(|representation| {
+                        registered_generation == Some(representation.generation())
+                    });
+            if !same_generation {
+                continue;
+            }
             if let Some(admitted) = admitted {
                 // The host re-admitted representations for this request: one that is not named
                 // (or whose digest differs) does not take part in scoring.

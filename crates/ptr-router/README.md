@@ -10,10 +10,11 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-15  
-**Code footprint:** 19 Rust source files · 10813 nonblank source lines · 16 integration-test files · 254 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 19 Rust source files · 10828 nonblank source lines · 16 integration-test files · 255 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
+- LearnedPodRouter scores a candidate only with a representation of the generation the registry names for it (PodRegistry::generation): an address learned for one generation never ranks a superseded or newer implementation, and a candidate registered without a generation has no learned score
 - A non-finite query vector (NaN or infinity) is RouteError::InvalidFeatures, never read as missing representations
 - Representations are scoped to their lifecycle namespace in the store too: RepresentationStore is keyed by (project, namespace, pod), get/remove and LearnedPodRouter::score take the namespace, generations are only ordered within one namespace (a high generation in ns-a never blocks ns-b), and policy looks the representation up by the namespace the registry names; generation 0 is RepresentationError::ZeroGeneration
 - LearnedPodRouter scores a registry candidate only with a representation of the namespace the registry names for it (PodRegistry::namespace): an address learned for one lifecycle namespace never ranks the implementation of another, and a candidate registered without a namespace counts as one without a representation
@@ -94,6 +95,7 @@
 
 ### Current automated checks
 
+- tests/learned.rs: a_representation_scores_only_the_implementation_of_its_generation
 - tests/learned.rs: a_non_finite_query_is_invalid_features
 - unit tests: a role registers its Pod for exactly the table's codes of that role, repairers() has the roster shape without duplicate codes, registering twice is idempotent, every hard code of the verifier table is routable once its role is filled and no soft code is
 - pod_router_breaks_equal_scores_by_pod_id: two registered Pods of equal score select the greater id (zeta over alpha)

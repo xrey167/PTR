@@ -9,7 +9,7 @@ use ptr_router::{
     RoutedChoice, RoutedError, Router, SamplingKey,
 };
 use ptr_types::{
-    CapabilityId, Effect, NamespaceId, PodId, Probability, ProjectId, RequestId, TypeId,
+    CapabilityId, Effect, Generation, NamespaceId, PodId, Probability, ProjectId, RequestId, TypeId,
 };
 use std::sync::Arc;
 
@@ -29,12 +29,23 @@ pub fn registry(project: &ProjectId, ids: &[&str]) -> PodRegistry {
     registry_in(project, "ns", ids)
 }
 
-/// The pods `ids` of `project`, registered as the implementations of `namespace`.
+/// The pods `ids` of `project`, registered as the generation-1 implementations of `namespace`.
 pub fn registry_in(project: &ProjectId, namespace: &str, ids: &[&str]) -> PodRegistry {
+    registry_at(project, namespace, 1, ids)
+}
+
+/// The pods `ids` of `project`, registered as the implementations of `namespace` at `generation`.
+pub fn registry_at(
+    project: &ProjectId,
+    namespace: &str,
+    generation: u64,
+    ids: &[&str],
+) -> PodRegistry {
     let mut registry = PodRegistry::default();
     for id in ids {
-        registry.register_in_namespace(
+        registry.register_at(
             NamespaceId::from(namespace),
+            Generation(generation),
             Arc::new(TestPod(PodManifest {
                 project: project.clone(),
                 id: PodId::from(*id),

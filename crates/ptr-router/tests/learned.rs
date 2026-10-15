@@ -2,7 +2,7 @@
 //! only activated representations and keeps each pod's representation independent.
 mod common;
 
-use common::{key, nonce, registry, registry_in, request, route};
+use common::{key, nonce, registry, registry_at, registry_in, request, route};
 use ptr_router::{
     AbstentionReason, ActivationPolicy, EncoderRef, GateReport, LearnedPodRouter,
     LearnedRouterConfig, PodRepresentation, PodRepresentationParts, RepresentationError,
@@ -1012,4 +1012,44 @@ fn a_non_finite_query_is_invalid_features() {
             Err(RouteError::InvalidFeatures { .. })
         ));
     }
+}
+
+/// A representation learned for generation 1 does not rank the implementation registered as
+/// generation 2 (or without a generation): the registry's generation must be the
+/// representation's.
+#[test]
+fn a_representation_scores_only_the_implementation_of_its_generation() {
+    let scene = scene();
+    let router = router(vec![representation("alpha", vec![1.0, 0.0, 0.0], 10.0, 1)]);
+    let features = features(vec![1.0, 0.0, 0.0]);
+    let policy = |registry: &ptr_pods::PodRegistry| {
+        router.policy(&request(
+            registry,
+            &scene.project,
+            &scene.capability,
+            &scene.input_type,
+            &scene.request_id,
+            &features,
+        ))
+    };
+    assert_eq!(
+        policy(&registry_at(&scene.project, "ns", 1, &["alpha"]))
+            .unwrap()
+            .probability(&PodId::from("alpha")),
+        1.0
+    );
+    assert!(matches!(
+        policy(&registry_at(&scene.project, "ns", 2, &["alpha"])).unwrap_err(),
+        RouteError::NoRepresentation { candidates: 1 }
+    ));
+    let own = registry_at(&scene.project, "ns", 1, &["alpha"]);
+    let mut without_generation = ptr_pods::PodRegistry::default();
+    without_generation.register_in_namespace(
+        ns(),
+        own.get(&scene.project, &PodId::from("alpha")).unwrap(),
+    );
+    assert!(matches!(
+        policy(&without_generation).unwrap_err(),
+        RouteError::NoRepresentation { candidates: 1 }
+    ));
 }

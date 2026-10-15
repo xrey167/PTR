@@ -248,6 +248,7 @@ def build(
         entries.append(
             {
                 "pod_id": pod["pod_id"],
+                "generation": spec.generation,
                 "manifest": json_path.name,
                 "status": trained.gate.status,
                 "description_vector": description,

@@ -4,6 +4,7 @@ maturity = "prototype"
 last_reviewed = "2026-10-15"
 
 implemented = [
+  "PodRegistry::register_at(namespace, generation, pod) names the lifecycle generation of the implementation too (generation(project, id)); register, register_in_namespace and a takeover drop it, because the new entry is another implementation",
   "RegisteredPodBinding records the entry namespace (namespace()), and resolve_bound resolves only while the entry holds the same manifest and the same namespace",
   "PodLink::validate refuses the trace * (the coalescing marker of a recorded refusal that stands for several traces)",
   "PodLink::validate bounds the trace at MAX_TRACE_ID_BYTES (256, the ledger bound of a recorded refusal) and refuses it as PodLinkError::InvalidTrace",
@@ -109,6 +110,7 @@ decisions = [
 ]
 
 checks = [
+  "tests/registry.rs: the_generation_of_an_entry_belongs_to_the_implementation_registered_with_it",
   "tests/registry.rs: a_binding_does_not_resolve_after_the_entry_moved_to_another_namespace",
   "tests/registry.rs: the_namespace_of_an_entry_belongs_to_the_implementation_registered_with_it (set, replaced, dropped by register and by a takeover, other entries and projects unaffected)",
   "tests/semantic.rs: a_link_trace_is_bounded_so_every_refusal_of_it_can_be_recorded",

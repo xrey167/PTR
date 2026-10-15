@@ -347,16 +347,20 @@ fn evaluate_world(seed: u64, smoke: bool, dir: &Path) -> Result<Value, String> {
     };
 
     let project = ProjectId::from(world["project"].as_str().ok_or("project missing")?);
-    // The pods are registered as the implementations of the world's lifecycle namespace: a
-    // learned address scores only the implementation of its own namespace.
+    // The pods are registered as the implementations of the world's lifecycle namespace at
+    // their world generation: a learned address scores only the implementation of its own
+    // namespace and generation.
     let namespace = NamespaceId::from(world["namespace"].as_str().ok_or("namespace missing")?);
     let mut registry = PodRegistry::default();
     let mut representations: Vec<PodRepresentation> = Vec::new();
     let mut descriptions: Vec<(PodId, Vec<f32>)> = Vec::new();
     for pod in world["pods"].as_array().ok_or("pods missing")? {
         let pod_id = PodId::from(pod["pod_id"].as_str().ok_or("pod_id missing")?);
-        registry.register_in_namespace(
+        let generation =
+            ptr_types::Generation(pod["generation"].as_u64().ok_or("pod generation missing")?);
+        registry.register_at(
             namespace.clone(),
+            generation,
             Arc::new(ProbePod(PodManifest {
                 project: project.clone(),
                 id: pod_id.clone(),
@@ -697,6 +701,7 @@ mod tests {
             std::fs::write(dir.join(format!("{name}.json")), manifest_json.to_string()).unwrap();
             pods.push(json!({
                 "pod_id": name,
+                "generation": 1,
                 "manifest": format!("{name}.json"),
                 "status": "not-activated",
                 "description_vector": [1.0, 0.0, 0.0],

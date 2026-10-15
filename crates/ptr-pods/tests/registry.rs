@@ -1,6 +1,6 @@
 use ptr_pods::{DynPod, PodManifest, PodRegistrationError, PodRegistry};
 use ptr_protocol::TypedPayload;
-use ptr_types::{CapabilityId, Effect, NamespaceId, PodId, ProjectId, TypeId};
+use ptr_types::{CapabilityId, Effect, Generation, NamespaceId, PodId, ProjectId, TypeId};
 use std::sync::Arc;
 
 struct EchoPod {
@@ -319,4 +319,30 @@ fn a_binding_does_not_resolve_after_the_entry_moved_to_another_namespace() {
     assert!(registry.resolve_bound(&binding).is_none());
     registry.register_in_namespace(NamespaceId::from("ns-a"), echo("p", "alpha"));
     assert!(registry.resolve_bound(&binding).is_some());
+}
+
+/// `register_at` names namespace and generation of the implementation; any later registration
+/// without a generation, or a takeover, is another implementation and names none.
+#[test]
+fn the_generation_of_an_entry_belongs_to_the_implementation_registered_with_it() {
+    let (project, alpha) = (ProjectId::from("p"), PodId::from("alpha"));
+    let mut registry = PodRegistry::default();
+    assert_eq!(registry.generation(&project, &alpha), None);
+    registry.register_at(NamespaceId::from("ns"), Generation(2), echo("p", "alpha"));
+    assert_eq!(registry.generation(&project, &alpha), Some(Generation(2)));
+    assert_eq!(
+        registry.namespace(&project, &alpha),
+        Some(&NamespaceId::from("ns"))
+    );
+    registry.register_in_namespace(NamespaceId::from("ns"), echo("p", "alpha"));
+    assert_eq!(registry.generation(&project, &alpha), None);
+    registry.register_at(NamespaceId::from("ns"), Generation(3), echo("p", "alpha"));
+    registry.register(echo("p", "alpha"));
+    assert_eq!(registry.generation(&project, &alpha), None);
+    registry.register_at(NamespaceId::from("ns"), Generation(3), echo("p", "alpha"));
+    let current: Arc<dyn DynPod> = registry.get(&project, &alpha).unwrap();
+    registry
+        .replace_if_current(&current, echo("p", "alpha"))
+        .unwrap();
+    assert_eq!(registry.generation(&project, &alpha), None);
 }

@@ -500,13 +500,13 @@ fn pods_with_alpha_in(alpha_namespace: Option<&str>) -> PodRegistry {
     let mut registry = PodRegistry::default();
     match alpha_namespace {
         Some(namespace) => {
-            registry.register_in_namespace(NamespaceId::from(namespace), echo("alpha"));
+            registry.register_at(NamespaceId::from(namespace), Generation(1), echo("alpha"));
         }
         None => {
             registry.register(echo("alpha"));
         }
     }
-    registry.register_in_namespace(NamespaceId::from("ns"), echo("beta"));
+    registry.register_at(NamespaceId::from("ns"), Generation(1), echo("beta"));
     registry
 }
 
