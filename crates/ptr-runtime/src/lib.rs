@@ -709,6 +709,11 @@ pub enum RuntimeError {
         embedded: String,
         project: String,
     },
+    /// A `pod:<project>/<namespace>/<pod>` capsule was committed at generation 0, which no pod
+    /// revision has (`PodSemanticManifest::validate` refuses it), so it can never become live.
+    PodCapsuleGenerationZero {
+        capsule: String,
+    },
     ReservedTargetNamespace {
         target: String,
     },
@@ -3006,6 +3011,9 @@ impl PtrRuntime {
                             embedded: embedded.to_owned(),
                             project: project.to_string(),
                         });
+                    }
+                    if generation.0 == 0 {
+                        return Err(RuntimeError::PodCapsuleGenerationZero { capsule: target });
                     }
                 }
                 if let Some(current) = self.capsule_projects.get(&target) {

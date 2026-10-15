@@ -224,6 +224,79 @@ fn a_representation_never_moves_to_the_same_pod_id_in_another_namespace() {
     ));
 }
 
+/// The pod registry names a pod by project and id only. While the same pod id is live in two
+/// namespaces the registry pod is ambiguous, so no representation of it is admitted; once one
+/// namespace is revoked the representation of the remaining one is admitted again.
+#[test]
+fn a_pod_id_live_in_two_namespaces_admits_no_representation() {
+    let mut runtime = runtime();
+    let bound = cache(&runtime);
+    runtime
+        .commit(LedgerEvent::CapsuleCommitted {
+            project: "demo".into(),
+            capsule: CapsuleId::from(
+                pod_lifecycle_target(&address_in("ns-b", "alpha", 1)).as_str(),
+            ),
+            generation: Generation(1),
+        })
+        .unwrap();
+
+    let admitted = runtime.admitted_representations(encoder(), &bound);
+    assert_eq!(admitted.store.len(), 1);
+    assert!(admitted
+        .store
+        .get(&ProjectId::from("demo"), &PodId::from("alpha"))
+        .is_none());
+    assert_eq!(admitted.refused.len(), 1);
+    assert_eq!(admitted.refused[0].0, "alpha");
+    assert!(matches!(
+        &admitted.refused[0].1,
+        RepresentationRefusal::Admission(RepresentationDenial::AmbiguousNamespace { project, pod })
+            if project == "demo" && pod == "alpha"
+    ));
+    let names: Vec<String> = runtime
+        .admitted_representation_set(&bound)
+        .into_iter()
+        .map(|admitted| admitted.pod.to_string())
+        .collect();
+    assert_eq!(names, vec!["beta".to_owned()]);
+
+    runtime
+        .commit(LedgerEvent::Revoked {
+            subject: pod_lifecycle_target(&address_in("ns-b", "alpha", 1)),
+            generation: Generation(1),
+        })
+        .unwrap();
+    let admitted = runtime.admitted_representations(encoder(), &bound);
+    assert_eq!(admitted.store.len(), 2);
+    assert!(admitted.refused.is_empty());
+}
+
+/// State of another kind under a pod target (no representation digest in its provenance) is
+/// refused from the binding alone, before its payload is parsed.
+#[test]
+fn state_that_names_no_representation_is_refused_without_parsing_its_payload() {
+    let runtime = runtime();
+    let binding = runtime
+        .bind_state(
+            &StateDeclaration::at(CodebookVersion::V1)
+                .under(pod_lifecycle_target(&address("alpha", 1)))
+                .produced_by(ProvenanceRef {
+                    source: EvidenceId("kv-cache:alpha".into()),
+                    note: None,
+                }),
+        )
+        .unwrap();
+    let mut other = NeuralStateCache::default();
+    other.insert("kv", NeuralState::new(binding, vec![0xff; 64]));
+    let admitted = runtime.admitted_representations(encoder(), &other);
+    assert!(admitted.store.is_empty());
+    assert!(matches!(
+        &admitted.refused[0].1,
+        RepresentationRefusal::Admission(RepresentationDenial::BindingMismatch)
+    ));
+}
+
 #[test]
 fn a_pod_without_a_committed_lifecycle_target_cannot_be_bound() {
     let runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
@@ -635,6 +708,58 @@ fn without_an_eligible_pod_the_answer_is_unavailable_and_the_encoder_is_not_run(
         }
     );
     assert!(routed_pods(&runtime).is_empty());
+}
+
+#[test]
+fn with_no_admitted_representation_the_encoder_is_not_run() {
+    let mut runtime = runtime();
+    let bound = cache(&runtime);
+    let admitted = runtime.admitted_representations(encoder(), &bound);
+    let sampler = sampler(admitted.store, bound);
+    for pod in ["alpha", "beta"] {
+        runtime
+            .commit(LedgerEvent::Revoked {
+                subject: pod_lifecycle_target(&address(pod, 1)),
+                generation: Generation(1),
+            })
+            .unwrap();
+    }
+    // `AxisEmbedder` fails for this payload: had it run, the answer would be a policy failure.
+    assert_eq!(
+        run(&mut runtime, b"anything else", &sampler).unwrap_err(),
+        RuntimeError::RouteFailed {
+            reason: "routing has no learned representation"
+        }
+    );
+    assert!(routed_pods(&runtime).is_empty());
+}
+
+#[test]
+fn an_admission_cache_larger_than_a_store_is_refused() {
+    let runtime = runtime();
+    let state = bind(&runtime, &representation("alpha", vec![1.0, 0.0, 0.0], 1));
+    let mut oversized = NeuralStateCache::default();
+    for index in 0..=ptr_router::MAX_REPRESENTATIONS {
+        oversized.insert(format!("entry-{index}"), state.clone());
+    }
+    let refused = EmbeddingSampler::new(
+        CheckedRouter::new(
+            LearnedPodRouter::new(
+                RepresentationStore::new(encoder()),
+                LearnedRouterConfig::default(),
+            )
+            .unwrap(),
+            SamplingKey::from_bytes([9; 32]),
+            NonceSequence::starting_at([4; 8], 0),
+        ),
+        Arc::new(AxisEmbedder),
+        oversized,
+    );
+    assert!(matches!(
+        refused,
+        Err(EmbeddingSamplerError::AdmissionCacheTooLarge { len, max })
+            if len == ptr_router::MAX_REPRESENTATIONS + 1 && max == ptr_router::MAX_REPRESENTATIONS
+    ));
 }
 
 #[test]

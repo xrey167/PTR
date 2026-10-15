@@ -277,6 +277,10 @@ impl PtrRuntime {
             }))
         };
         new.validate().map_err(|_| invalid())?;
+        // No pod revision has generation 0 (`PodSemanticManifest::validate` refuses it).
+        if new.generation.0 == 0 {
+            return Err(invalid());
+        }
         for address in std::iter::once(new).chain(old) {
             if address.address.project != *project {
                 return Err(RuntimeError::PodHead(Box::new(

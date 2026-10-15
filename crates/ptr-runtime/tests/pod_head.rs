@@ -653,3 +653,38 @@ fn a_pod_capsule_committed_by_its_own_project_is_accepted_and_other_ids_are_unaf
             .unwrap();
     }
 }
+
+#[test]
+fn generation_zero_is_refused_for_a_pod_capsule_and_for_a_head() {
+    use ptr_ledger::CommittedEvent;
+    let mut runtime = runtime();
+    let zero = revision("reader", 0);
+    let target = pod_lifecycle_target(&zero);
+    let commit = LedgerEvent::CapsuleCommitted {
+        project: "project".into(),
+        capsule: CapsuleId::from(target.as_str()),
+        generation: Generation(0),
+    };
+    assert_eq!(
+        runtime.commit(commit.clone()),
+        Err(RuntimeError::PodCapsuleGenerationZero {
+            capsule: target.clone()
+        })
+    );
+    assert_eq!(runtime.live_generation(&target), None);
+
+    let refused = advance(&mut runtime, None, zero).unwrap_err();
+    assert!(matches!(
+        refused,
+        RuntimeError::PodHead(ref error) if matches!(**error, PodHeadError::InvalidAddress { .. })
+    ));
+    assert!(runtime.committed_events().is_empty());
+    assert_eq!(runtime.pod_heads().count(), 0);
+
+    // A log carrying the generation-zero commit fails replay closed.
+    let log = [CommittedEvent {
+        index: ptr_types::CommitIndex(1),
+        event: commit,
+    }];
+    assert!(PtrRuntime::replay(PtrConfig::default(), &log).is_err());
+}
