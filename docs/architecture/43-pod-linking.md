@@ -152,10 +152,12 @@ The registry names the lifecycle namespace of each registered implementation
 scores a candidate only with a representation of that namespace: an address learned for `ns-a`
 never ranks the implementation registered for `ns-b`, even while both are live. An entry
 registered without a namespace, or replaced by a plain registration or a takeover, names none and
-gets no learned score (fail closed). Per-request admission is bounded: the sampler refuses an
-admission cache larger than one store (`MAX_REPRESENTATIONS`), reads each payload in place, and
-refuses state that names no representation digest before parsing it. Generation 0 is refused for
-pod lifecycle targets and heads, since no pod revision has it.
+gets no learned score (fail closed). The representation store is keyed by project, namespace and
+pod, so the generations of one pod id in two namespaces are never ordered against each other.
+Per-request admission is bounded: the sampler refuses an admission cache larger than one store
+(`MAX_REPRESENTATIONS`), reads each payload in place, and refuses state that names no
+representation digest before parsing it. Generation 0 is refused for pod lifecycle targets, pod
+heads and learned representations, since no pod revision has it.
 
 The store itself holds no binding, so admission is repeated for every request instead of once at
 load time. `EmbeddingSampler::new(router, embedder, admission_cache)` keeps the bound states, and

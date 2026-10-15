@@ -297,7 +297,7 @@ def build(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--seed", type=int, required=True)
+    parser.add_argument("--seed", type=int, help="the seed of the world (every run but --preflight)")
     parser.add_argument(
         "--out",
         type=Path,
@@ -311,7 +311,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--config", type=Path, default=CONFIG, help="preregistration config.toml")
     parser.add_argument("--lock", type=Path, default=LOCK, help="the uv.lock the run must match")
+    parser.add_argument(
+        "--preflight",
+        action="store_true",
+        help="check the confirmatory environment (pinned encoder, interpreter, locked packages) "
+        "and exit; builds no world and takes no seed",
+    )
     arguments = parser.parse_args(argv)
+    if arguments.preflight and (arguments.smoke or arguments.seed is not None):
+        parser.error("--preflight takes neither --seed nor --smoke")
+    if not arguments.preflight and arguments.seed is None:
+        parser.error("--seed is required")
     if arguments.smoke:
         encoder: Encoder = HashedBagOfWordsEncoder(ENCODER_DIMS)
     else:
@@ -337,6 +347,25 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
+    if arguments.preflight:
+        # The pinned encoder must also produce a usable vector, not only load.
+        try:
+            probe = encoder.encode("preflight")
+        except Exception as error:  # noqa: BLE001 - any failure of the model is a failed preflight
+            print(f"ptr_training.dragonfly.experiment: the pinned encoder fails: {error}", file=sys.stderr)
+            return 2
+        if len(probe) != encoder.dims or not any(probe):
+            print(
+                "ptr_training.dragonfly.experiment: the pinned encoder returned an unusable vector",
+                file=sys.stderr,
+            )
+            return 2
+        print(
+            "ptr_training.dragonfly.experiment: preflight passed "
+            f"({encoder.encoder_id}@{encoder.encoder_revision}, python {environment['python']})",
+            file=sys.stderr,
+        )
+        return 0
     out = arguments.out or Path("target/dragonfly-addressing") / str(arguments.seed)
     world = build(
         arguments.seed,

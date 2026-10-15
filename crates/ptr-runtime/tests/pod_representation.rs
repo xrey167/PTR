@@ -305,11 +305,19 @@ fn revoking_one_pod_generation_denies_exactly_that_representation() {
     assert_eq!(admitted.store.len(), 1);
     assert!(admitted
         .store
-        .get(&ProjectId::from("demo"), &PodId::from("beta"))
+        .get(
+            &ProjectId::from("demo"),
+            &NamespaceId::from("ns"),
+            &PodId::from("beta")
+        )
         .is_some());
     assert!(admitted
         .store
-        .get(&ProjectId::from("demo"), &PodId::from("alpha"))
+        .get(
+            &ProjectId::from("demo"),
+            &NamespaceId::from("ns"),
+            &PodId::from("alpha")
+        )
         .is_none());
     assert_eq!(admitted.refused.len(), 1);
     let (key, refusal) = &admitted.refused[0];
@@ -336,11 +344,19 @@ fn a_new_pod_generation_denies_the_old_representation_until_it_is_retrained() {
     let admitted = runtime.admitted_representations(encoder(), &cache);
     assert!(admitted
         .store
-        .get(&ProjectId::from("demo"), &PodId::from("alpha"))
+        .get(
+            &ProjectId::from("demo"),
+            &NamespaceId::from("ns"),
+            &PodId::from("alpha")
+        )
         .is_some());
     assert!(admitted
         .store
-        .get(&ProjectId::from("demo"), &PodId::from("beta"))
+        .get(
+            &ProjectId::from("demo"),
+            &NamespaceId::from("ns"),
+            &PodId::from("beta")
+        )
         .is_none());
     assert!(matches!(
         &admitted.refused[0].1,
@@ -637,7 +653,11 @@ fn after_a_revocation_the_runtime_abstains_instead_of_routing_to_the_revoked_pod
     let admitted = runtime.admitted_representations(encoder(), &cache);
     let kept_beta = admitted
         .store
-        .get(&ProjectId::from("demo"), &PodId::from("beta"))
+        .get(
+            &ProjectId::from("demo"),
+            &NamespaceId::from("ns"),
+            &PodId::from("beta"),
+        )
         .is_some();
     let sampler = sampler(admitted.store, cache);
     // The alpha question no longer finds alpha's address; beta's does not match it either.

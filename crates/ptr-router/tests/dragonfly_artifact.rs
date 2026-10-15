@@ -11,7 +11,7 @@ use ptr_router::{
     EncoderRef, LearnedPodRouter, LearnedRouterConfig, PodRepresentation, RepresentationError,
     RepresentationStore, RouteError, RouteFeatures,
 };
-use ptr_types::{ClusterKey, PodId, PodIdentityDescriptor, ProjectId};
+use ptr_types::{ClusterKey, NamespaceId, PodId, PodIdentityDescriptor, ProjectId};
 use serde_json::Value;
 use std::fs;
 use std::path::PathBuf;
@@ -152,7 +152,11 @@ fn one_identity_exported_for_two_projects_gives_two_loadable_pairs_that_share_a_
     for entry in &twins {
         let project = ProjectId::from(entry["project"].as_str().unwrap());
         let loaded = store
-            .get(&project, &PodId::from("supplier-mueller"))
+            .get(
+                &project,
+                &NamespaceId::from("supply"),
+                &PodId::from("supplier-mueller"),
+            )
             .unwrap();
         assert_eq!(loaded.project(), &project);
     }
@@ -191,6 +195,7 @@ fn scores_match_the_python_scores_for_every_probe() {
             match router
                 .score(
                     &ProjectId::from("demo"),
+                    &NamespaceId::from("supply"),
                     &PodId::from(pod_id.as_str()),
                     &query,
                 )

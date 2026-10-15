@@ -212,14 +212,26 @@ impl Drop for Scratch {
 /// `transformers` or `numpy` differ from the lock. A smoke run uses the plain `python3` and needs
 /// no network: it only records the environment in the world.
 fn training_command(seed: u64, out: &Path, smoke: bool, venv: &Path) -> Command {
+    let mut command = training_step(smoke, venv);
+    command
+        .arg("--seed")
+        .arg(seed.to_string())
+        .arg("--out")
+        .arg(out)
+        // The harness prints exactly one JSON object on stdout; the training step's own report is
+        // not part of it (its world is read from the scratch directory).
+        .stdout(std::process::Stdio::null());
+    if smoke {
+        command.arg("--smoke");
+    }
+    command
+}
+
+/// The training module launched in the confirmatory environment (`uv run --locked` with the
+/// pinned interpreter, virtual environment in `venv`) or, for a smoke run, with plain `python3`.
+fn training_step(smoke: bool, venv: &Path) -> Command {
     let training = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../training");
-    let module_args = [
-        "python",
-        "-B",
-        "-m",
-        "ptr_training.dragonfly.experiment",
-        "--seed",
-    ];
+    let module_args = ["python", "-B", "-m", "ptr_training.dragonfly.experiment"];
     let mut command;
     if smoke {
         command = Command::new("python3");
@@ -234,17 +246,17 @@ fn training_command(seed: u64, out: &Path, smoke: bool, venv: &Path) -> Command 
             .env("UV_PROJECT_ENVIRONMENT", venv);
     }
     command
-        .arg(seed.to_string())
-        .arg("--out")
-        .arg(out)
         .env("PYTHONPATH", training.join("src"))
-        .env("PYTHONDONTWRITEBYTECODE", "1")
-        // The harness prints exactly one JSON object on stdout; the training step's own report is
-        // not part of it (its world is read from the scratch directory).
-        .stdout(std::process::Stdio::null());
-    if smoke {
-        command.arg("--smoke");
-    }
+        .env("PYTHONDONTWRITEBYTECODE", "1");
+    command
+}
+
+/// The preflight of a confirmatory run: the training step in the confirmatory environment with
+/// `--preflight`, which checks the pinned encoder (it loads and encodes), the interpreter and the
+/// locked packages and builds no world. The runner runs it before it reserves a seed.
+fn preflight_command(venv: &Path) -> Command {
+    let mut command = training_step(false, venv);
+    command.arg("--preflight");
     command
 }
 
@@ -529,6 +541,32 @@ fn route<R: Router + ?Sized>(
     }
 }
 
+/// `dragonfly-addressing --preflight`: check that a confirmatory run can start here (uv, the
+/// pinned interpreter, the locked packages, the pinned encoder) without reserving or spending a
+/// seed. Exit status 0 when it can, 2 when it cannot.
+pub fn preflight() {
+    let outcome = Scratch::create(0).and_then(|scratch| {
+        let mut command = preflight_command(&scratch.0.join("venv"));
+        let program = command.get_program().to_string_lossy().into_owned();
+        let status = command
+            .status()
+            .map_err(|error| format!("cannot start the training step ({program}): {error}"))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!(
+                "the preflight failed ({status}); a confirmatory run needs uv, Python \
+                 {PYTHON_VERSION}, the packages training/uv.lock names and the encoder the \
+                 preregistration pins"
+            ))
+        }
+    });
+    if let Err(message) = outcome {
+        eprintln!("ptr-bench dragonfly-addressing --preflight: {message}");
+        std::process::exit(2);
+    }
+}
+
 /// Run the harness for one seed and print its JSON object; exit status 2 when it cannot run.
 pub fn run(seed: u64, smoke: bool) {
     match run_seed(seed, smoke) {
@@ -570,6 +608,21 @@ mod tests {
             *key == "UV_PROJECT_ENVIRONMENT"
                 && value.map(|v| v.to_string_lossy().into_owned()) == Some("/scratch/venv".into())
         }));
+    }
+
+    #[test]
+    fn the_preflight_runs_the_training_step_in_the_confirmatory_environment_without_a_seed() {
+        let command = preflight_command(Path::new("/scratch/venv"));
+        assert_eq!(command.get_program(), "uv");
+        let args = words(&command);
+        assert_eq!(
+            &args[..5],
+            ["run", "--locked", "--python", PYTHON_VERSION, "--project"]
+        );
+        assert_eq!(args.last().map(String::as_str), Some("--preflight"));
+        for absent in ["--seed", "--out", "--smoke"] {
+            assert!(!args.contains(&absent.to_owned()), "{absent} in {args:?}");
+        }
     }
 
     #[test]

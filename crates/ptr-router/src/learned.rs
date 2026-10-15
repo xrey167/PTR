@@ -135,6 +135,8 @@ pub enum RepresentationError {
     EmptyField {
         field: &'static str,
     },
+    /// Generation 0 names no pod revision (`PodSemanticManifest::validate` refuses it).
+    ZeroGeneration,
     InvalidDimensions {
         actual: usize,
         max: usize,
@@ -592,6 +594,9 @@ fn validate_parts(parts: &PodRepresentationParts) -> Result<(), RepresentationEr
             return Err(RepresentationError::EmptyField { field });
         }
     }
+    if parts.generation.0 == 0 {
+        return Err(RepresentationError::ZeroGeneration);
+    }
     if parts.z.is_empty() || parts.z.len() > MAX_REPRESENTATION_DIMS {
         return Err(RepresentationError::InvalidDimensions {
             actual: parts.z.len(),
@@ -703,7 +708,10 @@ fn digest_of(parts: &PodRepresentationParts) -> [u8; 32] {
 pub struct RepresentationStore {
     encoder: EncoderRef,
     policy: ActivationPolicy,
-    entries: BTreeMap<(ProjectId, PodId), PodRepresentation>,
+    /// Keyed by project, lifecycle namespace and pod: the generations of one pod id in two
+    /// namespaces belong to independent lifecycle targets and are never ordered against each
+    /// other.
+    entries: BTreeMap<(ProjectId, NamespaceId, PodId), PodRepresentation>,
 }
 
 impl RepresentationStore {
@@ -743,7 +751,8 @@ impl RepresentationStore {
         })
     }
 
-    /// Loads an activated representation, replacing an older generation of the same pod.
+    /// Loads an activated representation, replacing an older generation of the same pod in the
+    /// same lifecycle namespace.
     ///
     /// # Errors
     /// [`RouteError::InactiveRepresentation`] for a representation that is not activated, or
@@ -756,7 +765,11 @@ impl RepresentationStore {
         representation: PodRepresentation,
     ) -> Result<Option<PodRepresentation>, RouteError> {
         let pod = representation.pod().clone();
-        let key = (representation.project().clone(), pod.clone());
+        let key = (
+            representation.project().clone(),
+            representation.namespace().clone(),
+            pod.clone(),
+        );
         let invalid = |error| RouteError::InvalidRepresentation {
             pod: pod.clone(),
             error,
@@ -801,13 +814,26 @@ impl RepresentationStore {
         Ok(self.entries.insert(key, representation))
     }
 
-    /// Drops the representation of `pod`; the others are untouched.
-    pub fn remove(&mut self, project: &ProjectId, pod: &PodId) -> Option<PodRepresentation> {
-        self.entries.remove(&(project.clone(), pod.clone()))
+    /// Drops the representation of `pod` in `namespace`; the others are untouched.
+    pub fn remove(
+        &mut self,
+        project: &ProjectId,
+        namespace: &NamespaceId,
+        pod: &PodId,
+    ) -> Option<PodRepresentation> {
+        self.entries
+            .remove(&(project.clone(), namespace.clone(), pod.clone()))
     }
 
-    pub fn get(&self, project: &ProjectId, pod: &PodId) -> Option<&PodRepresentation> {
-        self.entries.get(&(project.clone(), pod.clone()))
+    /// The representation of `pod` learned for lifecycle `namespace`.
+    pub fn get(
+        &self,
+        project: &ProjectId,
+        namespace: &NamespaceId,
+        pod: &PodId,
+    ) -> Option<&PodRepresentation> {
+        self.entries
+            .get(&(project.clone(), namespace.clone(), pod.clone()))
     }
 
     pub fn encoder(&self) -> &EncoderRef {
@@ -895,18 +921,19 @@ impl LearnedPodRouter {
         self.config
     }
 
-    /// The learned score of `pod` of `project` for `query`; `None` when that pod has no
-    /// representation.
+    /// The learned score of `pod` of `project` in lifecycle `namespace` for `query`; `None` when
+    /// that pod has no representation for that namespace.
     ///
     /// # Errors
     /// [`RouteError::InvalidFeatures`] for an empty, zero or wrongly sized query.
     pub fn score(
         &self,
         project: &ProjectId,
+        namespace: &NamespaceId,
         pod: &PodId,
         query: &[f32],
     ) -> Result<Option<f64>, RouteError> {
-        let Some(representation) = self.store.get(project, pod) else {
+        let Some(representation) = self.store.get(project, namespace, pod) else {
             return Ok(None);
         };
         self.check_query(query)?;
@@ -956,34 +983,29 @@ impl Router for LearnedPodRouter {
         let mut scored: Vec<(PodId, f64)> = Vec::new();
         let admitted = request.features.admitted_representations();
         for pod in &candidates {
-            let same_namespace =
-                self.store
-                    .get(request.project, pod)
-                    .is_some_and(|representation| {
-                        request.registry.namespace(request.project, pod)
-                            == Some(representation.namespace())
-                    });
-            if !same_namespace {
+            // Only the representation learned for the namespace the registry names for this
+            // candidate applies; a candidate registered without a namespace has none.
+            let Some(namespace) = request.registry.namespace(request.project, pod) else {
                 continue;
-            }
+            };
             if let Some(admitted) = admitted {
                 // The host re-admitted representations for this request: one that is not named
                 // (or whose digest differs) does not take part in scoring.
-                let named = self
-                    .store
-                    .get(request.project, pod)
-                    .is_some_and(|representation| {
-                        admitted.contains(&AdmittedRepresentation {
-                            project: request.project.clone(),
-                            pod: pod.clone(),
-                            digest: *representation.digest(),
-                        })
-                    });
+                let named =
+                    self.store
+                        .get(request.project, namespace, pod)
+                        .is_some_and(|representation| {
+                            admitted.contains(&AdmittedRepresentation {
+                                project: request.project.clone(),
+                                pod: pod.clone(),
+                                digest: *representation.digest(),
+                            })
+                        });
                 if !named {
                     continue;
                 }
             }
-            if let Some(score) = self.score(request.project, pod, query)? {
+            if let Some(score) = self.score(request.project, namespace, pod, query)? {
                 scored.push((pod.clone(), score));
             }
         }

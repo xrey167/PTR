@@ -7,6 +7,7 @@ baseline = "cosine_only,constant_score"
 falsification = "NO-GO unless, on every one of the 5 confirmatory seeds, the learned router has routing_accuracy at least that of the cosine-only baseline (margin 0 permille) and a false_route_rate strictly below it; both must hold on every seed, or the representations stay deactivated and the default PodRouter stays the only router. A seed whose validity controls fail (oracle ceiling, constant-score floor, full activation) is INVALID, not a pass. The ablations (no abstention, no bias), the sensitivity sweep and the oracle are reported, not judged. A learned router that routes to a pod outside registry.candidates, or loads a representation past an unmet activation gate, fails outright. Criteria and stop rules: PREREGISTRATION.md and criteria.toml."
 hardware_profile = "hardware/default.toml"
 entrypoint = "cargo run --release --locked -p ptr-bench -- dragonfly-addressing <seed>"
+preflight = "cargo run --release --locked -p ptr-bench -- dragonfly-addressing --preflight"
 seeds = [2017, 2029, 2043, 2071, 2101]
 results_dir = "results"
 required_artifacts = ["run.json", "metrics.json"]

@@ -67,6 +67,47 @@ class EntrypointTest(unittest.TestCase):
             self.assertFalse(out.exists(), "a refused run writes no world")
             self.assertIn("not pinned", stderr.getvalue())
 
+    def test_the_preflight_stops_with_status_2_on_an_unpinned_encoder_and_writes_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            config = _config(Path(raw), "must-be-pinned-before-prepared", "must-be-pinned-x")
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                status = main(["--preflight", "--config", str(config)])
+            self.assertEqual(status, 2)
+            self.assertEqual(list(Path(raw).iterdir()), [config])
+            self.assertIn("not pinned", stderr.getvalue())
+
+    def test_the_preflight_stops_with_status_2_on_another_interpreter(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            config = _config(Path(raw), "m", "r", python="2.7.18")
+            standin = experiment.HashedBagOfWordsEncoder(experiment.ENCODER_DIMS)
+            with (
+                mock.patch.object(experiment, "pinned_encoder", return_value=standin),
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                self.assertEqual(main(["--preflight", "--config", str(config)]), 2)
+
+    def test_the_preflight_passes_when_encoder_and_environment_match(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            config = _config(Path(raw), "m", "r")
+            standin = experiment.HashedBagOfWordsEncoder(experiment.ENCODER_DIMS)
+            report = {"python": _running_python(), "python_matches": True, "matches_lock": True}
+            stderr = io.StringIO()
+            with (
+                mock.patch.object(experiment, "pinned_encoder", return_value=standin),
+                mock.patch.object(experiment, "environment_report", return_value=report),
+                contextlib.redirect_stderr(stderr),
+            ):
+                status = main(["--preflight", "--config", str(config)])
+            self.assertEqual(status, 0)
+            self.assertIn("preflight passed", stderr.getvalue())
+            self.assertEqual(list(Path(raw).iterdir()), [config], "a preflight builds no world")
+
+    def test_the_preflight_takes_no_seed_and_no_smoke_and_a_run_needs_a_seed(self) -> None:
+        for argv in (["--preflight", "--seed", "1"], ["--preflight", "--smoke"], ["--smoke"]):
+            with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+                main(argv)
+
     def test_smoke_marks_the_world_as_no_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             out = Path(raw) / "world"
