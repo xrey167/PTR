@@ -168,7 +168,7 @@ impl World {
     /// is placed.
     pub fn new() -> Res<Self> {
         let mut runtime = PtrRuntime::new(PtrConfig::default()).map_err(fail("the runtime"))?;
-        let mut identities: Vec<String> = [STAGE, DOWNSTREAM, BASE, DOWNSTREAM_BASE]
+        let identities: Vec<String> = [STAGE, DOWNSTREAM, BASE, DOWNSTREAM_BASE]
             .into_iter()
             .chain(ADAPTERS)
             .chain(SEMANTIC)
@@ -176,7 +176,8 @@ impl World {
             .chain(DERIVED)
             .map(str::to_string)
             .collect();
-        identities.extend(expert_ids());
+        // Experts are registry objects only (no capsule): their generation, state, manifest
+        // digest and fence epoch all come from the one registry entry the runtime answers from.
         let mut generations = BTreeMap::new();
         let mut manifests = BTreeMap::new();
         let mut input_digests = BTreeMap::new();
@@ -192,8 +193,9 @@ impl World {
                 }
             }
         }
-        for index in 0..EXPERT_COUNT {
+        for (index, identity) in expert_ids().into_iter().enumerate() {
             experts::birth(&mut runtime, EXPERT_LAYER, index)?;
+            generations.insert(identity, 1);
         }
         let mut placement = PodPlacementController::default();
         placement
@@ -261,9 +263,21 @@ impl World {
         ChainElement {
             identity: identity.to_string(),
             generation,
-            digest: digest_of(identity, generation),
+            digest: self.manifest_of(identity, generation),
             fence_epoch: self.fence_epoch(identity),
         }
+    }
+
+    /// The manifest digest committed for `(identity, generation)`: an expert's is its registry
+    /// entry's, everything else's the one this world admitted.
+    fn manifest_of(&self, identity: &str, generation: u64) -> [u8; 32] {
+        expert_index(identity)
+            .and_then(|_| {
+                self.live()
+                    .stage
+                    .manifest_digest(identity, Generation(generation))
+            })
+            .unwrap_or_else(|| digest_of(identity, generation))
     }
 
     fn input(&self, kind: LineageKind, identity: &str) -> LineageInput {
@@ -339,6 +353,10 @@ impl World {
 
     /// Commit the revocation of the current generation of `identity`.
     pub fn revoke(&mut self, identity: &str) -> Res<()> {
+        // An expert is revoked through the registry: a committed `Retire`.
+        if let Some(index) = expert_index(identity) {
+            return experts::retire(&mut self.runtime, EXPERT_LAYER, index);
+        }
         let generation = self.generation(identity);
         lab::commit_revocation(&mut self.runtime, &ledger_target(identity), generation)
     }
@@ -346,6 +364,12 @@ impl World {
     /// Commit the supersession of the current generation of `identity` by the next; frames
     /// built afterwards carry the new generation.
     pub fn supersede(&mut self, identity: &str) -> Res<()> {
+        // An expert is superseded through the registry: a committed next generation of the pod.
+        if let Some(index) = expert_index(identity) {
+            let next = experts::supersede(&mut self.runtime, EXPERT_LAYER, index)?;
+            self.generations.insert(identity.to_string(), next);
+            return Ok(());
+        }
         let old = self.generation(identity);
         lab::commit_supersession(&mut self.runtime, &ledger_target(identity), old, old + 1)?;
         self.generations.insert(identity.to_string(), old + 1);

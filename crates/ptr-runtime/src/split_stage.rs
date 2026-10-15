@@ -16,6 +16,7 @@
 //! Nothing here installs KV from a wire either: an [`AdmittedFrame`] holds activations and
 //! positions and the cache stores what the caller computed from them.
 
+use crate::expert::ExpertEntry;
 use crate::placement::PlacementScope;
 use crate::{PodPlacementController, PtrRuntime};
 use ptr_model_api::KvReuseMode;
@@ -66,12 +67,63 @@ pub struct RuntimeStageLiveness<'a> {
     pub manifests: &'a BTreeMap<(String, u64), [u8; 32]>,
 }
 
+impl RuntimeStageLiveness<'_> {
+    /// The registry entry behind an `expert:{project}/{pod}` identity. `None` for an identity
+    /// that is no registry key and for an expert the registry does not hold.
+    fn expert_entry(&self, identity: &str) -> Option<&ExpertEntry> {
+        // Project and pod ids never contain `/`, so the key has exactly one split; the same
+        // idiom as the registry's own parser (`highest_fenced_epoch`).
+        let (project, pod) = identity
+            .strip_prefix(ptr_state::EXPERT_PREFIX)?
+            .split_once('/')?;
+        self.runtime
+            .expert_registry()
+            .get(&ProjectId::from(project), &ptr_types::PodId::from(pod))
+    }
+}
+
+/// The standing of `generation` of an expert, from its registry entry alone. The current
+/// generation is live while the expert is admitted (`Serving`, `Frozen`, or `Fenced`, which
+/// the fence epoch refuses on its own), superseded or revoked when the registry says so; an
+/// older generation is superseded; anything else is unknown.
+fn expert_validity(entry: &ExpertEntry, generation: Generation) -> Option<Validity> {
+    if generation.0 < entry.generation.0 {
+        return Some(Validity::Superseded);
+    }
+    if generation != entry.generation {
+        return None;
+    }
+    match entry.state {
+        ExpertState::Serving | ExpertState::Frozen | ExpertState::Fenced => Some(Validity::Live),
+        ExpertState::Superseded => Some(Validity::Superseded),
+        ExpertState::Retired(_) => Some(Validity::Revoked),
+        ExpertState::Candidate | ExpertState::Gated => None,
+    }
+}
+
 impl StageLiveness for RuntimeStageLiveness<'_> {
+    /// An `expert:{project}/{pod}` identity is answered from the expert registry alone (its
+    /// generation, state and manifest digest are the same entry the fence epoch comes from); an
+    /// expert identity the registry does not hold is unknown. Everything else is a capsule
+    /// generation of the runtime's lifecycle state.
     fn validity(&self, target: &str, generation: Generation) -> Option<Validity> {
+        if target.starts_with(ptr_state::EXPERT_PREFIX) {
+            return self
+                .expert_entry(target)
+                .and_then(|entry| expert_validity(entry, generation));
+        }
         self.runtime.generation_validity(target, generation)
     }
 
+    /// An expert's digest is its registry manifest digest at its current generation; every
+    /// other target's digest is the one the host admitted (`manifests`).
     fn manifest_digest(&self, target: &str, generation: Generation) -> Option<[u8; 32]> {
+        if target.starts_with(ptr_state::EXPERT_PREFIX) {
+            return self
+                .expert_entry(target)
+                .filter(|entry| entry.generation == generation)
+                .map(|entry| *entry.manifest_digest.as_bytes());
+        }
         self.manifests
             .get(&(target.to_owned(), generation.0))
             .copied()
@@ -100,15 +152,7 @@ impl StageLiveness for RuntimeStageLiveness<'_> {
     /// is no registry key and for an expert that is not serving (`Serving` or `Frozen`), so a
     /// fenced, retired or unknown expert fails closed ([`ChainFault::StaleFence`]).
     fn fence_epoch(&self, expert: &str) -> Option<u64> {
-        // Project and pod ids never contain `/`, so the key has exactly one split; the same
-        // idiom as the registry's own parser (`highest_fenced_epoch`).
-        let (project, pod) = expert
-            .strip_prefix(ptr_state::EXPERT_PREFIX)?
-            .split_once('/')?;
-        let entry = self
-            .runtime
-            .expert_registry()
-            .get(&ProjectId::from(project), &ptr_types::PodId::from(pod))?;
+        let entry = self.expert_entry(expert)?;
         matches!(entry.state, ExpertState::Serving | ExpertState::Frozen)
             .then_some(entry.state_version)
     }

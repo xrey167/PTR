@@ -14,7 +14,8 @@ use ptr_lineage::{
 use ptr_model_api::{KvReuseMode, KvReusePolicy, KvReuseTaint};
 use ptr_pods::{
     BaseModelDigest, BaseModelId, BaseModelRef, ExpertLevel, ExpertPodSpec, ExpertProposal,
-    ManifestDigest, ProposerRef, RationaleDigest, StructuralOp,
+    ExpertTarget, ExpertTargetInit, ManifestDigest, ProposerRef, RationaleDigest, RetiredReason,
+    StructuralOp,
 };
 use ptr_protocol::activation::{
     admit_v2, bijection_violations, chunk_digest_v2, chunk_payload_v2, frame_digest_v2,
@@ -42,9 +43,9 @@ mod expert_support;
 
 use expert_support::{binding, prime, requirement, EVAL_MANIFEST};
 
-/// Chain dependencies the ledger tracks as capsules (the expert's generation too; its fence
-/// epoch is the registry's).
-const TARGETS: [&str; 5] = ["stage", "model", "adapter", "down", "expert:proj/x"];
+/// Chain dependencies the ledger tracks as capsules. The expert is not one: its generation,
+/// state, manifest digest and fence epoch all come from the expert registry.
+const TARGETS: [&str; 4] = ["stage", "model", "adapter", "down"];
 const INPUTS: [(LineageKind, &str); 3] = [
     (LineageKind::Semantic, "sem"),
     (LineageKind::Memory, "mem"),
@@ -73,29 +74,85 @@ fn gate() -> ForgettingGate {
     }
 }
 
-/// Birth the expert `x` through the real admission path: it serves at state version 1.
-fn birth_expert(rt: &mut PtrRuntime) {
-    let proposer = ProposerRef::new(project(), PodId::from("meta"), Generation(1)).unwrap();
+/// The spec of expert `x` at `generation` (manifest digest `[generation; 32]`).
+fn expert_spec(generation: u64) -> ExpertPodSpec {
     let base = BaseModelRef::new(
         BaseModelId::new("base-a").unwrap(),
         BaseModelDigest::new([9; 32]).unwrap(),
         1,
     )
     .unwrap();
-    let spec = ExpertPodSpec::new(
+    ExpertPodSpec::new(
         project(),
         PodId::from("x"),
-        ManifestDigest::new([1; 32]).unwrap(),
+        ManifestDigest::new([generation as u8; 32]).unwrap(),
         ExpertLevel::Token { layer: 3, index: 1 },
         base,
-        Generation(1),
+        Generation(generation),
     )
-    .unwrap();
+    .unwrap()
+}
+
+/// Birth the expert `x` through the real admission path: it serves at state version 1.
+fn birth_expert(rt: &mut PtrRuntime) {
+    prime(rt);
+    admit_expert_op(
+        rt,
+        StructuralOp::Birth {
+            result: expert_spec(1),
+        },
+    );
+}
+
+/// The registry's current view of expert `x` as an operand.
+fn expert_target(rt: &PtrRuntime) -> ExpertTarget {
+    let entry = rt
+        .expert_registry()
+        .get(&project(), &PodId::from("x"))
+        .unwrap()
+        .clone();
+    ExpertTarget::new(ExpertTargetInit {
+        project: project(),
+        pod: PodId::from("x"),
+        generation: entry.generation,
+        level: entry.level,
+        base_model: entry.base_model,
+        manifest_digest: entry.manifest_digest,
+        state: entry.state,
+        state_version: entry.state_version,
+    })
+    .unwrap()
+}
+
+/// Revoke expert `x` through the registry: a committed `Retire`, and with `supersede` a
+/// `Reactivate` that commits its generation 2.
+fn invalidate_expert(rt: &mut PtrRuntime, supersede: bool) {
+    admit_expert_op(
+        rt,
+        StructuralOp::Retire {
+            target: expert_target(rt),
+            reason: RetiredReason::GateFailed,
+        },
+    );
+    if supersede {
+        admit_expert_op(
+            rt,
+            StructuralOp::Reactivate {
+                target: expert_target(rt),
+                result: Some(expert_spec(2)),
+            },
+        );
+    }
+}
+
+/// Admit one structural operation on expert `x` through the real admission path.
+fn admit_expert_op(rt: &mut PtrRuntime, op: StructuralOp) {
+    let proposer = ProposerRef::new(project(), PodId::from("meta"), Generation(1)).unwrap();
     let proposal = ExpertProposal::new(
         project(),
         proposer.clone(),
         CommitIndex(1),
-        StructuralOp::Birth { result: spec },
+        op,
         RationaleDigest::new([7; 32]).unwrap(),
     )
     .unwrap();
@@ -118,7 +175,6 @@ fn birth_expert(rt: &mut PtrRuntime) {
         )
         .unwrap()
         .bind(subject);
-    prime(rt);
     let grant = ExpertAdmissionGrant::new(
         project(),
         proposer,
@@ -302,6 +358,8 @@ fn frame(
             base_model: element("model"),
             adapters: vec![element("adapter")],
             experts: vec![ChainElement {
+                // The registry's manifest digest of the expert's generation 1.
+                digest: [1; 32],
                 fence_epoch: expert_epoch(world),
                 ..element(EXPERT)
             }],
@@ -352,6 +410,9 @@ fn ledger_target(subject: &str) -> String {
 }
 
 fn invalidate(world: &mut World, subject: &str, supersede: bool) {
+    if subject == EXPERT {
+        return invalidate_expert(&mut world.runtime, supersede);
+    }
     let target = ledger_target(subject);
     let event = if supersede {
         LedgerEvent::CapsuleSuperseded {

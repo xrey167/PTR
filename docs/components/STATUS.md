@@ -5,7 +5,7 @@
 
 **Component count:** 34  
 **Maturity distribution:** `foundation`: 1, `prototype`: 33  
-**Rust footprint:** 385 source files · 195954 nonblank source lines · 312 integration-test files · 4609 test markers (`#[test]`, `#[tokio::test]`)
+**Rust footprint:** 385 source files · 195996 nonblank source lines · 312 integration-test files · 4609 test markers (`#[test]`, `#[tokio::test]`)
 
 | Component | Maturity | Rust files | LOC | Test files | Tests | Implemented items | Missing items | Experiments | Evaluations |
 |---|---:|---:|---:|---:|---:|---:|---:|---|---|
@@ -34,7 +34,7 @@
 | [ptr-podwire](../../crates/ptr-podwire/README.md) | `prototype` | 5 | 5755 | 5 | 110 | 45 | 17 | E007:frozen | — |
 | [ptr-protocol](../../crates/ptr-protocol/README.md) | `prototype` | 10 | 7179 | 4 | 139 | 20 | 6 | R002:planned, E001:planned, E007:frozen, E008:planned | network-codec:open, local-serialization:open |
 | [ptr-router](../../crates/ptr-router/README.md) | `prototype` | 18 | 9727 | 14 | 216 | 32 | 9 | M004:planned, R002:planned, E003:planned | inference-serving:open, distributed-data-compute:open |
-| [ptr-runtime](../../crates/ptr-runtime/README.md) | `prototype` | 65 | 57881 | 99 | 1494 | 172 | 59 | E001:planned, E003:planned, E004:planned, E007:frozen, E008:planned, L001-v2:frozen, R011:frozen, R012:frozen | — |
+| [ptr-runtime](../../crates/ptr-runtime/README.md) | `prototype` | 65 | 57923 | 99 | 1494 | 173 | 59 | E001:planned, E003:planned, E004:planned, E007:frozen, E008:planned, L001-v2:frozen, R011:frozen, R012:frozen | — |
 | [ptr-search](../../crates/ptr-search/README.md) | `prototype` | 5 | 2480 | 6 | 82 | 14 | 6 | Q001:planned, Q002:frozen, E002:planned, E003:planned | lexical-search:open, local-vector-search:open, gpu-vector-search:open, distributed-search:open, structural-code-search:open |
 | [ptr-security](../../crates/ptr-security/README.md) | `prototype` | 1 | 126 | 2 | 8 | 6 | 4 | L001:superseded, E001:planned | security-context:open |
 | [ptr-semdb](../../crates/ptr-semdb/README.md) | `prototype` | 2 | 864 | 4 | 37 | 20 | 5 | S001:frozen, S002:frozen, E004:planned | semantic-db:open |

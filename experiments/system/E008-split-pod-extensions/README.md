@@ -29,6 +29,10 @@ The harness prints every Part A metric of this manifest (`reuse_after_raw_ancest
 The three controls are external baselines (small caches written for the harness), not the product with one mechanism removed: a control that trips shows the probe can see the failure it names. `matrix_frame_bijection_violations` is mainly a coverage check (the slot/kind mapping is a bijection and every kind is reached by a frame the harness builds), not a falsifier of a stale or tainted serve.
 
 ### Notes for the mutation plan (draft, not part of any freeze)
+The harness prints `procedure.scale` and `procedure.seed_is_declared` but does not judge them: a custom-scale run or an undeclared seed can exit 0. As in E007 (`aggregate.py`), the E008 aggregate must refuse such a record as invalid (Codex P1 on PR #167, assigned to the aggregate of the registration package).
+
+Part B's `REJECTION_KINDS` does not list the assembler's `deadline_too_far` and `frame_too_large`, so a regression of either over the socket is not a coverage failure; the preregistration adds both kinds with a network case each (Codex P2 on PR #167).
+
 Every matrix frame carries the current digests and the invalidation also ends the generation's validity, so validity refuses before a digest comparison decides: removing `InputDigestMismatch` or the upstream manifest-digest check alone would keep all 45 cells green. The preregistration needs a digest-only sensitivity case (a live generation whose authoritative digest changed, or a forged frame digest) before those two mutations can be killed (Codex P2 on PR #167).
 
 The fence epoch of an expert is the runtime's own (`RuntimeStageLiveness::fence_epoch`, the expert registry's committed state version), and the harness fences and readmits its experts through the real authority path.
