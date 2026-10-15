@@ -2977,8 +2977,12 @@ impl PtrRuntime {
             } => {
                 let target = capsule.to_string();
                 // Until target keys are a cross-component tagged union, prevent
-                // capsule IDs from impersonating the two reserved namespaces.
-                if target.starts_with("constraint:") || target.starts_with("procedure:") {
+                // capsule IDs from impersonating the reserved namespaces. `expert:` belongs to
+                // the expert registry, which alone answers for an expert's lifecycle.
+                if target.starts_with("constraint:")
+                    || target.starts_with("procedure:")
+                    || target.starts_with(ptr_state::EXPERT_PREFIX)
+                {
                     return Err(RuntimeError::ReservedTargetNamespace { target });
                 }
                 if let Some(current) = self.capsule_projects.get(&target) {

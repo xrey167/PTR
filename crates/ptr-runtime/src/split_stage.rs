@@ -196,8 +196,21 @@ fn entry_fault<V>(entry: &Entry<V>, live: &dyn StageLiveness) -> Option<ChainFau
 fn revalidate_own(own: &UpstreamChain, live: &dyn StageLiveness) -> Result<(), ChainFault> {
     revalidate_element(&own.stage, live)?;
     revalidate_element(&own.base_model, live)?;
-    for element in own.adapters.iter().chain(&own.experts) {
+    for element in &own.adapters {
         revalidate_element(element, live)?;
+    }
+    // An own expert is fenced like an upstream one: a fence leaves its generation live, so the
+    // recorded epoch must still be the committed one (fail closed on an unrecorded epoch 0).
+    for expert in &own.experts {
+        revalidate_element(expert, live)?;
+        let current = live.fence_epoch(&expert.identity);
+        if expert.fence_epoch == 0 || current != Some(expert.fence_epoch) {
+            return Err(ChainFault::StaleFence {
+                identity: expert.identity.clone(),
+                recorded: expert.fence_epoch,
+                current,
+            });
+        }
     }
     Ok(())
 }
@@ -914,6 +927,27 @@ mod tests {
             admit_frame(&frame(with(4), 5, 1.0), KvReuseMode::Exact, &live),
             Err(ChainFault::StaleFence { current: None, .. })
         ));
+    }
+
+    #[test]
+    fn a_fenced_expert_of_the_own_chain_ends_a_v1_entry_without_the_revoke_message() {
+        let live = live();
+        live.commit("own-expert", 1);
+        live.fence.borrow_mut().insert("own-expert".to_owned(), 2);
+        let own = UpstreamChain {
+            experts: vec![ChainElement {
+                fence_epoch: 2,
+                ..element("own-expert", 1)
+            }],
+            ..own_chain()
+        };
+        let first = admitted(&live, 1.0);
+        let mut cache: SplitStageCache<&str> = SplitStageCache::new(4);
+        let key = cache.store(&[&first], &own, "kv", &live).unwrap();
+        assert_eq!(cache.lookup(&key, &live), Ok(&"kv"));
+        // Fenced: the generation stays live, only the committed epoch moves.
+        live.fence.borrow_mut().insert("own-expert".to_owned(), 3);
+        assert!(cache.lookup(&key, &live).is_err());
     }
 
     #[test]

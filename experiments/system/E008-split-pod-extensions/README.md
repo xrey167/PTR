@@ -31,6 +31,8 @@ The three controls are external baselines (small caches written for the harness)
 ### Notes for the mutation plan (draft, not part of any freeze)
 The harness prints `procedure.scale` and `procedure.seed_is_declared` but does not judge them: a custom-scale run or an undeclared seed can exit 0. As in E007 (`aggregate.py`), the E008 aggregate must refuse such a record as invalid (Codex P1 on PR #167, assigned to the aggregate of the registration package).
 
+Part B's replay case registers the new endpoint identity only after the old frame completed, so it exercises the tombstones copied at registration and would still pass without the cross-identity check (`sibling_tombstone`); the preregistration adds a case that registers the new identity while the old one holds an incomplete frame, completes it under the old identity and replays it under the new one (Codex P2 on PR #167).
+
 Part B's `REJECTION_KINDS` does not list the assembler's `deadline_too_far` and `frame_too_large`, so a regression of either over the socket is not a coverage failure; the preregistration adds both kinds with a network case each (Codex P2 on PR #167).
 
 Every matrix frame carries the current digests and the invalidation also ends the generation's validity, so validity refuses before a digest comparison decides: removing `InputDigestMismatch` or the upstream manifest-digest check alone would keep all 45 cells green. The preregistration needs a digest-only sensitivity case (a live generation whose authoritative digest changed, or a forged frame digest) before those two mutations can be killed (Codex P2 on PR #167).
