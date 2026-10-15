@@ -5,6 +5,6 @@
 fn the_compiled_flag_follows_the_feature_and_the_target() {
     assert_eq!(
         ptr_fabric::CUDA_IPC_COMPILED,
-        cfg!(all(feature = "cuda-ipc", target_os = "linux"))
+        cfg!(all(feature = "cuda-ipc-core", target_os = "linux"))
     );
 }

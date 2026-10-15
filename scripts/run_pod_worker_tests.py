@@ -36,6 +36,7 @@ import tempfile
 TARGETS = (
     ("ptr-fabric", "worker-supervisor", "worker_supervisor"),
     ("ptr-worker", "data-plane,fault-injection", "pod_data_plane"),
+    ("ptr-worker", "data-plane", "staging_guardian"),
 )
 
 

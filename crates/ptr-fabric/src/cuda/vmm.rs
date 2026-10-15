@@ -28,6 +28,38 @@ use super::footprint::footprint_vmm;
 use super::record::{check_import, padding_is_zero, ExportRecord, ImportExpectation};
 use super::CudaError;
 
+/// A `CUmemLocation` naming the device `id`. The struct changed shape between `cudarc`'s
+/// bindings (`{ type_, id }` up to CUDA 13.1, `{ type_, union { id, .. } }` from 13.2), and a
+/// build that names no fixed version gets whichever its toolkit (or the newest) selects. Every
+/// shape is a 4-byte type followed by a 4-byte union or integer whose first member is the
+/// device ordinal, so write the ordinal there; `device_location_layout_holds` pins the sizes.
+fn device_location(id: i32) -> Result<sys::CUmemLocation, CudaError> {
+    // The newest layout holds the device in a one-byte member of the union next to the plain
+    // integer; no host has 256 devices, and an ordinal that would not fit it is refused rather
+    // than truncated.
+    if !(0..=255).contains(&id) {
+        return Err(CudaError::NoSuchDevice {
+            ordinal: u32::try_from(id).unwrap_or(u32::MAX),
+        });
+    }
+    // SAFETY: `CUmemLocation` is plain C data and the all-zero pattern is a valid value of it
+    // (location type 0 is the invalid-location enumerator, the union is integers).
+    let mut location: sys::CUmemLocation = unsafe { std::mem::zeroed() };
+    location.type_ = sys::CUmemLocationType::CU_MEM_LOCATION_TYPE_DEVICE;
+    let offset = std::mem::size_of::<sys::CUmemLocationType>();
+    // SAFETY: the struct is 8 bytes (checked by the layout test); bytes `offset..offset + 4`
+    // belong to the ordinal (a `c_int`, or the first member of the union that holds it), and
+    // the field is 4-byte aligned after a 4-byte enum.
+    unsafe {
+        (&mut location as *mut sys::CUmemLocation)
+            .cast::<u8>()
+            .add(offset)
+            .cast::<std::ffi::c_int>()
+            .write(id);
+    }
+    Ok(location)
+}
+
 /// The allocation properties of a POSIX-descriptor-exportable pinned allocation on `ordinal`.
 fn allocation_prop(ordinal: u32) -> Result<sys::CUmemAllocationProp, CudaError> {
     let id = i32::try_from(ordinal).map_err(|_| CudaError::Overflow)?;
@@ -35,10 +67,7 @@ fn allocation_prop(ordinal: u32) -> Result<sys::CUmemAllocationProp, CudaError> 
         type_: sys::CUmemAllocationType::CU_MEM_ALLOCATION_TYPE_PINNED,
         requestedHandleTypes:
             sys::CUmemAllocationHandleType::CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR,
-        location: sys::CUmemLocation {
-            type_: sys::CUmemLocationType::CU_MEM_LOCATION_TYPE_DEVICE,
-            id,
-        },
+        location: device_location(id)?,
         win32HandleMetaData: std::ptr::null_mut(),
         allocFlags: sys::CUmemAllocationProp_st__bindgen_ty_1 {
             compressionType: 0,
@@ -79,10 +108,7 @@ fn access_desc(
 ) -> Result<sys::CUmemAccessDesc, CudaError> {
     let id = i32::try_from(ordinal).map_err(|_| CudaError::Overflow)?;
     Ok(sys::CUmemAccessDesc {
-        location: sys::CUmemLocation {
-            type_: sys::CUmemLocationType::CU_MEM_LOCATION_TYPE_DEVICE,
-            id,
-        },
+        location: device_location(id)?,
         flags,
     })
 }
@@ -549,4 +575,34 @@ pub fn audit_export_padding(
         padding_len: record.size - expected.byte_len,
         all_zero: padding_is_zero(&whole, byte_len),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn device_location_layout_holds() {
+        // Every `cudarc` binding shape is a 4-byte type followed by a 4-byte ordinal.
+        assert_eq!(std::mem::size_of::<sys::CUmemLocationType>(), 4);
+        assert_eq!(std::mem::size_of::<sys::CUmemLocation>(), 8);
+        let location = device_location(3).expect("a small ordinal");
+        // Under the fixed 12.8 bindings the struct has the field itself: read it as such.
+        #[cfg(feature = "cuda-ipc")]
+        assert_eq!(location.id, 3);
+        assert!(device_location(256).is_err() && device_location(-1).is_err());
+        assert_eq!(
+            location.type_,
+            sys::CUmemLocationType::CU_MEM_LOCATION_TYPE_DEVICE
+        );
+        // SAFETY: reading back the 4 bytes after the type of an 8-byte plain-data struct.
+        let ordinal = unsafe {
+            (&location as *const sys::CUmemLocation)
+                .cast::<u8>()
+                .add(4)
+                .cast::<std::ffi::c_int>()
+                .read()
+        };
+        assert_eq!(ordinal, 3);
+    }
 }

@@ -271,8 +271,15 @@ jobs:
       - run: cargo +stable test -p ptr-fabric --features cuda-ipc --locked
       - run: cargo +stable clippy -p ptr-fabric --features cuda-ipc,worker-channel --all-targets --locked -- -D warnings
       - run: cargo +stable test -p ptr-fabric --features cuda-ipc,worker-channel --locked
+      - run: cargo +stable clippy -p ptr-fabric --features cuda-ipc-core --all-targets --locked -- -D warnings
+      - run: cargo +stable test -p ptr-fabric --features cuda-ipc-core --locked
+      - run: cargo +stable clippy -p ptr-fabric --features cuda-ipc,worker-supervisor --all-targets --locked -- -D warnings
+      - run: cargo +stable test -p ptr-fabric --features cuda-ipc,worker-supervisor --locked
+      - run: cargo +stable clippy -p ptr-worker --features cuda-ipc --all-targets --locked -- -D warnings
+      - run: cargo +stable test -p ptr-worker --features cuda-ipc --lib --bins --test staging_guardian --locked
       - run: rustup toolchain install 1.99.0 --profile minimal
       - run: cargo +1.99.0 test -p ptr-fabric --features cuda-ipc --locked
+      - run: cargo +1.99.0 test -p ptr-fabric --features cuda-ipc-core --locked
 
   pod-worker:
     runs-on: ubuntu-latest
@@ -286,6 +293,7 @@ jobs:
       - run: cargo +stable clippy -p ptr-worker --features data-plane --all-targets --locked -- -D warnings
       - run: cargo +stable clippy -p ptr-worker --all-features --all-targets --locked -- -D warnings
       - run: cargo +stable test -p ptr-fabric --features worker-supervisor --lib --locked
+      - run: cargo +stable test -p ptr-fabric --features worker-supervisor --test staging_pool --locked
       - run: cargo +stable test -p ptr-worker --all-features --lib --bins --test stdio_session --locked
       - run: python scripts/run_pod_worker_tests.py --toolchain stable
       - run: rustup toolchain install 1.99.0 --profile minimal

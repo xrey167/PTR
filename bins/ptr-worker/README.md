@@ -20,6 +20,9 @@ ptr-worker serve [--stdio]  serve one session on stdin/stdout
 ptr-worker serve --channel-fd <n> [--confined]
                             serve one session over an inherited SOCK_SEQPACKET channel
                             (Linux, feature data-plane)
+ptr-worker guardian --channel-fd <n> --backend fake|cuda
+                            hold the staging buffers of the CUDA carriers for the supervisor
+                            (Linux, feature data-plane; `cuda` needs cuda-ipc or cuda-ipc-core)
 ```
 
 Stdout is the protocol channel and carries nothing else; diagnostics go to stderr and never
@@ -115,6 +118,45 @@ signature and a silent worker. Tests that need root skip with a printed reason; 
 (`make ci-pod-worker`) builds the test binaries as the runner user and runs them under
 `sudo -E` (`scripts/run_pod_worker_tests.py`). The `fault-injection` feature adds
 `--fault bad-signature|silent|carrier-swap|tamper-field|region-unsealed|region-wrong-size|region-not-memfd` to the worker, and the "keeps its mapping after `Consumed`" hook, for those tests and is never part of a release build.
+
+## The CUDA staging lifecycle (stage S3, Linux, feature `data-plane`)
+
+`docs/architecture/42-pod-data-plane.md` rules 3, 3a and 3b: the staging buffers a `CudaIpc` or
+`DevicePeer` export is made from are owned by the supervisor and held by a **guardian** process,
+not by a worker.
+
+```text
+StagingHost (lib: staging_host) --StagingPool + ExportRegistry-->  RemoteBackend --Channel--> ptr-worker guardian
+   |  reap_worker / watch / shutdown / recycle                               (holds a StagingBackend: fake or CUDA;
+   v                                                                          reads only this channel; not seccomp)
+PodHost  --Supervisor-->  workers (own cgroup, uid, netns, seccomp)
+```
+
+- **Guardian (`guardian --channel-fd <n> --backend fake|cuda`, module `guardian`).** Serves
+  `ptr_fabric::serve_guardian` on the inherited channel: allocate, fill, export (a descriptor
+  rides with the reply), scrub, release. It accepts no worker input (a request with a descriptor is
+  refused), runs in a cgroup and network namespace of its own with no capabilities and
+  `no_new_privs`, and is **not** seccomp-confined: it is the supervisor's own code and needs the
+  driver calls the worker allowlist forbids. `fake` is the memfd-backed CPU double used by the tests
+  and on a host without a GPU; `cuda` needs a build with `cuda-ipc` (toolkit-free, dynamic loading)
+  or `cuda-ipc-core` and has not run on a GPU.
+- **Host (`StagingHost`, module `staging_host`).** Owns the guardian (`ptr_fabric::GuardianHost`),
+  the pool over it and the export registry. `issue_export` leases a buffer and issues the record;
+  `admit_import` consumes the record once; `reap_worker` reaps through the `PodHost` and then tells
+  the pool (which frees a buffer only after **both** its domains were reaped and makes it reusable
+  after its consumer's reap) and the registry. **Order:** `shutdown` reaps every worker domain
+  first and the guardian last, logging each step with its time and whether the guardian was still
+  alive; `watch` notices a dead guardian, terminates and reaps every worker whose buffers it held
+  (a typed `StagingEvent::GuardianLost` names them), drops the pool, charges and records, and
+  reaps the guardian's remains last. The loss is stored, so a worker reap that fails is retried by the next `watch`; a guardian that stops answering (request timeout) is killed and counts as lost. End a `StagingHost` with `shutdown` (a drop that still backs workers only warns). A producer-quota refusal comes with `recovery_plan`, and
+  `recycle` reaps the producer and the listed consumers, oldest export first.
+- **Not built.** The staging host is not in `PodHost`'s produce/admit/consume path (no CUDA handle
+  is produced or consumed through it yet), there is no adapter from the pool's per-session
+  `FootprintSink` to `SharedHostQuota`, and the CUDA backend has never run on a GPU.
+
+Tests: `tests/staging_guardian.rs` (feature `data-plane`, runs unprivileged and as root) uses a
+real guardian process and real workers; the GPU test in it is `#[ignore]`. CI: `pod-worker`
+(`scripts/run_pod_worker_tests.py`) and `fabric-cuda-check`.
 
 ## What it does not do
 

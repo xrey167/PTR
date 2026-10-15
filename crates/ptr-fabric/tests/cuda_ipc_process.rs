@@ -5,7 +5,11 @@
 //!
 //! The test needs an NVIDIA GPU and driver, so it is `#[ignore]`d; run it on the owner's PC per
 //! docs/GPU_HANDOVER.md. The child helper does nothing when run as an ordinary test.
-#![cfg(all(feature = "cuda-ipc", feature = "worker-channel", target_os = "linux"))]
+#![cfg(all(
+    feature = "cuda-ipc-core",
+    feature = "worker-channel",
+    target_os = "linux"
+))]
 
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
 use std::process::{Command, Stdio};

@@ -186,6 +186,16 @@ impl Channel {
         Ok((Self { fd: left }, Self { fd: right }))
     }
 
+    /// A second handle on the same socket (`F_DUPFD_CLOEXEC`): both ends of the duplication send
+    /// and receive on the one connection, so use it when one party owns the lifecycle (the
+    /// supervisor's worker table) and another needs to talk (a request stub).
+    pub fn try_clone(&self) -> Result<Self, ChannelError> {
+        self.fd
+            .try_clone()
+            .map(|fd| Self { fd })
+            .map_err(|error| ChannelError::Io(error.to_string()))
+    }
+
     /// Wrap an already connected socket, for example the one inherited from the supervisor.
     /// Refuses a descriptor that is not a `SOCK_SEQPACKET` socket, because only that type keeps
     /// frame boundaries.
