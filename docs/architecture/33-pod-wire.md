@@ -298,7 +298,9 @@ fields its layout has.
   the entry names another namespace. The entry must also be registered at the bound
   generation (`PodRegistry::register_at`); a binding for generation 2 over an entry registered
   as generation 1, or without a generation, is refused, and `resolve_bound` stops resolving once
-  the entry names another generation.
+  the entry names another generation. The answer path resolves exactly that captured binding,
+  never a fresh lookup by pod id and manifest, and an addressed binding at generation 0 is
+  refused (no pod revision has it).
 - **`PodCall.deadline_ms`** (proto field 7, optional) carries the same value in the protobuf
   adapter; zero is refused, absence means none. `RouteConstraints.deadline` replaces the
   `Timestamp(0)` placeholder in `PodRoute`.

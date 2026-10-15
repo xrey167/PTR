@@ -13,12 +13,10 @@
 //! the project is looked up from the authenticated peer, in the same table and for
 //! the same reason that the execution wire looks up a principal.
 use crate::frame::RefusalCode;
-#[cfg(feature = "podwire-backend")]
-use ptr_pods::PodManifest;
 use ptr_pods::PodRegistry;
-use ptr_protocol::TypedPayload;
 #[cfg(feature = "podwire-backend")]
-use ptr_types::PodId;
+use ptr_pods::RegisteredPodBinding;
+use ptr_protocol::TypedPayload;
 use ptr_types::{CapabilityId, Effect, NodeId, ProjectId, TypeId};
 use ptr_verifier::{VerificationStatus, Verifier};
 use std::collections::{BTreeMap, BTreeSet};
@@ -201,7 +199,9 @@ where
 
 /// Resolve and run the exact Pod captured by an admitted generation-bound
 /// binding. Unlike [`answer`], this path never performs a fresh capability-only
-/// selection after the binding has been accepted.
+/// selection after the binding has been accepted: the registry entry must still be
+/// the captured one ([`PodRegistry::resolve_bound`]: same manifest, namespace and
+/// generation), so a re-registration after the binding was made is not invoked.
 #[cfg(feature = "podwire-backend")]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn answer_bound<V>(
@@ -209,8 +209,7 @@ pub(crate) fn answer_bound<V>(
     registry: &PodRegistry,
     verifier: &V,
     peer: &NodeId,
-    pod_id: &PodId,
-    expected_manifest: &PodManifest,
+    bound: &RegisteredPodBinding,
     capability: &CapabilityId,
     expect_protocol: u32,
     payload: TypedPayload,
@@ -219,13 +218,11 @@ where
     V: Verifier<TypedPayload> + ?Sized,
 {
     let scope = policy.scope(peer).ok_or(RefusalCode::NotAdmitted)?;
-    if scope.project() != &expected_manifest.project || !scope.covers(capability, &payload.type_id)
-    {
+    if scope.project() != bound.project() || !scope.covers(capability, &payload.type_id) {
         return Err(RefusalCode::Unavailable);
     }
     let pod = registry
-        .get(&expected_manifest.project, pod_id)
-        .filter(|pod| pod.manifest() == expected_manifest)
+        .resolve_bound(bound)
         .ok_or(RefusalCode::Unavailable)?;
     let manifest = pod.manifest();
     if manifest
@@ -246,4 +243,91 @@ where
         return Err(RefusalCode::Unverified);
     }
     Ok(output)
+}
+
+#[cfg(all(test, feature = "podwire-backend"))]
+mod bound_tests {
+    use super::*;
+    use ptr_pods::{DynPod, PodManifest};
+    use ptr_types::{Generation, NamespaceId, PodId, Probability, VerificationLevel};
+    use ptr_verifier::VerificationReport;
+    use std::sync::Arc;
+
+    struct Echo(PodManifest);
+    impl DynPod for Echo {
+        fn manifest(&self) -> &PodManifest {
+            &self.0
+        }
+        fn invoke(&self, input: TypedPayload) -> Result<TypedPayload, String> {
+            Ok(input)
+        }
+    }
+
+    struct Pass;
+    impl Verifier<TypedPayload> for Pass {
+        fn verify(&self, _: &TypedPayload) -> VerificationReport {
+            VerificationReport {
+                status: VerificationStatus::Pass,
+                level: VerificationLevel::Deterministic,
+                score: Probability::new(1.0).unwrap(),
+                findings: vec![],
+            }
+        }
+    }
+
+    fn echo() -> Arc<Echo> {
+        Arc::new(Echo(PodManifest {
+            project: ProjectId::from("p"),
+            id: PodId::from("echo"),
+            capabilities: vec![CapabilityId::from("Echo")],
+            accepts: vec![TypeId::from("Text")],
+            produces: vec![TypeId::from("Text")],
+            effects: vec![Effect::Pure],
+            protocol_version: 1,
+        }))
+    }
+
+    /// The bound path resolves the captured binding: an entry re-registered with the same
+    /// manifest under another generation or namespace after the binding was taken is not
+    /// invoked.
+    #[test]
+    fn a_re_registration_after_binding_is_not_invoked() {
+        let peer = NodeId("peer".into());
+        let mut policy = PodAccessPolicy::new();
+        policy
+            .admit(
+                peer.clone(),
+                PodScope::new(ProjectId::from("p"))
+                    .allow(CapabilityId::from("Echo"), TypeId::from("Text")),
+            )
+            .unwrap();
+        let payload = || TypedPayload {
+            type_id: TypeId::from("Text"),
+            bytes: b"hi".to_vec(),
+        };
+        let mut registry = PodRegistry::default();
+        registry.register_at(NamespaceId::from("ns"), Generation(1), echo());
+        let bound = registry
+            .bind_registered(&ProjectId::from("p"), &PodId::from("echo"))
+            .unwrap();
+        let ask = |registry: &PodRegistry| {
+            answer_bound(
+                &policy,
+                registry,
+                &Pass,
+                &peer,
+                &bound,
+                &CapabilityId::from("Echo"),
+                1,
+                payload(),
+            )
+        };
+        assert!(ask(&registry).is_ok());
+        registry.register_at(NamespaceId::from("ns"), Generation(2), echo());
+        assert_eq!(ask(&registry), Err(RefusalCode::Unavailable));
+        registry.register_at(NamespaceId::from("other"), Generation(1), echo());
+        assert_eq!(ask(&registry), Err(RefusalCode::Unavailable));
+        registry.register_at(NamespaceId::from("ns"), Generation(1), echo());
+        assert!(ask(&registry).is_ok());
+    }
 }

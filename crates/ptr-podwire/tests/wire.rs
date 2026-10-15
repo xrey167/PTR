@@ -514,6 +514,27 @@ async fn an_addressed_binding_needs_the_registered_generation() {
     ));
     assert!(bind(Generation(1)).is_ok());
 
+    // No pod revision has generation 0, also when an entry was registered so.
+    let mut zero = PodRegistry::default();
+    zero.register_at(
+        ptr_types::NamespaceId::from("test"),
+        Generation(0),
+        pod("alpha", &invocations),
+    );
+    let zero_host = PodHost::bind(zero, PodAccessPolicy::new(), Pass)
+        .await
+        .unwrap();
+    assert!(matches!(
+        zero_host.bind_v2_addressed(
+            &project,
+            &pod_id,
+            ArtifactId::from("summarizer-artifact"),
+            Generation(0),
+            Revision(9),
+        ),
+        Err(PodWireError::V2BindingUnavailable)
+    ));
+
     let mut unversioned = PodRegistry::default();
     unversioned.register_in_namespace(
         ptr_types::NamespaceId::from("test"),
