@@ -61,6 +61,52 @@
 //! call gets a refusal it can report and the tests can observe, and no allowlist entry is
 //! reachable through it. [`DenyAction::KillProcess`] is available for a supervisor that prefers
 //! the worker to die on the first forbidden call.
+//!
+//! # The GPU profile
+//!
+//! A worker that must call the CUDA driver cannot run under the allowlist above: the driver
+//! talks to the kernel with `ioctl` on `/dev/nvidiactl`, `/dev/nvidia<N>` and `/dev/nvidia-uvm`,
+//! and the three requests the worker allowlist permits are none of them. [`SeccompProfile::Gpu`]
+//! is the second allowlist ([`gpu_worker_allowlist`], [`install_gpu_worker_seccomp`]). It is the
+//! worker allowlist with **one** change, listed with its reason in
+//! [`GPU_ALLOWLIST_CHANGES`]: `ioctl` accepts any request on any descriptor except thirteen that
+//! no driver uses (terminal injection and control: `TIOCSTI`, `TIOCLINUX`, `TIOCCONS`,
+//! `TIOCSETD`, `TIOCSPGRP`, `TIOCSCTTY`, `TIOCNOTTY`, `TIOCVHANGUP`; opening a new descriptor:
+//! `TIOCGPTPEER`, `SIOCUNIXFILE`; signal routing that would reopen the `F_SETOWN` the base list
+//! refuses: `FIOASYNC`, `FIOSETOWN`, `SIOCSPGRP`). `mmap`, `munmap`, `mprotect`, `mremap` and
+//! `madvise` are already allowed without a descriptor or protection restriction in the base list
+//! (its known limit above), so the driver's mappings need nothing more. Everything that opens a
+//! new resource stays refused: `open`, `openat`, `socket`, `socketpair`, `connect`, `bind`,
+//! `accept`, `pidfd_getfd`, `pidfd_open`, `ptrace`, `process_vm_*`, `io_uring_*`, `fork`,
+//! `execve`, `unshare` and `setns`.
+//!
+//! The thirteen are a denylist inside an allowlist, not a fence: the other `SIOC*` (socket and
+//! network) and `FS_IOC_*` (file system) families stay reachable on any descriptor the worker
+//! holds, the control socket and the received memfds included. The ones that change anything
+//! need `CAP_NET_ADMIN` or `CAP_SYS_ADMIN`, so the profile **depends on the worker holding no
+//! capability**. That is done by the supervisor, not by this module: `Supervisor::spawn` drops
+//! the bounding set and clears the ambient set (step 4, `PR_CAPBSET_DROP` and
+//! `PR_CAP_AMBIENT_CLEAR_ALL`) and then calls `capset` to empty (step 6) in the forked child
+//! before `exec`, `crates/ptr-fabric/src/supervisor.rs` (module docs lines 21 and 24, code
+//! near lines 1111 to 1147), with `no_new_privs`; `install_gpu_worker_seccomp` itself drops
+//! nothing. A GPU worker started any other way must hold no capabilities for this profile to
+//! mean what it says.
+//!
+//! This is a **weaker** confinement and it is reported as one. The driver's ioctl surface is
+//! large and reaches kernel code (the NVIDIA kernel modules) that this crate neither audits nor
+//! can restrict by request number: the requests are the driver's, they are not stable across
+//! driver versions, and `nvidia-uvm` uses plain numbers where `nvidiactl` uses `_IOWR('F', ..)`
+//! codes. A bug in the driver reachable through an ioctl on a descriptor the worker already holds
+//! is reachable by a compromised GPU worker; the CPU profile has no such surface. The profile is
+//! therefore a value ([`SeccompProfile`]) that travels with the confinement
+//! ([`WorkerConfinement`]), the worker proves which filter it runs by its own probe
+//! ([`probe_profile_calls`], [`observed_profile`]), and [`carrier_permitted_for`] decides the
+//! carriers from both. Nothing here has run on a GPU: the allowlist is built from the driver's
+//! documented behaviour and is unverified until `tests/gpu_worker.rs` has run on a card.
+//!
+//! The order is fixed by the filter: CUDA must be initialised **before** it is installed
+//! (`prepare_gpu_worker` in the `cuda` module, then `GpuPrepared::install_gpu_filter`), because
+//! the driver opens its device nodes lazily and `open` is refused afterwards.
 
 use std::ffi::{c_int, c_long, c_ulong, CString};
 use std::fmt;
@@ -225,6 +271,89 @@ pub fn carrier_permitted(carrier: Carrier, confinement: &Confinement) -> bool {
         Carrier::Bytes | Carrier::Remote => true,
         Carrier::HostShm | Carrier::CudaIpc | Carrier::DevicePeer | Carrier::PinnedHost => {
             matches!(confinement, Confinement::Full)
+        }
+        Carrier::InProcess | Carrier::NvmeFile => false,
+    }
+}
+
+/// Which seccomp allowlist a worker installs.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub enum SeccompProfile {
+    /// The worker allowlist ([`worker_allowlist`]): no driver, `ioctl` only `FIONBIO`, `FIOCLEX`
+    /// and `FIONCLEX`.
+    #[default]
+    Cpu,
+    /// The worker allowlist with `ioctl` widened for the CUDA driver
+    /// ([`gpu_worker_allowlist`]). A weaker confinement: see [`GPU_PROFILE_WEAKENING`].
+    Gpu,
+}
+
+impl SeccompProfile {
+    /// Every profile.
+    pub const ALL: [SeccompProfile; 2] = [SeccompProfile::Cpu, SeccompProfile::Gpu];
+
+    /// What this profile gives up against the CPU profile, or `None` for the CPU profile itself.
+    pub fn weakening(self) -> Option<&'static str> {
+        match self {
+            Self::Cpu => None,
+            Self::Gpu => Some(GPU_PROFILE_WEAKENING),
+        }
+    }
+}
+
+/// What the GPU profile gives up, stated for the host's records.
+pub const GPU_PROFILE_WEAKENING: &str =
+    "ioctl is allowed with any request on any descriptor the worker holds, except thirteen that no \
+driver uses (TIOCSTI, TIOCLINUX, TIOCCONS, TIOCSETD, TIOCSPGRP, TIOCSCTTY, TIOCNOTTY, TIOCVHANGUP, TIOCGPTPEER, SIOCUNIXFILE, FIOASYNC, FIOSETOWN, SIOCSPGRP): the NVIDIA \
+kernel modules' ioctl surface is reachable from the worker, and this crate can neither audit nor \
+narrow it (unverified on a GPU)";
+
+/// The confinement of a worker together with the seccomp profile it runs under: what the host
+/// records. [`Confinement`] alone says which mechanisms are applied; it does not say how wide the
+/// seccomp filter is, and a host that matched only on it could not tell a GPU worker from a CPU
+/// one.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkerConfinement {
+    /// The mechanisms applied (and observed).
+    pub confinement: Confinement,
+    /// The filter the worker runs. Supplied by the caller: it must be the profile **observed**
+    /// ([`observed_profile`] on the worker's probe report), not the one that was requested.
+    pub profile: SeccompProfile,
+}
+
+impl WorkerConfinement {
+    pub fn new(confinement: Confinement, profile: SeccompProfile) -> Self {
+        Self {
+            confinement,
+            profile,
+        }
+    }
+
+    /// Whether the worker runs a filter weaker than the CPU worker allowlist.
+    pub fn is_reduced(&self) -> bool {
+        self.profile != SeccompProfile::Cpu
+    }
+}
+
+/// May a worker with this confinement **and** profile exchange tensors by this carrier?
+///
+/// * `Bytes`, `Remote`: always, as in [`carrier_permitted`].
+/// * `HostShm`, `CudaIpc`, `DevicePeer`, `PinnedHost`: only when every mechanism is applied
+///   ([`Confinement::Full`], which includes the seccomp filter of the profile) under either
+///   profile. A GPU-profile worker is the only kind that can use the three CUDA carriers in
+///   fact; the CPU profile keeps its permission as before.
+/// * `InProcess`, `NvmeFile`: never for a worker.
+///
+/// The match on the profile is exhaustive on purpose: a third profile must decide here.
+pub fn carrier_permitted_for(carrier: Carrier, worker: &WorkerConfinement) -> bool {
+    match carrier {
+        Carrier::Bytes | Carrier::Remote => true,
+        Carrier::HostShm | Carrier::CudaIpc | Carrier::DevicePeer | Carrier::PinnedHost => {
+            match worker.profile {
+                SeccompProfile::Cpu | SeccompProfile::Gpu => {
+                    matches!(worker.confinement, Confinement::Full)
+                }
+            }
         }
         Carrier::InProcess | Carrier::NvmeFile => false,
     }
@@ -543,6 +672,86 @@ pub fn probe_forbidden_calls() -> Vec<ForbiddenCall> {
     report
 }
 
+/// The name of the extra entry [`probe_profile_calls`] appends: `ioctl(-1, FIONREAD)`.
+pub const PROFILE_PROBE_CALL: &str = "ioctl_unknown_fd";
+
+/// The seven calls the host requires refused, by name (the same list as the supervisor's
+/// `REQUIRED_REFUSED_CALLS`; a test keeps them equal).
+const PROFILE_REQUIRED_REFUSED: [&str; 7] = [
+    "socket",
+    "socketpair",
+    "fork",
+    "open",
+    "io_uring_setup",
+    "process_vm_readv",
+    "pidfd_open",
+];
+
+/// [`probe_forbidden_calls`] plus one entry, [`PROFILE_PROBE_CALL`], that tells the two profiles
+/// apart: `ioctl(-1, FIONREAD)`. Under the CPU filter the request is not one of the three
+/// allowed, so the answer is `EPERM`; under the GPU filter it passes the filter and the kernel
+/// answers `EBADF` for the descriptor `-1`; in an unconfined process the answer is `EBADF` too,
+/// which is why [`observed_profile`] also requires every forbidden call refused. A worker
+/// replies with this instead of `probe_forbidden_calls` when the host should be able to tell
+/// the profile; the extra entry is ignored by a host that looks only at the seven names.
+pub fn probe_profile_calls() -> Vec<ForbiddenCall> {
+    let mut report = probe_forbidden_calls();
+    // SAFETY: `ioctl` with descriptor -1 fails with `EBADF` before the kernel reads the
+    // argument, and the argument is null anyway; no memory of this process is touched.
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_ioctl,
+            -1 as c_long,
+            libc::FIONREAD as c_ulong,
+            0 as c_ulong,
+        )
+    };
+    report.push(ForbiddenCall {
+        name: PROFILE_PROBE_CALL,
+        errno: if result >= 0 { 0 } else { last_errno() },
+    });
+    report
+}
+
+/// The filter a worker's probe report shows.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ObservedProfile {
+    /// Every forbidden call refused and the wide `ioctl` refused too (`EPERM`).
+    Cpu,
+    /// Every forbidden call refused and the wide `ioctl` reached the kernel (`EBADF`).
+    Gpu,
+    /// A forbidden call is missing from the report or was not refused, or the `ioctl` entry
+    /// is missing or shows another errno: the report does not show a confined worker of either
+    /// profile. A worker must send [`probe_profile_calls`], not [`probe_forbidden_calls`].
+    Unproven,
+}
+
+/// Classify a probe report (name and errno pairs, as a worker sends them). A **self-report** of
+/// a binary the supervisor started: the kernel shows that a filter is installed (`Seccomp: 2`)
+/// but not which, so this is evidence of the same strength as the existing forbidden-call check
+/// and no stronger.
+pub fn observed_profile<'a>(calls: impl IntoIterator<Item = (&'a str, i32)>) -> ObservedProfile {
+    let reported: Vec<(&str, i32)> = calls.into_iter().collect();
+    let errno_of = |name: &str| {
+        reported
+            .iter()
+            .find(|(reported_name, _)| *reported_name == name)
+            .map(|(_, errno)| *errno)
+    };
+    let all_refused = PROFILE_REQUIRED_REFUSED
+        .iter()
+        .all(|name| errno_of(name) == Some(libc::EPERM));
+    if !all_refused {
+        return ObservedProfile::Unproven;
+    }
+    match errno_of(PROFILE_PROBE_CALL) {
+        None => ObservedProfile::Unproven,
+        Some(errno) if errno == libc::EPERM => ObservedProfile::Cpu,
+        Some(errno) if errno == libc::EBADF => ObservedProfile::Gpu,
+        Some(_) => ObservedProfile::Unproven,
+    }
+}
+
 // --- the seccomp allowlist ---------------------------------------------------------------
 
 /// What a denied system call does.
@@ -587,8 +796,62 @@ pub struct AllowedSyscall {
 
 /// The exact allowlist of the worker filter, for documentation and tests.
 pub fn worker_allowlist() -> Vec<AllowedSyscall> {
-    filter::allowlist()
+    filter::allowlist(SeccompProfile::Cpu)
 }
+
+/// The exact allowlist of the GPU profile: [`worker_allowlist`] with the changes of
+/// [`GPU_ALLOWLIST_CHANGES`].
+pub fn gpu_worker_allowlist() -> Vec<AllowedSyscall> {
+    filter::allowlist(SeccompProfile::Gpu)
+}
+
+/// How a GPU-profile entry differs from the worker allowlist.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GpuChangeKind {
+    /// A call the worker allowlist does not have.
+    Added,
+    /// A call the worker allowlist has with an argument restriction, which the GPU profile
+    /// relaxes.
+    Widened,
+}
+
+/// One difference between the GPU profile and the worker allowlist, with its reason.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GpuAllowlistChange {
+    pub name: &'static str,
+    pub kind: GpuChangeKind,
+    pub reason: &'static str,
+}
+
+/// Every difference between [`gpu_worker_allowlist`] and [`worker_allowlist`]; a test compares
+/// the two lists against this one, so a call cannot be added to the GPU profile without a reason
+/// written here.
+///
+/// Considered and **not** added, because the driver is not documented to need them after
+/// initialisation and each one opens or reaches something new: `dup`, `dup3`, `eventfd2`,
+/// `pipe2`, `timerfd_create`, `lseek`, `pread64`, `pwrite64`, `sched_setaffinity`, `prctl` and
+/// `mlock`. If a card shows the
+/// driver failing after the filter, `strace -f` on the test names the refused call; adding it is
+/// a reviewed change of this table, not a runtime option.
+pub const GPU_ALLOWLIST_CHANGES: [GpuAllowlistChange; 1] = [GpuAllowlistChange {
+    name: "ioctl",
+    kind: GpuChangeKind::Widened,
+    reason: "the CUDA driver's only channel into the kernel after initialisation is ioctl on \
+descriptors it opened before the filter (/dev/nvidiactl, /dev/nvidia<N>, /dev/nvidia-uvm): \
+allocation and mapping, VMM import and export, stream and event waits, host registration. The \
+request numbers are the driver's (nvidiactl uses _IOWR('F', ..) codes, nvidia-uvm plain numbers), \
+change with driver versions and cannot be listed without a card, so any request is allowed \
+except the thirteen that no driver uses: TIOCSTI (injects input into a terminal), TIOCLINUX and \
+TIOCCONS (console control and redirection), TIOCSETD (line discipline), TIOCSPGRP, TIOCSCTTY and \
+TIOCNOTTY (foreground group and controlling terminal, which route signals), TIOCVHANGUP (hangs \
+up a terminal for every holder), TIOCGPTPEER (opens the peer of a pseudo-terminal: a new \
+descriptor), SIOCUNIXFILE (opens the file a unix socket is bound to: a new descriptor, the \
+open that openat refuses), and FIOASYNC, FIOSETOWN, SIOCSPGRP (signal routing; the F_SETOWN \
+that fcntl refuses). Not denied, so reachable on non-driver descriptors: the other SIOC* and \
+FS_IOC_* requests; the ones that change anything need CAP_NET_ADMIN or CAP_SYS_ADMIN, so the \
+profile depends on the worker holding no capability (dropped by Supervisor::spawn). \
+Unverified on a GPU.",
+}];
 
 /// Install the worker allowlist with the default deny action (`EPERM`): `PR_SET_NO_NEW_PRIVS`,
 /// then the filter on every thread of the process. Irreversible. Call it in the worker after
@@ -600,14 +863,27 @@ pub fn install_worker_seccomp() -> Result<(), ConfineError> {
 
 /// Like [`install_worker_seccomp`] with a chosen deny action.
 pub fn install_worker_seccomp_with(deny: DenyAction) -> Result<(), ConfineError> {
-    filter::install(deny)
+    filter::install(SeccompProfile::Cpu, deny)
+}
+
+/// Install the GPU-profile allowlist with the default deny action (`EPERM`). Irreversible, and
+/// weaker than [`install_worker_seccomp`] (see [`GPU_PROFILE_WEAKENING`]). Call it only after
+/// the CUDA driver has been initialised and the device context created, because `open` is
+/// refused afterwards; `GpuPrepared::install_gpu_filter` enforces that order.
+pub fn install_gpu_worker_seccomp() -> Result<(), ConfineError> {
+    install_gpu_worker_seccomp_with(DenyAction::Errno)
+}
+
+/// Like [`install_gpu_worker_seccomp`] with a chosen deny action.
+pub fn install_gpu_worker_seccomp_with(deny: DenyAction) -> Result<(), ConfineError> {
+    filter::install(SeccompProfile::Gpu, deny)
 }
 
 /// The filter. The numbers of each supported architecture are written out here (they come from
 /// the kernel's tables, and a test compares the host's against `libc`), so the program for
 /// both architectures is built and tested on any host; only the installing is host-specific.
 mod filter {
-    use super::{AllowedSyscall, ConfineError, DenyAction};
+    use super::{AllowedSyscall, ConfineError, DenyAction, SeccompProfile};
     use std::ffi::{c_long, c_ulong};
 
     /// One architecture: its `AUDIT_ARCH` value and its system call numbers.
@@ -807,7 +1083,28 @@ mod filter {
         libc::F_GET_SEALS as u32,
     ];
 
-    pub(super) fn allowlist() -> Vec<AllowedSyscall> {
+    /// The `ioctl` requests the GPU profile still refuses. None is a driver request: terminal
+    /// control (the first eight), two that open a new descriptor, and three that route signals
+    /// to other processes (the `fcntl` counterpart, `F_SETOWN`, is refused by the base list).
+    pub(super) const GPU_IOCTL_REFUSED: [u32; 13] = [
+        libc::TIOCSTI as u32,
+        libc::TIOCLINUX as u32,
+        libc::TIOCCONS as u32,
+        libc::TIOCSETD as u32,
+        libc::TIOCSPGRP as u32,
+        libc::TIOCSCTTY as u32,
+        libc::TIOCNOTTY as u32,
+        libc::TIOCVHANGUP as u32,
+        libc::TIOCGPTPEER as u32,
+        // SIOCUNIXFILE; `libc` has no constant for it.
+        0x89e0,
+        libc::FIOASYNC as u32,
+        // FIOSETOWN and SIOCSPGRP, its socket spelling; `libc` has no constants for them.
+        0x8901,
+        0x8902,
+    ];
+
+    pub(super) fn allowlist(profile: SeccompProfile) -> Vec<AllowedSyscall> {
         let Some(abi) = host_abi() else {
             return Vec::new();
         };
@@ -829,7 +1126,12 @@ mod filter {
             (
                 "ioctl",
                 abi.ioctl,
-                "request is FIONBIO, FIOCLEX or FIONCLEX",
+                match profile {
+                    SeccompProfile::Cpu => "request is FIONBIO, FIOCLEX or FIONCLEX",
+                    SeccompProfile::Gpu => {
+                        "any request except TIOCSTI, TIOCLINUX, TIOCCONS, TIOCSETD, TIOCSPGRP, TIOCSCTTY, TIOCNOTTY, TIOCVHANGUP, TIOCGPTPEER, SIOCUNIXFILE, FIOASYNC, FIOSETOWN and SIOCSPGRP"
+                    }
+                },
             ),
             (
                 "prlimit64",
@@ -957,6 +1259,27 @@ mod filter {
             self.block(&ops, None);
         }
 
+        /// `number` is allowed unless the low word of argument `arg` is one of `values`.
+        fn allow_arg_not_in(&mut self, number: u32, arg: u32, values: &[u32]) {
+            let mut ops = vec![
+                Op::Jeq {
+                    k: number,
+                    yes: Label::Next,
+                    no: Label::End,
+                },
+                Op::Load(offset_arg_low(arg)),
+            ];
+            for (index, value) in values.iter().enumerate() {
+                let last = index + 1 == values.len();
+                ops.push(Op::Jeq {
+                    k: *value,
+                    yes: Label::Deny,
+                    no: if last { Label::Allow } else { Label::Next },
+                });
+            }
+            self.block(&ops, None);
+        }
+
         fn allow_clone_threads(&mut self, number: u32) {
             self.block(
                 &[
@@ -1030,7 +1353,18 @@ mod filter {
 
     /// The program for `abi`. `tgid` is the thread group the filter is installed in: the only
     /// one `tgkill` may signal.
+    #[cfg(test)]
     pub(super) fn build(abi: &Abi, deny: DenyAction, tgid: u32) -> Vec<libc::sock_filter> {
+        build_profile(abi, SeccompProfile::Cpu, deny, tgid)
+    }
+
+    /// The program for `abi` under `profile`; the CPU profile is [`build`].
+    pub(super) fn build_profile(
+        abi: &Abi,
+        profile: SeccompProfile,
+        deny: DenyAction,
+        tgid: u32,
+    ) -> Vec<libc::sock_filter> {
         let deny_value = match deny {
             DenyAction::Errno => ret_errno(libc::EPERM),
             DenyAction::KillProcess => RET_KILL_PROCESS,
@@ -1046,7 +1380,12 @@ mod filter {
             program.allow(*number);
         }
         program.allow_clone_threads(abi.clone);
-        program.allow_arg_in(abi.ioctl, 1, &[FIONBIO, FIOCLEX, FIONCLEX]);
+        match profile {
+            SeccompProfile::Cpu => {
+                program.allow_arg_in(abi.ioctl, 1, &[FIONBIO, FIOCLEX, FIONCLEX]);
+            }
+            SeccompProfile::Gpu => program.allow_arg_not_in(abi.ioctl, 1, &GPU_IOCTL_REFUSED),
+        }
         program.allow_arg_in(abi.fcntl, 1, &FCNTL_COMMANDS);
         program.allow_arg_in(abi.tgkill, 0, &[tgid]);
         program.allow_prlimit_read(abi.prlimit64);
@@ -1057,7 +1396,7 @@ mod filter {
         program.code
     }
 
-    pub(super) fn install(deny: DenyAction) -> Result<(), ConfineError> {
+    pub(super) fn install(profile: SeccompProfile, deny: DenyAction) -> Result<(), ConfineError> {
         let Some(abi) = host_abi() else {
             return Err(ConfineError::Unsupported(format!(
                 "no seccomp allowlist for architecture {}",
@@ -1067,7 +1406,7 @@ mod filter {
         // SAFETY: `getpid` takes no arguments. The filter is installed by the worker in its
         // own, already spawned process, so this is the thread group `tgkill` may signal.
         let tgid = unsafe { libc::getpid() } as u32;
-        let mut code = build(abi, deny, tgid);
+        let mut code = build_profile(abi, profile, deny, tgid);
         let program = libc::sock_fprog {
             len: u16::try_from(code.len())
                 .map_err(|_| ConfineError::Io("seccomp program too long".to_owned()))?,
@@ -1261,17 +1600,191 @@ mod tests {
             ("unshare", libc::SYS_unshare),
             ("setns", libc::SYS_setns),
         ];
-        let allowed = worker_allowlist();
-        for (name, number) in forbidden {
-            assert!(
-                allowed.iter().all(|entry| entry.number != *number),
-                "{name} must not be allowed"
-            );
+        for allowed in [worker_allowlist(), gpu_worker_allowlist()] {
+            for (name, number) in forbidden {
+                assert!(
+                    allowed.iter().all(|entry| entry.number != *number),
+                    "{name} must not be allowed"
+                );
+            }
+            let mut numbers: Vec<c_long> = allowed.iter().map(|entry| entry.number).collect();
+            numbers.sort_unstable();
+            numbers.dedup();
+            assert_eq!(numbers.len(), allowed.len(), "no duplicate entries");
         }
-        let mut numbers: Vec<c_long> = allowed.iter().map(|entry| entry.number).collect();
-        numbers.sort_unstable();
-        numbers.dedup();
-        assert_eq!(numbers.len(), allowed.len(), "no duplicate entries");
+    }
+
+    /// The GPU allowlist is the worker allowlist plus exactly the documented changes.
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    #[test]
+    fn the_gpu_allowlist_differs_from_the_worker_allowlist_by_the_documented_changes_only() {
+        let cpu = worker_allowlist();
+        let gpu = gpu_worker_allowlist();
+        let added: Vec<&str> = gpu
+            .iter()
+            .filter(|entry| cpu.iter().all(|base| base.number != entry.number))
+            .map(|entry| entry.name)
+            .collect();
+        let removed: Vec<&str> = cpu
+            .iter()
+            .filter(|entry| gpu.iter().all(|other| other.number != entry.number))
+            .map(|entry| entry.name)
+            .collect();
+        let widened: Vec<&str> = gpu
+            .iter()
+            .filter(|entry| {
+                cpu.iter().any(|base| {
+                    base.number == entry.number && base.restriction != entry.restriction
+                })
+            })
+            .map(|entry| entry.name)
+            .collect();
+        assert!(removed.is_empty(), "the GPU profile drops {removed:?}");
+        let documented = |kind: GpuChangeKind| -> Vec<&str> {
+            GPU_ALLOWLIST_CHANGES
+                .iter()
+                .filter(|change| change.kind == kind)
+                .map(|change| change.name)
+                .collect()
+        };
+        assert_eq!(added, documented(GpuChangeKind::Added));
+        assert_eq!(widened, documented(GpuChangeKind::Widened));
+        assert!(GPU_ALLOWLIST_CHANGES
+            .iter()
+            .all(|change| !change.reason.is_empty()));
+        for change in GPU_ALLOWLIST_CHANGES {
+            assert!(gpu.iter().any(|entry| entry.name == change.name));
+        }
+    }
+
+    #[test]
+    fn the_gpu_profile_says_what_it_gives_up() {
+        assert_eq!(SeccompProfile::Cpu.weakening(), None);
+        let text = SeccompProfile::Gpu
+            .weakening()
+            .expect("the GPU profile is weaker");
+        assert!(text.contains("ioctl") && text.contains("unverified"));
+        assert_eq!(SeccompProfile::default(), SeccompProfile::Cpu);
+        assert!(WorkerConfinement::new(Confinement::Full, SeccompProfile::Gpu).is_reduced());
+        assert!(!WorkerConfinement::new(Confinement::Full, SeccompProfile::Cpu).is_reduced());
+    }
+
+    /// Every cell of the carrier policy: carrier x profile x confinement.
+    #[test]
+    fn carrier_policy_by_profile_covers_every_cell() {
+        let partial = Confinement::Partial {
+            missing: vec![Mechanism::CgroupV2],
+        };
+        let no_seccomp = Confinement::Partial {
+            missing: vec![Mechanism::Seccomp],
+        };
+        let all = [
+            Carrier::InProcess,
+            Carrier::Bytes,
+            Carrier::HostShm,
+            Carrier::CudaIpc,
+            Carrier::DevicePeer,
+            Carrier::PinnedHost,
+            Carrier::NvmeFile,
+            Carrier::Remote,
+        ];
+        for carrier in all {
+            for profile in SeccompProfile::ALL {
+                for (label, confinement) in [
+                    ("full", Confinement::Full),
+                    ("partial", partial.clone()),
+                    ("no seccomp", no_seccomp.clone()),
+                    ("none", Confinement::None),
+                ] {
+                    let expected = match carrier {
+                        Carrier::Bytes | Carrier::Remote => true,
+                        Carrier::InProcess | Carrier::NvmeFile => false,
+                        Carrier::HostShm
+                        | Carrier::CudaIpc
+                        | Carrier::DevicePeer
+                        | Carrier::PinnedHost => label == "full",
+                    };
+                    let worker = WorkerConfinement::new(confinement.clone(), profile);
+                    assert_eq!(
+                        carrier_permitted_for(carrier, &worker),
+                        expected,
+                        "{carrier:?} / {profile:?} / {label}"
+                    );
+                    if profile == SeccompProfile::Cpu {
+                        // The CPU profile is exactly the older function.
+                        assert_eq!(carrier_permitted(carrier, &confinement), expected);
+                    }
+                }
+            }
+        }
+    }
+
+    fn report(ioctl: Option<i32>, overrides: &[(&str, i32)]) -> Vec<(String, i32)> {
+        let mut calls: Vec<(String, i32)> = PROFILE_REQUIRED_REFUSED
+            .iter()
+            .map(|name| ((*name).to_owned(), libc::EPERM))
+            .collect();
+        for (name, errno) in overrides {
+            for call in calls.iter_mut().filter(|call| call.0 == *name) {
+                call.1 = *errno;
+            }
+        }
+        if let Some(errno) = ioctl {
+            calls.push((PROFILE_PROBE_CALL.to_owned(), errno));
+        }
+        calls
+    }
+
+    fn observe(calls: &[(String, i32)]) -> ObservedProfile {
+        observed_profile(calls.iter().map(|(name, errno)| (name.as_str(), *errno)))
+    }
+
+    #[test]
+    fn a_probe_report_is_classified_by_profile() {
+        assert_eq!(
+            observe(&report(Some(libc::EPERM), &[])),
+            ObservedProfile::Cpu
+        );
+        assert_eq!(
+            observe(&report(Some(libc::EBADF), &[])),
+            ObservedProfile::Gpu
+        );
+        // No ioctl entry (the worker sent the plain forbidden-call report): not proven.
+        assert_eq!(observe(&report(None, &[])), ObservedProfile::Unproven);
+        // Any forbidden call that is not refused: not confined, whatever the ioctl says.
+        for name in PROFILE_REQUIRED_REFUSED {
+            for ioctl in [Some(libc::EPERM), Some(libc::EBADF), None] {
+                assert_eq!(
+                    observe(&report(ioctl, &[(name, 0)])),
+                    ObservedProfile::Unproven,
+                    "{name} succeeded"
+                );
+                assert_eq!(
+                    observe(&report(ioctl, &[(name, libc::EACCES)])),
+                    ObservedProfile::Unproven,
+                    "{name} refused with another errno"
+                );
+            }
+        }
+        // A missing forbidden call, an empty report and an odd ioctl errno.
+        let mut missing = report(Some(libc::EBADF), &[]);
+        missing.retain(|call| call.0 != "socket");
+        assert_eq!(observe(&missing), ObservedProfile::Unproven);
+        assert_eq!(observe(&[]), ObservedProfile::Unproven);
+        assert_eq!(
+            observe(&report(Some(libc::ENOSYS), &[])),
+            ObservedProfile::Unproven
+        );
+        assert_eq!(observe(&report(Some(0), &[])), ObservedProfile::Unproven);
+    }
+
+    #[cfg(feature = "worker-supervisor")]
+    #[test]
+    fn the_profile_check_requires_the_supervisors_list() {
+        assert_eq!(
+            PROFILE_REQUIRED_REFUSED,
+            crate::supervisor::REQUIRED_REFUSED_CALLS
+        );
     }
 
     /// The numbers written out for the host's architecture are the ones `libc` has.
@@ -1491,6 +2004,105 @@ mod tests {
                 ALLOW
             );
             assert_eq!(run(&killing, abi.audit_arch, abi.clone3, none), ENOSYS);
+        }
+    }
+
+    /// The program of the GPU profile for each architecture: the worker program except for
+    /// `ioctl`, which accepts any request but the thirteen refused.
+    #[test]
+    fn the_gpu_program_widens_ioctl_and_nothing_else() {
+        let thread = (libc::CLONE_VM
+            | libc::CLONE_FS
+            | libc::CLONE_FILES
+            | libc::CLONE_SIGHAND
+            | libc::CLONE_THREAD) as u64;
+        for abi in [&filter::X86_64, &filter::AARCH64] {
+            let cpu = filter::build_profile(abi, SeccompProfile::Cpu, DenyAction::Errno, TGID);
+            let gpu = filter::build_profile(abi, SeccompProfile::Gpu, DenyAction::Errno, TGID);
+            let tuple = |program: &[libc::sock_filter]| -> Vec<(u16, u8, u8, u32)> {
+                program.iter().map(|i| (i.code, i.jt, i.jf, i.k)).collect()
+            };
+            assert_eq!(
+                tuple(&cpu),
+                tuple(&filter::build(abi, DenyAction::Errno, TGID))
+            );
+            assert!(gpu.len() < 4096);
+            let none = [0u64; 6];
+            let on_cpu = |nr: u32, args: [u64; 6]| run(&cpu, abi.audit_arch, nr, args);
+            let on_gpu = |nr: u32, args: [u64; 6]| run(&gpu, abi.audit_arch, nr, args);
+
+            // Same answer as the worker program for every non-ioctl number in a wide sweep
+            // and for the guarded calls' good and bad arguments.
+            let mut probes: Vec<(u32, [u64; 6])> = (0..600u32)
+                .filter(|nr| *nr != abi.ioctl)
+                .map(|nr| (nr, none))
+                .collect();
+            probes.push((9999, none));
+            probes.push((abi.clone, [thread, 0, 0, 0, 0, 0]));
+            probes.push((abi.clone, [libc::SIGCHLD as u64, 0, 0, 0, 0, 0]));
+            probes.push((
+                abi.clone,
+                [thread | libc::CLONE_NEWNET as u64, 0, 0, 0, 0, 0],
+            ));
+            probes.push((abi.clone3, none));
+            probes.push((abi.prlimit64, [0, 7, 0, 0, 0, 0]));
+            probes.push((abi.prlimit64, [1, 7, 0, 0, 0, 0]));
+            probes.push((abi.tgkill, [u64::from(TGID), 1, 0, 0, 0, 0]));
+            probes.push((abi.tgkill, [1, 1, 0, 0, 0, 0]));
+            probes.push((abi.fcntl, [3, libc::F_GETFD as u64, 0, 0, 0, 0]));
+            probes.push((abi.fcntl, [3, libc::F_SETOWN as u64, 0, 0, 0, 0]));
+            for (nr, args) in probes {
+                assert_eq!(on_gpu(nr, args), on_cpu(nr, args), "nr {nr} args {args:?}");
+            }
+            for (_, nr) in abi.plain {
+                assert_eq!(on_gpu(*nr | 0x4000_0000, none), EPERM, "x32 {nr}");
+            }
+            let other = if abi.audit_arch == filter::X86_64.audit_arch {
+                filter::AARCH64.audit_arch
+            } else {
+                filter::X86_64.audit_arch
+            };
+            assert_eq!(run(&gpu, other, number(abi, "read"), none), KILL);
+
+            // ioctl: the worker program allows three requests; the GPU program everything
+            // but the thirteen.
+            let ioctl_cpu = |request: u64| on_cpu(abi.ioctl, [3, request, 0, 0, 0, 0]);
+            let ioctl_gpu = |request: u64| on_gpu(abi.ioctl, [3, request, 0, 0, 0, 0]);
+            for request in [
+                u64::from(libc::FIONBIO as u32),
+                u64::from(libc::FIOCLEX as u32),
+                u64::from(libc::FIONCLEX as u32),
+            ] {
+                assert_eq!(ioctl_cpu(request), ALLOW);
+                assert_eq!(ioctl_gpu(request), ALLOW);
+            }
+            // Requests of the shapes the NVIDIA modules use: an _IOWR('F', 0x2a, 0x38) code
+            // for nvidiactl, small plain numbers for nvidia-uvm, and FIONREAD.
+            for request in [0xc038_462a_u64, 0x19, 0x3000_0001, 0x541b, 0] {
+                assert_eq!(ioctl_gpu(request), ALLOW, "request {request:#x}");
+                assert_eq!(ioctl_cpu(request), EPERM, "request {request:#x} on cpu");
+            }
+            for refused in filter::GPU_IOCTL_REFUSED {
+                assert_eq!(ioctl_gpu(u64::from(refused)), EPERM, "{refused:#x}");
+                assert_eq!(ioctl_cpu(u64::from(refused)), EPERM, "{refused:#x} on cpu");
+            }
+            // Only the low word of the request counts: the kernel truncates it to 32 bits.
+            assert_eq!(
+                ioctl_gpu((1 << 32) | u64::from(filter::GPU_IOCTL_REFUSED[0])),
+                EPERM
+            );
+            let killing =
+                filter::build_profile(abi, SeccompProfile::Gpu, DenyAction::KillProcess, TGID);
+            assert_eq!(run(&killing, abi.audit_arch, 9999, none), KILL);
+            let driver_request = [3, 0xc038_462a, 0, 0, 0, 0];
+            assert_eq!(
+                run(&killing, abi.audit_arch, abi.ioctl, driver_request),
+                ALLOW
+            );
+            assert_eq!(
+                run(&killing, abi.audit_arch, abi.ioctl, [3, 0x5412, 0, 0, 0, 0]),
+                KILL
+            );
         }
     }
 }

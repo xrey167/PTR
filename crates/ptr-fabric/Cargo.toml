@@ -103,6 +103,11 @@ path = "tests/cuda_ipc_process.rs"
 required-features = ["cuda-ipc-core", "worker-channel"]
 
 [[test]]
+name = "gpu_worker"
+path = "tests/gpu_worker.rs"
+required-features = ["cuda-ipc-core", "worker-confine"]
+
+[[test]]
 name = "staging_pool"
 path = "tests/staging_pool.rs"
 required-features = ["shm-backend"]

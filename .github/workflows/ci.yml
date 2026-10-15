@@ -271,6 +271,8 @@ jobs:
       - run: cargo +stable test -p ptr-fabric --features cuda-ipc --locked
       - run: cargo +stable clippy -p ptr-fabric --features cuda-ipc,worker-channel --all-targets --locked -- -D warnings
       - run: cargo +stable test -p ptr-fabric --features cuda-ipc,worker-channel --locked
+      - run: cargo +stable clippy -p ptr-fabric --features cuda-ipc,worker-confine --all-targets --locked -- -D warnings
+      - run: cargo +stable test -p ptr-fabric --features cuda-ipc,worker-confine --locked
       - run: cargo +stable clippy -p ptr-fabric --features cuda-ipc-core --all-targets --locked -- -D warnings
       - run: cargo +stable test -p ptr-fabric --features cuda-ipc-core --locked
       - run: cargo +stable clippy -p ptr-fabric --features cuda-ipc,worker-supervisor --all-targets --locked -- -D warnings
@@ -280,6 +282,7 @@ jobs:
       - run: rustup toolchain install 1.99.0 --profile minimal
       - run: cargo +1.99.0 test -p ptr-fabric --features cuda-ipc --locked
       - run: cargo +1.99.0 test -p ptr-fabric --features cuda-ipc-core --locked
+      - run: cargo +1.99.0 test -p ptr-fabric --features cuda-ipc,worker-confine --locked
 
   pod-worker:
     runs-on: ubuntu-latest

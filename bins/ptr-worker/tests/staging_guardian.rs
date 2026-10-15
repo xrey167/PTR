@@ -17,7 +17,9 @@ use std::os::fd::OwnedFd;
 use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(feature = "fault-injection")]
+use std::time::Instant;
 
 use ptr_fabric::{
     host_page_size, AcquireRequest, ChargeBook, ConfinePolicy, ExportRecord, GuardianHostConfig,
@@ -221,6 +223,9 @@ fn placement(principal: &str, stage: &str) -> Placement {
         stage_identity: stage.to_owned(),
         seccomp: true,
         extra_args: Vec::new(),
+        device: None,
+        staging: None,
+        profile: ptr_fabric::SeccompProfile::Cpu,
     }
 }
 
@@ -539,6 +544,7 @@ fn shutdown_ends_every_worker_domain_before_the_guardian() {
     assert_eq!(world.book.total(), 0);
 }
 
+#[cfg(feature = "fault-injection")]
 #[test]
 fn a_dead_guardian_ends_every_worker_it_backed_and_nothing_else() {
     let _serial = serial();
@@ -559,8 +565,7 @@ fn a_dead_guardian_ends_every_worker_it_backed_and_nothing_else() {
 
     world
         .staging
-        .guardian_mut()
-        .kill_process()
+        .kill_guardian_process()
         .expect("kill the guardian");
     let deadline = Instant::now() + Duration::from_secs(20);
     let events = loop {
@@ -708,6 +713,7 @@ fn the_export_registry_is_bounded_and_nothing_leaks_on_a_refusal() {
     world.staging.shutdown(&mut world.host).expect("shutdown");
 }
 
+#[cfg(feature = "fault-injection")]
 #[test]
 fn a_failed_reap_after_a_guardian_loss_is_resumed_by_the_next_watch() {
     let _serial = serial();
@@ -719,7 +725,7 @@ fn a_failed_reap_after_a_guardian_loss_is_resumed_by_the_next_watch() {
         .staging
         .issue_export(&world.request(producer, consumer, 100), 10_000, 0)
         .expect("export");
-    world.staging.guardian_mut().kill_process().expect("kill");
+    world.staging.kill_guardian_process().expect("kill");
     // The first worker reap that the loss needs fails once.
     world.staging.inject_reap_failures(1);
     let deadline = Instant::now() + Duration::from_secs(20);
@@ -760,6 +766,7 @@ fn a_failed_reap_after_a_guardian_loss_is_resumed_by_the_next_watch() {
     world.staging.shutdown(&mut world.host).expect("shutdown");
 }
 
+#[cfg(feature = "fault-injection")]
 #[test]
 fn a_shutdown_whose_worker_reap_fails_leaves_the_guardian_alive_and_resumes() {
     let _serial = serial();
@@ -809,12 +816,8 @@ fn a_guardian_that_stops_answering_is_killed_and_handled_as_lost() {
         .status()
         .expect("kill -STOP");
     assert!(status.success());
-    // The stopped guardian is neither exited nor hung up: only a call that times out shows it.
-    assert!(world
-        .staging
-        .watch(&mut world.host)
-        .expect("watch")
-        .is_empty());
+    // A request of the pool that times out breaks the stub (the ping of `watch` is the other
+    // way, tested below).
     let refused = world
         .staging
         .issue_export(&world.request(producer, consumer, 100), 10_000, 0)
@@ -827,6 +830,43 @@ fn a_guardian_that_stops_answering_is_killed_and_handled_as_lost() {
     // Memory may still be held: nothing was recredited by the failed call.
     assert!(world.book.total() > 0);
 
+    let events = world.staging.watch(&mut world.host).expect("the loss path");
+    let StagingEvent::GuardianLost { cause, terminated } = &events[0] else {
+        panic!("the first event is the loss: {events:?}");
+    };
+    assert_eq!(*cause, GuardianLoss::Unresponsive);
+    assert_eq!(terminated.len(), 2);
+    assert_eq!(events.last(), Some(&StagingEvent::GuardianReaped));
+    assert!(world.host.workers().is_empty());
+    assert_eq!(world.book.total(), 0);
+    assert!(!Path::new(&format!("/proc/{pid}")).exists());
+}
+
+#[test]
+fn watch_pings_the_guardian_and_finds_a_stopped_one_without_a_failing_request() {
+    let _serial = serial();
+    let mut world = world_with_timeout(PoolLimits::small_host(), 16, Duration::from_millis(300));
+    let producer = world.worker("producer-pod");
+    let consumer = world.worker("consumer-pod");
+    world
+        .staging
+        .issue_export(&world.request(producer, consumer, 100), 10_000, 0)
+        .expect("export");
+    // A live guardian answers the ping and nothing happens.
+    assert!(world
+        .staging
+        .watch(&mut world.host)
+        .expect("watch")
+        .is_empty());
+    assert!(!world.staging.pool().backend().is_broken());
+    let pid = world.staging.guardian().pid();
+    let status = std::process::Command::new("kill")
+        .args(["-STOP", &pid.to_string()])
+        .status()
+        .expect("kill -STOP");
+    assert!(status.success());
+    // No request of the pool failed first: the ping of this very call did not get its answer
+    // within the deadline, so the guardian is killed and the loss handled in the same call.
     let events = world.staging.watch(&mut world.host).expect("the loss path");
     let StagingEvent::GuardianLost { cause, terminated } = &events[0] else {
         panic!("the first event is the loss: {events:?}");
@@ -997,10 +1037,7 @@ fn the_guardian_holds_vmm_allocations_on_a_gpu() {
         len: tensor.len() as u64,
     };
     let issued = staging.issue_export(&request, 10_000, 0).expect("issue");
-    staging
-        .pool_mut()
-        .fill(issued.lease.slot, &tensor)
-        .expect("fill");
+    staging.fill(issued.lease.slot, &tensor).expect("fill");
     let fd = staging
         .export_descriptor(issued.lease.slot, &issued.lease.record)
         .expect("export");
