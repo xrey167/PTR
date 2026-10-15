@@ -312,6 +312,8 @@ ci-fabric-cuda-check:
 	cargo +stable test -p ptr-fabric --features cuda-ipc --locked
 	cargo +stable clippy -p ptr-fabric --features cuda-ipc,worker-channel --all-targets --locked -- -D warnings
 	cargo +stable test -p ptr-fabric --features cuda-ipc,worker-channel --locked
+	cargo +stable clippy -p ptr-fabric --features cuda-ipc,worker-confine --all-targets --locked -- -D warnings
+	cargo +stable test -p ptr-fabric --features cuda-ipc,worker-confine --locked
 	cargo +stable clippy -p ptr-fabric --features cuda-ipc-core --all-targets --locked -- -D warnings
 	cargo +stable test -p ptr-fabric --features cuda-ipc-core --locked
 	cargo +stable clippy -p ptr-fabric --features cuda-ipc,worker-supervisor --all-targets --locked -- -D warnings
@@ -321,6 +323,7 @@ ci-fabric-cuda-check:
 	rustup toolchain install 1.99.0 --profile minimal
 	cargo +1.99.0 test -p ptr-fabric --features cuda-ipc --locked
 	cargo +1.99.0 test -p ptr-fabric --features cuda-ipc-core --locked
+	cargo +1.99.0 test -p ptr-fabric --features cuda-ipc,worker-confine --locked
 
 ci-pod-worker:
 	cargo +stable clippy -p ptr-fabric --features worker-supervisor --all-targets --locked -- -D warnings

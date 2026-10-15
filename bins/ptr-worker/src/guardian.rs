@@ -44,6 +44,14 @@ impl BackendChoice {
             _ => None,
         }
     }
+
+    /// The name `--backend` takes, and `--staging` for the workers that import its buffers.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Fake => "fake",
+            Self::Cuda => "cuda",
+        }
+    }
 }
 
 /// Why the guardian could not run or stopped abnormally.
@@ -121,6 +129,10 @@ mod tests {
         assert_eq!(BackendChoice::parse("fake"), Some(BackendChoice::Fake));
         assert_eq!(BackendChoice::parse("cuda"), Some(BackendChoice::Cuda));
         assert_eq!(BackendChoice::parse("gpu"), None);
+        // The workers' `--staging` takes the same names.
+        for choice in [BackendChoice::Fake, BackendChoice::Cuda] {
+            assert_eq!(BackendChoice::parse(choice.name()), Some(choice));
+        }
     }
 
     #[cfg(not(feature = "cuda-ipc-core"))]

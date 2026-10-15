@@ -9,7 +9,11 @@
 //! (feature `worker-channel`, framed messages with `SCM_RIGHTS` descriptors) and `confine`
 //! (feature `worker-confine`, the host probe, the carrier policy and the seccomp allowlist);
 //! `supervisor` (feature `worker-supervisor`) spawns a confined worker, watches it and reaps its
-//! whole cgroup, then drains the old channel end.
+//! whole cgroup, then drains the old channel end. `confine` also has the **GPU profile**, a
+//! second, weaker seccomp allowlist for a worker that must call the CUDA driver (`ioctl` widened,
+//! everything that opens a new resource still refused), the typed `SeccompProfile` that travels
+//! with the confinement, and, with `cuda-ipc-core`, `prepare_gpu_worker` and `GpuWorker`, which
+//! initialise CUDA before the filter is installed. Nothing of the GPU profile has run on a GPU.
 //!
 //! `cuda` (feature `cuda-ipc-core`, or `cuda-ipc` for the toolkit-free dynamic-loading variant;
 //! Linux only) holds the CUDA foundations of the `CudaIpc`, `DevicePeer` and `PinnedHost`
@@ -36,6 +40,12 @@ mod cuda;
 mod error;
 #[cfg(all(feature = "shm-backend", target_os = "linux"))]
 mod export_record;
+#[cfg(all(
+    feature = "cuda-ipc-core",
+    feature = "worker-confine",
+    target_os = "linux"
+))]
+mod gpu_worker;
 #[cfg(all(feature = "shm-backend", target_os = "linux"))]
 mod shm;
 #[cfg(all(feature = "shm-backend", target_os = "linux"))]
@@ -51,20 +61,29 @@ pub use channel::{
 };
 #[cfg(all(feature = "worker-confine", target_os = "linux"))]
 pub use confine::{
-    carrier_permitted, install_worker_seccomp, install_worker_seccomp_with, probe_forbidden_calls,
-    worker_allowlist, AllowedSyscall, AppliedMechanisms, Availability, ConfineError, Confinement,
-    ConfinementProbe, DenyAction, ForbiddenCall, Mechanism,
+    carrier_permitted, carrier_permitted_for, gpu_worker_allowlist, install_gpu_worker_seccomp,
+    install_gpu_worker_seccomp_with, install_worker_seccomp, install_worker_seccomp_with,
+    observed_profile, probe_forbidden_calls, probe_profile_calls, worker_allowlist, AllowedSyscall,
+    AppliedMechanisms, Availability, ConfineError, Confinement, ConfinementProbe, DenyAction,
+    ForbiddenCall, GpuAllowlistChange, GpuChangeKind, Mechanism, ObservedProfile, SeccompProfile,
+    WorkerConfinement, GPU_ALLOWLIST_CHANGES, GPU_PROFILE_WEAKENING, PROFILE_PROBE_CALL,
 };
 #[cfg(all(feature = "cuda-ipc-core", target_os = "linux"))]
 pub use cuda::{
     audit_export_padding, check_extent, check_import, footprint_legacy, footprint_memfd,
-    footprint_vmm, import_and_copy, padding_is_zero, CudaDriver, CudaError, CudaProbe, DeviceInfo,
-    ImportExpectation, PaddingAudit, PeerLink, PinnedRegistration, StagingAllocation,
-    StagingExport, LEGACY_STAGING_UNIT,
+    footprint_vmm, import_and_copy, padding_is_zero, prepare_gpu_worker, CudaDriver, CudaError,
+    CudaProbe, DeviceInfo, GpuPrepared, ImportExpectation, PaddingAudit, PeerLink,
+    PinnedRegistration, StagingAllocation, StagingExport, LEGACY_STAGING_UNIT,
 };
 pub use error::{FabricError, Seal};
 #[cfg(all(feature = "shm-backend", target_os = "linux"))]
 pub use export_record::ExportRecord;
+#[cfg(all(
+    feature = "cuda-ipc-core",
+    feature = "worker-confine",
+    target_os = "linux"
+))]
+pub use gpu_worker::GpuWorker;
 #[cfg(all(feature = "shm-backend", target_os = "linux"))]
 pub use shm::{host_page_size, inspect_region, ShmExpectation, ShmExport, ShmMapping, ShmRegion};
 #[cfg(all(feature = "worker-channel", target_os = "linux"))]

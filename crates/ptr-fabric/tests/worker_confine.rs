@@ -14,8 +14,10 @@ use std::os::unix::process::ExitStatusExt;
 use std::process::{Command, Stdio};
 
 use ptr_fabric::{
-    install_worker_seccomp, install_worker_seccomp_with, Channel, ConfineError, ConfinementProbe,
-    DenyAction, ShmExpectation, ShmExport, ShmMapping,
+    gpu_worker_allowlist, install_gpu_worker_seccomp, install_worker_seccomp,
+    install_worker_seccomp_with, observed_profile, probe_forbidden_calls, probe_profile_calls,
+    worker_allowlist, Channel, ConfineError, ConfinementProbe, DenyAction, ObservedProfile,
+    ShmExpectation, ShmExport, ShmMapping, GPU_ALLOWLIST_CHANGES,
 };
 use ptr_protocol::content_digest;
 
@@ -290,6 +292,95 @@ fn check_compute(pipe: [i32; 2]) {
     }
 }
 
+/// `ioctl(fd, request, arg)` made directly.
+fn ioctl(fd: i32, request: u32, arg: usize) -> Result<c_long, i32> {
+    raw(
+        libc::SYS_ioctl,
+        [fd as usize, request as usize, arg, 0, 0, 0],
+    )
+}
+
+/// What separates the two profiles, seen from inside the child: `ioctl` on a descriptor the
+/// process already holds (a pipe end stands in for a driver descriptor), `open` and the probe
+/// the host reads. `gpu` is the profile the child installed.
+fn check_profile(pipe: [i32; 2], gpu: bool) {
+    let message = b"hello";
+    // SAFETY: `pipe` holds the two ends created before the filter; the buffers are valid for
+    // the lengths passed.
+    let written = unsafe { libc::write(pipe[1], message.as_ptr().cast(), message.len()) };
+    if written != message.len() as isize {
+        fail("the pipe write failed");
+    }
+    let mut queued: libc::c_int = -1;
+    let asked = ioctl(
+        pipe[0],
+        libc::FIONREAD as u32,
+        std::ptr::addr_of_mut!(queued) as usize,
+    );
+    // Drain the five bytes just written into a buffer of 8.
+    let mut buffer = [0u8; 8];
+    // SAFETY: the buffer is valid for the length passed.
+    unsafe { libc::read(pipe[0], buffer.as_mut_ptr().cast(), buffer.len()) };
+    if gpu {
+        // An ioctl on an existing descriptor is allowed (the request is the kernel's to answer).
+        if asked != Ok(0) || queued != 5 {
+            fail(&format!(
+                "ioctl(FIONREAD) under the GPU filter: {asked:?}, {queued}"
+            ));
+        }
+        // The descriptor is still checked by the kernel: -1 is EBADF, not a filter refusal.
+        if ioctl(-1, libc::FIONREAD as u32, 0) != Err(libc::EBADF) {
+            fail("ioctl on descriptor -1 was not answered EBADF by the kernel");
+        }
+        // The thirteen requests no driver uses stay refused, on a valid descriptor too.
+        for (name, request) in [
+            ("TIOCSTI", libc::TIOCSTI as u32),
+            ("TIOCLINUX", libc::TIOCLINUX as u32),
+            ("TIOCCONS", libc::TIOCCONS as u32),
+            ("TIOCSETD", libc::TIOCSETD as u32),
+            ("TIOCSPGRP", libc::TIOCSPGRP as u32),
+            ("TIOCSCTTY", libc::TIOCSCTTY as u32),
+            ("TIOCNOTTY", libc::TIOCNOTTY as u32),
+            ("TIOCVHANGUP", libc::TIOCVHANGUP as u32),
+            ("TIOCGPTPEER", libc::TIOCGPTPEER as u32),
+            ("SIOCUNIXFILE", 0x89e0),
+            ("FIOASYNC", libc::FIOASYNC as u32),
+            ("FIOSETOWN", 0x8901),
+            ("SIOCSPGRP", 0x8902),
+        ] {
+            if ioctl(pipe[0], request, 0) != Err(libc::EPERM) {
+                fail(&format!("ioctl {name} was not refused with EPERM"));
+            }
+        }
+    } else if asked != Err(libc::EPERM) {
+        fail(&format!("ioctl(FIONREAD) under the CPU filter: {asked:?}"));
+    }
+    // Opening a new file is refused under both profiles, through the C library as well.
+    match std::fs::File::open("/proc/self/status") {
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {}
+        other => fail(&format!("File::open under the filter: {other:?}")),
+    }
+    // The host's evidence: every forbidden call refused, and the profile it classifies.
+    if probe_forbidden_calls()
+        .iter()
+        .any(|call| call.errno != libc::EPERM)
+    {
+        fail("probe_forbidden_calls shows a call that was not refused");
+    }
+    let calls = probe_profile_calls();
+    let observed = observed_profile(calls.iter().map(|call| (call.name, call.errno)));
+    let wanted = if gpu {
+        ObservedProfile::Gpu
+    } else {
+        ObservedProfile::Cpu
+    };
+    if observed != wanted {
+        fail(&format!(
+            "observed profile {observed:?}, wanted {wanted:?}: {calls:?}"
+        ));
+    }
+}
+
 /// Over the inherited control socket: receive a frame with a sealed memfd, map and verify it,
 /// answer. Every call is `recvmsg`, `sendmsg`, `fstat`, `fcntl`, `mmap`, `munmap` and `close`.
 fn check_control_socket(channel: &Channel) {
@@ -354,7 +445,13 @@ fn confine_child_helper() {
         std::process::exit(2);
     }
 
-    match install_worker_seccomp() {
+    let gpu = mode == "gpu";
+    let installed = if gpu {
+        install_gpu_worker_seccomp()
+    } else {
+        install_worker_seccomp()
+    };
+    match installed {
         Ok(()) => {}
         Err(ConfineError::Unsupported(why)) => {
             eprintln!("UNSUPPORTED: {why}");
@@ -363,6 +460,7 @@ fn confine_child_helper() {
         Err(error) => fail(&format!("install: {error}")),
     }
     check_denials();
+    check_profile(pipe, gpu);
     check_compute(pipe);
     if let Some(channel) = &channel {
         check_control_socket(channel);
@@ -400,6 +498,17 @@ fn seccomp_available() -> bool {
 
 #[test]
 fn a_filtered_child_is_denied_what_doc_42_names_and_still_computes() {
+    run_filtered_child("full");
+}
+
+/// The GPU profile: every forbidden call still refused, `ioctl` on an existing descriptor
+/// allowed, `open` refused, a thread, a memfd round trip and the control socket still working.
+#[test]
+fn a_gpu_filtered_child_keeps_every_refusal_and_may_ioctl_an_open_descriptor() {
+    run_filtered_child("gpu");
+}
+
+fn run_filtered_child(mode: &str) {
     if !seccomp_available() {
         return;
     }
@@ -411,7 +520,7 @@ fn a_filtered_child_is_denied_what_doc_42_names_and_still_computes() {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let inheritable = rustix::io::dup(child_end.as_fd()).expect("dup");
-        let mut command = child_command("full");
+        let mut command = child_command(mode);
         command.env(
             SOCKET_VAR,
             std::os::fd::AsRawFd::as_raw_fd(&inheritable).to_string(),
@@ -467,4 +576,51 @@ fn kill_mode_ends_the_process_on_the_first_forbidden_call() {
         "status {:?}\n{stderr}",
         output.status
     );
+}
+
+// --- the two allowlists, from outside ------------------------------------------------------
+
+#[test]
+fn the_gpu_allowlist_is_the_worker_allowlist_plus_the_documented_changes() {
+    let cpu = worker_allowlist();
+    let gpu = gpu_worker_allowlist();
+    let numbers = |list: &[ptr_fabric::AllowedSyscall]| -> Vec<c_long> {
+        let mut numbers: Vec<c_long> = list.iter().map(|entry| entry.number).collect();
+        numbers.sort_unstable();
+        numbers
+    };
+    // The same calls; the documented changes are the entries whose restriction differs.
+    assert_eq!(numbers(&cpu), numbers(&gpu));
+    let differing: Vec<&str> = gpu
+        .iter()
+        .filter(|entry| {
+            cpu.iter()
+                .any(|base| base.number == entry.number && base.restriction != entry.restriction)
+        })
+        .map(|entry| entry.name)
+        .collect();
+    let documented: Vec<&str> = GPU_ALLOWLIST_CHANGES
+        .iter()
+        .map(|change| change.name)
+        .collect();
+    assert_eq!(differing, documented);
+    // The widened entry names what it still refuses.
+    let ioctl = gpu
+        .iter()
+        .find(|entry| entry.name == "ioctl")
+        .expect("ioctl");
+    let restriction = ioctl.restriction.expect("a restriction");
+    for refused in [
+        "TIOCSTI",
+        "TIOCSPGRP",
+        "TIOCSCTTY",
+        "TIOCNOTTY",
+        "TIOCVHANGUP",
+        "TIOCGPTPEER",
+        "SIOCUNIXFILE",
+        "FIOSETOWN",
+        "SIOCSPGRP",
+    ] {
+        assert!(restriction.contains(refused), "{restriction}");
+    }
 }
