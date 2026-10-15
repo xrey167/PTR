@@ -224,54 +224,6 @@ fn a_representation_never_moves_to_the_same_pod_id_in_another_namespace() {
     ));
 }
 
-/// The pod registry names a pod by project and id only. While the same pod id is live in two
-/// namespaces the registry pod is ambiguous, so no representation of it is admitted; once one
-/// namespace is revoked the representation of the remaining one is admitted again.
-#[test]
-fn a_pod_id_live_in_two_namespaces_admits_no_representation() {
-    let mut runtime = runtime();
-    let bound = cache(&runtime);
-    runtime
-        .commit(LedgerEvent::CapsuleCommitted {
-            project: "demo".into(),
-            capsule: CapsuleId::from(
-                pod_lifecycle_target(&address_in("ns-b", "alpha", 1)).as_str(),
-            ),
-            generation: Generation(1),
-        })
-        .unwrap();
-
-    let admitted = runtime.admitted_representations(encoder(), &bound);
-    assert_eq!(admitted.store.len(), 1);
-    assert!(admitted
-        .store
-        .get(&ProjectId::from("demo"), &PodId::from("alpha"))
-        .is_none());
-    assert_eq!(admitted.refused.len(), 1);
-    assert_eq!(admitted.refused[0].0, "alpha");
-    assert!(matches!(
-        &admitted.refused[0].1,
-        RepresentationRefusal::Admission(RepresentationDenial::AmbiguousNamespace { project, pod })
-            if project == "demo" && pod == "alpha"
-    ));
-    let names: Vec<String> = runtime
-        .admitted_representation_set(&bound)
-        .into_iter()
-        .map(|admitted| admitted.pod.to_string())
-        .collect();
-    assert_eq!(names, vec!["beta".to_owned()]);
-
-    runtime
-        .commit(LedgerEvent::Revoked {
-            subject: pod_lifecycle_target(&address_in("ns-b", "alpha", 1)),
-            generation: Generation(1),
-        })
-        .unwrap();
-    let admitted = runtime.admitted_representations(encoder(), &bound);
-    assert_eq!(admitted.store.len(), 2);
-    assert!(admitted.refused.is_empty());
-}
-
 /// State of another kind under a pod target (no representation digest in its provenance) is
 /// refused from the binding alone, before its payload is parsed.
 #[test]
@@ -510,19 +462,35 @@ impl Verifier<TypedPayload> for Pass {
     }
 }
 
+fn echo(id: &str) -> Arc<Echo> {
+    Arc::new(Echo(PodManifest {
+        project: ProjectId::from("demo"),
+        id: PodId::from(id),
+        capabilities: vec![CapabilityId::from("Echo<Text>")],
+        accepts: vec![TypeId::from("Text")],
+        produces: vec![TypeId::from("Text")],
+        effects: vec![Effect::Pure],
+        protocol_version: 1,
+    }))
+}
+
+/// `alpha` and `beta`, both registered as the implementations of namespace `ns`.
 fn pods() -> PodRegistry {
+    pods_with_alpha_in(Some("ns"))
+}
+
+/// `beta` in namespace `ns`, and `alpha` in `alpha_namespace` (`None`: registered without one).
+fn pods_with_alpha_in(alpha_namespace: Option<&str>) -> PodRegistry {
     let mut registry = PodRegistry::default();
-    for id in ["alpha", "beta"] {
-        registry.register(Arc::new(Echo(PodManifest {
-            project: ProjectId::from("demo"),
-            id: PodId::from(id),
-            capabilities: vec![CapabilityId::from("Echo<Text>")],
-            accepts: vec![TypeId::from("Text")],
-            produces: vec![TypeId::from("Text")],
-            effects: vec![Effect::Pure],
-            protocol_version: 1,
-        })));
+    match alpha_namespace {
+        Some(namespace) => {
+            registry.register_in_namespace(NamespaceId::from(namespace), echo("alpha"));
+        }
+        None => {
+            registry.register(echo("alpha"));
+        }
     }
+    registry.register_in_namespace(NamespaceId::from("ns"), echo("beta"));
     registry
 }
 
@@ -569,13 +537,22 @@ fn run(
     payload: &'static [u8],
     sampler: &EmbeddingSampler<LearnedPodRouter>,
 ) -> Result<(), RuntimeError> {
+    run_with(runtime, payload, sampler, &pods())
+}
+
+fn run_with(
+    runtime: &mut PtrRuntime,
+    payload: &'static [u8],
+    sampler: &EmbeddingSampler<LearnedPodRouter>,
+    registry: &PodRegistry,
+) -> Result<(), RuntimeError> {
     runtime
         .run_resumable_with_pods_using_router(
             "request-1".into(),
             &ProjectId::from("demo"),
             "go",
             &Ask(payload),
-            &pods(),
+            registry,
             sampler,
             &Pass,
             2,
@@ -604,6 +581,47 @@ fn the_runtime_routes_each_question_to_the_pod_whose_address_matches() {
     run(&mut runtime, b"alpha question", &sampler).unwrap();
     run(&mut runtime, b"beta question", &sampler).unwrap();
     assert_eq!(routed_pods(&runtime), ["alpha", "beta"]);
+}
+
+/// The registry names which namespace's implementation is registered for a pod id. The `ns`
+/// address of `alpha` scores only the implementation registered for `ns`: with `alpha` registered
+/// for `ns-b`, or without a namespace, `alpha` has no usable address and the field abstains
+/// (partial coverage), also while `ns-b/alpha` is live in the lifecycle.
+#[test]
+fn a_representation_scores_only_the_implementation_registered_for_its_namespace() {
+    let mut runtime = runtime();
+    runtime
+        .commit(LedgerEvent::CapsuleCommitted {
+            project: "demo".into(),
+            capsule: CapsuleId::from(
+                pod_lifecycle_target(&address_in("ns-b", "alpha", 1)).as_str(),
+            ),
+            generation: Generation(1),
+        })
+        .unwrap();
+    let bound = cache(&runtime);
+    let admitted = runtime.admitted_representations(encoder(), &bound);
+    assert!(admitted.refused.is_empty());
+    let sampler = sampler(admitted.store, bound);
+    let abstained = RuntimeError::RouteFailed {
+        reason: "routing abstained",
+    };
+    for registry in [pods_with_alpha_in(Some("ns-b")), pods_with_alpha_in(None)] {
+        assert_eq!(
+            run_with(&mut runtime, b"alpha question", &sampler, &registry).unwrap_err(),
+            abstained
+        );
+    }
+    assert!(routed_pods(&runtime).is_empty());
+    // The implementation registered for `ns` is scored again.
+    run_with(
+        &mut runtime,
+        b"alpha question",
+        &sampler,
+        &pods_with_alpha_in(Some("ns")),
+    )
+    .unwrap();
+    assert_eq!(routed_pods(&runtime), ["alpha"]);
 }
 
 #[test]

@@ -1,6 +1,6 @@
 use ptr_pods::{DynPod, PodManifest, PodRegistrationError, PodRegistry};
 use ptr_protocol::TypedPayload;
-use ptr_types::{CapabilityId, Effect, PodId, ProjectId, TypeId};
+use ptr_types::{CapabilityId, Effect, NamespaceId, PodId, ProjectId, TypeId};
 use std::sync::Arc;
 
 struct EchoPod {
@@ -252,4 +252,51 @@ fn replace_if_current_rejects_a_project_or_id_mismatch() {
         &dynpod(&first)
     ));
     assert_eq!(registry.len(), 1);
+}
+
+/// An entry names the lifecycle namespace of its implementation only while that implementation is
+/// registered: a plain re-registration or a compare-and-replace takeover is another
+/// implementation and names none; other entries keep theirs.
+#[test]
+fn the_namespace_of_an_entry_belongs_to_the_implementation_registered_with_it() {
+    let (project, alpha, beta) = (
+        ProjectId::from("p"),
+        PodId::from("alpha"),
+        PodId::from("beta"),
+    );
+    let mut registry = PodRegistry::default();
+    assert_eq!(registry.namespace(&project, &alpha), None);
+
+    registry.register_in_namespace(NamespaceId::from("ns-a"), echo("p", "alpha"));
+    registry.register_in_namespace(NamespaceId::from("ns-a"), echo("p", "beta"));
+    assert_eq!(
+        registry.namespace(&project, &alpha),
+        Some(&NamespaceId::from("ns-a"))
+    );
+    // Another project's pod of the same id has its own entry and no namespace.
+    registry.register(echo("q", "alpha"));
+    assert_eq!(registry.namespace(&ProjectId::from("q"), &alpha), None);
+
+    // Re-registering for another namespace replaces the label with the implementation.
+    registry.register_in_namespace(NamespaceId::from("ns-b"), echo("p", "alpha"));
+    assert_eq!(
+        registry.namespace(&project, &alpha),
+        Some(&NamespaceId::from("ns-b"))
+    );
+
+    // A plain registration is an implementation of no named namespace.
+    registry.register(echo("p", "alpha"));
+    assert_eq!(registry.namespace(&project, &alpha), None);
+
+    // A takeover replaces the implementation and drops the label; beta keeps its own.
+    registry.register_in_namespace(NamespaceId::from("ns-a"), echo("p", "alpha"));
+    let current: Arc<dyn DynPod> = registry.get(&project, &alpha).unwrap();
+    registry
+        .replace_if_current(&current, echo("p", "alpha"))
+        .unwrap();
+    assert_eq!(registry.namespace(&project, &alpha), None);
+    assert_eq!(
+        registry.namespace(&project, &beta),
+        Some(&NamespaceId::from("ns-a"))
+    );
 }

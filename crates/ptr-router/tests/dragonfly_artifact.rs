@@ -6,7 +6,7 @@
 //! cluster keys, gate status, and the score of every probe query for every pod.
 mod common;
 
-use common::{key, nonce, registry, request, route};
+use common::{key, nonce, registry_in, request, route};
 use ptr_router::{
     EncoderRef, LearnedPodRouter, LearnedRouterConfig, PodRepresentation, RepresentationError,
     RepresentationStore, RouteError, RouteFeatures,
@@ -234,7 +234,11 @@ fn a_not_activated_artifact_loads_but_is_never_admitted_to_the_store() {
 #[test]
 fn the_exported_representations_route_the_probe_questions_to_their_pods() {
     let project = ProjectId::from("demo");
-    let registry = registry(&project, &["supplier-mueller", "supplier-schmidt"]);
+    let registry = registry_in(
+        &project,
+        "supply",
+        &["supplier-mueller", "supplier-schmidt"],
+    );
     let router = LearnedPodRouter::new(activated_store(), LearnedRouterConfig::default()).unwrap();
     let capability = "read".into();
     let input_type = "Text".into();

@@ -2,7 +2,7 @@
 //! only activated representations and keeps each pod's representation independent.
 mod common;
 
-use common::{key, nonce, registry, request, route};
+use common::{key, nonce, registry, registry_in, request, route};
 use ptr_router::{
     AbstentionReason, ActivationPolicy, EncoderRef, GateReport, LearnedPodRouter,
     LearnedRouterConfig, PodRepresentation, PodRepresentationParts, RepresentationError,
@@ -873,4 +873,62 @@ fn the_admitted_set_of_a_request_narrows_scoring_and_never_widens_it() {
         reason(outcome(Some([named(&beta), intruder].into()))),
         Some(AbstentionReason::PartialCoverage)
     );
+}
+
+/// A representation is learned for one lifecycle namespace. It scores a registry candidate only
+/// when the registry names that namespace for the candidate; an implementation registered for
+/// another namespace, or without one, is a candidate without a representation.
+#[test]
+fn a_representation_scores_only_the_implementation_registered_for_its_namespace() {
+    let scene = scene();
+    let router = router(vec![
+        representation("alpha", vec![1.0, 0.0, 0.0], 10.0, 1),
+        representation("beta", vec![0.0, 1.0, 0.0], 10.0, 1),
+    ]);
+    let features = features(vec![1.0, 0.0, 0.0]);
+    let policy = |registry: &ptr_pods::PodRegistry| {
+        router.policy(&request(
+            registry,
+            &scene.project,
+            &scene.capability,
+            &scene.input_type,
+            &scene.request_id,
+            &features,
+        ))
+    };
+    // Registered for the representations' own namespace: alpha is chosen.
+    let own = registry(&scene.project, &["alpha", "beta"]);
+    assert_eq!(
+        policy(&own).unwrap().probability(&PodId::from("alpha")),
+        1.0
+    );
+    // The same pod ids registered for another namespace: no representation applies.
+    let foreign = registry_in(&scene.project, "ns-b", &["alpha", "beta"]);
+    assert!(matches!(
+        policy(&foreign).unwrap_err(),
+        RouteError::NoRepresentation { candidates: 2 }
+    ));
+    // Registered without a namespace: no representation applies either.
+    let mut unnamed = ptr_pods::PodRegistry::default();
+    for id in ["alpha", "beta"] {
+        let pod = own.get(&scene.project, &PodId::from(id)).unwrap();
+        unnamed.register(pod);
+    }
+    assert!(matches!(
+        policy(&unnamed).unwrap_err(),
+        RouteError::NoRepresentation { candidates: 2 }
+    ));
+    // Only alpha moved to another namespace: the field is partly covered and abstains.
+    let mut mixed = registry(&scene.project, &["beta"]);
+    mixed.register_in_namespace(
+        NamespaceId::from("ns-b"),
+        own.get(&scene.project, &PodId::from("alpha")).unwrap(),
+    );
+    assert!(matches!(
+        policy(&mixed).unwrap_err(),
+        RouteError::Abstained {
+            reason: AbstentionReason::PartialCoverage,
+            ..
+        }
+    ));
 }

@@ -8,7 +8,9 @@ use ptr_router::{
     DecisionNonce, NonceSequence, PodRouter, RouteFeatures, RouteOption, RouteRequest,
     RoutedChoice, RoutedError, Router, SamplingKey,
 };
-use ptr_types::{CapabilityId, Effect, PodId, Probability, ProjectId, RequestId, TypeId};
+use ptr_types::{
+    CapabilityId, Effect, NamespaceId, PodId, Probability, ProjectId, RequestId, TypeId,
+};
 use std::sync::Arc;
 
 pub struct TestPod(pub PodManifest);
@@ -22,18 +24,27 @@ impl DynPod for TestPod {
     }
 }
 
+/// The pods `ids` of `project`, registered as the implementations of namespace `ns`.
 pub fn registry(project: &ProjectId, ids: &[&str]) -> PodRegistry {
+    registry_in(project, "ns", ids)
+}
+
+/// The pods `ids` of `project`, registered as the implementations of `namespace`.
+pub fn registry_in(project: &ProjectId, namespace: &str, ids: &[&str]) -> PodRegistry {
     let mut registry = PodRegistry::default();
     for id in ids {
-        registry.register(Arc::new(TestPod(PodManifest {
-            project: project.clone(),
-            id: PodId::from(*id),
-            capabilities: vec![CapabilityId::from("read")],
-            accepts: vec![TypeId::from("Text")],
-            produces: vec![TypeId::from("Text")],
-            effects: vec![Effect::Pure],
-            protocol_version: 1,
-        })));
+        registry.register_in_namespace(
+            NamespaceId::from(namespace),
+            Arc::new(TestPod(PodManifest {
+                project: project.clone(),
+                id: PodId::from(*id),
+                capabilities: vec![CapabilityId::from("read")],
+                accepts: vec![TypeId::from("Text")],
+                produces: vec![TypeId::from("Text")],
+                effects: vec![Effect::Pure],
+                protocol_version: 1,
+            })),
+        );
     }
     registry
 }

@@ -1,5 +1,5 @@
 pub use ptr_protocol::TypedPayload;
-use ptr_types::{CapabilityId, Effect, PodId, ProjectId, TypeId};
+use ptr_types::{CapabilityId, Effect, NamespaceId, PodId, ProjectId, TypeId};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::marker::PhantomData;
@@ -293,9 +293,17 @@ impl RegisteredPodBinding {
 /// The project is part of the key rather than a filter applied afterwards, so
 /// two projects may each register an `echo` Pod without one shadowing the
 /// other, and no lookup path exists that forgets to check it.
+///
+/// An entry may also name the lifecycle namespace its implementation belongs to
+/// ([`PodRegistry::register_in_namespace`]); the same pod id can be committed in
+/// several namespaces (`pod:<project>/<namespace>/<pod>`), and state bound to one
+/// namespace (a learned pod address, for one) may only be used for the
+/// implementation of that namespace. An entry registered without a namespace has
+/// none ([`PodRegistry::namespace`] is `None`), which such state treats as no match.
 #[derive(Default)]
 pub struct PodRegistry {
     pods: BTreeMap<(ProjectId, PodId), Arc<dyn DynPod>>,
+    namespaces: BTreeMap<(ProjectId, PodId), NamespaceId>,
 }
 
 impl PodRegistry {
@@ -307,7 +315,28 @@ impl PodRegistry {
     pub fn register(&mut self, pod: Arc<dyn DynPod>) -> Option<Arc<dyn DynPod>> {
         let manifest = pod.manifest();
         let key = (manifest.project.clone(), manifest.id.clone());
+        // The replaced entry's namespace described the replaced implementation, not this one.
+        self.namespaces.remove(&key);
         self.pods.insert(key, pod)
+    }
+
+    /// Insert or REPLACE like [`PodRegistry::register`], naming the lifecycle namespace the
+    /// implementation belongs to.
+    pub fn register_in_namespace(
+        &mut self,
+        namespace: NamespaceId,
+        pod: Arc<dyn DynPod>,
+    ) -> Option<Arc<dyn DynPod>> {
+        let manifest = pod.manifest();
+        let key = (manifest.project.clone(), manifest.id.clone());
+        self.namespaces.insert(key.clone(), namespace);
+        self.pods.insert(key, pod)
+    }
+
+    /// The lifecycle namespace the registered implementation of `(project, id)` belongs to;
+    /// `None` when it is not registered or was registered without one.
+    pub fn namespace(&self, project: &ProjectId, id: &PodId) -> Option<&NamespaceId> {
+        self.namespaces.get(&(project.clone(), id.clone()))
     }
 
     /// Insert a pod without replacing: fails with
@@ -359,10 +388,22 @@ impl PodRegistry {
             });
         }
         let (project, pod) = expected_key;
-        match self.pods.get_mut(&(project.clone(), pod.clone())) {
-            None => Err(PodRegistrationError::NotRegistered { project, pod }),
-            Some(current) if Arc::ptr_eq(current, expected) => Ok(std::mem::replace(current, new)),
-            Some(_) => Err(PodRegistrationError::NotCurrent { project, pod }),
+        let key = (project, pod);
+        match self.pods.get_mut(&key) {
+            None => Err(PodRegistrationError::NotRegistered {
+                project: key.0,
+                pod: key.1,
+            }),
+            Some(current) if Arc::ptr_eq(current, expected) => {
+                let old = std::mem::replace(current, new);
+                // The takeover is another implementation; it names no namespace.
+                self.namespaces.remove(&key);
+                Ok(old)
+            }
+            Some(_) => Err(PodRegistrationError::NotCurrent {
+                project: key.0,
+                pod: key.1,
+            }),
         }
     }
 

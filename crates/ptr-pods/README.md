@@ -9,8 +9,8 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-10-14  
-**Code footprint:** 40 Rust source files · 19236 nonblank source lines · 28 integration-test files · 362 test markers (`#[test]`, `#[tokio::test]`)
+**Last reviewed:** 2026-10-15  
+**Code footprint:** 40 Rust source files · 19275 nonblank source lines · 28 integration-test files · 363 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -24,6 +24,7 @@
 - Decoding an evidence output no longer sizes an allocation from the dependency or provenance count stored in the record: the vectors grow with what is read, so a forged count ends at the first missing byte as an error instead of a capacity-overflow panic
 - PodRegistry::register replaces an existing (project, id) entry and returns the old one (kept for current callers); PodRegistry::register_new is the non-replacing insert that structural-admission paths must use: it returns PodRegistrationError::AlreadyRegistered and leaves the original entry unchanged; PodRegistry::replace_if_current(expected, new) is the compare-and-replace for the atomic takeover of an operand of the same operation (a retired-target reactivation puts generation g+1 on the same pod id): it swaps only when the entry for new's (project, id) is exactly expected (Arc::ptr_eq), returns the old entry, and otherwise leaves the registry unchanged with NotRegistered, NotCurrent or IdentityMismatch; the registry tracks no token-expert (layer, slot), so slot ownership is not checked there
 - PodRegistry is keyed by project and id, so two projects may register the same Pod id without shadowing and no lookup path exists that takes an id alone
+- PodRegistry entries may name the lifecycle namespace of their implementation: register_in_namespace(namespace, pod) sets it and namespace(project, id) reads it; register and a replace_if_current takeover drop it, because the new entry is another implementation. A pod id committed in several namespaces (pod:<project>/<namespace>/<pod>) thus names which namespace is served, and namespace-bound state (learned pod addresses) can be checked against it
 - PodManifest declares the one project a Pod serves; resolution inside another project finds nothing rather than a worse match
 - PodManifest with capability, accepted/produced types, effects and protocol version
 - Typed Pod associated Input/Output/Error contract
@@ -117,6 +118,7 @@
 
 ### Current automated checks
 
+- tests/registry.rs: the_namespace_of_an_entry_belongs_to_the_implementation_registered_with_it (set, replaced, dropped by register and by a takeover, other entries and projects unaffected)
 - tests/semantic.rs: a_link_trace_is_bounded_so_every_refusal_of_it_can_be_recorded
 - tests/egress.rs: a declared topic under a topic policy is refused by the TCP and UDP executors; an MQTT link is refused; the topic check itself is tested on the policy
 - tests/egress.rs: topic required, topic digest not the topic, expired and future millisecond deadlines

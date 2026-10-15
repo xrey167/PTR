@@ -938,6 +938,12 @@ impl Router for LearnedPodRouter {
     /// clearly the answer: a low score, a small margin, or (`PartialCoverage`) a field in which
     /// some candidate has no representation. With no candidate scored at all the result is
     /// [`RouteError::NoRepresentation`]. No candidate at all is the empty distribution.
+    ///
+    /// A representation scores a candidate only when the registry names the candidate's
+    /// lifecycle namespace and it is the representation's own
+    /// ([`ptr_pods::PodRegistry::namespace`]): the same pod id can be committed in several
+    /// namespaces, and an address learned for one must not rank the implementation of another.
+    /// A candidate registered without a namespace counts as one without a representation.
     fn policy(&self, request: &RouteRequest<'_>) -> Result<RouteDistribution, RouteError> {
         let candidates =
             request
@@ -950,6 +956,16 @@ impl Router for LearnedPodRouter {
         let mut scored: Vec<(PodId, f64)> = Vec::new();
         let admitted = request.features.admitted_representations();
         for pod in &candidates {
+            let same_namespace =
+                self.store
+                    .get(request.project, pod)
+                    .is_some_and(|representation| {
+                        request.registry.namespace(request.project, pod)
+                            == Some(representation.namespace())
+                    });
+            if !same_namespace {
+                continue;
+            }
             if let Some(admitted) = admitted {
                 // The host re-admitted representations for this request: one that is not named
                 // (or whose digest differs) does not take part in scoring.

@@ -22,11 +22,9 @@ use ptr_router::{
     AdmittedRepresentation, EncoderRef, PodRepresentation, RepresentationError,
     RepresentationStore, RouteError,
 };
-use ptr_types::{CodebookVersion, EvidenceId, PodRevisionAddress, ProvenanceRef, Validity};
+use ptr_types::{CodebookVersion, EvidenceId, PodRevisionAddress, ProvenanceRef};
 
-use std::collections::btree_map::Entry;
-use std::collections::{BTreeMap, BTreeSet};
-use std::ops::Bound;
+use std::collections::BTreeSet;
 
 const PROVENANCE_PREFIX: &str = "dragonfly:";
 
@@ -72,10 +70,6 @@ pub enum RepresentationDenial {
     Payload(RepresentationError),
     /// The payload is not the representation the binding was made for.
     BindingMismatch,
-    /// The pod id is live in more than one lifecycle namespace of its project. The pod registry
-    /// names a pod by project and id only, so the registry pod cannot be told apart and no
-    /// representation of that pod id is admitted (fail closed) until one namespace remains.
-    AmbiguousNamespace { project: String, pod: String },
 }
 
 /// The representations that passed admission, as a router store, and the ones that did not.
@@ -185,11 +179,7 @@ impl PtrRuntime {
         state: &NeuralState,
     ) -> Result<PodRepresentation, RepresentationDenial> {
         let admitted = self.admit(state).map_err(RepresentationDenial::State)?;
-        self.check_representation(
-            admitted.binding(),
-            admitted.payload(),
-            &self.ambiguous_pod_namespaces(),
-        )
+        self.check_representation(admitted.binding(), admitted.payload())
     }
 
     /// The representations of `cache` that are admitted now, named by pod and digest: the set a
@@ -200,13 +190,9 @@ impl PtrRuntime {
         &self,
         cache: &NeuralStateCache,
     ) -> BTreeSet<AdmittedRepresentation> {
-        let ambiguous = self.ambiguous_pod_namespaces();
         cache
             .keys()
-            .filter_map(|key| {
-                self.admit_cached_representation(cache, key, &ambiguous)
-                    .ok()
-            })
+            .filter_map(|key| self.admit_cached_representation(cache, key).ok())
             .map(|representation| AdmittedRepresentation {
                 project: representation.project().clone(),
                 pod: representation.pod().clone(),
@@ -224,10 +210,9 @@ impl PtrRuntime {
     ) -> AdmittedRepresentations {
         let mut store = RepresentationStore::new(encoder);
         let mut refused = Vec::new();
-        let ambiguous = self.ambiguous_pod_namespaces();
         for key in cache.keys() {
             let outcome = self
-                .admit_cached_representation(cache, key, &ambiguous)
+                .admit_cached_representation(cache, key)
                 .map_err(RepresentationRefusal::Admission)
                 .and_then(|representation| {
                     store
@@ -247,23 +232,22 @@ impl PtrRuntime {
         &self,
         cache: &NeuralStateCache,
         key: &str,
-        ambiguous: &BTreeSet<(String, String)>,
     ) -> Result<PodRepresentation, RepresentationDenial> {
         let admitted = cache
             .admit(self, key)
             .map_err(RepresentationDenial::State)?;
-        self.check_representation(admitted.binding(), admitted.payload(), ambiguous)
+        self.check_representation(admitted.binding(), admitted.payload())
     }
 
     /// The checks after the neural-state admission: the binding names exactly one pod target and
     /// records a representation digest (checked before the payload is parsed, so state of another
-    /// kind costs no parse), the payload is that representation, its own target is named, the
-    /// target was committed by its project, and its pod id is live in one namespace only.
+    /// kind costs no parse), the payload is that representation, its own target is named and the
+    /// target was committed by its project. Which registered implementation it may score is the
+    /// learned router's check against the registry's namespace.
     fn check_representation(
         &self,
         binding: &StateBinding,
         payload: &[u8],
-        ambiguous: &BTreeSet<(String, String)>,
     ) -> Result<PodRepresentation, RepresentationDenial> {
         let names_a_representation = binding.generations.len() == 1
             && binding
@@ -288,47 +272,7 @@ impl PtrRuntime {
         if !recorded || !bound_to_its_pod {
             return Err(RepresentationDenial::BindingMismatch);
         }
-        let key = (
-            representation.project().0.clone(),
-            representation.pod().0.clone(),
-        );
-        if ambiguous.contains(&key) {
-            return Err(RepresentationDenial::AmbiguousNamespace {
-                project: key.0,
-                pod: key.1,
-            });
-        }
         Ok(representation)
-    }
-
-    /// The `(project, pod)` pairs whose pod id has a live (not revoked) lifecycle target in more
-    /// than one namespace. Computed once per admission pass over the `pod:` targets only.
-    fn ambiguous_pod_namespaces(&self) -> BTreeSet<(String, String)> {
-        let mut namespace_of: BTreeMap<(&str, &str), &str> = BTreeMap::new();
-        let mut ambiguous = BTreeSet::new();
-        // `;` is the character after `:`, so this range is exactly the `pod:` targets.
-        for (target, generation) in self
-            .live_generations
-            .range::<str, _>((Bound::Included("pod:"), Bound::Excluded("pod;")))
-        {
-            if self.generation_validity(target, *generation) != Some(Validity::Live) {
-                continue;
-            }
-            let Some((project, namespace, pod)) = split_pod_target(target) else {
-                continue;
-            };
-            match namespace_of.entry((project, pod)) {
-                Entry::Vacant(entry) => {
-                    entry.insert(namespace);
-                }
-                Entry::Occupied(entry) => {
-                    if *entry.get() != namespace {
-                        ambiguous.insert((project.to_owned(), pod.to_owned()));
-                    }
-                }
-            }
-        }
-        ambiguous
     }
 }
 

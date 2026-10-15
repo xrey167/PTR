@@ -36,7 +36,7 @@ use ptr_router::{
     PodRepresentation, PodRepresentationParts, PodRouter, RepresentationStore, RouteError,
     RouteFeatures, RouteRequest, Router, SamplingKey,
 };
-use ptr_types::{CapabilityId, Effect, PodId, ProjectId, RequestId, TypeId};
+use ptr_types::{CapabilityId, Effect, NamespaceId, PodId, ProjectId, RequestId, TypeId};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -335,20 +335,26 @@ fn evaluate_world(seed: u64, smoke: bool, dir: &Path) -> Result<Value, String> {
     };
 
     let project = ProjectId::from(world["project"].as_str().ok_or("project missing")?);
+    // The pods are registered as the implementations of the world's lifecycle namespace: a
+    // learned address scores only the implementation of its own namespace.
+    let namespace = NamespaceId::from(world["namespace"].as_str().ok_or("namespace missing")?);
     let mut registry = PodRegistry::default();
     let mut representations: Vec<PodRepresentation> = Vec::new();
     let mut descriptions: Vec<(PodId, Vec<f32>)> = Vec::new();
     for pod in world["pods"].as_array().ok_or("pods missing")? {
         let pod_id = PodId::from(pod["pod_id"].as_str().ok_or("pod_id missing")?);
-        registry.register(Arc::new(ProbePod(PodManifest {
-            project: project.clone(),
-            id: pod_id.clone(),
-            capabilities: vec![CapabilityId::from("answer")],
-            accepts: vec![TypeId::from("Text")],
-            produces: vec![TypeId::from("Text")],
-            effects: vec![Effect::Pure],
-            protocol_version: 1,
-        })));
+        registry.register_in_namespace(
+            namespace.clone(),
+            Arc::new(ProbePod(PodManifest {
+                project: project.clone(),
+                id: pod_id.clone(),
+                capabilities: vec![CapabilityId::from("answer")],
+                accepts: vec![TypeId::from("Text")],
+                produces: vec![TypeId::from("Text")],
+                effects: vec![Effect::Pure],
+                protocol_version: 1,
+            })),
+        );
         descriptions.push((
             pod_id,
             f32_vector(&pod["description_vector"], "description")?,
@@ -658,6 +664,7 @@ mod tests {
             "encoder": {"id": "test-encoder", "revision": "r1"},
             "dims": 3,
             "project": "demo",
+            "namespace": "supply",
             "smoke": true,
             "evidence": "none (stand-in encoder)",
             "environment": {"python": "3.13.16"},
