@@ -169,8 +169,8 @@ impl CudaExport {
     }
 }
 
-/// Where a tensor is, per carrier. There is no variant for [`Carrier::InProcess`]: that
-/// carrier has nothing to serialise.
+/// Where a tensor is, per carrier. [`CarrierLocator::InProcess`] is a unit variant with nothing
+/// to serialise; it exists only for [`InProcessHandle`], and no codec path accepts it.
 #[derive(Clone, Eq, PartialEq)]
 pub enum CarrierLocator {
     Bytes {
@@ -217,6 +217,10 @@ pub enum CarrierLocator {
         frame_digest: [u8; 32],
         chunk_total: u32,
     },
+    /// The tensor object itself, in the producer's process: there is nothing to locate and
+    /// nothing to serialise. Only an [`InProcessHandle`] carries it; [`TensorHandle::validate`],
+    /// [`TensorHandle::encode`] and [`TensorHandle::decode`] refuse every handle that names it.
+    InProcess,
 }
 
 impl fmt::Debug for CarrierLocator {
@@ -268,6 +272,7 @@ impl fmt::Debug for CarrierLocator {
                 .field("frame_digest", frame_digest)
                 .field("chunk_total", chunk_total)
                 .finish(),
+            Self::InProcess => formatter.write_str("InProcess"),
         }
     }
 }
@@ -283,6 +288,7 @@ impl CarrierLocator {
             Self::PinnedHost { .. } => Carrier::PinnedHost,
             Self::NvmeFile { .. } => Carrier::NvmeFile,
             Self::Remote { .. } => Carrier::Remote,
+            Self::InProcess => Carrier::InProcess,
         }
     }
 }
@@ -326,6 +332,53 @@ pub struct TensorHandle {
     pub content_digest: [u8; 32],
     /// Ed25519 signature of the producing runtime over [`handle_signing_bytes`].
     pub signature: [u8; 64],
+}
+
+/// A locator-free, non-serialisable [`TensorHandle`] of [`Carrier::InProcess`]: the claim on a
+/// tensor object that stays in the producing process and moves to the consumer separately, with
+/// unique ownership (doc 42 section 2, rule 3a).
+///
+/// It carries everything a wire handle carries for admission (chain, placement epoch fence,
+/// signed deadline, nonce, operation, audience, content digest, Ed25519 signature) and nothing
+/// to locate bytes with. It has no codec and no `Serialize`: it cannot be written to a socket,
+/// and [`TensorHandle::encode`] / [`TensorHandle::decode`] still refuse the carrier. It is not
+/// `Clone`, so a copy is not made by accident (single use is the nonce tombstone in admission, not
+/// this type). It enters admission only through its own source
+/// (`HandleSource::InProcess` in `ptr-runtime`), so a wire handle can never be presented as one.
+/// The constructor does not verify the signature; admission does, over [`handle_signing_bytes`].
+#[derive(Debug, Eq, PartialEq)]
+pub struct InProcessHandle {
+    handle: TensorHandle,
+}
+
+impl InProcessHandle {
+    /// Wrap `handle`, which must name [`Carrier::InProcess`] with [`CarrierLocator::InProcess`]
+    /// and be well formed in every other field (shape, byte length, identities, chain).
+    pub fn new(handle: TensorHandle) -> Result<Self, HandleError> {
+        if handle.carrier != Carrier::InProcess {
+            return Err(HandleError::LocatorMismatch {
+                carrier: handle.carrier,
+                locator: Carrier::InProcess,
+            });
+        }
+        handle.validate_fields()?;
+        Ok(Self { handle })
+    }
+
+    /// The handle fields, for admission and signing. The value is not a wire handle.
+    pub fn as_tensor_handle(&self) -> &TensorHandle {
+        &self.handle
+    }
+
+    /// The bytes the producing runtime signs ([`handle_signing_bytes`]).
+    pub fn signing_bytes(&self) -> Vec<u8> {
+        handle_signing_bytes(&self.handle)
+    }
+
+    /// The digest of the handle ([`handle_digest`]).
+    pub fn digest(&self) -> [u8; 32] {
+        handle_digest(&self.handle)
+    }
 }
 
 /// Why bytes are no instance of the handle schema, or why a handle cannot be encoded.
@@ -414,6 +467,12 @@ impl TensorHandle {
         if self.carrier == Carrier::InProcess {
             return Err(HandleError::InProcessNotEncodable);
         }
+        self.validate_fields()
+    }
+
+    /// The checks of [`Self::validate`] without the refusal of [`Carrier::InProcess`], shared
+    /// with [`InProcessHandle::new`].
+    fn validate_fields(&self) -> Result<(), HandleError> {
         let locator = self.locator.carrier();
         if locator != self.carrier {
             return Err(HandleError::LocatorMismatch {
@@ -477,7 +536,8 @@ impl TensorHandle {
             }
             CarrierLocator::HostShm { .. }
             | CarrierLocator::PinnedHost { .. }
-            | CarrierLocator::NvmeFile { .. } => {}
+            | CarrierLocator::NvmeFile { .. }
+            | CarrierLocator::InProcess => {}
         }
         check_identity(&self.consumer)?;
         check_identity(&self.payload_type.0)?;
@@ -504,7 +564,8 @@ impl TensorHandle {
             | CarrierLocator::DevicePeer { .. }
             | CarrierLocator::PinnedHost { .. }
             | CarrierLocator::NvmeFile { .. }
-            | CarrierLocator::Remote { .. } => 0,
+            | CarrierLocator::Remote { .. }
+            | CarrierLocator::InProcess => 0,
         }
     }
 
@@ -691,6 +752,9 @@ fn write_locator(out: &mut Vec<u8>, locator: &CarrierLocator) {
             out.extend_from_slice(frame_digest);
             out.extend_from_slice(&chunk_total.to_le_bytes());
         }
+        // Nothing follows the carrier code: there is no locator. Reached only through the
+        // signing bytes and digest of an `InProcessHandle`; no codec path writes it.
+        CarrierLocator::InProcess => {}
     }
 }
 
@@ -948,7 +1012,8 @@ mod tests {
             | CarrierLocator::DevicePeer { .. }
             | CarrierLocator::PinnedHost { .. }
             | CarrierLocator::NvmeFile { .. }
-            | CarrierLocator::Remote { .. } => None,
+            | CarrierLocator::Remote { .. }
+            | CarrierLocator::InProcess => None,
         };
         let digest = match &locator {
             CarrierLocator::Bytes { inline } => content_digest(inline),
@@ -957,7 +1022,8 @@ mod tests {
             | CarrierLocator::DevicePeer { .. }
             | CarrierLocator::PinnedHost { .. }
             | CarrierLocator::NvmeFile { .. }
-            | CarrierLocator::Remote { .. } => [4; 32],
+            | CarrierLocator::Remote { .. }
+            | CarrierLocator::InProcess => [4; 32],
         };
         TensorHandle {
             carrier: locator.carrier(),

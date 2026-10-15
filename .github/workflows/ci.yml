@@ -261,6 +261,19 @@ jobs:
       - run: cargo +1.99.0 test -p ptr-fabric --features shm-backend --locked
       - run: cargo +1.99.0 test -p ptr-fabric --features worker-channel,worker-confine --locked
 
+  fabric-cuda-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo +stable build -p ptr-fabric --features cuda-ipc --locked
+      - run: cargo +stable clippy -p ptr-fabric --features cuda-ipc --all-targets --locked -- -D warnings
+      - run: cargo +stable test -p ptr-fabric --features cuda-ipc --locked
+      - run: cargo +stable clippy -p ptr-fabric --features cuda-ipc,worker-channel --all-targets --locked -- -D warnings
+      - run: cargo +stable test -p ptr-fabric --features cuda-ipc,worker-channel --locked
+      - run: rustup toolchain install 1.99.0 --profile minimal
+      - run: cargo +1.99.0 test -p ptr-fabric --features cuda-ipc --locked
+
   pod-worker:
     runs-on: ubuntu-latest
     steps:

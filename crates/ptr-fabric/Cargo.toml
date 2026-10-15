@@ -19,6 +19,11 @@ worker-confine = ["worker-channel", "dep:libc"]
 # The worker supervisor: spawn a confined worker process, watch it, reap its whole cgroup and
 # drain its channel (doc 42 stage S1). Linux only.
 worker-supervisor = ["worker-confine"]
+# The CUDA foundations of the CudaIpc, DevicePeer and PinnedHost carriers (doc 42 stage S2):
+# the driver probe, the VMM staging export and import, and the pinned registration of a HostShm
+# region, through `cudarc` with dynamic loading. Linux only. Nothing here links `libcuda`: a
+# host without a driver gets a typed "no driver" result, never a panic and never a link error.
+cuda-ipc = ["shm-backend", "dep:cudarc"]
 
 [dependencies]
 # The handle, its locators and the digest rule the carriers check against.
@@ -32,6 +37,14 @@ rustix = { version = "=1.1.5", optional = true, default-features = false, featur
 # Raw `prctl`, `seccomp`, `unshare` and `fork` for the confinement probe and the filter, and the
 # syscall numbers of the allowlist. Version already in the lockfile.
 libc = { version = "=0.2.189", optional = true }
+
+# The driver binding of the `cuda-ipc` feature. Version and features pinned: `driver` for the
+# `cu*` entry points, `dynamic-loading` so `libcuda` is opened at run time (and `is_culib_present`
+# tells whether it can be), and `cuda-12080` for the bindings. Never
+# `cuda-version-from-build-system`: its build script panics on a host without `nvcc`. Version
+# already in the lockfile through candle, so no package is added.
+# Conflicts with `candle-cuda` in the same build (dynamic-loading vs dynamic-linking); see component.toml.
+cudarc = { version = "=0.19.10", optional = true, default-features = false, features = ["std", "driver", "dynamic-loading", "cuda-12080"] }
 
 [dev-dependencies]
 ptr-types = { workspace = true }
@@ -54,6 +67,20 @@ required-features = ["worker-channel"]
 name = "worker_confine"
 path = "tests/worker_confine.rs"
 required-features = ["worker-confine"]
+
+[[test]]
+name = "cuda_gating"
+path = "tests/cuda_gating.rs"
+
+[[test]]
+name = "cuda_ipc"
+path = "tests/cuda_ipc.rs"
+required-features = ["cuda-ipc"]
+
+[[test]]
+name = "cuda_ipc_process"
+path = "tests/cuda_ipc_process.rs"
+required-features = ["cuda-ipc", "worker-channel"]
 
 [[test]]
 name = "worker_supervisor"

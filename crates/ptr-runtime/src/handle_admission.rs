@@ -108,7 +108,7 @@ use ed25519_dalek::{Signature, VerifyingKey};
 use ptr_protocol::activation::{BoundaryDtype, UpstreamChain};
 use ptr_protocol::{
     handle_digest, handle_signing_bytes, verify_content, Carrier, CarrierLocator, HandleError,
-    TensorHandle,
+    InProcessHandle, TensorHandle,
 };
 
 use ptr_types::{ProjectId, TypeId};
@@ -391,11 +391,19 @@ pub struct ReclaimNotice {
     pub reason: ReclaimReason,
 }
 
-/// The handle of a request, still encoded or already decoded.
+/// The handle of a request, still encoded, already decoded, or locator-free in this process.
 #[derive(Clone, Copy)]
 pub enum HandleSource<'a> {
     Encoded(&'a [u8]),
+    /// A wire handle. A [`Carrier::InProcess`] handle is refused here
+    /// ([`HandleError::InProcessNotEncodable`]): it enters only as [`Self::InProcess`].
     Decoded(&'a TensorHandle),
+    /// The locator-free handle of a tensor that moves inside this process with unique
+    /// ownership (doc 42 section 2). Admitted by every check of a wire handle (signature,
+    /// stage, audience, operation, nonce, deadline, bounds, chain and placement epoch); the
+    /// tensor object itself is bound to the consumed handle separately
+    /// ([`crate::MovedTensor::receive`]).
+    InProcess(&'a InProcessHandle),
 }
 
 impl fmt::Debug for HandleSource<'_> {
@@ -404,6 +412,11 @@ impl fmt::Debug for HandleSource<'_> {
         match self {
             Self::Encoded(bytes) => write!(formatter, "Encoded({} bytes)", bytes.len()),
             Self::Decoded(handle) => write!(formatter, "Decoded(nonce {})", handle.handle_nonce),
+            Self::InProcess(handle) => write!(
+                formatter,
+                "InProcess(nonce {})",
+                handle.as_tensor_handle().handle_nonce
+            ),
         }
     }
 }
@@ -904,6 +917,8 @@ impl HandleTable {
                 handle.validate().map_err(HandleRejection::Malformed)?;
                 Cow::Borrowed(handle)
             }
+            // Validated when the `InProcessHandle` was built and immutable since.
+            HandleSource::InProcess(handle) => Cow::Borrowed(handle.as_tensor_handle()),
         };
         let signature = Signature::from_bytes(&handle.signature);
         if producer
@@ -1340,7 +1355,8 @@ fn is_expired(deadline_ms: u64, policy: &HandlePolicy, now_ms: u64) -> bool {
 fn reclaim_locator(locator: &CarrierLocator) -> CarrierLocator {
     match locator {
         CarrierLocator::Bytes { .. } => CarrierLocator::Bytes { inline: Vec::new() },
-        other @ (CarrierLocator::HostShm { .. }
+        other @ (CarrierLocator::InProcess
+        | CarrierLocator::HostShm { .. }
         | CarrierLocator::CudaIpc { .. }
         | CarrierLocator::DevicePeer { .. }
         | CarrierLocator::PinnedHost { .. }
