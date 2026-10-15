@@ -10,8 +10,8 @@ use ptr_router::{
     MAX_REPRESENTATIONS,
 };
 use ptr_types::{
-    CapabilityId, ClusterKey, Generation, PodId, PodIdentity, PodIdentityDescriptor, ProjectId,
-    RequestId, TypeId, POD_IDENTITY_SCHEMA_VERSION,
+    CapabilityId, ClusterKey, Generation, NamespaceId, PodId, PodIdentity, PodIdentityDescriptor,
+    ProjectId, RequestId, TypeId, POD_IDENTITY_SCHEMA_VERSION,
 };
 
 fn encoder() -> EncoderRef {
@@ -54,6 +54,7 @@ fn parts(pod: &str, z: Vec<f32>, bias: f32, generation: u64) -> PodRepresentatio
     let descriptor = descriptor(pod);
     PodRepresentationParts {
         project: ProjectId::from("demo"),
+        namespace: NamespaceId::from("ns"),
         pod: PodId::from(pod),
         identity: descriptor.identity(),
         cluster_key: descriptor.cluster_key(),
@@ -380,6 +381,13 @@ fn two_projects_with_the_same_pod_id_do_not_collide_and_route_only_with_their_ow
     other_parts.project = other.clone();
     let other_alpha = PodRepresentation::new(other_parts).unwrap();
     assert_ne!(demo_alpha.digest(), other_alpha.digest());
+    // The lifecycle namespace is part of the digest too: the same training in another namespace
+    // is another representation.
+    let mut other_namespace = parts("alpha", vec![1.0, 0.0, 0.0], 10.0, 1);
+    other_namespace.namespace = NamespaceId::from("ns-b");
+    let other_namespace = PodRepresentation::new(other_namespace).unwrap();
+    assert_eq!(other_namespace.namespace(), &NamespaceId::from("ns-b"));
+    assert_ne!(demo_alpha.digest(), other_namespace.digest());
 
     let mut store = RepresentationStore::new(encoder());
     assert!(store.insert(demo_alpha.clone()).unwrap().is_none());
@@ -600,6 +608,10 @@ fn invalid_representations_are_refused_with_the_reason() {
             actual: 0,
             max: 4096
         }
+    );
+    assert_eq!(
+        refuse(&|p| p.namespace = NamespaceId::from("")),
+        RepresentationError::EmptyField { field: "namespace" }
     );
     assert_eq!(
         refuse(&|p| p.encoder.revision.clear()),

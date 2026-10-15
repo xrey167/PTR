@@ -26,6 +26,7 @@ from .train import PodTrainingSpec, TrainConfig, TrainedAddress, train_pod_addre
 ENCODER_DIMS = 32
 PROJECT = "demo"
 OTHER_PROJECT = "other"
+NAMESPACE = "supply"
 
 _QUESTIONS = {
     "mueller": [
@@ -80,6 +81,7 @@ def _spec(key: str) -> PodTrainingSpec:
     negative_aliases = [a for other in _ALIASES if other != key for a in _ALIASES[other]]
     return PodTrainingSpec(
         project=PROJECT,
+        namespace=NAMESPACE,
         pod_id=f"supplier-{key}",
         descriptor=_descriptor(key),
         generation=3,
@@ -119,13 +121,18 @@ def build_world(out_dir: Path) -> dict:
         pods.append(
             {
                 "project": address.spec.project,
+                "namespace": address.spec.namespace,
                 "pod_id": address.spec.pod_id,
                 "pod_identity": address.spec.descriptor.identity(),
                 "cluster_key": address.spec.descriptor.cluster_key().hex(),
                 "generation": address.spec.generation,
                 "status": address.gate.status,
                 "manifest": json_path.name,
-                "weights": artifact_stem(address.spec.project, address.spec.descriptor.identity())
+                "weights": artifact_stem(
+                    address.spec.project,
+                    address.spec.namespace,
+                    address.spec.descriptor.identity(),
+                )
                 + ".bin",
             }
         )

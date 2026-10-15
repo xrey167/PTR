@@ -26,8 +26,10 @@
 //! # Artifact
 //!
 //! [`PodRepresentation::from_artifact`] reads the pair
-//! `dragonfly-<project>__<identity>.json` and `.bin` the Python exporter writes (the project is
-//! part of the name: two projects with equal pod semantics share an identity). The binary file holds `dims` little
+//! `dragonfly-<project>__<namespace>__<identity>.json` and `.bin` the Python exporter writes (project
+//! and namespace are part of the name: equal pod semantics in two projects or namespaces share an
+//! identity). The manifest names the project, the lifecycle namespace and the pod, so a
+//! representation is admitted only under its own lifecycle target. The binary file holds `dims` little
 //! endian `f32` values of `z` followed by one `f32` bias. The manifest carries the SHA-256 of
 //! that file and a digest over every field (see [`PodRepresentation::digest`]); a mismatch of
 //! either refuses the load.
@@ -35,13 +37,13 @@
 use crate::{
     AbstentionReason, AdmittedRepresentation, RouteDistribution, RouteError, RouteRequest, Router,
 };
-use ptr_types::{ClusterKey, Generation, PodId, PodIdentity, ProjectId};
+use ptr_types::{ClusterKey, Generation, NamespaceId, PodId, PodIdentity, ProjectId};
 use sha2::{Digest as ShaDigest, Sha256};
 use std::collections::BTreeMap;
 use std::fmt;
 
 /// The artifact schema this build reads and writes.
-pub const REPRESENTATION_SCHEMA: u32 = 1;
+pub const REPRESENTATION_SCHEMA: u32 = 2;
 /// The most dimensions a representation may have.
 pub const MAX_REPRESENTATION_DIMS: usize = 4096;
 /// Minimum score of the weakest trusted alias for activation, in permille.
@@ -54,7 +56,7 @@ pub const MAX_REPRESENTATIONS: usize = 4096;
 pub const MAX_MANIFEST_BYTES: usize = 64 * 1024;
 
 const ARTIFACT_KIND: &str = "dragonfly-pod-address";
-const DIGEST_DOMAIN: &str = "ptr.dragonfly.artifact.v1";
+const DIGEST_DOMAIN: &str = "ptr.dragonfly.artifact.v2";
 const STATUS_ACTIVATED: &str = "activated";
 const STATUS_NOT_ACTIVATED: &str = "not-activated";
 
@@ -202,6 +204,10 @@ impl std::error::Error for RepresentationError {}
 pub struct PodRepresentationParts {
     /// The project whose registry the pod belongs to. Two projects may use the same pod id.
     pub project: ProjectId,
+    /// The lifecycle namespace of the pod. Pod generations are committed and revoked per
+    /// `pod:<project>/<namespace>/<pod>`, so a representation is bound to exactly one namespace
+    /// and cannot be admitted under the lifecycle target of the same pod id in another one.
+    pub namespace: NamespaceId,
     pub pod: PodId,
     pub identity: PodIdentity,
     pub cluster_key: ClusterKey,
@@ -331,6 +337,7 @@ impl PodRepresentation {
 
         let representation = Self::new(PodRepresentationParts {
             project: ProjectId(text(root.get("project"), "project")?.to_owned()),
+            namespace: NamespaceId(text(root.get("namespace"), "namespace")?.to_owned()),
             pod: PodId(text(root.get("pod_id"), "pod_id")?.to_owned()),
             identity: PodIdentity(text(root.get("pod_identity"), "pod_identity")?.to_owned()),
             cluster_key,
@@ -365,6 +372,7 @@ impl PodRepresentation {
             "dims": self.dims(),
             "generation": self.parts.generation.0,
             "project": self.parts.project.0,
+            "namespace": self.parts.namespace.0,
             "pod_id": self.parts.pod.0,
             "pod_identity": self.parts.identity.0,
             "cluster_key": self.parts.cluster_key.to_hex(),
@@ -424,6 +432,10 @@ impl PodRepresentation {
 
     pub fn project(&self) -> &ProjectId {
         &self.parts.project
+    }
+
+    pub fn namespace(&self) -> &NamespaceId {
+        &self.parts.namespace
     }
 
     pub fn pod(&self) -> &PodId {
@@ -570,6 +582,7 @@ fn hex_digest(value: &str) -> Option<[u8; 32]> {
 fn validate_parts(parts: &PodRepresentationParts) -> Result<(), RepresentationError> {
     for (field, empty) in [
         ("project", parts.project.0.is_empty()),
+        ("namespace", parts.namespace.0.is_empty()),
         ("pod", parts.pod.0.is_empty()),
         ("identity", parts.identity.0.is_empty()),
         ("encoder.id", parts.encoder.id.is_empty()),
@@ -663,6 +676,7 @@ fn digest_of(parts: &PodRepresentationParts) -> [u8; 32] {
     bytes.extend_from_slice(&(parts.z.len() as u32).to_le_bytes());
     bytes.extend_from_slice(&parts.generation.0.to_le_bytes());
     put_text(&mut bytes, &parts.project.0);
+    put_text(&mut bytes, &parts.namespace.0);
     put_text(&mut bytes, &parts.pod.0);
     put_text(&mut bytes, &parts.identity.0);
     bytes.extend_from_slice(parts.cluster_key.digest());

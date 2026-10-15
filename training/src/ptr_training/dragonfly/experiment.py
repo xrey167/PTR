@@ -47,6 +47,7 @@ from .train import PodTrainingSpec, TrainConfig, train_pod_address
 ENCODER_DIMS = 64
 POD_COUNT = 6
 PROJECT = "demo"
+NAMESPACE = "supply"
 CONFIG = (
     Path(__file__).resolve().parents[4]
     / "experiments/runtime/R015-dragonfly-pod-addressing/config.toml"
@@ -213,6 +214,7 @@ def _spec(pod: dict, others: list[dict]) -> PodTrainingSpec:
     negative_aliases = [a for other in others for a in other["aliases"]]
     return PodTrainingSpec(
         project=PROJECT,
+        namespace=NAMESPACE,
         pod_id=pod["pod_id"],
         descriptor=descriptor,
         generation=1,
@@ -278,6 +280,7 @@ def build(
         "encoder": {"id": encoder.encoder_id, "revision": encoder.encoder_revision},
         "dims": encoder.dims,
         "project": PROJECT,
+        "namespace": NAMESPACE,
         # A smoke world is produced with the stand-in encoder and is no evidence about any model.
         "smoke": smoke,
         "evidence": "none (stand-in encoder)" if smoke else "candidate",

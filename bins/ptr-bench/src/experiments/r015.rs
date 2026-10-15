@@ -269,6 +269,7 @@ fn generate_world(seed: u64, out: &Path, smoke: bool, venv: &Path) -> Result<(),
 fn without_bias(representation: &PodRepresentation) -> Result<PodRepresentation, String> {
     PodRepresentation::new(PodRepresentationParts {
         project: representation.project().clone(),
+        namespace: representation.namespace().clone(),
         pod: representation.pod().clone(),
         identity: representation.identity().clone(),
         cluster_key: representation.cluster_key(),
@@ -617,6 +618,7 @@ mod tests {
             z[index] = 1.0;
             let representation = PodRepresentation::new(PodRepresentationParts {
                 project: ProjectId::from("demo"),
+                namespace: ptr_types::NamespaceId::from("supply"),
                 pod: PodId::from(name),
                 identity: ptr_types::PodIdentity::from(format!("pod:{name}").as_str()),
                 cluster_key: ptr_types::ClusterKey([1; 32]),

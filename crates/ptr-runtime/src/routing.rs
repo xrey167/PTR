@@ -271,6 +271,12 @@ impl PtrRuntime {
                 .and_then(|route| pods.get(project, &route.pod_id))
                 .ok_or_else(unavailable),
             PodSelection::Sampled(sampler) => {
+                // Without an eligible pod there is nothing to score: answer `PodUnavailable`
+                // exactly as the router would, without running the encoder (whose failure would
+                // otherwise turn the unavailable answer into a route failure).
+                if pods.candidates(project, capability, input_type).is_empty() {
+                    return Err(unavailable());
+                }
                 let features = sampler
                     .features_at(
                         self,

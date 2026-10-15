@@ -14,16 +14,16 @@ use ptr_router::{
     PodRepresentation, PodRepresentationParts, PolicyFailure, RepresentationStore, RouteError,
     SamplingKey, ScoreWeights,
 };
-use ptr_runtime::neural::{Denial, NeuralError, NeuralState, NeuralStateCache};
+use ptr_runtime::neural::{Denial, NeuralError, NeuralState, NeuralStateCache, StateDeclaration};
 use ptr_runtime::{
     pod_lifecycle_target, BindPodRepresentation, EmbeddingSampler, EmbeddingSamplerError,
     PodRepresentationError, PtrRuntime, QueryEmbedder, RepresentationDenial, RepresentationRefusal,
     RouteQuery, RuntimeError,
 };
 use ptr_types::{
-    CapabilityId, CapsuleId, ClusterKey, CodebookVersion, Effect, Generation, NamespaceId,
-    PodAddress, PodId, PodIdentity, PodRevisionAddress, Probability, ProjectId, TypeId,
-    VerificationLevel,
+    CapabilityId, CapsuleId, ClusterKey, CodebookVersion, Effect, EvidenceId, Generation,
+    NamespaceId, PodAddress, PodId, PodIdentity, PodRevisionAddress, Probability, ProjectId,
+    ProvenanceRef, TypeId, VerificationLevel,
 };
 use ptr_verifier::{VerificationReport, VerificationStatus, Verifier};
 use std::sync::Arc;
@@ -36,10 +36,14 @@ fn encoder() -> EncoderRef {
 }
 
 fn address(pod: &str, generation: u64) -> PodRevisionAddress {
+    address_in("ns", pod, generation)
+}
+
+fn address_in(namespace: &str, pod: &str, generation: u64) -> PodRevisionAddress {
     PodRevisionAddress {
         address: PodAddress::new(
             ProjectId::from("demo"),
-            NamespaceId::from("ns"),
+            NamespaceId::from(namespace),
             PodId::from(pod),
         )
         .unwrap(),
@@ -51,6 +55,7 @@ fn address(pod: &str, generation: u64) -> PodRevisionAddress {
 fn representation(pod: &str, z: Vec<f32>, generation: u64) -> PodRepresentation {
     PodRepresentation::new(PodRepresentationParts {
         project: ProjectId::from("demo"),
+        namespace: NamespaceId::from("ns"),
         pod: PodId::from(pod),
         identity: PodIdentity::from(format!("pod:{pod}").as_str()),
         cluster_key: ClusterKey([3; 32]),
@@ -149,6 +154,74 @@ fn a_representation_for_another_pod_or_generation_does_not_bind() {
             address: 2,
         })
     );
+}
+
+/// The same pod id is live in two namespaces of one project. A representation of `ns/alpha` binds
+/// only under its own lifecycle target, and revoking that target denies it although `ns-b/alpha`
+/// is still live.
+#[test]
+fn a_representation_never_moves_to_the_same_pod_id_in_another_namespace() {
+    let mut runtime = runtime();
+    runtime
+        .commit(LedgerEvent::CapsuleCommitted {
+            project: "demo".into(),
+            capsule: CapsuleId::from(
+                pod_lifecycle_target(&address_in("ns-b", "alpha", 1)).as_str(),
+            ),
+            generation: Generation(1),
+        })
+        .unwrap();
+    let alpha = representation("alpha", vec![1.0, 0.0, 0.0], 1);
+
+    let through_other_namespace = runtime.bind_pod_representation(BindPodRepresentation {
+        representation: &alpha,
+        pod: &address_in("ns-b", "alpha", 1),
+        codebook: CodebookVersion::V1,
+    });
+    assert_eq!(
+        through_other_namespace.unwrap_err(),
+        RuntimeError::PodRepresentation(PodRepresentationError::NamespaceMismatch {
+            representation: "ns".into(),
+            address: "ns-b".into(),
+        })
+    );
+
+    // A binding forged under the other namespace's target, with the representation's own digest
+    // recorded, is still refused on admission.
+    let digest: String = alpha
+        .digest()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let forged = runtime
+        .bind_state(
+            &StateDeclaration::at(CodebookVersion::V1)
+                .under(pod_lifecycle_target(&address_in("ns-b", "alpha", 1)))
+                .produced_by(ProvenanceRef {
+                    source: EvidenceId(format!("dragonfly:{digest}")),
+                    note: None,
+                }),
+        )
+        .unwrap();
+    let forged = NeuralState::new(forged, alpha.to_payload());
+    assert_eq!(
+        runtime.admit_pod_representation(&forged),
+        Err(RepresentationDenial::BindingMismatch)
+    );
+
+    let own = bind(&runtime, &alpha);
+    runtime
+        .commit(LedgerEvent::Revoked {
+            subject: pod_lifecycle_target(&address("alpha", 1)),
+            generation: Generation(1),
+        })
+        .unwrap();
+    assert!(matches!(
+        runtime.admit_pod_representation(&own),
+        Err(RepresentationDenial::State(
+            Denial::RevokedGeneration { .. }
+        ))
+    ));
 }
 
 #[test]
@@ -305,6 +378,7 @@ fn an_admitted_representation_that_is_not_activated_stays_out_of_the_router_stor
 fn parts_of(representation: &PodRepresentation) -> PodRepresentationParts {
     PodRepresentationParts {
         project: representation.project().clone(),
+        namespace: representation.namespace().clone(),
         pod: representation.pod().clone(),
         identity: representation.identity().clone(),
         cluster_key: representation.cluster_key(),
@@ -529,6 +603,35 @@ fn an_encoder_failure_or_a_wrongly_sized_query_is_a_pod_free_route_failure() {
         run(&mut runtime, b"anything else", &sampler).unwrap_err(),
         RuntimeError::RouteFailed {
             reason: "routing policy failed"
+        }
+    );
+    assert!(routed_pods(&runtime).is_empty());
+}
+
+#[test]
+fn without_an_eligible_pod_the_answer_is_unavailable_and_the_encoder_is_not_run() {
+    let mut runtime = runtime();
+    let bound = cache(&runtime);
+    let admitted = runtime.admitted_representations(encoder(), &bound);
+    let sampler = sampler(admitted.store, bound);
+    // `AxisEmbedder` fails for this payload: had it run, the answer would be a route failure.
+    let error = runtime
+        .run_resumable_with_pods_using_router(
+            "request-1".into(),
+            &ProjectId::from("demo"),
+            "go",
+            &Ask(b"anything else"),
+            &PodRegistry::default(),
+            &sampler,
+            &Pass,
+            2,
+        )
+        .unwrap_err();
+    assert_eq!(
+        error,
+        RuntimeError::PodUnavailable {
+            capability: "Echo<Text>".into(),
+            input_type: "Text".into(),
         }
     );
     assert!(routed_pods(&runtime).is_empty());

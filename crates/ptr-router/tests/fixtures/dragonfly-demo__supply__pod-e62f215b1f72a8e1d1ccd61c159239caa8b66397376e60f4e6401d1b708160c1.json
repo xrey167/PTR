@@ -1,6 +1,6 @@
 {
   "cluster_key": "76d375c4bcf6a22fdca10c5c74d5b04302685d5995760fbc2fb1f3e793cb59ec",
-  "digest": "064ef9691f7142af35e6dd925208ba3f89f0cc1ce175f497320136326c4a07cb",
+  "digest": "cda3ead69213d6d0d308e55f3f1d7ca2d797cfe812cd3ac48a7a805914d0aa19",
   "dims": 32,
   "encoder": {
     "id": "hashed-bow-32",
@@ -17,14 +17,15 @@
   },
   "generation": 3,
   "kind": "dragonfly-pod-address",
+  "namespace": "supply",
   "pod_id": "supplier-mueller",
   "pod_identity": "pod:e62f215b1f72a8e1d1ccd61c159239caa8b66397376e60f4e6401d1b708160c1",
-  "project": "other",
-  "schema": 1,
+  "project": "demo",
+  "schema": 2,
   "scoring": {
     "cosine_weight": 12.0,
     "metadata_weight": 3.0
   },
-  "weights_file": "dragonfly-other__pod-e62f215b1f72a8e1d1ccd61c159239caa8b66397376e60f4e6401d1b708160c1.bin",
+  "weights_file": "dragonfly-demo__supply__pod-e62f215b1f72a8e1d1ccd61c159239caa8b66397376e60f4e6401d1b708160c1.bin",
   "weights_sha256": "c4ee7793a8bc914eac3e4854c0ac1150f7bbb938a66e8df1e6fed637263dca58"
 }

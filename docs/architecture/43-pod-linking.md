@@ -123,8 +123,9 @@ space.
 payload length and a digest prefix (Invariant 13).
 `ptrd` does not wire a learned router for that reason.
 
-**Artifact.** `dragonfly-<project>__<identity>.json` (manifest) and `.bin` (`dims` little-endian `f32` of `z`,
-then the bias). The manifest carries the encoder, dimension, generation, project, pod, identity, cluster
+**Artifact.** `dragonfly-<project>__<namespace>__<identity>.json` (manifest) and `.bin` (`dims`
+little-endian `f32` of `z`, then the bias). The manifest (schema 2) carries the encoder, dimension,
+generation, project, lifecycle namespace, pod, identity, cluster
 key, scoring weights, the gate measurement, `weights_sha256` and a `digest` over every field and the
 weights. The Python exporter and the Rust loader share a committed fixture
 (`crates/ptr-router/tests/fixtures`): identities, cluster keys, weights bit for bit and every probe
@@ -138,7 +139,12 @@ target at the pod's exact generation, with its digest in the provenance, and
 `Denial::RevokedGeneration` for that pod only (Invariant 17); a new generation yields
 `StaleGeneration` until a representation trained for it is bound; a payload swapped under a valid
 binding is refused. `admitted_representations` builds the router store from the cache and reports
-what was refused and why.
+what was refused and why. The representation names its lifecycle namespace and the digest covers
+it: an address in another namespace does not bind (`NamespaceMismatch`), and a binding under the
+target of the same pod id in another namespace is refused on admission, so revoking a
+representation's own target cannot be bypassed through a sibling namespace.
+A sampled Pod request without an eligible registry candidate answers `PodUnavailable` before the
+query encoder runs.
 
 The store itself holds no binding, so admission is repeated for every request instead of once at
 load time. `EmbeddingSampler::new(router, embedder, admission_cache)` keeps the bound states, and

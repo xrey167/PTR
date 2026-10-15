@@ -16,7 +16,7 @@ QUESTIONS = (
 )
 
 
-def pod_json(project: str | None = "demo") -> dict:
+def pod_json(project: str | None = "demo", namespace: str | None = "supply") -> dict:
     data = {
         "pod_id": "pod-mueller",
         "descriptor": {
@@ -34,6 +34,8 @@ def pod_json(project: str | None = "demo") -> dict:
     }
     if project is not None:
         data["project"] = project
+    if namespace is not None:
+        data["namespace"] = namespace
     return data
 
 
@@ -43,6 +45,14 @@ class SpecFromJsonTest(unittest.TestCase):
 
     def test_a_spec_without_a_project_is_refused(self) -> None:
         for data in (pod_json(None), pod_json("")):
+            with self.assertRaises(ValueError):
+                _spec_from_json(data)
+
+    def test_the_namespace_is_read_from_the_spec(self) -> None:
+        self.assertEqual(_spec_from_json(pod_json("acme", "ns-a")).namespace, "ns-a")
+
+    def test_a_spec_without_a_namespace_is_refused(self) -> None:
+        for data in (pod_json("acme", None), pod_json("acme", "")):
             with self.assertRaises(ValueError):
                 _spec_from_json(data)
 
@@ -59,6 +69,7 @@ class CliTest(unittest.TestCase):
             self.assertEqual(len(manifests), 1)
             manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
             self.assertEqual(manifest["project"], "acme")
+            self.assertEqual(manifest["namespace"], "supply")
             self.assertEqual(manifest["pod_id"], "pod-mueller")
 
     def test_the_cli_refuses_a_spec_without_a_project(self) -> None:

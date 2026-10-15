@@ -45,6 +45,11 @@ pub enum PodRepresentationError {
         representation: String,
         address: String,
     },
+    /// The representation is for the same pod id in another lifecycle namespace than `pod`.
+    NamespaceMismatch {
+        representation: String,
+        address: String,
+    },
     /// The representation was trained for another pod than `pod`.
     PodMismatch {
         representation: String,
@@ -104,6 +109,14 @@ impl PtrRuntime {
                 PodRepresentationError::ProjectMismatch {
                     representation: representation.project().to_string(),
                     address: pod.address.project.to_string(),
+                },
+            ));
+        }
+        if representation.namespace() != &pod.address.namespace {
+            return Err(RuntimeError::PodRepresentation(
+                PodRepresentationError::NamespaceMismatch {
+                    representation: representation.namespace().to_string(),
+                    address: pod.address.namespace.to_string(),
                 },
             ));
         }
@@ -251,13 +264,17 @@ impl PtrRuntime {
 }
 
 /// Whether the lifecycle target `pod:<project>/<namespace>/<pod>` names the representation's own
-/// project and pod.
+/// project, namespace and pod. A representation never moves to the lifecycle target of the same
+/// pod id in another namespace, so revoking its own target denies it everywhere.
 fn target_names(target: &str, representation: &PodRepresentation) -> bool {
     let Some(rest) = target.strip_prefix("pod:") else {
         return false;
     };
     let parts: Vec<&str> = rest.split('/').collect();
-    parts.len() == 3 && parts[0] == representation.project().0 && parts[2] == representation.pod().0
+    parts.len() == 3
+        && parts[0] == representation.project().0
+        && parts[1] == representation.namespace().0
+        && parts[2] == representation.pod().0
 }
 
 fn digest_hex(digest: &[u8; 32]) -> String {

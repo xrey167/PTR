@@ -98,6 +98,10 @@ fn every_exported_pod_loads_with_the_fields_the_exporter_wrote() {
             &ProjectId::from(entry["project"].as_str().unwrap())
         );
         assert_eq!(
+            representation.namespace().0,
+            entry["namespace"].as_str().unwrap()
+        );
+        assert_eq!(
             representation.identity().0,
             entry["pod_identity"].as_str().unwrap()
         );
@@ -281,6 +285,10 @@ fn any_changed_manifest_field_is_refused_by_the_digest() {
         Err(RepresentationError::DigestMismatch)
     );
     assert_eq!(
+        tampered(|manifest| manifest["namespace"] = Value::from("other-namespace")),
+        Err(RepresentationError::DigestMismatch)
+    );
+    assert_eq!(
         tampered(|manifest| manifest["encoder"]["revision"] = Value::from("2")),
         Err(RepresentationError::DigestMismatch)
     );
@@ -333,11 +341,18 @@ fn changed_or_truncated_weights_are_refused() {
 #[test]
 fn malformed_manifests_are_refused_with_the_failing_field() {
     assert_eq!(
-        tampered(|manifest| manifest["schema"] = Value::from(2)),
+        tampered(|manifest| manifest["schema"] = Value::from(1)),
         Err(RepresentationError::UnsupportedSchema {
-            expected: 1,
-            actual: 2
+            expected: 2,
+            actual: 1
         })
+    );
+    // An artifact without a lifecycle namespace cannot be bound to one pod target.
+    assert_eq!(
+        tampered(|manifest| {
+            manifest.as_object_mut().unwrap().remove("namespace");
+        }),
+        Err(RepresentationError::Malformed { field: "namespace" })
     );
     assert_eq!(
         tampered(|manifest| manifest["kind"] = Value::from("other")),

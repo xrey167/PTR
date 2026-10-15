@@ -43,6 +43,9 @@ class PodTrainingSpec:
 
     #: The project whose registry the pod belongs to; the router keys addresses by project and pod.
     project: str
+    #: The lifecycle namespace of the pod: generations are committed and revoked per
+    #: `pod:<project>/<namespace>/<pod>`, and the exported address is bound to exactly this one.
+    namespace: str
     pod_id: str
     descriptor: PodIdentityDescriptor
     generation: int
@@ -127,6 +130,8 @@ def _check_inputs(spec: PodTrainingSpec, positives: Sequence[str], negatives: Se
         raise ValueError("pod_id is required")
     if not spec.project:
         raise ValueError("project is required")
+    if not spec.namespace:
+        raise ValueError("namespace is required")
     spec.descriptor.validate()
     if not spec.positives or not negatives:
         raise ValueError("positive and negative address examples are required")
@@ -237,8 +242,11 @@ def _spec_from_json(data: dict) -> PodTrainingSpec:
     descriptor = PodIdentityDescriptor.from_json(data["descriptor"])
     if not data.get("project"):
         raise ValueError(f"pod spec {data.get('pod_id')!r} needs a non-empty `project`")
+    if not data.get("namespace"):
+        raise ValueError(f"pod spec {data.get('pod_id')!r} needs a non-empty `namespace`")
     return PodTrainingSpec(
         project=data["project"],
+        namespace=data["namespace"],
         pod_id=data["pod_id"],
         descriptor=descriptor,
         generation=data["generation"],
