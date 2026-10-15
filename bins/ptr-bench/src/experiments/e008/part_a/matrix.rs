@@ -201,6 +201,8 @@ fn run_case(
     count_case(tally, cell);
 
     let mut cache: SplitStageCacheV2<Vec<f32>> = SplitStageCacheV2::new(params::CACHE_CAPACITY);
+    // The downstream stage's own chain the buffered frame is computed with.
+    let own = world.own_chain();
     let (buffered, key) = {
         let live = world.live();
         let admitted = admit_frame_v2(&frame, KvReusePolicy::ExactOnly, &live, &live)
@@ -279,7 +281,7 @@ fn run_case(
     // the output would be an output after the invalidation.
     {
         let live = world.live();
-        if buffered.revalidate(&live, &live).is_ok() {
+        if buffered.revalidate(&own, &live, &live).is_ok() {
             released = true;
         }
     }

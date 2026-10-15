@@ -293,16 +293,19 @@ impl AdmittedFrameV2 {
         taint_of(self.taint)
     }
 
-    /// Revalidate the frame's chain, placement epoch and lineage against `live` and `inputs`
-    /// now. Admission checks once; a caller that computes from the frame calls this before it
-    /// releases the computed output, so an invalidation between admission and release is
-    /// caught.
+    /// Revalidate the frame's chain, placement epoch and lineage, and `own` (the downstream
+    /// stage's own chain the output is computed with), against `live` and `inputs` now.
+    /// Admission checks once; a caller that computes from the frame on a miss calls this
+    /// before it releases the computed output, so an invalidation of either side between
+    /// admission and release is caught.
     pub fn revalidate(
         &self,
+        own: &UpstreamChain,
         live: &dyn StageLiveness,
         inputs: &dyn InputLiveness,
     ) -> Result<(), FrameFault> {
         revalidate_scoped(&self.scope, &self.chain, self.placement_epoch, live)?;
+        revalidate_own(own, live)?;
         for input in &self.lineage.inputs {
             revalidate_input(input, inputs)?;
         }
@@ -1336,6 +1339,22 @@ mod tests {
                 ChainFault::StaleFence { recorded: 0, .. }
             )))
         ));
+    }
+
+    #[test]
+    fn a_miss_is_not_released_after_its_own_chain_was_invalidated() {
+        let live = live();
+        let admitted = admit(&live, &frame(vec![], 1.0)).unwrap();
+        assert_eq!(admitted.revalidate(&own_chain(), &live, &live), Ok(()));
+        // The downstream stage's own generation revoked while the miss computes.
+        live.set("down", 1, Validity::Revoked);
+        assert_eq!(
+            admitted.revalidate(&own_chain(), &live, &live),
+            Err(FrameFault::Chain(ChainFault::NotLive {
+                identity: "down".to_owned(),
+                standing: Some(Validity::Revoked),
+            }))
+        );
     }
 
     #[test]
