@@ -10,10 +10,11 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-15  
-**Code footprint:** 40 Rust source files · 19275 nonblank source lines · 28 integration-test files · 363 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 40 Rust source files · 19288 nonblank source lines · 28 integration-test files · 364 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
+- RegisteredPodBinding records the entry namespace (namespace()), and resolve_bound resolves only while the entry holds the same manifest and the same namespace
 - PodLink::validate refuses the trace * (the coalescing marker of a recorded refusal that stands for several traces)
 - PodLink::validate bounds the trace at MAX_TRACE_ID_BYTES (256, the ledger bound of a recorded refusal) and refuses it as PodLinkError::InvalidTrace
 - TCP and UDP executors refuse a request under a topic policy or on an MQTT link with EgressRefusalReason::TopicUnverifiable (code 6), because they send the payload unchanged and cannot tie a declared topic to the wire; check_publication is kept for an executor that reads the topic from its frame
@@ -118,6 +119,7 @@
 
 ### Current automated checks
 
+- tests/registry.rs: a_binding_does_not_resolve_after_the_entry_moved_to_another_namespace
 - tests/registry.rs: the_namespace_of_an_entry_belongs_to_the_implementation_registered_with_it (set, replaced, dropped by register and by a takeover, other entries and projects unaffected)
 - tests/semantic.rs: a_link_trace_is_bounded_so_every_refusal_of_it_can_be_recorded
 - tests/egress.rs: a declared topic under a topic policy is refused by the TCP and UDP executors; an MQTT link is refused; the topic check itself is tested on the policy

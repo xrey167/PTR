@@ -264,6 +264,7 @@ impl PodWireV2Binding {
                     && address.destination.semantic_revision == expected_revision
                     && address.destination.address.project == self.manifest().project
                     && address.destination.address.pod_id == self.manifest().id
+                    && self.registered.namespace() == Some(&address.destination.address.namespace)
                     && address.destination.generation == request.generation
                     && address.protocol == self.protocol
                     && address.mesh == self.mesh
@@ -550,6 +551,12 @@ impl PodHost {
         revision: Revision,
     ) -> Result<PodWireV2Binding, PodWireError> {
         let mut binding = self.bind_v2(project, pod, artifact_id, generation, revision)?;
+        // An address names a lifecycle namespace; the same pod id, manifest and generation can
+        // be registered for several. An entry that names no namespace cannot be told apart, so
+        // it is not addressable (fail closed).
+        if binding.registered.namespace().is_none() {
+            return Err(PodWireError::V2BindingUnavailable);
+        }
         // The addressed revision is the admitted manifest digest.  Callers must
         // not be able to mint a second, untracked semantic identity for the same
         // registry entry.

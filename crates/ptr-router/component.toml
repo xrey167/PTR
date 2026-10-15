@@ -4,6 +4,7 @@ maturity = "prototype"
 last_reviewed = "2026-10-15"
 
 implemented = [
+  "A non-finite query vector (NaN or infinity) is RouteError::InvalidFeatures, never read as missing representations",
   "Representations are scoped to their lifecycle namespace in the store too: RepresentationStore is keyed by (project, namespace, pod), get/remove and LearnedPodRouter::score take the namespace, generations are only ordered within one namespace (a high generation in ns-a never blocks ns-b), and policy looks the representation up by the namespace the registry names; generation 0 is RepresentationError::ZeroGeneration",
   "LearnedPodRouter scores a registry candidate only with a representation of the namespace the registry names for it (PodRegistry::namespace): an address learned for one lifecycle namespace never ranks the implementation of another, and a candidate registered without a namespace counts as one without a representation",
   "RouteScore and RouteDecision with deterministic best-score selection",
@@ -83,6 +84,7 @@ decisions = [
 ]
 
 checks = [
+  "tests/learned.rs: a_non_finite_query_is_invalid_features",
   "unit tests: a role registers its Pod for exactly the table's codes of that role, repairers() has the roster shape without duplicate codes, registering twice is idempotent, every hard code of the verifier table is routable once its role is filled and no soft code is",
   "pod_router_breaks_equal_scores_by_pod_id: two registered Pods of equal score select the greater id (zeta over alpha)",
   "tests/router.rs: PodRouter policy is a point mass matching select including the zeta tie and logs propensity 1.0 through route_checked, works through &dyn Router and returns Ok(None) without candidates; a budget-determined policy logs 1.0 instead of an arbitrary number; a 1:3 stochastic policy records exactly 0.25 or 0.75 (interval width / 2^53) matching the sampled pod and the recorded draw, sampling is identical on replay with the same key, depends on the digest, and over 2000 request ids matches the weights within 0.05; a different key gives different draws; RouteDistribution rejects NaN, infinite, negative, all-zero, duplicate and overflowing weights with typed errors, quantized widths sum to exactly 2^53 for many weight shapes (including 1/3 splits with the remainder going to the lesser PodIds), a 1e-300 relative weight and anything below 2^-53 is rejected with ProbabilityBelowResolution while 2^-52 is accepted, and a router with a sub-resolution pod fails route_checked with the request context; a failing router yields Err distinguishable from Ok(None); Propensity rejects 0, negatives, values above 1, NaN, infinities and subnormals with an overflowing reciprocal and accepts f64::MIN_POSITIVE",

@@ -300,3 +300,23 @@ fn the_namespace_of_an_entry_belongs_to_the_implementation_registered_with_it() 
         Some(&NamespaceId::from("ns-a"))
     );
 }
+
+/// A binding resolves only while the entry names the namespace it was bound with: re-registering
+/// the same manifest for another namespace, or without one, is another implementation.
+#[test]
+fn a_binding_does_not_resolve_after_the_entry_moved_to_another_namespace() {
+    let project = ProjectId::from("p");
+    let alpha = PodId::from("alpha");
+    let mut registry = PodRegistry::default();
+    registry.register_in_namespace(NamespaceId::from("ns-a"), echo("p", "alpha"));
+    let binding = registry.bind_registered(&project, &alpha).unwrap();
+    assert_eq!(binding.namespace(), Some(&NamespaceId::from("ns-a")));
+    assert!(registry.resolve_bound(&binding).is_some());
+
+    registry.register_in_namespace(NamespaceId::from("ns-b"), echo("p", "alpha"));
+    assert!(registry.resolve_bound(&binding).is_none());
+    registry.register(echo("p", "alpha"));
+    assert!(registry.resolve_bound(&binding).is_none());
+    registry.register_in_namespace(NamespaceId::from("ns-a"), echo("p", "alpha"));
+    assert!(registry.resolve_bound(&binding).is_some());
+}

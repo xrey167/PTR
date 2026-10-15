@@ -217,6 +217,8 @@ pub struct RegisteredPodBinding {
     project: ProjectId,
     pod_id: PodId,
     manifest: PodManifest,
+    /// The lifecycle namespace the bound entry names ([`PodRegistry::namespace`]), if any.
+    namespace: Option<NamespaceId>,
 }
 
 /// A non-replacing registration found the pod id already registered.
@@ -285,6 +287,12 @@ impl RegisteredPodBinding {
 
     pub fn manifest(&self) -> &PodManifest {
         &self.manifest
+    }
+
+    /// The lifecycle namespace of the bound implementation; `None` when the entry was
+    /// registered without one.
+    pub fn namespace(&self) -> Option<&NamespaceId> {
+        self.namespace.as_ref()
     }
 }
 
@@ -426,12 +434,18 @@ impl PodRegistry {
             project: project.clone(),
             pod_id: pod.clone(),
             manifest: resolved.manifest().clone(),
+            namespace: self.namespace(project, pod).cloned(),
         })
     }
 
+    /// The bound implementation while the entry still holds the same manifest **and** names the
+    /// same lifecycle namespace; a re-registration for another namespace (or without one) is
+    /// another implementation and does not resolve.
     pub fn resolve_bound(&self, binding: &RegisteredPodBinding) -> Option<Arc<dyn DynPod>> {
         let pod = self.get(&binding.project, &binding.pod_id)?;
-        (pod.manifest() == &binding.manifest).then_some(pod)
+        (pod.manifest() == &binding.manifest
+            && self.namespace(&binding.project, &binding.pod_id) == binding.namespace.as_ref())
+        .then_some(pod)
     }
 
     /// Resolve within one project only.

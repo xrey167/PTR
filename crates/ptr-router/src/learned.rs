@@ -953,6 +953,11 @@ impl LearnedPodRouter {
                 )));
             }
         }
+        // A NaN or infinite element would make every score undefined and read as "no
+        // representation"; it is a broken query, reported as such.
+        if query.iter().any(|value| !value.is_finite()) {
+            return Err(invalid("query vector is not finite".into()));
+        }
         if norm(query) == 0.0 {
             return Err(invalid("query vector is the zero vector".into()));
         }

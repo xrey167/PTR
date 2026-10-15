@@ -1000,3 +1000,16 @@ fn generations_are_ordered_per_namespace_and_the_registry_picks_the_namespace() 
         .unwrap();
     assert_eq!(distribution.probability(&PodId::from("alpha")), 1.0);
 }
+
+/// A NaN or infinite query element is a broken query (`InvalidFeatures`), never read as "no
+/// representation".
+#[test]
+fn a_non_finite_query_is_invalid_features() {
+    let router = router(vec![representation("alpha", vec![1.0, 0.0, 0.0], 10.0, 1)]);
+    for query in [[f32::NAN, 0.0, 0.0], [f32::INFINITY, 0.0, 0.0]] {
+        assert!(matches!(
+            router.score(&demo(), &ns(), &PodId::from("alpha"), &query),
+            Err(RouteError::InvalidFeatures { .. })
+        ));
+    }
+}
