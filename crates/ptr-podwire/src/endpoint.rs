@@ -560,7 +560,8 @@ impl PodHost {
         // The address names a pod revision; the registered implementation must be that
         // generation, or a request addressed to a successor would run the superseded
         // implementation (an entry without a generation is not addressable either).
-        if binding.registered.generation() != Some(generation) {
+        // No pod revision has generation 0 (`PodSemanticManifest::validate` refuses it).
+        if generation.0 == 0 || binding.registered.generation() != Some(generation) {
             return Err(PodWireError::V2BindingUnavailable);
         }
         // The addressed revision is the admitted manifest digest.  Callers must
@@ -980,8 +981,7 @@ impl PodHost {
             &self.registry,
             self.verifier.as_ref(),
             &NodeId(peer.public_key.clone()),
-            binding.registered.pod_id(),
-            binding.manifest(),
+            &binding.registered,
             &request.capability,
             request.expect_protocol,
             request.payload,

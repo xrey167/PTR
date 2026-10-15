@@ -10,10 +10,11 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-15  
-**Code footprint:** 5 Rust source files · 5544 nonblank source lines · 5 integration-test files · 109 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 5 Rust source files · 5623 nonblank source lines · 5 integration-test files · 110 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
+- The bound answer path resolves the captured RegisteredPodBinding (PodRegistry::resolve_bound: same manifest, namespace and generation) instead of a fresh lookup, so an entry re-registered after the binding was taken is not invoked; an addressed binding at generation 0 is refused
 - An addressed binding needs the registered implementation to be the bound generation: bind_v2_addressed refuses an entry registered at another generation or without one (V2BindingUnavailable), so a request addressed to a successor never runs the superseded implementation
 - Addressed PodWire bindings carry the lifecycle namespace: bind_v2_addressed (and every addressed variant) refuses a registry entry that names no namespace (V2BindingUnavailable), and accepts requires the request destination namespace to equal the bound entry namespace, so the same pod id, manifest and generation in another namespace is never invoked
 - Both receive paths ask the request deadline again with a fresh clock after the manifest and validity checks, right before the Pod runs; a replayed session answer is refused past its request deadline (DeadlineExceeded { sent: false })
@@ -97,6 +98,7 @@
 
 ### Current automated checks
 
+- src/access.rs unit test a_re_registration_after_binding_is_not_invoked (podwire-backend); tests/wire.rs an_addressed_binding_needs_the_registered_generation also covers generation 0
 - tests/wire.rs: an_addressed_binding_needs_the_registered_generation (podwire-backend)
 - tests/wire.rs: v2_rejects_a_request_addressed_to_another_namespace_before_invoking_the_pod, an_entry_without_a_namespace_cannot_be_bound_for_addressed_requests (podwire-backend)
 - tests/wire.rs: a_deadline_that_passes_during_the_checks_is_asked_again_before_the_pod_runs, a_cached_session_answer_is_not_replayed_past_the_requests_deadline
