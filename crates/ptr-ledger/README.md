@@ -9,11 +9,12 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-10-13  
-**Code footprint:** 9 Rust source files · 9589 nonblank source lines · 17 integration-test files · 212 test markers (`#[test]`, `#[tokio::test]`)
+**Last reviewed:** 2026-10-15  
+**Code footprint:** 9 Rust source files · 9608 nonblank source lines · 17 integration-test files · 212 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
+- PodHeadAdvanced identities are storage-safe: at most MAX_POD_HEAD_IDENTITY_BYTES (256) and no control character (no U+0000, which PostgreSQL text and jsonb refuse), checked on append and on decode (PTR_LEDGER_POD_HEAD_IDENTITY)
 - EgressRefused is ledger tag 37 (32-36 are reserved by ADR-0022); tag 33 decodes as an unknown tag
 - EgressRefused accepts the trace * (several traces) only with a count of at least two
 - LedgerEvent::EgressRefused carries saturated: a count of u32::MAX that stands for at least that many; the flag is one codec byte before the reason code and check_encodable refuses it with any other count
@@ -130,6 +131,7 @@
 
 ### Current automated checks
 
+- src/lib.rs unit test pod_head_advance_refuses_every_non_canonical_form covers a NUL identity and an over-long identity
 - src/lib.rs: tag_33_belongs_to_another_decision_and_decodes_as_unknown
 - src/lib.rs: the_many_traces_marker_needs_a_count_of_at_least_two
 - src/lib.rs: a_saturated_egress_count_round_trips_and_an_unknown_flag_is_refused

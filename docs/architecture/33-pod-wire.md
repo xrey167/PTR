@@ -295,7 +295,10 @@ fields its layout has.
   (`V2BindingUnavailable`). `accepts` requires the request's destination namespace to be the
   bound entry's, so the same pod id, manifest and generation registered for `ns-a` never answers
   a request addressed to `ns-b`, and `PodRegistry::resolve_bound` stops resolving a binding once
-  the entry names another namespace.
+  the entry names another namespace. The entry must also be registered at the bound
+  generation (`PodRegistry::register_at`); a binding for generation 2 over an entry registered
+  as generation 1, or without a generation, is refused, and `resolve_bound` stops resolving once
+  the entry names another generation.
 - **`PodCall.deadline_ms`** (proto field 7, optional) carries the same value in the protobuf
   adapter; zero is refused, absence means none. `RouteConstraints.deadline` replaces the
   `Timestamp(0)` placeholder in `PodRoute`.

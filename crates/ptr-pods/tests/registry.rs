@@ -346,3 +346,18 @@ fn the_generation_of_an_entry_belongs_to_the_implementation_registered_with_it()
         .unwrap();
     assert_eq!(registry.generation(&project, &alpha), None);
 }
+
+/// A binding also resolves only while the entry names the generation it was bound with.
+#[test]
+fn a_binding_does_not_resolve_after_the_entry_moved_to_another_generation() {
+    let (project, alpha) = (ProjectId::from("p"), PodId::from("alpha"));
+    let mut registry = PodRegistry::default();
+    registry.register_at(NamespaceId::from("ns"), Generation(1), echo("p", "alpha"));
+    let binding = registry.bind_registered(&project, &alpha).unwrap();
+    assert_eq!(binding.generation(), Some(Generation(1)));
+    assert!(registry.resolve_bound(&binding).is_some());
+    registry.register_at(NamespaceId::from("ns"), Generation(2), echo("p", "alpha"));
+    assert!(registry.resolve_bound(&binding).is_none());
+    registry.register_in_namespace(NamespaceId::from("ns"), echo("p", "alpha"));
+    assert!(registry.resolve_bound(&binding).is_none());
+}

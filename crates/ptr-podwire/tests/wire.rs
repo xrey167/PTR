@@ -287,7 +287,7 @@ async fn v2_binds_manifest_artifact_generation_and_revision_over_a_real_connecti
     let revision = Revision(12);
 
     let mut registry = PodRegistry::default();
-    registry.register_in_namespace(ptr_types::NamespaceId::from("test"), admitted);
+    registry.register_at(ptr_types::NamespaceId::from("test"), generation, admitted);
     let mut policy = PodAccessPolicy::new();
     policy
         .admit(NodeId(client.identity().public_key), scope("alpha"))
@@ -342,7 +342,11 @@ async fn v2_rejects_a_stale_generation_before_invoking_the_pod() {
     let admitted = pod("alpha", &invocations);
     let manifest = admitted.manifest().clone();
     let mut registry = PodRegistry::default();
-    registry.register_in_namespace(ptr_types::NamespaceId::from("test"), admitted);
+    registry.register_at(
+        ptr_types::NamespaceId::from("test"),
+        Generation(2),
+        admitted,
+    );
     let mut policy = PodAccessPolicy::new();
     policy
         .admit(NodeId(client.identity().public_key), scope("alpha"))
@@ -393,7 +397,11 @@ async fn v2_rejects_a_request_addressed_to_another_namespace_before_invoking_the
     let admitted = pod("alpha", &invocations);
     let manifest = admitted.manifest().clone();
     let mut registry = PodRegistry::default();
-    registry.register_in_namespace(ptr_types::NamespaceId::from("test"), admitted);
+    registry.register_at(
+        ptr_types::NamespaceId::from("test"),
+        Generation(2),
+        admitted,
+    );
     let mut policy = PodAccessPolicy::new();
     policy
         .admit(NodeId(client.identity().public_key), scope("alpha"))
@@ -474,6 +482,58 @@ async fn an_entry_without_a_namespace_cannot_be_bound_for_addressed_requests() {
         .is_ok());
 }
 
+/// An addressed binding names a pod revision: the registered implementation must be that
+/// generation. A binding for generation 2 over an entry registered as generation 1 (or without
+/// a generation) is refused, so a request addressed to a successor never runs the superseded
+/// implementation.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_addressed_binding_needs_the_registered_generation() {
+    let invocations = Arc::new(Mutex::new(0));
+    let mut registry = PodRegistry::default();
+    registry.register_at(
+        ptr_types::NamespaceId::from("test"),
+        Generation(1),
+        pod("alpha", &invocations),
+    );
+    let host = PodHost::bind(registry, PodAccessPolicy::new(), Pass)
+        .await
+        .unwrap();
+    let (project, pod_id) = (ProjectId::from("alpha"), PodId::from("summarizer"));
+    let bind = |generation| {
+        host.bind_v2_addressed(
+            &project,
+            &pod_id,
+            ArtifactId::from("summarizer-artifact"),
+            generation,
+            Revision(9),
+        )
+    };
+    assert!(matches!(
+        bind(Generation(2)),
+        Err(PodWireError::V2BindingUnavailable)
+    ));
+    assert!(bind(Generation(1)).is_ok());
+
+    let mut unversioned = PodRegistry::default();
+    unversioned.register_in_namespace(
+        ptr_types::NamespaceId::from("test"),
+        pod("alpha", &invocations),
+    );
+    let host = PodHost::bind(unversioned, PodAccessPolicy::new(), Pass)
+        .await
+        .unwrap();
+    assert!(matches!(
+        host.bind_v2_addressed(
+            &project,
+            &pod_id,
+            ArtifactId::from("summarizer-artifact"),
+            Generation(1),
+            Revision(9),
+        ),
+        Err(PodWireError::V2BindingUnavailable)
+    ));
+}
+
 fn wall_clock_millis() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -495,7 +555,11 @@ async fn v4_request_with_a_future_deadline_is_served_in_the_v4_layout() {
     let admitted = pod("alpha", &invocations);
     let manifest = admitted.manifest().clone();
     let mut registry = PodRegistry::default();
-    registry.register_in_namespace(ptr_types::NamespaceId::from("test"), admitted);
+    registry.register_at(
+        ptr_types::NamespaceId::from("test"),
+        Generation(2),
+        admitted,
+    );
     let mut policy = PodAccessPolicy::new();
     policy
         .admit(NodeId(client.identity().public_key), scope("alpha"))
@@ -573,7 +637,11 @@ async fn v4_host_refuses_an_expired_deadline_before_invoking_the_pod() {
     let admitted = pod("alpha", &invocations);
     let manifest = admitted.manifest().clone();
     let mut registry = PodRegistry::default();
-    registry.register_in_namespace(ptr_types::NamespaceId::from("test"), admitted);
+    registry.register_at(
+        ptr_types::NamespaceId::from("test"),
+        Generation(2),
+        admitted,
+    );
     let mut policy = PodAccessPolicy::new();
     policy
         .admit(NodeId(raw.identity().public_key), scope("alpha"))
@@ -713,7 +781,7 @@ async fn v2_rejects_a_protocol_binding_mismatch_before_invoking_the_pod() {
     let revision = Revision(4);
 
     let mut registry = PodRegistry::default();
-    registry.register_in_namespace(ptr_types::NamespaceId::from("test"), admitted);
+    registry.register_at(ptr_types::NamespaceId::from("test"), generation, admitted);
     let mut policy = PodAccessPolicy::new();
     policy
         .admit(NodeId(client.identity().public_key), scope("alpha"))
@@ -1333,7 +1401,11 @@ async fn v2_session_reuses_one_authenticated_connection() {
     let admitted = pod("alpha", &invocations);
     let manifest = admitted.manifest().clone();
     let mut registry = PodRegistry::default();
-    registry.register_in_namespace(ptr_types::NamespaceId::from("test"), admitted);
+    registry.register_at(
+        ptr_types::NamespaceId::from("test"),
+        Generation(7),
+        admitted,
+    );
     let mut policy = PodAccessPolicy::new();
     policy
         .admit(NodeId(client.identity().public_key), scope("alpha"))
@@ -1419,7 +1491,11 @@ async fn serve_with_runtime_manifest_deadline(
     let registry = Arc::new(std::sync::RwLock::new(registry));
 
     let mut pods = PodRegistry::default();
-    pods.register_in_namespace(ptr_types::NamespaceId::from("test"), admitted);
+    pods.register_at(
+        ptr_types::NamespaceId::from("test"),
+        Generation(7),
+        admitted,
+    );
     let mut policy = PodAccessPolicy::new();
     policy
         .admit(NodeId(client.identity().public_key), scope("alpha"))
@@ -1523,7 +1599,11 @@ async fn a_cached_session_answer_is_not_replayed_past_the_requests_deadline() {
     let admitted = pod("alpha", &invocations);
     let manifest = admitted.manifest().clone();
     let mut pods = PodRegistry::default();
-    pods.register_in_namespace(ptr_types::NamespaceId::from("test"), admitted);
+    pods.register_at(
+        ptr_types::NamespaceId::from("test"),
+        Generation(7),
+        admitted,
+    );
     let mut policy = PodAccessPolicy::new();
     policy
         .admit(NodeId(client.identity().public_key), scope("alpha"))
@@ -1621,7 +1701,11 @@ async fn v2_session_replays_identical_request_ids_but_rejects_conflicting_bytes(
     let admitted = pod("alpha", &invocations);
     let manifest = admitted.manifest().clone();
     let mut registry = PodRegistry::default();
-    registry.register_in_namespace(ptr_types::NamespaceId::from("test"), admitted);
+    registry.register_at(
+        ptr_types::NamespaceId::from("test"),
+        Generation(7),
+        admitted,
+    );
     let mut policy = PodAccessPolicy::new();
     policy
         .admit(NodeId(client.identity().public_key), scope("alpha"))
@@ -1790,7 +1874,11 @@ async fn v2_binding_rejects_a_manifest_digest_that_is_not_the_registered_manifes
     let mut altered = manifest.clone();
     altered.protocol_version = 2;
     let mut registry = PodRegistry::default();
-    registry.register_in_namespace(ptr_types::NamespaceId::from("test"), admitted);
+    registry.register_at(
+        ptr_types::NamespaceId::from("test"),
+        Generation(7),
+        admitted,
+    );
     let mut policy = PodAccessPolicy::new();
     policy
         .admit(NodeId(client.identity().public_key), scope("alpha"))
@@ -1924,7 +2012,11 @@ async fn serve_runtime_backed_binding(
         .unwrap();
 
     let mut pods = PodRegistry::default();
-    pods.register_in_namespace(ptr_types::NamespaceId::from("test"), admitted);
+    pods.register_at(
+        ptr_types::NamespaceId::from("test"),
+        Generation(7),
+        admitted,
+    );
     let mut policy = PodAccessPolicy::new();
     policy
         .admit(NodeId(client.identity().public_key), scope("alpha"))

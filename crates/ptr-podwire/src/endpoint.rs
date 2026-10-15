@@ -557,6 +557,12 @@ impl PodHost {
         if binding.registered.namespace().is_none() {
             return Err(PodWireError::V2BindingUnavailable);
         }
+        // The address names a pod revision; the registered implementation must be that
+        // generation, or a request addressed to a successor would run the superseded
+        // implementation (an entry without a generation is not addressable either).
+        if binding.registered.generation() != Some(generation) {
+            return Err(PodWireError::V2BindingUnavailable);
+        }
         // The addressed revision is the admitted manifest digest.  Callers must
         // not be able to mint a second, untracked semantic identity for the same
         // registry entry.

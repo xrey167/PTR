@@ -447,8 +447,9 @@ async fn identity_admission_podwire_protected_kv_ledger_and_recovery_are_bound()
 
     let calls = Arc::new(Mutex::new(0));
     let mut registry = PodRegistry::default();
-    registry.register_in_namespace(
+    registry.register_at(
         ptr_types::NamespaceId::from("test"),
+        Generation(1),
         Arc::new(EchoPod {
             manifest: manifest(),
             calls: calls.clone(),
@@ -669,8 +670,9 @@ async fn identity_admission_podwire_protected_kv_ledger_and_recovery_are_bound()
     let next_binding =
         PodAdmissionBinding::from_identity(&next_identity, next_admission.policy_revision).unwrap();
     let mut next_registry = PodRegistry::default();
-    next_registry.register_in_namespace(
+    next_registry.register_at(
         ptr_types::NamespaceId::from("test"),
+        Generation(2),
         Arc::new(EchoPod {
             manifest: manifest(),
             calls: calls.clone(),
