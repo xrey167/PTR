@@ -584,3 +584,107 @@ fn replay_and_a_compacted_restore_keep_the_heads_of_both_projects() {
         Some(&revision_in("alpha", "reader", 1))
     );
 }
+
+#[test]
+fn a_pod_capsule_committed_under_another_project_is_refused_and_the_victim_stays_not_live() {
+    use ptr_ledger::CommittedEvent;
+    let mut runtime = runtime();
+    let victim = revision_in("beta", "reader", 1);
+    let target = pod_lifecycle_target(&victim);
+    let forged = LedgerEvent::CapsuleCommitted {
+        project: "alpha".into(),
+        capsule: CapsuleId::from(target.as_str()),
+        generation: Generation(1),
+    };
+    assert_eq!(
+        runtime.commit(forged.clone()),
+        Err(RuntimeError::PodCapsuleProjectMismatch {
+            capsule: target.clone(),
+            embedded: "beta".into(),
+            project: "alpha".into(),
+        })
+    );
+    assert_eq!(runtime.live_generation(&target), None);
+    assert!(runtime.committed_events().is_empty());
+
+    // beta's own head move is a valid record, but beta's pod was never made live by beta.
+    let beta = ProjectId::from("beta");
+    runtime
+        .advance_pod_head(AdvancePodHead {
+            project: beta.clone(),
+            identity: identity(),
+            expected: None,
+            new: victim,
+        })
+        .unwrap();
+    assert_eq!(runtime.pod_head(&beta, &identity()), None);
+    assert_eq!(runtime.pod_heads().count(), 0);
+
+    // A log that carries the forged record is refused on replay, not grandfathered.
+    let log = [CommittedEvent {
+        index: ptr_types::CommitIndex(1),
+        event: forged,
+    }];
+    assert!(PtrRuntime::replay(PtrConfig::default(), &log).is_err());
+}
+
+#[test]
+fn a_pod_capsule_committed_by_its_own_project_is_accepted_and_other_ids_are_unaffected() {
+    let mut runtime = runtime();
+    let own = revision_in("beta", "reader", 1);
+    make_live(&mut runtime, &own);
+    assert_eq!(
+        runtime.live_generation(&pod_lifecycle_target(&own)),
+        Some(Generation(1))
+    );
+    for capsule in [
+        "note:alpha",
+        "pod:alpha",
+        "pod:alpha/ns",
+        "pod:/ns/p",
+        "pod:a/b/c/d",
+    ] {
+        runtime
+            .commit(LedgerEvent::CapsuleCommitted {
+                project: "alpha".into(),
+                capsule: CapsuleId::from(capsule),
+                generation: Generation(1),
+            })
+            .unwrap();
+    }
+}
+
+#[test]
+fn generation_zero_is_refused_for_a_pod_capsule_and_for_a_head() {
+    use ptr_ledger::CommittedEvent;
+    let mut runtime = runtime();
+    let zero = revision("reader", 0);
+    let target = pod_lifecycle_target(&zero);
+    let commit = LedgerEvent::CapsuleCommitted {
+        project: "project".into(),
+        capsule: CapsuleId::from(target.as_str()),
+        generation: Generation(0),
+    };
+    assert_eq!(
+        runtime.commit(commit.clone()),
+        Err(RuntimeError::PodCapsuleGenerationZero {
+            capsule: target.clone()
+        })
+    );
+    assert_eq!(runtime.live_generation(&target), None);
+
+    let refused = advance(&mut runtime, None, zero).unwrap_err();
+    assert!(matches!(
+        refused,
+        RuntimeError::PodHead(ref error) if matches!(**error, PodHeadError::InvalidAddress { .. })
+    ));
+    assert!(runtime.committed_events().is_empty());
+    assert_eq!(runtime.pod_heads().count(), 0);
+
+    // A log carrying the generation-zero commit fails replay closed.
+    let log = [CommittedEvent {
+        index: ptr_types::CommitIndex(1),
+        event: commit,
+    }];
+    assert!(PtrRuntime::replay(PtrConfig::default(), &log).is_err());
+}

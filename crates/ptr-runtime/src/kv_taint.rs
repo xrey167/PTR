@@ -711,6 +711,28 @@ impl PtrRuntime {
         )
     }
 
+    /// [`Self::record_pod_output_taint`] for a retry answered from an admission recorded under
+    /// the version-1 output digest (issue #153): the PodOutput subject of that digest (which
+    /// names the recorded candidate key or branch id), of the version-2 digest of the retried
+    /// output, and the Content subject of its payload, in one batch under the fixed Pod recipe.
+    pub(crate) fn record_legacy_pod_output_taint(
+        &mut self,
+        legacy_digest: &Digest,
+        output_digest: &Digest,
+        payload: &[u8],
+        report: Digest,
+    ) -> Result<(), RuntimeError> {
+        self.record_taint(
+            &[
+                pod_output_subject(legacy_digest),
+                pod_output_subject(output_digest),
+                content_subject(payload),
+            ],
+            report,
+            pod_output_recipe(),
+        )
+    }
+
     /// Record `subjects` as tainted by `report` under `recipe`: bound check for the whole batch
     /// first, then taint-first append (in canonical chunks of at most
     /// [`MAX_KV_TAINT_SUBJECTS`]), the registry updated from each committed event. Subjects

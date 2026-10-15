@@ -61,6 +61,15 @@ revision. `pod_head_status` still shows such a head (`Revoked` or `Stale`), so a
 it as `expected` and move the identity on. `advance_pod_head(AdvancePodHead { project, identity, expected, new })` commits through the
 ledger. `PodDirectory::resolve_head` resolves the caller's project and identity, then head, then the ordinary `resolve`; another project's head for the same identity is never consulted.
 A pod generation is the lifecycle target `pod:<project>/<namespace>/<pod>` (`pod_lifecycle_target`).
+That target names its project, so only that project may commit it: lifecycle validation refuses a
+`CapsuleCommitted { project: A, capsule: "pod:B/..." }` with `RuntimeError::PodCapsuleProjectMismatch`
+(on commit and on replay), and `pod_head` and the admission of a representation also compare the
+project the capsule was committed under (`capsule_projects`) with the project of the head or the
+representation. Existing ledgers: the `pod:<project>/<namespace>/<pod>` form is introduced by this
+change and no code on main commits such a capsule, so no record of a mismatching pod capsule is
+expected to exist; the rule is not grandfathered, and a log that does carry one fails replay closed
+instead of making another project's pod live. Ids that are not of that exact three-segment form
+(`pod:x`, `pod:a/b`, `note:...`) are ordinary capsules and unaffected.
 
 ```mermaid
 flowchart LR
@@ -114,8 +123,9 @@ space.
 payload length and a digest prefix (Invariant 13).
 `ptrd` does not wire a learned router for that reason.
 
-**Artifact.** `dragonfly-<project>__<identity>.json` (manifest) and `.bin` (`dims` little-endian `f32` of `z`,
-then the bias). The manifest carries the encoder, dimension, generation, project, pod, identity, cluster
+**Artifact.** `dragonfly-<project>__<namespace>__<identity>.json` (manifest) and `.bin` (`dims`
+little-endian `f32` of `z`, then the bias). The manifest (schema 2) carries the encoder, dimension,
+generation, project, lifecycle namespace, pod, identity, cluster
 key, scoring weights, the gate measurement, `weights_sha256` and a `digest` over every field and the
 weights. The Python exporter and the Rust loader share a committed fixture
 (`crates/ptr-router/tests/fixtures`): identities, cluster keys, weights bit for bit and every probe
@@ -129,7 +139,28 @@ target at the pod's exact generation, with its digest in the provenance, and
 `Denial::RevokedGeneration` for that pod only (Invariant 17); a new generation yields
 `StaleGeneration` until a representation trained for it is bound; a payload swapped under a valid
 binding is refused. `admitted_representations` builds the router store from the cache and reports
-what was refused and why.
+what was refused and why. The representation names its lifecycle namespace and the digest covers
+it: an address in another namespace does not bind (`NamespaceMismatch`), and a binding under the
+target of the same pod id in another namespace is refused on admission, so revoking a
+representation's own target cannot be bypassed through a sibling namespace.
+A sampled Pod request without an eligible registry candidate answers `PodUnavailable` before the
+query encoder runs, and with no representation admitted the encoder is not run either (the request
+is a `NoRepresentation` route failure).
+
+The registry names the lifecycle namespace of each registered implementation
+(`PodRegistry::register_in_namespace`, read with `PodRegistry::namespace`), and the learned router
+scores a candidate only with a representation of that namespace: an address learned for `ns-a`
+never ranks the implementation registered for `ns-b`, even while both are live. An entry
+registered without a namespace, or replaced by a plain registration or a takeover, names none and
+gets no learned score (fail closed). `PodRegistry::register_at` also names the generation of the
+implementation, and a representation scores only the implementation of its own generation, so a
+superseded implementation still registered is never ranked with the address of its successor.
+The representation store is keyed by project, namespace and
+pod, so the generations of one pod id in two namespaces are never ordered against each other.
+Per-request admission is bounded: the sampler refuses an admission cache larger than one store
+(`MAX_REPRESENTATIONS`), reads each payload in place, and refuses state that names no
+representation digest before parsing it. Generation 0 is refused for pod lifecycle targets, pod
+heads and learned representations, since no pod revision has it.
 
 The store itself holds no binding, so admission is repeated for every request instead of once at
 load time. `EmbeddingSampler::new(router, embedder, admission_cache)` keeps the bound states, and
@@ -155,7 +186,7 @@ a learned address (`NoRepresentation`, nothing was scored), or the routed pod fa
 (`DispatchError`). A failure of the router itself (an invalid distribution, an ineligible choice, a
 policy error) is not a miss and is never covered: a broken router is not hidden by a fallback.
 
-**Plan.** `FallbackPlan { default_pod, max_attempts }` is host configuration, set per
+**Plan.** `DefaultPodPlan { default_pod, max_attempts }` is host configuration, set per
 `(project, capability)` with `PtrRuntime::set_fallback_plan` together with the
 `PodRevisionAddress` of the default pod. It is not a ledger record: a restarted or replayed runtime
 has no plan and fails closed (a miss fails the request as before). `max_attempts` counts dispatch
@@ -169,9 +200,12 @@ leaves nothing for the default, while an abstention (nothing dispatched yet) can
 2. its revision is not revoked and is the generation the lifecycle authority holds live
    (invariant 3); a pod the lifecycle never made live fails closed, and a revocation or a new live
    generation committed after the plan was set stops the failover with the next request;
-3. no effect beyond `Pure` or `Read`, checked before it is invoked (invariant 7);
-4. not the pod that just failed, and the attempt budget is not spent;
-5. its output goes through `promote_verified_pod_output`, the same verifier path as any pod output,
+3. the registry holds exactly the implementation that revision names (`PodRegistry::register_at`: the
+   same namespace and generation), so the generation that was checked is the code that runs; a
+   default registered at another generation or without one is `StaleFallback` and is not invoked;
+4. no effect beyond `Pure` or `Read`, checked before it is invoked (invariant 7);
+5. not the pod that just failed, and the attempt budget is not spent;
+6. its output goes through `promote_verified_pod_output`, the same verifier path as any pod output,
    so a deterministic contradiction is never promoted (invariants 7 and 11). The reflex substitutes
    a pod; the verifier commits.
 

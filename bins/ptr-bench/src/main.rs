@@ -128,6 +128,16 @@ fn main() {
         "self-modification-authority" => experiments::r013::run(&args[2..]),
         // The harness of R015 (Dragonfly pod addressing): `<seed>` or `<seed> --smoke`, no default
         // seed. It generates and consumes the seed's world itself; see `experiments::r015`.
+        // The harness of R015: `<seed> [--smoke]`, or `--preflight` (checks the confirmatory
+        // environment before the runner reserves a seed); no default seed.
+        "dragonfly-addressing" if args.get(2).map(String::as_str) == Some("--preflight") => {
+            if args.len() != 3 {
+                strict_or_exit::<()>(Err(
+                    "dragonfly-addressing --preflight takes no further argument".into(),
+                ));
+            }
+            experiments::r015::preflight()
+        }
         "dragonfly-addressing" => {
             let seed = strict_or_exit(seed_arg(&args, "dragonfly-addressing"));
             let smoke = match args.get(3).map(String::as_str) {

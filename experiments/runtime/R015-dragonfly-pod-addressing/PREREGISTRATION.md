@@ -34,7 +34,9 @@ clean checkout runs without a prior step. The training step builds the encoder t
 pin is a `must-be-pinned-…` placeholder, or the pinned encoder cannot be built, the run exits 2 (harness failure) and
 never falls back to another encoder. Only `--smoke` selects the stand-in, and its output is marked as no evidence.
 
-The Python environment is frozen as well. A confirmatory run goes through `uv run --locked --project training
+The Python environment is frozen as well. The interpreter is pinned to one exact version (`python_version`,
+run with `uv run --python`; the training step exits 2 on any other, a smoke run only records it). A confirmatory
+run goes through `uv run --locked --project training
 --extra dragonfly`; the digest of `training/uv.lock` is pinned at the freeze (`training_lock_sha256`). The
 training step exits 2 when the installed `sentence-transformers`, `torch`, `transformers` or `numpy` differ
 from the lock, and every run prints the interpreter version, those package versions, the locked versions and
@@ -79,7 +81,7 @@ smallest pod id as the default (fixed here, before any run; its lifecycle genera
   is reported (`reflex.default_only_correct`) and not judged: it would be a strawman, since the default is one
   pod of six. Failure criterion: a gap below 1 on any seed.
 
-Both are guarded against the vacuous pass. "Every miss was caught" holds trivially with no miss, and a router
+The harness counts a request only when the counters account for its outcome (one hit, or one miss caught by the default, or one miss nothing covered); any other runtime error is a harness failure (exit 2), not a counted miss, so `reflex.requests` can be compared with the probe count. Both are guarded against the vacuous pass. "Every miss was caught" holds trivially with no miss, and a router
 that never dispatches has no precision, so a seed with `reflex.misses` below 1 (claim 1) or
 `reflex.dispatch_hits` below 1 (claim 2), or with any `reflex.inconsistent` recording, is INVALID for that claim:
 no result, not a pass. A seed that is INVALID or failing for one claim says nothing about the other or about the
@@ -98,7 +100,8 @@ The rules are in `criteria.toml`, in a fixed grammar, and are all that judges.
   deactivated and the default `PodRouter` stays the only router. Seeds are not re-run, replaced or dropped.
 - Validity controls (coverage): the oracle reaches the ceiling (accuracy 1000 permille, no false route), the
   constant-score router does not beat description cosine, every representation passed its activation gate, and the
-  probe counts are those of the design. A seed missing one is INVALID: the verdict is "no result", the cause is fixed
+  probe counts are exactly those of the design (43 probes, 36 labelled, 6 pods: `==` in `criteria.toml`, since
+  more is a different experiment, not extra evidence). A seed missing one is INVALID: the verdict is "no result", the cause is fixed
   under a successor experiment, and the seed is not reused.
 - Stop: all five seeds are run, in order, once. If a seed is INVALID the series stops there and the verdict is "no
   result"; if a seed fails the primary rules the series still completes, so the negative result is complete.

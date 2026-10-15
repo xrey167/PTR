@@ -26,8 +26,10 @@
 //! # Artifact
 //!
 //! [`PodRepresentation::from_artifact`] reads the pair
-//! `dragonfly-<project>__<identity>.json` and `.bin` the Python exporter writes (the project is
-//! part of the name: two projects with equal pod semantics share an identity). The binary file holds `dims` little
+//! `dragonfly-<project>__<namespace>__<identity>.json` and `.bin` the Python exporter writes (project
+//! and namespace are part of the name: equal pod semantics in two projects or namespaces share an
+//! identity). The manifest names the project, the lifecycle namespace and the pod, so a
+//! representation is admitted only under its own lifecycle target. The binary file holds `dims` little
 //! endian `f32` values of `z` followed by one `f32` bias. The manifest carries the SHA-256 of
 //! that file and a digest over every field (see [`PodRepresentation::digest`]); a mismatch of
 //! either refuses the load.
@@ -35,13 +37,13 @@
 use crate::{
     AbstentionReason, AdmittedRepresentation, RouteDistribution, RouteError, RouteRequest, Router,
 };
-use ptr_types::{ClusterKey, Generation, PodId, PodIdentity, ProjectId};
+use ptr_types::{ClusterKey, Generation, NamespaceId, PodId, PodIdentity, ProjectId};
 use sha2::{Digest as ShaDigest, Sha256};
 use std::collections::BTreeMap;
 use std::fmt;
 
 /// The artifact schema this build reads and writes.
-pub const REPRESENTATION_SCHEMA: u32 = 1;
+pub const REPRESENTATION_SCHEMA: u32 = 2;
 /// The most dimensions a representation may have.
 pub const MAX_REPRESENTATION_DIMS: usize = 4096;
 /// Minimum score of the weakest trusted alias for activation, in permille.
@@ -54,7 +56,7 @@ pub const MAX_REPRESENTATIONS: usize = 4096;
 pub const MAX_MANIFEST_BYTES: usize = 64 * 1024;
 
 const ARTIFACT_KIND: &str = "dragonfly-pod-address";
-const DIGEST_DOMAIN: &str = "ptr.dragonfly.artifact.v1";
+const DIGEST_DOMAIN: &str = "ptr.dragonfly.artifact.v2";
 const STATUS_ACTIVATED: &str = "activated";
 const STATUS_NOT_ACTIVATED: &str = "not-activated";
 
@@ -133,6 +135,8 @@ pub enum RepresentationError {
     EmptyField {
         field: &'static str,
     },
+    /// Generation 0 names no pod revision (`PodSemanticManifest::validate` refuses it).
+    ZeroGeneration,
     InvalidDimensions {
         actual: usize,
         max: usize,
@@ -202,6 +206,10 @@ impl std::error::Error for RepresentationError {}
 pub struct PodRepresentationParts {
     /// The project whose registry the pod belongs to. Two projects may use the same pod id.
     pub project: ProjectId,
+    /// The lifecycle namespace of the pod. Pod generations are committed and revoked per
+    /// `pod:<project>/<namespace>/<pod>`, so a representation is bound to exactly one namespace
+    /// and cannot be admitted under the lifecycle target of the same pod id in another one.
+    pub namespace: NamespaceId,
     pub pod: PodId,
     pub identity: PodIdentity,
     pub cluster_key: ClusterKey,
@@ -331,6 +339,7 @@ impl PodRepresentation {
 
         let representation = Self::new(PodRepresentationParts {
             project: ProjectId(text(root.get("project"), "project")?.to_owned()),
+            namespace: NamespaceId(text(root.get("namespace"), "namespace")?.to_owned()),
             pod: PodId(text(root.get("pod_id"), "pod_id")?.to_owned()),
             identity: PodIdentity(text(root.get("pod_identity"), "pod_identity")?.to_owned()),
             cluster_key,
@@ -365,6 +374,7 @@ impl PodRepresentation {
             "dims": self.dims(),
             "generation": self.parts.generation.0,
             "project": self.parts.project.0,
+            "namespace": self.parts.namespace.0,
             "pod_id": self.parts.pod.0,
             "pod_identity": self.parts.identity.0,
             "cluster_key": self.parts.cluster_key.to_hex(),
@@ -424,6 +434,10 @@ impl PodRepresentation {
 
     pub fn project(&self) -> &ProjectId {
         &self.parts.project
+    }
+
+    pub fn namespace(&self) -> &NamespaceId {
+        &self.parts.namespace
     }
 
     pub fn pod(&self) -> &PodId {
@@ -570,6 +584,7 @@ fn hex_digest(value: &str) -> Option<[u8; 32]> {
 fn validate_parts(parts: &PodRepresentationParts) -> Result<(), RepresentationError> {
     for (field, empty) in [
         ("project", parts.project.0.is_empty()),
+        ("namespace", parts.namespace.0.is_empty()),
         ("pod", parts.pod.0.is_empty()),
         ("identity", parts.identity.0.is_empty()),
         ("encoder.id", parts.encoder.id.is_empty()),
@@ -578,6 +593,9 @@ fn validate_parts(parts: &PodRepresentationParts) -> Result<(), RepresentationEr
         if empty {
             return Err(RepresentationError::EmptyField { field });
         }
+    }
+    if parts.generation.0 == 0 {
+        return Err(RepresentationError::ZeroGeneration);
     }
     if parts.z.is_empty() || parts.z.len() > MAX_REPRESENTATION_DIMS {
         return Err(RepresentationError::InvalidDimensions {
@@ -663,6 +681,7 @@ fn digest_of(parts: &PodRepresentationParts) -> [u8; 32] {
     bytes.extend_from_slice(&(parts.z.len() as u32).to_le_bytes());
     bytes.extend_from_slice(&parts.generation.0.to_le_bytes());
     put_text(&mut bytes, &parts.project.0);
+    put_text(&mut bytes, &parts.namespace.0);
     put_text(&mut bytes, &parts.pod.0);
     put_text(&mut bytes, &parts.identity.0);
     bytes.extend_from_slice(parts.cluster_key.digest());
@@ -689,7 +708,10 @@ fn digest_of(parts: &PodRepresentationParts) -> [u8; 32] {
 pub struct RepresentationStore {
     encoder: EncoderRef,
     policy: ActivationPolicy,
-    entries: BTreeMap<(ProjectId, PodId), PodRepresentation>,
+    /// Keyed by project, lifecycle namespace and pod: the generations of one pod id in two
+    /// namespaces belong to independent lifecycle targets and are never ordered against each
+    /// other.
+    entries: BTreeMap<(ProjectId, NamespaceId, PodId), PodRepresentation>,
 }
 
 impl RepresentationStore {
@@ -729,7 +751,8 @@ impl RepresentationStore {
         })
     }
 
-    /// Loads an activated representation, replacing an older generation of the same pod.
+    /// Loads an activated representation, replacing an older generation of the same pod in the
+    /// same lifecycle namespace.
     ///
     /// # Errors
     /// [`RouteError::InactiveRepresentation`] for a representation that is not activated, or
@@ -742,7 +765,11 @@ impl RepresentationStore {
         representation: PodRepresentation,
     ) -> Result<Option<PodRepresentation>, RouteError> {
         let pod = representation.pod().clone();
-        let key = (representation.project().clone(), pod.clone());
+        let key = (
+            representation.project().clone(),
+            representation.namespace().clone(),
+            pod.clone(),
+        );
         let invalid = |error| RouteError::InvalidRepresentation {
             pod: pod.clone(),
             error,
@@ -787,13 +814,26 @@ impl RepresentationStore {
         Ok(self.entries.insert(key, representation))
     }
 
-    /// Drops the representation of `pod`; the others are untouched.
-    pub fn remove(&mut self, project: &ProjectId, pod: &PodId) -> Option<PodRepresentation> {
-        self.entries.remove(&(project.clone(), pod.clone()))
+    /// Drops the representation of `pod` in `namespace`; the others are untouched.
+    pub fn remove(
+        &mut self,
+        project: &ProjectId,
+        namespace: &NamespaceId,
+        pod: &PodId,
+    ) -> Option<PodRepresentation> {
+        self.entries
+            .remove(&(project.clone(), namespace.clone(), pod.clone()))
     }
 
-    pub fn get(&self, project: &ProjectId, pod: &PodId) -> Option<&PodRepresentation> {
-        self.entries.get(&(project.clone(), pod.clone()))
+    /// The representation of `pod` learned for lifecycle `namespace`.
+    pub fn get(
+        &self,
+        project: &ProjectId,
+        namespace: &NamespaceId,
+        pod: &PodId,
+    ) -> Option<&PodRepresentation> {
+        self.entries
+            .get(&(project.clone(), namespace.clone(), pod.clone()))
     }
 
     pub fn encoder(&self) -> &EncoderRef {
@@ -881,18 +921,19 @@ impl LearnedPodRouter {
         self.config
     }
 
-    /// The learned score of `pod` of `project` for `query`; `None` when that pod has no
-    /// representation.
+    /// The learned score of `pod` of `project` in lifecycle `namespace` for `query`; `None` when
+    /// that pod has no representation for that namespace.
     ///
     /// # Errors
     /// [`RouteError::InvalidFeatures`] for an empty, zero or wrongly sized query.
     pub fn score(
         &self,
         project: &ProjectId,
+        namespace: &NamespaceId,
         pod: &PodId,
         query: &[f32],
     ) -> Result<Option<f64>, RouteError> {
-        let Some(representation) = self.store.get(project, pod) else {
+        let Some(representation) = self.store.get(project, namespace, pod) else {
             return Ok(None);
         };
         self.check_query(query)?;
@@ -912,6 +953,11 @@ impl LearnedPodRouter {
                 )));
             }
         }
+        // A NaN or infinite element would make every score undefined and read as "no
+        // representation"; it is a broken query, reported as such.
+        if query.iter().any(|value| !value.is_finite()) {
+            return Err(invalid("query vector is not finite".into()));
+        }
         if norm(query) == 0.0 {
             return Err(invalid("query vector is the zero vector".into()));
         }
@@ -924,6 +970,15 @@ impl Router for LearnedPodRouter {
     /// clearly the answer: a low score, a small margin, or (`PartialCoverage`) a field in which
     /// some candidate has no representation. With no candidate scored at all the result is
     /// [`RouteError::NoRepresentation`]. No candidate at all is the empty distribution.
+    ///
+    /// A representation scores a candidate only when the registry names the candidate's
+    /// lifecycle generation and it is the representation's ([`ptr_pods::PodRegistry::generation`]:
+    /// an address learned for one generation never ranks a superseded or newer implementation),
+    /// and when the registry names the candidate's lifecycle namespace and it is the
+    /// representation's own
+    /// ([`ptr_pods::PodRegistry::namespace`]): the same pod id can be committed in several
+    /// namespaces, and an address learned for one must not rank the implementation of another.
+    /// A candidate registered without a namespace counts as one without a representation.
     fn policy(&self, request: &RouteRequest<'_>) -> Result<RouteDistribution, RouteError> {
         let candidates =
             request
@@ -936,24 +991,41 @@ impl Router for LearnedPodRouter {
         let mut scored: Vec<(PodId, f64)> = Vec::new();
         let admitted = request.features.admitted_representations();
         for pod in &candidates {
+            // Only the representation learned for the namespace the registry names for this
+            // candidate applies; a candidate registered without a namespace has none.
+            let Some(namespace) = request.registry.namespace(request.project, pod) else {
+                continue;
+            };
+            // The representation must be the one learned for the generation the registered
+            // implementation is; a candidate registered without a generation has none.
+            let registered_generation = request.registry.generation(request.project, pod);
+            let same_generation =
+                self.store
+                    .get(request.project, namespace, pod)
+                    .is_some_and(|representation| {
+                        registered_generation == Some(representation.generation())
+                    });
+            if !same_generation {
+                continue;
+            }
             if let Some(admitted) = admitted {
                 // The host re-admitted representations for this request: one that is not named
                 // (or whose digest differs) does not take part in scoring.
-                let named = self
-                    .store
-                    .get(request.project, pod)
-                    .is_some_and(|representation| {
-                        admitted.contains(&AdmittedRepresentation {
-                            project: request.project.clone(),
-                            pod: pod.clone(),
-                            digest: *representation.digest(),
-                        })
-                    });
+                let named =
+                    self.store
+                        .get(request.project, namespace, pod)
+                        .is_some_and(|representation| {
+                            admitted.contains(&AdmittedRepresentation {
+                                project: request.project.clone(),
+                                pod: pod.clone(),
+                                digest: *representation.digest(),
+                            })
+                        });
                 if !named {
                     continue;
                 }
             }
-            if let Some(score) = self.score(request.project, pod, query)? {
+            if let Some(score) = self.score(request.project, namespace, pod, query)? {
                 scored.push((pod.clone(), score));
             }
         }

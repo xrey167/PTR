@@ -36,9 +36,9 @@ experiment = "R015"
 seed_aggregation = "every_seed_must_pass"
 
 coverage = [
-  "probes >= 43",
-  "labelled_probes >= 36",
-  "pods >= 6",
+  "probes == 43",
+  "labelled_probes == 36",
+  "pods == 6",
   "representations_refused <= 0",
   "arms.oracle.routing_accuracy_permille >= 1000",
   "arms.oracle.false_route_permille <= 0",

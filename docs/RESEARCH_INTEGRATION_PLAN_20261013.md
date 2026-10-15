@@ -37,7 +37,7 @@ Open in WP1: no Rust encoder and no `ptrd` wiring of the learned router; no froz
 
 Branched from WP1 (#149, not yet merged); it is pulled onto `main` after WP1 lands.
 
-- `FallbackPlan`, `MissReason` (an abstention keeps its reason; no-representation is its own), `UncoveredReason`, `ReflexOutcome`, `ReflexCounters` with `coverage()` and a bounded `LatencyWindow` that times failures (`ptr-router`).
+- `DefaultPodPlan`, `MissReason` (an abstention keeps its reason; no-representation is its own), `UncoveredReason`, `ReflexOutcome`, `ReflexCounters` with `coverage()` and a bounded `LatencyWindow` that times failures (`ptr-router`).
 - `RuntimeEvent::{ReflexHit, ReflexMiss, ReflexFailover}` (`ptr-events`).
 - One `dispatch_pod` for every Pod request path, `PtrRuntime::{set_fallback_plan, clear_fallback_plan, fallback_plan, reflex_counters}`, `RuntimeError::{FallbackConfig, FailoverRefused}` (`ptr-runtime`). The default pod is a registry candidate of the project, holds a live unrevoked generation (checked at every use), declares no effect beyond read, and its output passes the same verifier path; a contradiction is not promoted.
 - R015 gets two separate claims, `reflex_failover_coverage` (mechanism) and `reflex_dispatch_hits` (benefit), each with its own criteria and a guard against the vacuous pass; R015 stays `planned`.

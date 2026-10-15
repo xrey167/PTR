@@ -2,7 +2,7 @@
 //! only activated representations and keeps each pod's representation independent.
 mod common;
 
-use common::{key, nonce, registry, request, route};
+use common::{key, nonce, registry, registry_at, registry_in, request, route};
 use ptr_router::{
     AbstentionReason, ActivationPolicy, EncoderRef, GateReport, LearnedPodRouter,
     LearnedRouterConfig, PodRepresentation, PodRepresentationParts, RepresentationError,
@@ -10,9 +10,14 @@ use ptr_router::{
     MAX_REPRESENTATIONS,
 };
 use ptr_types::{
-    CapabilityId, ClusterKey, Generation, PodId, PodIdentity, PodIdentityDescriptor, ProjectId,
-    RequestId, TypeId, POD_IDENTITY_SCHEMA_VERSION,
+    CapabilityId, ClusterKey, Generation, NamespaceId, PodId, PodIdentity, PodIdentityDescriptor,
+    ProjectId, RequestId, TypeId, POD_IDENTITY_SCHEMA_VERSION,
 };
+
+/// The lifecycle namespace the test representations are learned for.
+fn ns() -> NamespaceId {
+    NamespaceId::from("ns")
+}
 
 fn encoder() -> EncoderRef {
     EncoderRef {
@@ -54,6 +59,7 @@ fn parts(pod: &str, z: Vec<f32>, bias: f32, generation: u64) -> PodRepresentatio
     let descriptor = descriptor(pod);
     PodRepresentationParts {
         project: ProjectId::from("demo"),
+        namespace: NamespaceId::from("ns"),
         pod: PodId::from(pod),
         identity: descriptor.identity(),
         cluster_key: descriptor.cluster_key(),
@@ -115,7 +121,7 @@ fn features(vector: Vec<f32>) -> RouteFeatures {
 fn the_score_is_the_sigmoid_of_weighted_cosine_plus_metadata_minus_bias() {
     let router = router(vec![representation("alpha", vec![1.0, 0.0, 0.0], 10.0, 1)]);
     let score = router
-        .score(&demo(), &PodId::from("alpha"), &[1.0, 0.0, 0.0])
+        .score(&demo(), &ns(), &PodId::from("alpha"), &[1.0, 0.0, 0.0])
         .unwrap()
         .unwrap();
     assert!(
@@ -124,14 +130,14 @@ fn the_score_is_the_sigmoid_of_weighted_cosine_plus_metadata_minus_bias() {
     );
     // Scaling the query does not change a cosine.
     let scaled = router
-        .score(&demo(), &PodId::from("alpha"), &[5.0, 0.0, 0.0])
+        .score(&demo(), &ns(), &PodId::from("alpha"), &[5.0, 0.0, 0.0])
         .unwrap()
         .unwrap();
     assert!((scaled - score).abs() < 1e-12);
     // A pod without a representation has no score.
     assert_eq!(
         router
-            .score(&demo(), &PodId::from("beta"), &[1.0, 0.0, 0.0])
+            .score(&demo(), &ns(), &PodId::from("beta"), &[1.0, 0.0, 0.0])
             .unwrap(),
         None
     );
@@ -380,22 +386,35 @@ fn two_projects_with_the_same_pod_id_do_not_collide_and_route_only_with_their_ow
     other_parts.project = other.clone();
     let other_alpha = PodRepresentation::new(other_parts).unwrap();
     assert_ne!(demo_alpha.digest(), other_alpha.digest());
+    // The lifecycle namespace is part of the digest too: the same training in another namespace
+    // is another representation.
+    let mut other_namespace = parts("alpha", vec![1.0, 0.0, 0.0], 10.0, 1);
+    other_namespace.namespace = NamespaceId::from("ns-b");
+    let other_namespace = PodRepresentation::new(other_namespace).unwrap();
+    assert_eq!(other_namespace.namespace(), &NamespaceId::from("ns-b"));
+    assert_ne!(demo_alpha.digest(), other_namespace.digest());
 
     let mut store = RepresentationStore::new(encoder());
     assert!(store.insert(demo_alpha.clone()).unwrap().is_none());
     assert!(store.insert(other_alpha.clone()).unwrap().is_none());
     assert_eq!(store.len(), 2);
-    assert_eq!(store.get(&demo(), &PodId::from("alpha")), Some(&demo_alpha));
-    assert_eq!(store.get(&other, &PodId::from("alpha")), Some(&other_alpha));
+    assert_eq!(
+        store.get(&demo(), &ns(), &PodId::from("alpha")),
+        Some(&demo_alpha)
+    );
+    assert_eq!(
+        store.get(&other, &ns(), &PodId::from("alpha")),
+        Some(&other_alpha)
+    );
 
     let router = LearnedPodRouter::new(store, LearnedRouterConfig::default()).unwrap();
     let query = [1.0, 0.0, 0.0];
     let in_demo = router
-        .score(&demo(), &PodId::from("alpha"), &query)
+        .score(&demo(), &ns(), &PodId::from("alpha"), &query)
         .unwrap()
         .unwrap();
     let in_other = router
-        .score(&other, &PodId::from("alpha"), &query)
+        .score(&other, &ns(), &PodId::from("alpha"), &query)
         .unwrap()
         .unwrap();
     assert!(in_demo > 0.9 && in_other < 0.5, "{in_demo} {in_other}");
@@ -422,8 +441,8 @@ fn two_projects_with_the_same_pod_id_do_not_collide_and_route_only_with_their_ow
 
     // Removing one project's pod leaves the other's untouched.
     let mut store = router.store().clone();
-    assert!(store.remove(&other, &PodId::from("alpha")).is_some());
-    assert!(store.get(&demo(), &PodId::from("alpha")).is_some());
+    assert!(store.remove(&other, &ns(), &PodId::from("alpha")).is_some());
+    assert!(store.get(&demo(), &ns(), &PodId::from("alpha")).is_some());
 }
 
 #[test]
@@ -602,6 +621,14 @@ fn invalid_representations_are_refused_with_the_reason() {
         }
     );
     assert_eq!(
+        refuse(&|p| p.namespace = NamespaceId::from("")),
+        RepresentationError::EmptyField { field: "namespace" }
+    );
+    assert_eq!(
+        refuse(&|p| p.generation = Generation(0)),
+        RepresentationError::ZeroGeneration
+    );
+    assert_eq!(
         refuse(&|p| p.encoder.revision.clear()),
         RepresentationError::EmptyField {
             field: "encoder.revision"
@@ -665,7 +692,7 @@ fn a_representation_replaces_only_a_strictly_older_generation() {
     assert_eq!(replaced.generation(), Generation(2));
     assert_eq!(
         store
-            .get(&demo(), &PodId::from("alpha"))
+            .get(&demo(), &ns(), &PodId::from("alpha"))
             .unwrap()
             .generation(),
         Generation(3)
@@ -681,31 +708,33 @@ fn removing_one_pods_representation_leaves_the_others_scoring_identically() {
     ]);
     let query = [0.2, 0.7, 0.1];
     let beta_before = router_before
-        .score(&demo(), &PodId::from("beta"), &query)
+        .score(&demo(), &ns(), &PodId::from("beta"), &query)
         .unwrap();
     let gamma_before = router_before
-        .score(&demo(), &PodId::from("gamma"), &query)
+        .score(&demo(), &ns(), &PodId::from("gamma"), &query)
         .unwrap();
 
     let mut revoked = router_before.store().clone();
-    assert!(revoked.remove(&demo(), &PodId::from("alpha")).is_some());
+    assert!(revoked
+        .remove(&demo(), &ns(), &PodId::from("alpha"))
+        .is_some());
     let router_after = LearnedPodRouter::new(revoked, LearnedRouterConfig::default()).unwrap();
 
     assert_eq!(
         router_after
-            .score(&demo(), &PodId::from("alpha"), &query)
+            .score(&demo(), &ns(), &PodId::from("alpha"), &query)
             .unwrap(),
         None
     );
     assert_eq!(
         router_after
-            .score(&demo(), &PodId::from("beta"), &query)
+            .score(&demo(), &ns(), &PodId::from("beta"), &query)
             .unwrap(),
         beta_before
     );
     assert_eq!(
         router_after
-            .score(&demo(), &PodId::from("gamma"), &query)
+            .score(&demo(), &ns(), &PodId::from("gamma"), &query)
             .unwrap(),
         gamma_before
     );
@@ -861,4 +890,166 @@ fn the_admitted_set_of_a_request_narrows_scoring_and_never_widens_it() {
         reason(outcome(Some([named(&beta), intruder].into()))),
         Some(AbstentionReason::PartialCoverage)
     );
+}
+
+/// A representation is learned for one lifecycle namespace. It scores a registry candidate only
+/// when the registry names that namespace for the candidate; an implementation registered for
+/// another namespace, or without one, is a candidate without a representation.
+#[test]
+fn a_representation_scores_only_the_implementation_registered_for_its_namespace() {
+    let scene = scene();
+    let router = router(vec![
+        representation("alpha", vec![1.0, 0.0, 0.0], 10.0, 1),
+        representation("beta", vec![0.0, 1.0, 0.0], 10.0, 1),
+    ]);
+    let features = features(vec![1.0, 0.0, 0.0]);
+    let policy = |registry: &ptr_pods::PodRegistry| {
+        router.policy(&request(
+            registry,
+            &scene.project,
+            &scene.capability,
+            &scene.input_type,
+            &scene.request_id,
+            &features,
+        ))
+    };
+    // Registered for the representations' own namespace: alpha is chosen.
+    let own = registry(&scene.project, &["alpha", "beta"]);
+    assert_eq!(
+        policy(&own).unwrap().probability(&PodId::from("alpha")),
+        1.0
+    );
+    // The same pod ids registered for another namespace: no representation applies.
+    let foreign = registry_in(&scene.project, "ns-b", &["alpha", "beta"]);
+    assert!(matches!(
+        policy(&foreign).unwrap_err(),
+        RouteError::NoRepresentation { candidates: 2 }
+    ));
+    // Registered without a namespace: no representation applies either.
+    let mut unnamed = ptr_pods::PodRegistry::default();
+    for id in ["alpha", "beta"] {
+        let pod = own.get(&scene.project, &PodId::from(id)).unwrap();
+        unnamed.register(pod);
+    }
+    assert!(matches!(
+        policy(&unnamed).unwrap_err(),
+        RouteError::NoRepresentation { candidates: 2 }
+    ));
+    // Only alpha moved to another namespace: the field is partly covered and abstains.
+    let mut mixed = registry(&scene.project, &["beta"]);
+    mixed.register_in_namespace(
+        NamespaceId::from("ns-b"),
+        own.get(&scene.project, &PodId::from("alpha")).unwrap(),
+    );
+    assert!(matches!(
+        policy(&mixed).unwrap_err(),
+        RouteError::Abstained {
+            reason: AbstentionReason::PartialCoverage,
+            ..
+        }
+    ));
+}
+
+/// The generations of one pod id in two lifecycle namespaces are independent: a high generation
+/// learned for `ns` does not block a low one learned for `ns-b`, and the registry's namespace picks
+/// which of the two scores.
+#[test]
+fn generations_are_ordered_per_namespace_and_the_registry_picks_the_namespace() {
+    let scene = scene();
+    let mut in_b = parts("alpha", vec![0.0, 1.0, 0.0], 10.0, 1);
+    in_b.namespace = NamespaceId::from("ns-b");
+    let in_b = PodRepresentation::new(in_b).unwrap();
+    let mut store = RepresentationStore::new(encoder());
+    store
+        .insert(representation("alpha", vec![1.0, 0.0, 0.0], 10.0, 5))
+        .unwrap();
+    assert!(store.insert(in_b.clone()).unwrap().is_none());
+    assert_eq!(store.len(), 2);
+    assert_eq!(
+        store.get(&demo(), &NamespaceId::from("ns-b"), &PodId::from("alpha")),
+        Some(&in_b)
+    );
+    let router = LearnedPodRouter::new(store, LearnedRouterConfig::default()).unwrap();
+    let in_ns = router
+        .score(&demo(), &ns(), &PodId::from("alpha"), &[1.0, 0.0, 0.0])
+        .unwrap()
+        .unwrap();
+    let in_ns_b = router
+        .score(
+            &demo(),
+            &NamespaceId::from("ns-b"),
+            &PodId::from("alpha"),
+            &[1.0, 0.0, 0.0],
+        )
+        .unwrap()
+        .unwrap();
+    assert!(in_ns > 0.9 && in_ns_b < 0.5, "{in_ns} {in_ns_b}");
+
+    // Routed with the registry naming ns-b, alpha is scored with the ns-b address.
+    let features = features(vec![0.0, 1.0, 0.0]);
+    let registry = registry_in(&scene.project, "ns-b", &["alpha"]);
+    let distribution = router
+        .policy(&request(
+            &registry,
+            &scene.project,
+            &scene.capability,
+            &scene.input_type,
+            &scene.request_id,
+            &features,
+        ))
+        .unwrap();
+    assert_eq!(distribution.probability(&PodId::from("alpha")), 1.0);
+}
+
+/// A NaN or infinite query element is a broken query (`InvalidFeatures`), never read as "no
+/// representation".
+#[test]
+fn a_non_finite_query_is_invalid_features() {
+    let router = router(vec![representation("alpha", vec![1.0, 0.0, 0.0], 10.0, 1)]);
+    for query in [[f32::NAN, 0.0, 0.0], [f32::INFINITY, 0.0, 0.0]] {
+        assert!(matches!(
+            router.score(&demo(), &ns(), &PodId::from("alpha"), &query),
+            Err(RouteError::InvalidFeatures { .. })
+        ));
+    }
+}
+
+/// A representation learned for generation 1 does not rank the implementation registered as
+/// generation 2 (or without a generation): the registry's generation must be the
+/// representation's.
+#[test]
+fn a_representation_scores_only_the_implementation_of_its_generation() {
+    let scene = scene();
+    let router = router(vec![representation("alpha", vec![1.0, 0.0, 0.0], 10.0, 1)]);
+    let features = features(vec![1.0, 0.0, 0.0]);
+    let policy = |registry: &ptr_pods::PodRegistry| {
+        router.policy(&request(
+            registry,
+            &scene.project,
+            &scene.capability,
+            &scene.input_type,
+            &scene.request_id,
+            &features,
+        ))
+    };
+    assert_eq!(
+        policy(&registry_at(&scene.project, "ns", 1, &["alpha"]))
+            .unwrap()
+            .probability(&PodId::from("alpha")),
+        1.0
+    );
+    assert!(matches!(
+        policy(&registry_at(&scene.project, "ns", 2, &["alpha"])).unwrap_err(),
+        RouteError::NoRepresentation { candidates: 1 }
+    ));
+    let own = registry_at(&scene.project, "ns", 1, &["alpha"]);
+    let mut without_generation = ptr_pods::PodRegistry::default();
+    without_generation.register_in_namespace(
+        ns(),
+        own.get(&scene.project, &PodId::from("alpha")).unwrap(),
+    );
+    assert!(matches!(
+        policy(&without_generation).unwrap_err(),
+        RouteError::NoRepresentation { candidates: 1 }
+    ));
 }

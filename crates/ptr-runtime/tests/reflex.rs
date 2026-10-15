@@ -14,7 +14,7 @@ use ptr_model_api::{
 use ptr_pods::{DynPod, PodManifest, PodRegistry};
 use ptr_protocol::TypedPayload;
 use ptr_router::{
-    AbstentionReason, CheckedRouter, FailoverCoverage, FallbackPlan, MissReason, NonceSequence,
+    AbstentionReason, CheckedRouter, DefaultPodPlan, FailoverCoverage, MissReason, NonceSequence,
     PodRouter, RouteDistribution, RouteError, RouteRequest, Router, SamplingKey, UncoveredReason,
 };
 use ptr_runtime::{
@@ -102,6 +102,8 @@ struct PodSpec {
     id: &'static str,
     effect: Effect,
     behaviour: Behaviour,
+    /// The lifecycle namespace and generation the registry holds the implementation at.
+    binding: Option<(&'static str, u64)>,
 }
 
 fn spec(id: &'static str, behaviour: Behaviour) -> PodSpec {
@@ -110,6 +112,7 @@ fn spec(id: &'static str, behaviour: Behaviour) -> PodSpec {
         id,
         effect: Effect::Pure,
         behaviour,
+        binding: Some(("ns", 1)),
     }
 }
 
@@ -120,7 +123,7 @@ fn registry(specs: &[PodSpec]) -> (PodRegistry, Vec<(&'static str, Arc<AtomicUsi
     for spec in specs {
         let invocations = Arc::new(AtomicUsize::new(0));
         counters.push((spec.id, Arc::clone(&invocations)));
-        registry.register(Arc::new(TestPod {
+        let pod = Arc::new(TestPod {
             manifest: PodManifest {
                 project: ProjectId::from(spec.project),
                 id: PodId::from(spec.id),
@@ -132,7 +135,15 @@ fn registry(specs: &[PodSpec]) -> (PodRegistry, Vec<(&'static str, Arc<AtomicUsi
             },
             behaviour: spec.behaviour,
             invocations,
-        }));
+        });
+        match spec.binding {
+            Some((namespace, generation)) => {
+                registry.register_at(NamespaceId::from(namespace), Generation(generation), pod);
+            }
+            None => {
+                registry.register(pod);
+            }
+        }
     }
     (registry, counters)
 }
@@ -254,7 +265,7 @@ fn plan(runtime: &mut PtrRuntime, default: &str, max_attempts: u8, revision: Pod
         .set_fallback_plan(SetFallbackPlan {
             project: project(),
             capability: capability(),
-            plan: FallbackPlan::new(Some(PodId::from(default)), max_attempts).unwrap(),
+            plan: DefaultPodPlan::new(Some(PodId::from(default)), max_attempts).unwrap(),
             default_revision: Some(revision),
         })
         .unwrap();
@@ -396,7 +407,7 @@ mod without_a_default {
             .set_fallback_plan(SetFallbackPlan {
                 project: project(),
                 capability: capability(),
-                plan: FallbackPlan::new(None, 2).unwrap(),
+                plan: DefaultPodPlan::new(None, 2).unwrap(),
                 default_revision: None,
             })
             .unwrap();
@@ -610,6 +621,86 @@ mod with_a_default {
             })
         ));
         assert_eq!(invocations(&counts, "primary"), 0);
+    }
+
+    #[test]
+    fn a_default_the_registry_holds_at_another_generation_is_not_invoked() {
+        // The plan names generation 2 and the lifecycle holds it live, but the registry still
+        // holds the generation 1 implementation: the checked revision is not the code that runs.
+        let (pods, counts) = registry(&[
+            spec("primary", Behaviour::Echo),
+            spec("fallback", Behaviour::Prefix("fb:")),
+        ]);
+        let mut runtime = runtime();
+        let fallback = revision("fallback", 2);
+        make_live(&mut runtime, &fallback);
+        plan(&mut runtime, "fallback", 2, fallback);
+        let outcome = run_routed(&mut runtime, "r1", &pods, &low_score_router(), &PASS);
+        assert_eq!(
+            outcome,
+            Err(RuntimeError::FailoverRefused {
+                miss: MissReason::Abstained(AbstentionReason::LowScore),
+                reason: UncoveredReason::StaleFallback,
+            })
+        );
+        assert_eq!(invocations(&counts, "fallback"), 0);
+        let counters = runtime.reflex_counters();
+        assert_eq!((counters.misses(), counters.failovers()), (1, 0));
+        assert_eq!(
+            counters
+                .uncovered_reasons()
+                .get(&UncoveredReason::StaleFallback),
+            Some(&1)
+        );
+        assert!(!counters.all_misses_covered());
+    }
+
+    #[test]
+    fn a_default_the_registry_holds_in_another_namespace_is_not_invoked() {
+        let (pods, counts) = registry(&[
+            spec("primary", Behaviour::Echo),
+            PodSpec {
+                binding: Some(("elsewhere", 1)),
+                ..spec("fallback", Behaviour::Prefix("fb:"))
+            },
+        ]);
+        let mut runtime = runtime();
+        let fallback = revision("fallback", 1);
+        make_live(&mut runtime, &fallback);
+        plan(&mut runtime, "fallback", 2, fallback);
+        let outcome = run_routed(&mut runtime, "r1", &pods, &low_score_router(), &PASS);
+        assert!(matches!(
+            outcome,
+            Err(RuntimeError::FailoverRefused {
+                reason: UncoveredReason::StaleFallback,
+                ..
+            })
+        ));
+        assert_eq!(invocations(&counts, "fallback"), 0);
+    }
+
+    #[test]
+    fn a_default_registered_without_a_namespace_and_generation_is_not_invoked() {
+        let (pods, counts) = registry(&[
+            spec("primary", Behaviour::Echo),
+            PodSpec {
+                binding: None,
+                ..spec("fallback", Behaviour::Prefix("fb:"))
+            },
+        ]);
+        let mut runtime = runtime();
+        let fallback = revision("fallback", 1);
+        make_live(&mut runtime, &fallback);
+        plan(&mut runtime, "fallback", 2, fallback);
+        let outcome = run_routed(&mut runtime, "r1", &pods, &low_score_router(), &PASS);
+        assert!(matches!(
+            outcome,
+            Err(RuntimeError::FailoverRefused {
+                reason: UncoveredReason::StaleFallback,
+                ..
+            })
+        ));
+        assert_eq!(invocations(&counts, "fallback"), 0);
     }
 
     #[test]
@@ -1023,7 +1114,7 @@ mod configuration {
         SetFallbackPlan {
             project: project(),
             capability: capability(),
-            plan: FallbackPlan::new(default.map(PodId::from), 2).unwrap(),
+            plan: DefaultPodPlan::new(default.map(PodId::from), 2).unwrap(),
             default_revision,
         }
     }
@@ -1113,7 +1204,7 @@ mod configuration {
                 .set_fallback_plan(SetFallbackPlan {
                     project: project(),
                     capability: CapabilityId::from(format!("cap{index}").as_str()),
-                    plan: FallbackPlan::new(None, 1).unwrap(),
+                    plan: DefaultPodPlan::new(None, 1).unwrap(),
                     default_revision: None,
                 })
                 .unwrap();
@@ -1121,7 +1212,7 @@ mod configuration {
         let over = SetFallbackPlan {
             project: project(),
             capability: CapabilityId::from("one-too-many"),
-            plan: FallbackPlan::new(None, 1).unwrap(),
+            plan: DefaultPodPlan::new(None, 1).unwrap(),
             default_revision: None,
         };
         assert_eq!(
@@ -1134,14 +1225,14 @@ mod configuration {
             .set_fallback_plan(SetFallbackPlan {
                 project: project(),
                 capability: CapabilityId::from("cap0"),
-                plan: FallbackPlan::new(None, 3).unwrap(),
+                plan: DefaultPodPlan::new(None, 3).unwrap(),
                 default_revision: None,
             })
             .unwrap();
         assert_eq!(
             runtime
                 .fallback_plan(&project(), &CapabilityId::from("cap0"))
-                .map(FallbackPlan::max_attempts),
+                .map(DefaultPodPlan::max_attempts),
             Some(3)
         );
     }

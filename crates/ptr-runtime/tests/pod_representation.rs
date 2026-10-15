@@ -14,16 +14,16 @@ use ptr_router::{
     PodRepresentation, PodRepresentationParts, PolicyFailure, RepresentationStore, RouteError,
     SamplingKey, ScoreWeights,
 };
-use ptr_runtime::neural::{Denial, NeuralError, NeuralState, NeuralStateCache};
+use ptr_runtime::neural::{Denial, NeuralError, NeuralState, NeuralStateCache, StateDeclaration};
 use ptr_runtime::{
     pod_lifecycle_target, BindPodRepresentation, EmbeddingSampler, EmbeddingSamplerError,
     PodRepresentationError, PtrRuntime, QueryEmbedder, RepresentationDenial, RepresentationRefusal,
     RouteQuery, RuntimeError,
 };
 use ptr_types::{
-    CapabilityId, CapsuleId, ClusterKey, CodebookVersion, Effect, Generation, NamespaceId,
-    PodAddress, PodId, PodIdentity, PodRevisionAddress, Probability, ProjectId, TypeId,
-    VerificationLevel,
+    CapabilityId, CapsuleId, ClusterKey, CodebookVersion, Effect, EvidenceId, Generation,
+    NamespaceId, PodAddress, PodId, PodIdentity, PodRevisionAddress, Probability, ProjectId,
+    ProvenanceRef, TypeId, VerificationLevel,
 };
 use ptr_verifier::{VerificationReport, VerificationStatus, Verifier};
 use std::sync::Arc;
@@ -36,10 +36,14 @@ fn encoder() -> EncoderRef {
 }
 
 fn address(pod: &str, generation: u64) -> PodRevisionAddress {
+    address_in("ns", pod, generation)
+}
+
+fn address_in(namespace: &str, pod: &str, generation: u64) -> PodRevisionAddress {
     PodRevisionAddress {
         address: PodAddress::new(
             ProjectId::from("demo"),
-            NamespaceId::from("ns"),
+            NamespaceId::from(namespace),
             PodId::from(pod),
         )
         .unwrap(),
@@ -51,6 +55,7 @@ fn address(pod: &str, generation: u64) -> PodRevisionAddress {
 fn representation(pod: &str, z: Vec<f32>, generation: u64) -> PodRepresentation {
     PodRepresentation::new(PodRepresentationParts {
         project: ProjectId::from("demo"),
+        namespace: NamespaceId::from("ns"),
         pod: PodId::from(pod),
         identity: PodIdentity::from(format!("pod:{pod}").as_str()),
         cluster_key: ClusterKey([3; 32]),
@@ -151,6 +156,99 @@ fn a_representation_for_another_pod_or_generation_does_not_bind() {
     );
 }
 
+/// The same pod id is live in two namespaces of one project. A representation of `ns/alpha` binds
+/// only under its own lifecycle target, and revoking that target denies it although `ns-b/alpha`
+/// is still live.
+#[test]
+fn a_representation_never_moves_to_the_same_pod_id_in_another_namespace() {
+    let mut runtime = runtime();
+    runtime
+        .commit(LedgerEvent::CapsuleCommitted {
+            project: "demo".into(),
+            capsule: CapsuleId::from(
+                pod_lifecycle_target(&address_in("ns-b", "alpha", 1)).as_str(),
+            ),
+            generation: Generation(1),
+        })
+        .unwrap();
+    let alpha = representation("alpha", vec![1.0, 0.0, 0.0], 1);
+
+    let through_other_namespace = runtime.bind_pod_representation(BindPodRepresentation {
+        representation: &alpha,
+        pod: &address_in("ns-b", "alpha", 1),
+        codebook: CodebookVersion::V1,
+    });
+    assert_eq!(
+        through_other_namespace.unwrap_err(),
+        RuntimeError::PodRepresentation(PodRepresentationError::NamespaceMismatch {
+            representation: "ns".into(),
+            address: "ns-b".into(),
+        })
+    );
+
+    // A binding forged under the other namespace's target, with the representation's own digest
+    // recorded, is still refused on admission.
+    let digest: String = alpha
+        .digest()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let forged = runtime
+        .bind_state(
+            &StateDeclaration::at(CodebookVersion::V1)
+                .under(pod_lifecycle_target(&address_in("ns-b", "alpha", 1)))
+                .produced_by(ProvenanceRef {
+                    source: EvidenceId(format!("dragonfly:{digest}")),
+                    note: None,
+                }),
+        )
+        .unwrap();
+    let forged = NeuralState::new(forged, alpha.to_payload());
+    assert_eq!(
+        runtime.admit_pod_representation(&forged),
+        Err(RepresentationDenial::BindingMismatch)
+    );
+
+    let own = bind(&runtime, &alpha);
+    runtime
+        .commit(LedgerEvent::Revoked {
+            subject: pod_lifecycle_target(&address("alpha", 1)),
+            generation: Generation(1),
+        })
+        .unwrap();
+    assert!(matches!(
+        runtime.admit_pod_representation(&own),
+        Err(RepresentationDenial::State(
+            Denial::RevokedGeneration { .. }
+        ))
+    ));
+}
+
+/// State of another kind under a pod target (no representation digest in its provenance) is
+/// refused from the binding alone, before its payload is parsed.
+#[test]
+fn state_that_names_no_representation_is_refused_without_parsing_its_payload() {
+    let runtime = runtime();
+    let binding = runtime
+        .bind_state(
+            &StateDeclaration::at(CodebookVersion::V1)
+                .under(pod_lifecycle_target(&address("alpha", 1)))
+                .produced_by(ProvenanceRef {
+                    source: EvidenceId("kv-cache:alpha".into()),
+                    note: None,
+                }),
+        )
+        .unwrap();
+    let mut other = NeuralStateCache::default();
+    other.insert("kv", NeuralState::new(binding, vec![0xff; 64]));
+    let admitted = runtime.admitted_representations(encoder(), &other);
+    assert!(admitted.store.is_empty());
+    assert!(matches!(
+        &admitted.refused[0].1,
+        RepresentationRefusal::Admission(RepresentationDenial::BindingMismatch)
+    ));
+}
+
 #[test]
 fn a_pod_without_a_committed_lifecycle_target_cannot_be_bound() {
     let runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
@@ -207,11 +305,19 @@ fn revoking_one_pod_generation_denies_exactly_that_representation() {
     assert_eq!(admitted.store.len(), 1);
     assert!(admitted
         .store
-        .get(&ProjectId::from("demo"), &PodId::from("beta"))
+        .get(
+            &ProjectId::from("demo"),
+            &NamespaceId::from("ns"),
+            &PodId::from("beta")
+        )
         .is_some());
     assert!(admitted
         .store
-        .get(&ProjectId::from("demo"), &PodId::from("alpha"))
+        .get(
+            &ProjectId::from("demo"),
+            &NamespaceId::from("ns"),
+            &PodId::from("alpha")
+        )
         .is_none());
     assert_eq!(admitted.refused.len(), 1);
     let (key, refusal) = &admitted.refused[0];
@@ -238,11 +344,19 @@ fn a_new_pod_generation_denies_the_old_representation_until_it_is_retrained() {
     let admitted = runtime.admitted_representations(encoder(), &cache);
     assert!(admitted
         .store
-        .get(&ProjectId::from("demo"), &PodId::from("alpha"))
+        .get(
+            &ProjectId::from("demo"),
+            &NamespaceId::from("ns"),
+            &PodId::from("alpha")
+        )
         .is_some());
     assert!(admitted
         .store
-        .get(&ProjectId::from("demo"), &PodId::from("beta"))
+        .get(
+            &ProjectId::from("demo"),
+            &NamespaceId::from("ns"),
+            &PodId::from("beta")
+        )
         .is_none());
     assert!(matches!(
         &admitted.refused[0].1,
@@ -305,6 +419,7 @@ fn an_admitted_representation_that_is_not_activated_stays_out_of_the_router_stor
 fn parts_of(representation: &PodRepresentation) -> PodRepresentationParts {
     PodRepresentationParts {
         project: representation.project().clone(),
+        namespace: representation.namespace().clone(),
         pod: representation.pod().clone(),
         identity: representation.identity().clone(),
         cluster_key: representation.cluster_key(),
@@ -363,19 +478,35 @@ impl Verifier<TypedPayload> for Pass {
     }
 }
 
+fn echo(id: &str) -> Arc<Echo> {
+    Arc::new(Echo(PodManifest {
+        project: ProjectId::from("demo"),
+        id: PodId::from(id),
+        capabilities: vec![CapabilityId::from("Echo<Text>")],
+        accepts: vec![TypeId::from("Text")],
+        produces: vec![TypeId::from("Text")],
+        effects: vec![Effect::Pure],
+        protocol_version: 1,
+    }))
+}
+
+/// `alpha` and `beta`, both registered as the implementations of namespace `ns`.
 fn pods() -> PodRegistry {
+    pods_with_alpha_in(Some("ns"))
+}
+
+/// `beta` in namespace `ns`, and `alpha` in `alpha_namespace` (`None`: registered without one).
+fn pods_with_alpha_in(alpha_namespace: Option<&str>) -> PodRegistry {
     let mut registry = PodRegistry::default();
-    for id in ["alpha", "beta"] {
-        registry.register(Arc::new(Echo(PodManifest {
-            project: ProjectId::from("demo"),
-            id: PodId::from(id),
-            capabilities: vec![CapabilityId::from("Echo<Text>")],
-            accepts: vec![TypeId::from("Text")],
-            produces: vec![TypeId::from("Text")],
-            effects: vec![Effect::Pure],
-            protocol_version: 1,
-        })));
+    match alpha_namespace {
+        Some(namespace) => {
+            registry.register_at(NamespaceId::from(namespace), Generation(1), echo("alpha"));
+        }
+        None => {
+            registry.register(echo("alpha"));
+        }
     }
+    registry.register_at(NamespaceId::from("ns"), Generation(1), echo("beta"));
     registry
 }
 
@@ -422,13 +553,22 @@ fn run(
     payload: &'static [u8],
     sampler: &EmbeddingSampler<LearnedPodRouter>,
 ) -> Result<(), RuntimeError> {
+    run_with(runtime, payload, sampler, &pods())
+}
+
+fn run_with(
+    runtime: &mut PtrRuntime,
+    payload: &'static [u8],
+    sampler: &EmbeddingSampler<LearnedPodRouter>,
+    registry: &PodRegistry,
+) -> Result<(), RuntimeError> {
     runtime
         .run_resumable_with_pods_using_router(
             "request-1".into(),
             &ProjectId::from("demo"),
             "go",
             &Ask(payload),
-            &pods(),
+            registry,
             sampler,
             &Pass,
             2,
@@ -459,6 +599,47 @@ fn the_runtime_routes_each_question_to_the_pod_whose_address_matches() {
     assert_eq!(routed_pods(&runtime), ["alpha", "beta"]);
 }
 
+/// The registry names which namespace's implementation is registered for a pod id. The `ns`
+/// address of `alpha` scores only the implementation registered for `ns`: with `alpha` registered
+/// for `ns-b`, or without a namespace, `alpha` has no usable address and the field abstains
+/// (partial coverage), also while `ns-b/alpha` is live in the lifecycle.
+#[test]
+fn a_representation_scores_only_the_implementation_registered_for_its_namespace() {
+    let mut runtime = runtime();
+    runtime
+        .commit(LedgerEvent::CapsuleCommitted {
+            project: "demo".into(),
+            capsule: CapsuleId::from(
+                pod_lifecycle_target(&address_in("ns-b", "alpha", 1)).as_str(),
+            ),
+            generation: Generation(1),
+        })
+        .unwrap();
+    let bound = cache(&runtime);
+    let admitted = runtime.admitted_representations(encoder(), &bound);
+    assert!(admitted.refused.is_empty());
+    let sampler = sampler(admitted.store, bound);
+    let abstained = RuntimeError::RouteFailed {
+        reason: "routing abstained",
+    };
+    for registry in [pods_with_alpha_in(Some("ns-b")), pods_with_alpha_in(None)] {
+        assert_eq!(
+            run_with(&mut runtime, b"alpha question", &sampler, &registry).unwrap_err(),
+            abstained
+        );
+    }
+    assert!(routed_pods(&runtime).is_empty());
+    // The implementation registered for `ns` is scored again.
+    run_with(
+        &mut runtime,
+        b"alpha question",
+        &sampler,
+        &pods_with_alpha_in(Some("ns")),
+    )
+    .unwrap();
+    assert_eq!(routed_pods(&runtime), ["alpha"]);
+}
+
 #[test]
 fn after_a_revocation_the_runtime_abstains_instead_of_routing_to_the_revoked_pod() {
     let mut runtime = runtime();
@@ -472,7 +653,11 @@ fn after_a_revocation_the_runtime_abstains_instead_of_routing_to_the_revoked_pod
     let admitted = runtime.admitted_representations(encoder(), &cache);
     let kept_beta = admitted
         .store
-        .get(&ProjectId::from("demo"), &PodId::from("beta"))
+        .get(
+            &ProjectId::from("demo"),
+            &NamespaceId::from("ns"),
+            &PodId::from("beta"),
+        )
         .is_some();
     let sampler = sampler(admitted.store, cache);
     // The alpha question no longer finds alpha's address; beta's does not match it either.
@@ -532,6 +717,87 @@ fn an_encoder_failure_or_a_wrongly_sized_query_is_a_pod_free_route_failure() {
         }
     );
     assert!(routed_pods(&runtime).is_empty());
+}
+
+#[test]
+fn without_an_eligible_pod_the_answer_is_unavailable_and_the_encoder_is_not_run() {
+    let mut runtime = runtime();
+    let bound = cache(&runtime);
+    let admitted = runtime.admitted_representations(encoder(), &bound);
+    let sampler = sampler(admitted.store, bound);
+    // `AxisEmbedder` fails for this payload: had it run, the answer would be a route failure.
+    let error = runtime
+        .run_resumable_with_pods_using_router(
+            "request-1".into(),
+            &ProjectId::from("demo"),
+            "go",
+            &Ask(b"anything else"),
+            &PodRegistry::default(),
+            &sampler,
+            &Pass,
+            2,
+        )
+        .unwrap_err();
+    assert_eq!(
+        error,
+        RuntimeError::PodUnavailable {
+            capability: "Echo<Text>".into(),
+            input_type: "Text".into(),
+        }
+    );
+    assert!(routed_pods(&runtime).is_empty());
+}
+
+#[test]
+fn with_no_admitted_representation_the_encoder_is_not_run() {
+    let mut runtime = runtime();
+    let bound = cache(&runtime);
+    let admitted = runtime.admitted_representations(encoder(), &bound);
+    let sampler = sampler(admitted.store, bound);
+    for pod in ["alpha", "beta"] {
+        runtime
+            .commit(LedgerEvent::Revoked {
+                subject: pod_lifecycle_target(&address(pod, 1)),
+                generation: Generation(1),
+            })
+            .unwrap();
+    }
+    // `AxisEmbedder` fails for this payload: had it run, the answer would be a policy failure.
+    assert_eq!(
+        run(&mut runtime, b"anything else", &sampler).unwrap_err(),
+        RuntimeError::RouteFailed {
+            reason: "routing has no learned representation"
+        }
+    );
+    assert!(routed_pods(&runtime).is_empty());
+}
+
+#[test]
+fn an_admission_cache_larger_than_a_store_is_refused() {
+    let runtime = runtime();
+    let state = bind(&runtime, &representation("alpha", vec![1.0, 0.0, 0.0], 1));
+    let mut oversized = NeuralStateCache::default();
+    for index in 0..=ptr_router::MAX_REPRESENTATIONS {
+        oversized.insert(format!("entry-{index}"), state.clone());
+    }
+    let refused = EmbeddingSampler::new(
+        CheckedRouter::new(
+            LearnedPodRouter::new(
+                RepresentationStore::new(encoder()),
+                LearnedRouterConfig::default(),
+            )
+            .unwrap(),
+            SamplingKey::from_bytes([9; 32]),
+            NonceSequence::starting_at([4; 8], 0),
+        ),
+        Arc::new(AxisEmbedder),
+        oversized,
+    );
+    assert!(matches!(
+        refused,
+        Err(EmbeddingSamplerError::AdmissionCacheTooLarge { len, max })
+            if len == ptr_router::MAX_REPRESENTATIONS + 1 && max == ptr_router::MAX_REPRESENTATIONS
+    ));
 }
 
 #[test]
@@ -721,4 +987,26 @@ fn an_embedder_of_another_model_or_revision_is_refused_even_at_the_same_dimensio
         NeuralStateCache::default()
     )
     .is_ok());
+}
+
+#[test]
+fn a_representation_cannot_become_live_through_a_commit_of_another_project() {
+    let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+    let alpha = representation("alpha", vec![1.0, 0.0, 0.0], 1);
+    // The pod belongs to project "demo"; project "other" tries to make its target live.
+    let refused = runtime.commit(LedgerEvent::CapsuleCommitted {
+        project: "other".into(),
+        capsule: CapsuleId::from(pod_lifecycle_target(&address("alpha", 1)).as_str()),
+        generation: Generation(1),
+    });
+    assert!(matches!(
+        refused,
+        Err(RuntimeError::PodCapsuleProjectMismatch { .. })
+    ));
+    let bound = runtime.bind_pod_representation(BindPodRepresentation {
+        representation: &alpha,
+        pod: &address("alpha", 1),
+        codebook: CodebookVersion::V1,
+    });
+    assert!(bound.is_err());
 }

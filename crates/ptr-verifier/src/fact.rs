@@ -18,8 +18,9 @@
 //! nothing proves nothing. See [`crate::codes`].
 
 use ptr_semdb::{SemanticSnapshot, SemanticValue};
-use ptr_types::{Probability, Revision, VerificationLevel};
+use ptr_types::{Generation, Probability, Revision, VerificationLevel};
 
+use crate::bound::{BoundVerificationReport, BoundVerifier, NamedBoundVerifier, SnapshotBinding};
 use crate::codes::finding;
 use crate::{Finding, NamedVerifier, VerificationReport, VerificationStatus, Verifier};
 
@@ -64,6 +65,7 @@ pub struct BoundReport {
 pub struct FactVerifier {
     snapshot: SemanticSnapshot,
     live: Option<Revision>,
+    generation: Generation,
 }
 
 impl FactVerifier {
@@ -74,6 +76,7 @@ impl FactVerifier {
         Self {
             snapshot,
             live: Some(live),
+            generation: Generation::default(),
         }
     }
 
@@ -85,7 +88,17 @@ impl FactVerifier {
         Self {
             snapshot,
             live: None,
+            generation: Generation::default(),
         }
+    }
+
+    /// Declares the generation the snapshot belongs to (default `Generation(0)`), so the
+    /// [`BoundVerifier`] binding names it. The snapshot itself carries only a revision; the
+    /// generation is the host's statement and is not checked here.
+    #[must_use]
+    pub fn with_generation(mut self, generation: Generation) -> Self {
+        self.generation = generation;
+        self
     }
 
     pub fn snapshot_revision(&self) -> Revision {
@@ -209,6 +222,21 @@ impl Verifier<Vec<FactClaim>> for FactVerifier {
             VerificationStatus::Unknown
         };
         report(status, findings)
+    }
+}
+
+impl BoundVerifier<Vec<FactClaim>> for FactVerifier {
+    fn verify_at_snapshot(&self, claims: &Vec<FactClaim>) -> BoundVerificationReport {
+        BoundVerificationReport {
+            report: self.verify(claims),
+            snapshot: SnapshotBinding::new(self.snapshot.revision, self.generation),
+        }
+    }
+}
+
+impl NamedBoundVerifier<Vec<FactClaim>> for FactVerifier {
+    fn bound_name(&self) -> &'static str {
+        "fact"
     }
 }
 

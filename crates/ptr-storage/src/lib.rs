@@ -11,17 +11,25 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use zeroize::Zeroizing;
 
+#[cfg(all(feature = "tier-direct-io", target_os = "linux"))]
+mod direct_io;
 #[cfg(feature = "tier-opendal")]
 mod opendal_tier;
+#[cfg(all(feature = "tier-pinned", target_os = "linux"))]
+mod pinned_tier;
 mod tier;
 mod tier_protected;
 #[cfg(feature = "tier-opendal")]
 pub use opendal_tier::OpenDalTierBackend;
+#[cfg(all(feature = "tier-pinned", target_os = "linux"))]
+pub use pinned_tier::PinnedHostTierBackend;
 pub use tier::{
     digest as tier_digest, ChunkDescriptor, ChunkReceipt, CpuTierBackend, FileTierBackend,
     PreparedTierObject, StorageTier, TierBackend, TierBackendId, TierCapabilities, TierError,
     TierFuture, TierHealth, TierIntegrityReport, TierObjectDomain, TierObjectManifest,
 };
+#[cfg(all(feature = "tier-direct-io", target_os = "linux"))]
+pub use tier::{FileReadMode, FileReadStats, FileTierOptions};
 pub use tier_protected::{
     open_protected_tier_chunk, seal_protected_tier_chunk, ProtectedTierChunk,
 };

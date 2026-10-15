@@ -1,4 +1,6 @@
-use crate::placement::{FencedStateLease, FencingToken, PlacementError, PodPlacementController};
+use crate::placement::{
+    FencedStateLease, FencingToken, PlacementError, PlacementScope, PodPlacementController,
+};
 use ptr_pods::{KvBackendError, KvTensorBackend, KvTensorSnapshot};
 use ptr_types::{DeviceId, Generation, NodeId, PodId, StateId};
 use std::collections::BTreeMap;
@@ -25,6 +27,8 @@ pub struct MigrationRecord {
     pub target_node: Option<NodeId>,
     pub target_device: Option<DeviceId>,
     pub state: MigrationState,
+    /// The namespace the source lease was issued in; the freeze is lifted in exactly this one.
+    pub(crate) scope: PlacementScope,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -73,6 +77,7 @@ impl KvMigrationController {
             target_node: None,
             target_device: None,
             state: MigrationState::Frozen,
+            scope: source.scope.clone(),
         };
         self.records.insert(migration_id, record.clone());
         Ok(record)
@@ -116,6 +121,11 @@ impl KvMigrationController {
         if target.state_id() != &record.state_id || target.generation() != record.generation {
             return Err(MigrationError::GenerationMismatch);
         }
+        // A lease of another namespace (another project, or the legacy one) is not a target of
+        // this migration, even with the same state id and generation.
+        if target.scope != record.scope {
+            return Err(MigrationError::Placement(PlacementError::StaleLease));
+        }
         if target.node_id() == &record.source_node && target.device_id() == &record.source_device {
             return Err(MigrationError::SamePlacement);
         }
@@ -142,13 +152,16 @@ impl KvMigrationController {
         if record.state != MigrationState::Restored {
             return Err(MigrationError::InvalidState(record.state));
         }
+        if target.scope != record.scope {
+            return Err(MigrationError::Placement(PlacementError::StaleLease));
+        }
         if target.node_id() != record.target_node.as_ref().unwrap()
             || target.device_id() != record.target_device.as_ref().unwrap()
         {
             return Err(MigrationError::Placement(PlacementError::StaleLease));
         }
         record.state = MigrationState::Committed;
-        placement.unfreeze_state(&record.state_id);
+        placement.unfreeze_state_scoped(&record.scope, &record.state_id);
         Ok(record.clone())
     }
 
@@ -165,7 +178,7 @@ impl KvMigrationController {
             return Err(MigrationError::InvalidState(record.state));
         }
         record.state = MigrationState::Aborted;
-        placement.unfreeze_state(&record.state_id);
+        placement.unfreeze_state_scoped(&record.scope, &record.state_id);
         Ok(record.clone())
     }
 

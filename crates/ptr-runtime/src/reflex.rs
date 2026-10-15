@@ -3,7 +3,7 @@
 //! Every Pod request goes through `dispatch_pod`. The primary path (the router, or
 //! the plain deterministic selector) either yields a pod that answers, or it misses: no
 //! candidate, an abstention, no learned representation, or a pod that fails when invoked. After a
-//! miss the runtime consults the [`FallbackPlan`] the host configured for the request's project
+//! miss the runtime consults the [`DefaultPodPlan`] the host configured for the request's project
 //! and capability. A plan is host configuration, not history: it is not a ledger record, a
 //! runtime rebuilt from its log has none, and with no plan a miss fails the request exactly as it
 //! did before this module existed.
@@ -18,6 +18,9 @@
 //! - its generation is the one the lifecycle authority holds live for it, and not revoked
 //!   (invariant 3). The plan names a [`PodRevisionAddress`]; a revocation or a newer live
 //!   generation committed after the plan was set stops the failover with the very next request;
+//! - the registry holds exactly the implementation that revision names (the same namespace and
+//!   generation, `PodRegistry::register_at`): a registry whose default is another generation, or
+//!   was registered without one, is not the code the lifecycle check was about;
 //! - its manifest declares no effect beyond pure or read (invariant 7);
 //! - its output goes through [`PtrRuntime::promote_verified_pod_output`], the same verifier path
 //!   as any pod output, so a deterministic contradiction is never promoted (invariants 7 and 11).
@@ -42,7 +45,7 @@ use ptr_model_api::KvReuseTaint;
 use ptr_pods::{DynPod, PodRegistry};
 use ptr_protocol::TypedPayload;
 use ptr_router::{
-    FallbackPlan, LatencySample, MissReason, ReflexCounters, ReflexOutcome, UncoveredReason,
+    DefaultPodPlan, LatencySample, MissReason, ReflexCounters, ReflexOutcome, UncoveredReason,
 };
 use ptr_types::{
     CapabilityId, Effect, PodId, PodRevisionAddress, ProjectId, RequestId, Revision, TypeId,
@@ -62,7 +65,7 @@ pub const MAX_FALLBACK_PLANS: usize = 1024;
 pub struct SetFallbackPlan {
     pub project: ProjectId,
     pub capability: CapabilityId,
-    pub plan: FallbackPlan,
+    pub plan: DefaultPodPlan,
     /// The exact revision of the plan's default pod, whose generation is checked against the
     /// lifecycle authority at every failover. Required when the plan names a default pod, and
     /// refused when it names none.
@@ -119,7 +122,7 @@ impl std::error::Error for FallbackConfigError {}
 
 #[derive(Clone, Debug)]
 struct Binding {
-    plan: FallbackPlan,
+    plan: DefaultPodPlan,
     revision: Option<PodRevisionAddress>,
 }
 
@@ -223,7 +226,7 @@ impl PtrRuntime {
         &self,
         project: &ProjectId,
         capability: &CapabilityId,
-    ) -> Option<&FallbackPlan> {
+    ) -> Option<&DefaultPodPlan> {
         self.reflex
             .plans
             .get(&(project.clone(), capability.clone()))
@@ -432,6 +435,13 @@ impl PtrRuntime {
         let Some(pod) = request.pods.get(request.project, &default) else {
             return refuse(self, UncoveredReason::NotACandidate);
         };
+        // ... the registry holds the implementation the checked revision names, not another
+        // namespace or generation of the same pod id ...
+        if request.pods.namespace(request.project, &default) != Some(&revision.address.namespace)
+            || request.pods.generation(request.project, &default) != Some(revision.generation)
+        {
+            return refuse(self, UncoveredReason::StaleFallback);
+        }
         // ... and no effect beyond pure or read.
         if !effect_allowed(pod.as_ref()) {
             return refuse(self, UncoveredReason::EffectNotAllowed);

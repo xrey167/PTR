@@ -75,7 +75,7 @@ id = "ptr-router"
 ports = ["Router", "CapabilityGraph", "FallbackPlanner"]
 type_families = ["cognitive-semantic", "routing-execution", "model-interface", "search-retrieval", "pod-contract"]
 backend_slots = ["routing-policy"]
-open_decisions = ["ExecutionRecipe", "operator taxonomy", "budget model", "fallback/degradation semantics (implemented in work package 2 for a miss of the primary path: one explicit default pod per project and capability, doc 43; other degradation stays open)"]
+open_decisions = ["ExecutionRecipe", "operator taxonomy", "budget model", "fallback/degradation semantics (recipe degradation is src/degradation.rs; work package 2 adds, for a miss of the primary path, one explicit default pod per project and capability, doc 43)"]
 
 [[component]]
 id = "ptr-verifier"
@@ -160,6 +160,13 @@ ports = ["PodHost", "PodClient", "PodAccessPolicy"]
 type_families = ["network-protocol", "capability-authority", "identity-lifecycle"]
 backend_slots = ["network-transport", "pod-environment"]
 open_decisions = ["whether the Pod access policy and the execution admission policy share one durability story before either is journaled", "whether an answer should be signed, which is the receipt question in a second place", "whether a peer identity should be unforgeable at the type level, which needs a ptr-runtime dependency on ptr-net", "who owns the accept loop", "backpressure toward a peer that asks faster than the host answers", "whether a requester should be able to discover a Pod's protocol version rather than only be refused for guessing it wrong", "which discovery mechanism turns an id into an address, and whose answer to believe"]
+
+[[component]]
+id = "ptr-fabric"
+ports = ["export_bytes", "import_bytes", "ShmExport", "ShmMapping"]
+type_families = ["pod-contract", "storage-object"]
+backend_slots = ["pod-environment"]
+open_decisions = ["how the sealed descriptor is passed to the consumer and bound to the handle nonce", "which carrier a handle uses for which size and placement", "whether a mapping may cross threads"]
 
 [[component]]
 id = "ptr-events"

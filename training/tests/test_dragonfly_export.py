@@ -32,6 +32,7 @@ def trained(**config):
     )
     spec = PodTrainingSpec(
         project="demo",
+        namespace="supply",
         pod_id="pod-alpha",
         descriptor=descriptor,
         generation=2,
@@ -45,19 +46,30 @@ def trained(**config):
 class ProjectQualifiedNamesTests(unittest.TestCase):
     def test_the_stem_encodes_the_project_reversibly_and_safely(self):
         identity = "pod:" + "ab" * 32
-        self.assertEqual(artifact_stem("demo", identity), "dragonfly-demo__pod-" + "ab" * 32)
+        self.assertEqual(
+            artifact_stem("demo", "supply", identity), "dragonfly-demo__supply__pod-" + "ab" * 32
+        )
         # Upper case, `_`, `/` and non-ASCII are escaped, so no two projects share a name, also on
         # a case-insensitive file system.
-        stems = {
-            artifact_stem(project, identity)
-            for project in ("Demo", "demo", "de_mo", "de-mo", "de/mo", "démo", "a__b", "a_b")
-        }
+        names = ("Demo", "demo", "de_mo", "de-mo", "de/mo", "démo", "a__b", "a_b")
+        stems = {artifact_stem(project, "supply", identity) for project in names}
         self.assertEqual(len(stems), 8)
         for stem in stems:
-            self.assertRegex(stem, r"^dragonfly-[a-z0-9._-]*(_[0-9a-f]{2}[a-z0-9._-]*)*__pod-")
+            self.assertRegex(
+                stem,
+                r"^dragonfly-[a-z0-9._-]*(_[0-9a-f]{2}[a-z0-9._-]*)*__supply__pod-",
+            )
             self.assertEqual(stem.lower(), stem)
+        # The namespace is encoded the same way, and a project/namespace split never collides.
+        pairs = [(project, namespace) for project in names for namespace in names]
+        self.assertEqual(
+            len({artifact_stem(project, namespace, identity) for project, namespace in pairs}),
+            len(pairs),
+        )
         with self.assertRaises(ValueError):
-            artifact_stem("", identity)
+            artifact_stem("", "supply", identity)
+        with self.assertRaises(ValueError):
+            artifact_stem("demo", "", identity)
 
     def test_two_projects_with_the_same_identity_export_two_loadable_pairs(self):
         first = trained()
@@ -75,6 +87,22 @@ class ProjectQualifiedNamesTests(unittest.TestCase):
             projects = {verify_artifact(json_path)["project"] for json_path, _ in paths}
             self.assertEqual(projects, {first.spec.project, "other"})
 
+    def test_two_namespaces_with_the_same_identity_export_two_distinct_pairs(self):
+        first = trained()
+        second = train_pod_address(
+            replace(first.spec, namespace="other-ns"), ENCODER, TrainConfig(steps=60)
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory)
+            paths = [export_address(address, out) for address in (first, second)]
+            self.assertEqual(len(list(out.iterdir())), 4)
+            manifests = [verify_artifact(json_path) for json_path, _ in paths]
+            self.assertEqual(
+                {manifest["namespace"] for manifest in manifests}, {"supply", "other-ns"}
+            )
+            # The namespace is covered by the digest: equal training, other namespace, other digest.
+            self.assertNotEqual(manifests[0]["digest"], manifests[1]["digest"])
+
     def test_an_export_never_overwrites_an_existing_artifact(self):
         address = trained()
         with tempfile.TemporaryDirectory() as directory:
@@ -90,7 +118,14 @@ class ExportTests(unittest.TestCase):
         address = trained()
         with tempfile.TemporaryDirectory() as directory:
             json_path, bin_path = export_address(address, Path(directory))
-            self.assertEqual(json_path.stem, artifact_stem(address.spec.project, address.spec.descriptor.identity()))
+            self.assertEqual(
+                json_path.stem,
+                artifact_stem(
+                    address.spec.project,
+                    address.spec.namespace,
+                    address.spec.descriptor.identity(),
+                ),
+            )
             self.assertNotIn(":", json_path.name)
             manifest = verify_artifact(json_path)
             self.assertEqual(manifest["pod_identity"], address.spec.descriptor.identity())

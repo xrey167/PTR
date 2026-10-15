@@ -18,7 +18,9 @@ The Python environment is part of the experiment. The Rust harness starts this m
 `uv run --locked --project training --extra dragonfly` for a confirmatory run, so the installed
 packages are the ones `training/uv.lock` names. The module checks that again itself: a run without
 `--smoke` stops with exit status 2 when the interpreter's installed `sentence-transformers`,
-`torch`, `transformers` or `numpy` differ from the lock (or are missing), and every run, smoke or
+`torch`, `transformers` or `numpy` differ from the lock (or are missing), or when the interpreter
+is not exactly the `python_version` the preregistration pins (the harness passes the same
+version to `uv run --python`), and every run, smoke or
 not, writes the interpreter version, those package versions, the locked versions and the SHA-256 of
 `training/uv.lock` into `world.json` (`environment`). A smoke run only records the mismatch.
 """
@@ -31,6 +33,7 @@ import importlib.metadata
 import json
 import platform
 import random
+import re
 import sys
 import tomllib
 from pathlib import Path
@@ -44,6 +47,7 @@ from .train import PodTrainingSpec, TrainConfig, train_pod_address
 ENCODER_DIMS = 64
 POD_COUNT = 6
 PROJECT = "demo"
+NAMESPACE = "supply"
 CONFIG = (
     Path(__file__).resolve().parents[4]
     / "experiments/runtime/R015-dragonfly-pod-addressing/config.toml"
@@ -58,8 +62,26 @@ class EncoderUnavailable(Exception):
     """The encoder the preregistration names cannot be used; a confirmatory run stops."""
 
 
+def python_matches(pin: str | None, version=None) -> bool:
+    """Whether the running interpreter is exactly the pinned `X.Y.Z` (no range, no prefix)."""
+    version = sys.version_info if version is None else version
+    if not pin or not re.fullmatch(r"\d+\.\d+\.\d+", pin):
+        return False
+    return pin == f"{version[0]}.{version[1]}.{version[2]}"
+
+
+def pinned_python(config: Path = CONFIG) -> str | None:
+    """The interpreter version `config` pins (`python_version`), or `None` while it is unset or a
+    `must-be-pinned-...` placeholder."""
+    table = tomllib.loads(config.read_text(encoding="utf-8"))["preregistration"]
+    pin = str(table.get("python_version", ""))
+    return None if not pin or pin.startswith(PLACEHOLDER_PREFIX) else pin
+
+
 def environment_report(
-    lock: Path = LOCK, packages: tuple[str, ...] = LOCKED_PACKAGES
+    lock: Path = LOCK,
+    packages: tuple[str, ...] = LOCKED_PACKAGES,
+    python_pin: str | None = None,
 ) -> dict:
     """The interpreter, the installed and the locked versions of `packages`, and the lock digest.
 
@@ -82,6 +104,8 @@ def environment_report(
             mismatches.append(name)
     return {
         "python": sys.version.split()[0],
+        "python_pinned": python_pin,
+        "python_matches": python_matches(python_pin),
         "implementation": platform.python_implementation(),
         "uv_lock_sha256": hashlib.sha256(raw).hexdigest(),
         "packages": report,
@@ -190,6 +214,7 @@ def _spec(pod: dict, others: list[dict]) -> PodTrainingSpec:
     negative_aliases = [a for other in others for a in other["aliases"]]
     return PodTrainingSpec(
         project=PROJECT,
+        namespace=NAMESPACE,
         pod_id=pod["pod_id"],
         descriptor=descriptor,
         generation=1,
@@ -223,6 +248,7 @@ def build(
         entries.append(
             {
                 "pod_id": pod["pod_id"],
+                "generation": spec.generation,
                 "manifest": json_path.name,
                 "status": trained.gate.status,
                 "description_vector": description,
@@ -255,6 +281,7 @@ def build(
         "encoder": {"id": encoder.encoder_id, "revision": encoder.encoder_revision},
         "dims": encoder.dims,
         "project": PROJECT,
+        "namespace": NAMESPACE,
         # A smoke world is produced with the stand-in encoder and is no evidence about any model.
         "smoke": smoke,
         "evidence": "none (stand-in encoder)" if smoke else "candidate",
@@ -271,7 +298,7 @@ def build(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--seed", type=int, required=True)
+    parser.add_argument("--seed", type=int, help="the seed of the world (every run but --preflight)")
     parser.add_argument(
         "--out",
         type=Path,
@@ -285,7 +312,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--config", type=Path, default=CONFIG, help="preregistration config.toml")
     parser.add_argument("--lock", type=Path, default=LOCK, help="the uv.lock the run must match")
+    parser.add_argument(
+        "--preflight",
+        action="store_true",
+        help="check the confirmatory environment (pinned encoder, interpreter, locked packages) "
+        "and exit; builds no world and takes no seed",
+    )
     arguments = parser.parse_args(argv)
+    if arguments.preflight and (arguments.smoke or arguments.seed is not None):
+        parser.error("--preflight takes neither --seed nor --smoke")
+    if not arguments.preflight and arguments.seed is None:
+        parser.error("--seed is required")
     if arguments.smoke:
         encoder: Encoder = HashedBagOfWordsEncoder(ENCODER_DIMS)
     else:
@@ -294,7 +331,15 @@ def main(argv: list[str] | None = None) -> int:
         except EncoderUnavailable as error:
             print(f"ptr_training.dragonfly.experiment: {error}", file=sys.stderr)
             return 2
-    environment = environment_report(arguments.lock)
+    environment = environment_report(arguments.lock, python_pin=pinned_python(arguments.config))
+    if not arguments.smoke and not environment["python_matches"]:
+        print(
+            "ptr_training.dragonfly.experiment: the interpreter is "
+            f"{environment['python']}, the preregistration pins {environment['python_pinned']}; "
+            "a confirmatory run needs exactly that version",
+            file=sys.stderr,
+        )
+        return 2
     if not arguments.smoke and not environment["matches_lock"]:
         print(
             "ptr_training.dragonfly.experiment: the installed "
@@ -303,6 +348,25 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
+    if arguments.preflight:
+        # The pinned encoder must also produce a usable vector, not only load.
+        try:
+            probe = encoder.encode("preflight")
+        except Exception as error:  # noqa: BLE001 - any failure of the model is a failed preflight
+            print(f"ptr_training.dragonfly.experiment: the pinned encoder fails: {error}", file=sys.stderr)
+            return 2
+        if len(probe) != encoder.dims or not any(probe):
+            print(
+                "ptr_training.dragonfly.experiment: the pinned encoder returned an unusable vector",
+                file=sys.stderr,
+            )
+            return 2
+        print(
+            "ptr_training.dragonfly.experiment: preflight passed "
+            f"({encoder.encoder_id}@{encoder.encoder_revision}, python {environment['python']})",
+            file=sys.stderr,
+        )
+        return 0
     out = arguments.out or Path("target/dragonfly-addressing") / str(arguments.seed)
     world = build(
         arguments.seed,

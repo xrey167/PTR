@@ -234,7 +234,10 @@ async fn an_admitted_peer_reaches_its_project_s_pod_over_a_real_connection() {
     let client = PodClient::bind().await.unwrap();
     let invocations = Arc::new(Mutex::new(0));
     let mut registry = PodRegistry::default();
-    registry.register(pod("alpha", &invocations));
+    registry.register_in_namespace(
+        ptr_types::NamespaceId::from("test"),
+        pod("alpha", &invocations),
+    );
     let mut policy = PodAccessPolicy::new();
     policy
         .admit(NodeId(client.identity().public_key), scope("alpha"))
@@ -284,7 +287,7 @@ async fn v2_binds_manifest_artifact_generation_and_revision_over_a_real_connecti
     let revision = Revision(12);
 
     let mut registry = PodRegistry::default();
-    registry.register(admitted);
+    registry.register_at(ptr_types::NamespaceId::from("test"), generation, admitted);
     let mut policy = PodAccessPolicy::new();
     policy
         .admit(NodeId(client.identity().public_key), scope("alpha"))
@@ -339,7 +342,11 @@ async fn v2_rejects_a_stale_generation_before_invoking_the_pod() {
     let admitted = pod("alpha", &invocations);
     let manifest = admitted.manifest().clone();
     let mut registry = PodRegistry::default();
-    registry.register(admitted);
+    registry.register_at(
+        ptr_types::NamespaceId::from("test"),
+        Generation(2),
+        admitted,
+    );
     let mut policy = PodAccessPolicy::new();
     policy
         .admit(NodeId(client.identity().public_key), scope("alpha"))
@@ -381,6 +388,152 @@ async fn v2_rejects_a_stale_generation_before_invoking_the_pod() {
     assert_eq!(*invocations.lock().unwrap(), 0);
 }
 
+/// The same pod id, manifest and generation registered for namespace `test` must not answer a
+/// request addressed to namespace `other`: the address names a lifecycle namespace too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn v2_rejects_a_request_addressed_to_another_namespace_before_invoking_the_pod() {
+    let client = PodClient::bind().await.unwrap();
+    let invocations = Arc::new(Mutex::new(0));
+    let admitted = pod("alpha", &invocations);
+    let manifest = admitted.manifest().clone();
+    let mut registry = PodRegistry::default();
+    registry.register_at(
+        ptr_types::NamespaceId::from("test"),
+        Generation(2),
+        admitted,
+    );
+    let mut policy = PodAccessPolicy::new();
+    policy
+        .admit(NodeId(client.identity().public_key), scope("alpha"))
+        .unwrap();
+    let host = PodHost::bind(registry, policy, Pass).await.unwrap();
+    let binding = host
+        .bind_v2_addressed(
+            &ProjectId::from("alpha"),
+            &PodId::from("summarizer"),
+            ArtifactId::from("summarizer-artifact"),
+            Generation(2),
+            Revision(9),
+        )
+        .unwrap()
+        .with_execution_manifest(execution_manifest(&manifest, Generation(2), Revision(9)))
+        .unwrap();
+    let mut asked = request_v2(
+        host.identity().public_key,
+        103,
+        &manifest,
+        Generation(2),
+        Revision(9),
+    );
+    let destination = &mut asked.address.as_mut().unwrap().destination;
+    destination.address = ptr_types::PodAddress::new(
+        ProjectId::from("alpha"),
+        "other".into(),
+        "summarizer".into(),
+    )
+    .unwrap();
+    let address = host.address();
+    let (answered, served) = tokio::join!(
+        client.request_v2(located(address), &asked),
+        host.serve_once_v2(&binding)
+    );
+    assert_eq!(
+        answered.unwrap().outcome,
+        PodOutcome::Refused {
+            code: RefusalCode::Unavailable
+        }
+    );
+    assert_eq!(
+        served.unwrap().refused,
+        Some(PodWireError::V2BindingUnavailable)
+    );
+    assert_eq!(*invocations.lock().unwrap(), 0);
+}
+
+/// An entry registered without a lifecycle namespace cannot be told apart from the same pod id in
+/// another namespace, so it cannot be bound for addressed requests; unaddressed binding still works.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_entry_without_a_namespace_cannot_be_bound_for_addressed_requests() {
+    let invocations = Arc::new(Mutex::new(0));
+    let mut registry = PodRegistry::default();
+    registry.register(pod("alpha", &invocations));
+    let host = PodHost::bind(registry, PodAccessPolicy::new(), Pass)
+        .await
+        .unwrap();
+    let (project, pod_id) = (ProjectId::from("alpha"), PodId::from("summarizer"));
+    assert!(matches!(
+        host.bind_v2_addressed(
+            &project,
+            &pod_id,
+            ArtifactId::from("summarizer-artifact"),
+            Generation(2),
+            Revision(9),
+        ),
+        Err(PodWireError::V2BindingUnavailable)
+    ));
+    assert!(host
+        .bind_v2(
+            &project,
+            &pod_id,
+            ArtifactId::from("summarizer-artifact"),
+            Generation(2),
+            Revision(9),
+        )
+        .is_ok());
+}
+
+/// An addressed binding names a pod revision: the registered implementation must be that
+/// generation. A binding for generation 2 over an entry registered as generation 1 (or without
+/// a generation) is refused, so a request addressed to a successor never runs the superseded
+/// implementation.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_addressed_binding_needs_the_registered_generation() {
+    let invocations = Arc::new(Mutex::new(0));
+    let mut registry = PodRegistry::default();
+    registry.register_at(
+        ptr_types::NamespaceId::from("test"),
+        Generation(1),
+        pod("alpha", &invocations),
+    );
+    let host = PodHost::bind(registry, PodAccessPolicy::new(), Pass)
+        .await
+        .unwrap();
+    let (project, pod_id) = (ProjectId::from("alpha"), PodId::from("summarizer"));
+    let bind = |generation| {
+        host.bind_v2_addressed(
+            &project,
+            &pod_id,
+            ArtifactId::from("summarizer-artifact"),
+            generation,
+            Revision(9),
+        )
+    };
+    assert!(matches!(
+        bind(Generation(2)),
+        Err(PodWireError::V2BindingUnavailable)
+    ));
+    assert!(bind(Generation(1)).is_ok());
+
+    let mut unversioned = PodRegistry::default();
+    unversioned.register_in_namespace(
+        ptr_types::NamespaceId::from("test"),
+        pod("alpha", &invocations),
+    );
+    let host = PodHost::bind(unversioned, PodAccessPolicy::new(), Pass)
+        .await
+        .unwrap();
+    assert!(matches!(
+        host.bind_v2_addressed(
+            &project,
+            &pod_id,
+            ArtifactId::from("summarizer-artifact"),
+            Generation(1),
+            Revision(9),
+        ),
+        Err(PodWireError::V2BindingUnavailable)
+    ));
+}
+
 fn wall_clock_millis() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -402,7 +555,11 @@ async fn v4_request_with_a_future_deadline_is_served_in_the_v4_layout() {
     let admitted = pod("alpha", &invocations);
     let manifest = admitted.manifest().clone();
     let mut registry = PodRegistry::default();
-    registry.register(admitted);
+    registry.register_at(
+        ptr_types::NamespaceId::from("test"),
+        Generation(2),
+        admitted,
+    );
     let mut policy = PodAccessPolicy::new();
     policy
         .admit(NodeId(client.identity().public_key), scope("alpha"))
@@ -480,7 +637,11 @@ async fn v4_host_refuses_an_expired_deadline_before_invoking_the_pod() {
     let admitted = pod("alpha", &invocations);
     let manifest = admitted.manifest().clone();
     let mut registry = PodRegistry::default();
-    registry.register(admitted);
+    registry.register_at(
+        ptr_types::NamespaceId::from("test"),
+        Generation(2),
+        admitted,
+    );
     let mut policy = PodAccessPolicy::new();
     policy
         .admit(NodeId(raw.identity().public_key), scope("alpha"))
@@ -620,7 +781,7 @@ async fn v2_rejects_a_protocol_binding_mismatch_before_invoking_the_pod() {
     let revision = Revision(4);
 
     let mut registry = PodRegistry::default();
-    registry.register(admitted);
+    registry.register_at(ptr_types::NamespaceId::from("test"), generation, admitted);
     let mut policy = PodAccessPolicy::new();
     policy
         .admit(NodeId(client.identity().public_key), scope("alpha"))
@@ -778,8 +939,14 @@ async fn two_peers_send_the_same_bytes_and_reach_two_different_projects_pods() {
     let beta_runs = Arc::new(Mutex::new(0));
 
     let mut registry = PodRegistry::default();
-    registry.register(pod("alpha", &alpha_runs));
-    registry.register(pod("beta", &beta_runs));
+    registry.register_in_namespace(
+        ptr_types::NamespaceId::from("test"),
+        pod("alpha", &alpha_runs),
+    );
+    registry.register_in_namespace(
+        ptr_types::NamespaceId::from("test"),
+        pod("beta", &beta_runs),
+    );
     let mut policy = PodAccessPolicy::new();
     policy
         .admit(NodeId(alpha_client.identity().public_key), scope("alpha"))
@@ -836,7 +1003,10 @@ async fn a_peer_the_host_never_admitted_is_refused_and_no_pod_runs() {
     let stranger = PodClient::bind().await.unwrap();
     let invocations = Arc::new(Mutex::new(0));
     let mut registry = PodRegistry::default();
-    registry.register(pod("alpha", &invocations));
+    registry.register_in_namespace(
+        ptr_types::NamespaceId::from("test"),
+        pod("alpha", &invocations),
+    );
     let host = PodHost::bind(registry, PodAccessPolicy::new(), Pass)
         .await
         .unwrap();
@@ -870,7 +1040,10 @@ async fn withdrawing_a_peer_takes_effect_on_its_very_next_request_over_the_wire(
     let client = PodClient::bind().await.unwrap();
     let invocations = Arc::new(Mutex::new(0));
     let mut registry = PodRegistry::default();
-    registry.register(pod("alpha", &invocations));
+    registry.register_in_namespace(
+        ptr_types::NamespaceId::from("test"),
+        pod("alpha", &invocations),
+    );
     let mut policy = PodAccessPolicy::new();
     policy
         .admit(NodeId(client.identity().public_key), scope("alpha"))
@@ -912,7 +1085,10 @@ async fn a_request_addressed_to_another_host_is_refused_and_no_pod_runs() {
     let elsewhere = IrohTransport::bind(&[ALPN_PODWIRE]).await.unwrap();
     let invocations = Arc::new(Mutex::new(0));
     let mut registry = PodRegistry::default();
-    registry.register(pod("alpha", &invocations));
+    registry.register_in_namespace(
+        ptr_types::NamespaceId::from("test"),
+        pod("alpha", &invocations),
+    );
     let mut policy = PodAccessPolicy::new();
     policy
         .admit(NodeId(client.identity().public_key), scope("alpha"))
@@ -959,7 +1135,10 @@ async fn a_damaged_frame_is_refused_before_any_pod_and_still_answered() {
     let raw = IrohTransport::bind(&[ALPN_PODWIRE]).await.unwrap();
     let invocations = Arc::new(Mutex::new(0));
     let mut registry = PodRegistry::default();
-    registry.register(pod("alpha", &invocations));
+    registry.register_in_namespace(
+        ptr_types::NamespaceId::from("test"),
+        pod("alpha", &invocations),
+    );
     let mut policy = PodAccessPolicy::new();
     policy
         .admit(NodeId(raw.identity().public_key), scope("alpha"))
@@ -1147,17 +1326,20 @@ async fn an_answer_that_will_not_fit_in_a_frame_is_still_an_answer() {
     // act on — which is exactly what the execution wire cannot say in this position.
     let client = PodClient::bind().await.unwrap();
     let mut registry = PodRegistry::default();
-    registry.register(Arc::new(Enormous {
-        manifest: PodManifest {
-            project: ProjectId::from("alpha"),
-            id: PodId::from("enormous"),
-            capabilities: vec![CapabilityId::from(SUMMARIZE)],
-            accepts: vec![TypeId::from(DOCUMENT)],
-            produces: vec![TypeId::from(SUMMARY)],
-            effects: vec![Effect::Pure],
-            protocol_version: 1,
-        },
-    }));
+    registry.register_in_namespace(
+        ptr_types::NamespaceId::from("test"),
+        Arc::new(Enormous {
+            manifest: PodManifest {
+                project: ProjectId::from("alpha"),
+                id: PodId::from("enormous"),
+                capabilities: vec![CapabilityId::from(SUMMARIZE)],
+                accepts: vec![TypeId::from(DOCUMENT)],
+                produces: vec![TypeId::from(SUMMARY)],
+                effects: vec![Effect::Pure],
+                protocol_version: 1,
+            },
+        }),
+    );
     let mut policy = PodAccessPolicy::new();
     policy
         .admit(NodeId(client.identity().public_key), scope("alpha"))
@@ -1194,7 +1376,10 @@ async fn an_answer_that_will_not_fit_in_a_frame_is_still_an_answer() {
     // about the size and not about this host.
     let mut registry = PodRegistry::default();
     let invocations = Arc::new(Mutex::new(0));
-    registry.register(pod("alpha", &invocations));
+    registry.register_in_namespace(
+        ptr_types::NamespaceId::from("test"),
+        pod("alpha", &invocations),
+    );
     let mut policy = PodAccessPolicy::new();
     policy
         .admit(NodeId(client.identity().public_key), scope("alpha"))
@@ -1216,7 +1401,11 @@ async fn v2_session_reuses_one_authenticated_connection() {
     let admitted = pod("alpha", &invocations);
     let manifest = admitted.manifest().clone();
     let mut registry = PodRegistry::default();
-    registry.register(admitted);
+    registry.register_at(
+        ptr_types::NamespaceId::from("test"),
+        Generation(7),
+        admitted,
+    );
     let mut policy = PodAccessPolicy::new();
     policy
         .admit(NodeId(client.identity().public_key), scope("alpha"))
@@ -1302,7 +1491,11 @@ async fn serve_with_runtime_manifest_deadline(
     let registry = Arc::new(std::sync::RwLock::new(registry));
 
     let mut pods = PodRegistry::default();
-    pods.register(admitted);
+    pods.register_at(
+        ptr_types::NamespaceId::from("test"),
+        Generation(7),
+        admitted,
+    );
     let mut policy = PodAccessPolicy::new();
     policy
         .admit(NodeId(client.identity().public_key), scope("alpha"))
@@ -1406,7 +1599,11 @@ async fn a_cached_session_answer_is_not_replayed_past_the_requests_deadline() {
     let admitted = pod("alpha", &invocations);
     let manifest = admitted.manifest().clone();
     let mut pods = PodRegistry::default();
-    pods.register(admitted);
+    pods.register_at(
+        ptr_types::NamespaceId::from("test"),
+        Generation(7),
+        admitted,
+    );
     let mut policy = PodAccessPolicy::new();
     policy
         .admit(NodeId(client.identity().public_key), scope("alpha"))
@@ -1504,7 +1701,11 @@ async fn v2_session_replays_identical_request_ids_but_rejects_conflicting_bytes(
     let admitted = pod("alpha", &invocations);
     let manifest = admitted.manifest().clone();
     let mut registry = PodRegistry::default();
-    registry.register(admitted);
+    registry.register_at(
+        ptr_types::NamespaceId::from("test"),
+        Generation(7),
+        admitted,
+    );
     let mut policy = PodAccessPolicy::new();
     policy
         .admit(NodeId(client.identity().public_key), scope("alpha"))
@@ -1673,7 +1874,11 @@ async fn v2_binding_rejects_a_manifest_digest_that_is_not_the_registered_manifes
     let mut altered = manifest.clone();
     altered.protocol_version = 2;
     let mut registry = PodRegistry::default();
-    registry.register(admitted);
+    registry.register_at(
+        ptr_types::NamespaceId::from("test"),
+        Generation(7),
+        admitted,
+    );
     let mut policy = PodAccessPolicy::new();
     policy
         .admit(NodeId(client.identity().public_key), scope("alpha"))
@@ -1807,7 +2012,11 @@ async fn serve_runtime_backed_binding(
         .unwrap();
 
     let mut pods = PodRegistry::default();
-    pods.register(admitted);
+    pods.register_at(
+        ptr_types::NamespaceId::from("test"),
+        Generation(7),
+        admitted,
+    );
     let mut policy = PodAccessPolicy::new();
     policy
         .admit(NodeId(client.identity().public_key), scope("alpha"))

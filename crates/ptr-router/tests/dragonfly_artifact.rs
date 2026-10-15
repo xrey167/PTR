@@ -6,12 +6,12 @@
 //! cluster keys, gate status, and the score of every probe query for every pod.
 mod common;
 
-use common::{key, nonce, registry, request, route};
+use common::{key, nonce, registry_at, request, route};
 use ptr_router::{
     EncoderRef, LearnedPodRouter, LearnedRouterConfig, PodRepresentation, RepresentationError,
     RepresentationStore, RouteError, RouteFeatures,
 };
-use ptr_types::{ClusterKey, PodId, PodIdentityDescriptor, ProjectId};
+use ptr_types::{ClusterKey, NamespaceId, PodId, PodIdentityDescriptor, ProjectId};
 use serde_json::Value;
 use std::fs;
 use std::path::PathBuf;
@@ -98,6 +98,10 @@ fn every_exported_pod_loads_with_the_fields_the_exporter_wrote() {
             &ProjectId::from(entry["project"].as_str().unwrap())
         );
         assert_eq!(
+            representation.namespace().0,
+            entry["namespace"].as_str().unwrap()
+        );
+        assert_eq!(
             representation.identity().0,
             entry["pod_identity"].as_str().unwrap()
         );
@@ -148,7 +152,11 @@ fn one_identity_exported_for_two_projects_gives_two_loadable_pairs_that_share_a_
     for entry in &twins {
         let project = ProjectId::from(entry["project"].as_str().unwrap());
         let loaded = store
-            .get(&project, &PodId::from("supplier-mueller"))
+            .get(
+                &project,
+                &NamespaceId::from("supply"),
+                &PodId::from("supplier-mueller"),
+            )
             .unwrap();
         assert_eq!(loaded.project(), &project);
     }
@@ -187,6 +195,7 @@ fn scores_match_the_python_scores_for_every_probe() {
             match router
                 .score(
                     &ProjectId::from("demo"),
+                    &NamespaceId::from("supply"),
                     &PodId::from(pod_id.as_str()),
                     &query,
                 )
@@ -230,7 +239,13 @@ fn a_not_activated_artifact_loads_but_is_never_admitted_to_the_store() {
 #[test]
 fn the_exported_representations_route_the_probe_questions_to_their_pods() {
     let project = ProjectId::from("demo");
-    let registry = registry(&project, &["supplier-mueller", "supplier-schmidt"]);
+    // The fixture pods are generation 3 (training/src/ptr_training/dragonfly/fixture.py).
+    let registry = registry_at(
+        &project,
+        "supply",
+        3,
+        &["supplier-mueller", "supplier-schmidt"],
+    );
     let router = LearnedPodRouter::new(activated_store(), LearnedRouterConfig::default()).unwrap();
     let capability = "read".into();
     let input_type = "Text".into();
@@ -278,6 +293,10 @@ fn any_changed_manifest_field_is_refused_by_the_digest() {
     );
     assert_eq!(
         tampered(|manifest| manifest["pod_id"] = Value::from("supplier-other")),
+        Err(RepresentationError::DigestMismatch)
+    );
+    assert_eq!(
+        tampered(|manifest| manifest["namespace"] = Value::from("other-namespace")),
         Err(RepresentationError::DigestMismatch)
     );
     assert_eq!(
@@ -333,11 +352,18 @@ fn changed_or_truncated_weights_are_refused() {
 #[test]
 fn malformed_manifests_are_refused_with_the_failing_field() {
     assert_eq!(
-        tampered(|manifest| manifest["schema"] = Value::from(2)),
+        tampered(|manifest| manifest["schema"] = Value::from(1)),
         Err(RepresentationError::UnsupportedSchema {
-            expected: 1,
-            actual: 2
+            expected: 2,
+            actual: 1
         })
+    );
+    // An artifact without a lifecycle namespace cannot be bound to one pod target.
+    assert_eq!(
+        tampered(|manifest| {
+            manifest.as_object_mut().unwrap().remove("namespace");
+        }),
+        Err(RepresentationError::Malformed { field: "namespace" })
     );
     assert_eq!(
         tampered(|manifest| manifest["kind"] = Value::from("other")),

@@ -40,7 +40,14 @@ bench kit (`evaluations/bench/kit`); every further `evaluations/bench/*`
 workspace that carries a `Cargo.lock` joins automatically
 (`scripts/security_workspaces.py list` is the authority). A benchmark candidate
 whose graph carries an advisory is blocked unless a patch of the classes above
-is cheap; it never gets an ignore entry (`evaluations/SPIKE.md`). This is not a claim
+is cheap; it never gets an ignore entry (`evaluations/SPIKE.md`). The one kind of
+ignore entry allowed is `AUDIT_EXCEPTIONS` in `scripts/security_workspaces.py`: cargo-audit
+only, for a lockfile that frozen experiment records pin, and only for an exact locked
+package that no target or feature of that workspace builds. Every audit run checks both:
+the scan fails once the lockfile no longer pins that package or pins a second version of it
+(cargo-audit ignores by advisory ID for the whole lockfile), and fails once
+`cargo tree --target all --all-features -i <package>` finds a path to it. cargo-deny
+never gets an exception. This is not a claim
 that optional GPU, Apple, HIP, CUDA or image-codec execution paths have been
 hardware-tested.
 

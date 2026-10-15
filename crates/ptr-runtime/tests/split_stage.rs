@@ -8,8 +8,9 @@ use ptr_ledger::LedgerEvent;
 use ptr_model_api::KvReuseMode;
 use ptr_protocol::activation::{ActivationFrame, BoundaryDtype, ChainElement, UpstreamChain};
 use ptr_runtime::{
-    admit_frame, ChainFault, DeviceHealth, DeviceRecord, NodeHealth, NodeRecord,
-    PodPlacementController, PtrRuntime, RuntimeStageLiveness, SplitStageCache, UseFault,
+    admit_frame, admit_frame_in, revalidate_chain_in, ChainFault, DeviceHealth, DeviceRecord,
+    NodeHealth, NodeRecord, PodPlacementController, ProjectPlacementRequest, PtrRuntime,
+    RuntimeStageLiveness, SplitStageCache, StageLiveness, UseFault,
 };
 use ptr_types::{
     ArtifactId, CapsuleId, DeviceId, Generation, NodeId, PodId, ProjectId, Timestamp, Validity,
@@ -330,4 +331,223 @@ fn an_approximate_upstream_is_refused_and_a_full_cache_recovers_from_a_lost_revo
     commit(&mut world.runtime, "stage", 2);
     assert_eq!(cache.evict_dead(&live(&world)), 1);
     assert!(cache.is_empty());
+}
+
+#[test]
+fn a_frame_produced_on_a_device_that_then_failed_is_refused() {
+    let mut world = world();
+    let old = frame(&world);
+    let admitted = admit_frame(&old, KvReuseMode::Exact, &live(&world)).unwrap();
+    let mut cache: SplitStageCache<u8> = SplitStageCache::new(2);
+    let key = cache
+        .store(&[&admitted], &own_chain(), 1, &live(&world))
+        .unwrap();
+    world
+        .placement
+        .heartbeat(
+            &NodeId::from("n1"),
+            Timestamp(2),
+            vec![DeviceRecord {
+                device_id: DeviceId::from("cpu"),
+                vram_bytes: 10,
+                used_vram_bytes: 0,
+                health: DeviceHealth::Failed,
+            }],
+        )
+        .unwrap();
+    assert!(matches!(
+        admit_frame(&old, KvReuseMode::Exact, &live(&world)),
+        Err(ChainFault::StalePlacement { .. })
+    ));
+    assert!(matches!(
+        cache.lookup(&key, &live(&world)),
+        Err(UseFault::Stale(ChainFault::StalePlacement { .. }))
+    ));
+    // The entry was evicted at that use, so it is gone afterwards.
+    assert!(cache.lookup(&key, &live(&world)).is_err());
+}
+
+#[test]
+fn a_frame_produced_before_its_node_was_replaced_is_refused() {
+    let mut world = world();
+    let old = frame(&world);
+    admit_frame(&old, KvReuseMode::Exact, &live(&world)).unwrap();
+    // A new node process registers under the same id with the same healthy device.
+    world.placement.register_node(node("n1")).unwrap();
+    assert!(matches!(
+        admit_frame(&old, KvReuseMode::Exact, &live(&world)),
+        Err(ChainFault::StalePlacement { .. })
+    ));
+}
+
+fn place_in(placement: &mut PodPlacementController, project: &str, node: &str) -> u64 {
+    placement
+        .assign_in(ProjectPlacementRequest {
+            project: ProjectId::from(project),
+            pod_id: PodId::from("stage"),
+            artifact_id: ArtifactId::from("artifact"),
+            generation: Generation(1),
+            node_id: NodeId::from(node),
+            device_id: DeviceId::from("cpu"),
+            required_vram: 1,
+        })
+        .unwrap()
+        .epoch
+        .0
+}
+
+/// `frame` produced under the placement epoch `epoch`.
+fn frame_at(world: &World, epoch: u64) -> ActivationFrame {
+    ActivationFrame {
+        placement_epoch: epoch,
+        ..frame(world)
+    }
+}
+
+#[test]
+fn a_frame_of_one_project_is_refused_against_the_same_named_stage_of_another() {
+    let mut world = world();
+    let (a, b) = (ProjectId::from("a"), ProjectId::from("b"));
+    let epoch_a = place_in(&mut world.placement, "a", "n1");
+    let epoch_b = place_in(&mut world.placement, "b", "n1");
+    let from_a = frame_at(&world, epoch_a);
+    let from_b = frame_at(&world, epoch_b);
+
+    // Each frame is admitted for its own project, and only for it.
+    assert!(admit_frame_in(&a, &from_a, KvReuseMode::Exact, &live(&world)).is_ok());
+    assert!(admit_frame_in(&b, &from_b, KvReuseMode::Exact, &live(&world)).is_ok());
+    assert_eq!(
+        admit_frame_in(&b, &from_a, KvReuseMode::Exact, &live(&world)).unwrap_err(),
+        ChainFault::StalePlacement {
+            recorded: epoch_a,
+            current: Some(epoch_b)
+        }
+    );
+    assert_eq!(
+        admit_frame_in(&a, &from_b, KvReuseMode::Exact, &live(&world)).unwrap_err(),
+        ChainFault::StalePlacement {
+            recorded: epoch_b,
+            current: Some(epoch_a)
+        }
+    );
+    // A project with no placement of its own is not served by another project's.
+    assert_eq!(
+        admit_frame_in(
+            &ProjectId::from("c"),
+            &from_a,
+            KvReuseMode::Exact,
+            &live(&world)
+        )
+        .unwrap_err(),
+        ChainFault::StalePlacement {
+            recorded: epoch_a,
+            current: None
+        }
+    );
+    // The legacy path reads the legacy namespace only: it does not see project placements.
+    let legacy_epoch = world
+        .placement
+        .placement(&PodId::from("stage"))
+        .unwrap()
+        .epoch
+        .0;
+    assert_ne!(legacy_epoch, epoch_a);
+    assert!(matches!(
+        admit_frame(&from_a, KvReuseMode::Exact, &live(&world)),
+        Err(ChainFault::StalePlacement { .. })
+    ));
+    // Revalidation of a bare chain names the project too.
+    assert!(revalidate_chain_in(&a, &from_a.upstream_chain, epoch_a, &live(&world)).is_ok());
+    assert!(revalidate_chain_in(&b, &from_a.upstream_chain, epoch_a, &live(&world)).is_err());
+}
+
+#[test]
+fn fencing_one_project_leaves_the_frames_and_cache_entries_of_the_other_live() {
+    let mut world = world();
+    let (a, b) = (ProjectId::from("a"), ProjectId::from("b"));
+    let epoch_a = place_in(&mut world.placement, "a", "n1");
+    let epoch_b = place_in(&mut world.placement, "b", "n1");
+    let admitted_a = admit_frame_in(
+        &a,
+        &frame_at(&world, epoch_a),
+        KvReuseMode::Exact,
+        &live(&world),
+    )
+    .unwrap();
+    let admitted_b = admit_frame_in(
+        &b,
+        &frame_at(&world, epoch_b),
+        KvReuseMode::Exact,
+        &live(&world),
+    )
+    .unwrap();
+    assert_eq!(admitted_a.project(), Some(&a));
+    let mut cache: SplitStageCache<&str> = SplitStageCache::new(4);
+    let key_a = cache
+        .store(&[&admitted_a], &own_chain(), "kv-a", &live(&world))
+        .unwrap();
+    let key_b = cache
+        .store(&[&admitted_b], &own_chain(), "kv-b", &live(&world))
+        .unwrap();
+    // The two projects' entries never share a key.
+    assert_ne!(key_a, key_b);
+    // One cache entry cannot mix frames of two projects.
+    assert!(cache
+        .store(
+            &[&admitted_a, &admitted_b],
+            &own_chain(),
+            "mixed",
+            &live(&world)
+        )
+        .is_err());
+
+    // Project a's stage is re-placed (new epoch); project b's placement is untouched.
+    let moved = place_in(&mut world.placement, "a", "n1");
+    assert_ne!(moved, epoch_a);
+    assert!(matches!(
+        cache.lookup(&key_a, &live(&world)),
+        Err(UseFault::Stale(ChainFault::StalePlacement { .. }))
+    ));
+    assert_eq!(cache.lookup(&key_b, &live(&world)), Ok(&"kv-b"));
+    assert!(admitted_b.revalidate(&live(&world)).is_ok());
+    assert!(admitted_a.revalidate(&live(&world)).is_err());
+}
+
+/// An implementor that does not know projects answers nothing for a project-scoped query
+/// (it fails closed), while its legacy answer is unchanged.
+#[test]
+fn a_liveness_that_does_not_know_projects_refuses_a_project_scoped_frame() {
+    struct LegacyOnly<'a>(RuntimeStageLiveness<'a>);
+    impl StageLiveness for LegacyOnly<'_> {
+        fn validity(&self, target: &str, generation: Generation) -> Option<Validity> {
+            self.0.validity(target, generation)
+        }
+        fn manifest_digest(&self, target: &str, generation: Generation) -> Option<[u8; 32]> {
+            self.0.manifest_digest(target, generation)
+        }
+        fn placement_epoch(&self, stage: &str) -> Option<u64> {
+            self.0.placement_epoch(stage)
+        }
+        fn fence_epoch(&self, expert: &str) -> Option<u64> {
+            self.0.fence_epoch(expert)
+        }
+    }
+    let mut world = world();
+    let epoch = place_in(&mut world.placement, "a", "n1");
+    let legacy = LegacyOnly(live(&world));
+    // The legacy path still answers (the legacy namespace holds the world's own placement).
+    assert!(admit_frame(&frame(&world), KvReuseMode::Exact, &legacy).is_ok());
+    assert_eq!(
+        admit_frame_in(
+            &ProjectId::from("a"),
+            &frame_at(&world, epoch),
+            KvReuseMode::Exact,
+            &legacy
+        )
+        .unwrap_err(),
+        ChainFault::StalePlacement {
+            recorded: epoch,
+            current: None
+        }
+    );
 }

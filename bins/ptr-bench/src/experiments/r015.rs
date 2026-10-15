@@ -48,15 +48,17 @@ use ptr_model_api::{
 use ptr_pods::{DynPod, PodManifest, PodRegistry};
 use ptr_protocol::TypedPayload;
 use ptr_router::{
-    route_checked, CheckedRouter, DecisionNonce, EncoderRef, FallbackPlan, LearnedPodRouter,
+    route_checked, CheckedRouter, DecisionNonce, DefaultPodPlan, EncoderRef, LearnedPodRouter,
     LearnedRouterConfig, NonceSequence, PodRepresentation, PodRepresentationParts, PodRouter,
     RepresentationStore, RouteError, RouteFeatures, RouteRequest, RoutedChoice, RoutedError,
     Router, SamplingKey,
 };
-use ptr_runtime::{pod_lifecycle_target, PodSampler, PtrRuntime, RouteQuery, SetFallbackPlan};
+use ptr_runtime::{
+    pod_lifecycle_target, PodSampler, PtrRuntime, RouteQuery, RuntimeError, SetFallbackPlan,
+};
 use ptr_types::{
-    CapabilityId, CapsuleId, Effect, Generation, NamespaceId, PodAddress, PodId,
-    PodRevisionAddress, Probability, ProjectId, RequestId, TypeId, VerificationLevel,
+    CapabilityId, CapsuleId, Effect, NamespaceId, PodAddress, PodId, PodRevisionAddress,
+    Probability, ProjectId, RequestId, TypeId, VerificationLevel,
 };
 use ptr_verifier::{VerificationReport, VerificationStatus, Verifier};
 use serde_json::{json, Value};
@@ -71,6 +73,10 @@ use std::sync::Mutex;
 /// `abstain_margin_permille`.
 const ABSTAIN_BELOW_PERMILLE: u32 = 500;
 const MIN_MARGIN_PERMILLE: u32 = 150;
+
+/// The exact interpreter of a confirmatory run: passed to `uv run --python`, and checked by the
+/// training step against `sys.version_info`. Restates `config.toml`'s `python_version`.
+const PYTHON_VERSION: &str = "3.13.16";
 
 /// The pre-fixed sensitivity sweep, `(abstain_below, min_margin)` in permille. They restate
 /// `config.toml`'s `sweep_abstain_below_permille` and `sweep_min_margin_permille`.
@@ -232,14 +238,26 @@ impl Drop for Scratch {
 /// `transformers` or `numpy` differ from the lock. A smoke run uses the plain `python3` and needs
 /// no network: it only records the environment in the world.
 fn training_command(seed: u64, out: &Path, smoke: bool, venv: &Path) -> Command {
+    let mut command = training_step(smoke, venv);
+    command
+        .arg("--seed")
+        .arg(seed.to_string())
+        .arg("--out")
+        .arg(out)
+        // The harness prints exactly one JSON object on stdout; the training step's own report is
+        // not part of it (its world is read from the scratch directory).
+        .stdout(std::process::Stdio::null());
+    if smoke {
+        command.arg("--smoke");
+    }
+    command
+}
+
+/// The training module launched in the confirmatory environment (`uv run --locked` with the
+/// pinned interpreter, virtual environment in `venv`) or, for a smoke run, with plain `python3`.
+fn training_step(smoke: bool, venv: &Path) -> Command {
     let training = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../training");
-    let module_args = [
-        "python",
-        "-B",
-        "-m",
-        "ptr_training.dragonfly.experiment",
-        "--seed",
-    ];
+    let module_args = ["python", "-B", "-m", "ptr_training.dragonfly.experiment"];
     let mut command;
     if smoke {
         command = Command::new("python3");
@@ -247,24 +265,24 @@ fn training_command(seed: u64, out: &Path, smoke: bool, venv: &Path) -> Command 
     } else {
         command = Command::new("uv");
         command
-            .args(["run", "--locked", "--project"])
+            .args(["run", "--locked", "--python", PYTHON_VERSION, "--project"])
             .arg(&training)
             .args(["--extra", "dragonfly"])
             .args(module_args)
             .env("UV_PROJECT_ENVIRONMENT", venv);
     }
     command
-        .arg(seed.to_string())
-        .arg("--out")
-        .arg(out)
         .env("PYTHONPATH", training.join("src"))
-        .env("PYTHONDONTWRITEBYTECODE", "1")
-        // The harness prints exactly one JSON object on stdout; the training step's own report is
-        // not part of it (its world is read from the scratch directory).
-        .stdout(std::process::Stdio::null());
-    if smoke {
-        command.arg("--smoke");
-    }
+        .env("PYTHONDONTWRITEBYTECODE", "1");
+    command
+}
+
+/// The preflight of a confirmatory run: the training step in the confirmatory environment with
+/// `--preflight`, which checks the pinned encoder (it loads and encodes), the interpreter and the
+/// locked packages and builds no world. The runner runs it before it reserves a seed.
+fn preflight_command(venv: &Path) -> Command {
+    let mut command = training_step(false, venv);
+    command.arg("--preflight");
     command
 }
 
@@ -289,6 +307,7 @@ fn generate_world(seed: u64, out: &Path, smoke: bool, venv: &Path) -> Result<(),
 fn without_bias(representation: &PodRepresentation) -> Result<PodRepresentation, String> {
     PodRepresentation::new(PodRepresentationParts {
         project: representation.project().clone(),
+        namespace: representation.namespace().clone(),
         pod: representation.pod().clone(),
         identity: representation.identity().clone(),
         cluster_key: representation.cluster_key(),
@@ -332,6 +351,11 @@ fn run_seed(seed: u64, smoke: bool) -> Result<Value, String> {
     let scratch = Scratch::create(seed)?;
     let dir = scratch.0.as_path();
     generate_world(seed, dir, smoke, &dir.join("venv"))?;
+    evaluate_world(seed, smoke, dir)
+}
+
+/// Routes the probes of the world in `dir` with every arm and returns the result object.
+fn evaluate_world(seed: u64, smoke: bool, dir: &Path) -> Result<Value, String> {
     let world = read_json(&dir.join("world.json"))?;
     let world_smoke = world["smoke"].as_bool().ok_or("world.smoke missing")?;
     if world_smoke != smoke {
@@ -349,20 +373,30 @@ fn run_seed(seed: u64, smoke: bool) -> Result<Value, String> {
     };
 
     let project = ProjectId::from(world["project"].as_str().ok_or("project missing")?);
+    // The pods are registered as the implementations of the world's lifecycle namespace at
+    // their world generation: a learned address scores only the implementation of its own
+    // namespace and generation.
+    let namespace = NamespaceId::from(world["namespace"].as_str().ok_or("namespace missing")?);
     let mut registry = PodRegistry::default();
     let mut representations: Vec<PodRepresentation> = Vec::new();
     let mut descriptions: Vec<(PodId, Vec<f32>)> = Vec::new();
     for pod in world["pods"].as_array().ok_or("pods missing")? {
         let pod_id = PodId::from(pod["pod_id"].as_str().ok_or("pod_id missing")?);
-        registry.register(Arc::new(ProbePod(PodManifest {
-            project: project.clone(),
-            id: pod_id.clone(),
-            capabilities: vec![CapabilityId::from("answer")],
-            accepts: vec![TypeId::from("Text")],
-            produces: vec![TypeId::from("Text")],
-            effects: vec![Effect::Pure],
-            protocol_version: 1,
-        })));
+        let generation =
+            ptr_types::Generation(pod["generation"].as_u64().ok_or("pod generation missing")?);
+        registry.register_at(
+            namespace.clone(),
+            generation,
+            Arc::new(ProbePod(PodManifest {
+                project: project.clone(),
+                id: pod_id.clone(),
+                capabilities: vec![CapabilityId::from("answer")],
+                accepts: vec![TypeId::from("Text")],
+                produces: vec![TypeId::from("Text")],
+                effects: vec![Effect::Pure],
+                protocol_version: 1,
+            })),
+        );
         descriptions.push((
             pod_id,
             f32_vector(&pod["description_vector"], "description")?,
@@ -638,6 +672,51 @@ impl DispatchBaseline {
     }
 }
 
+/// What one dispatch changed in the reflex counters.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CounterDelta {
+    hits: u64,
+    misses: u64,
+    failovers: u64,
+}
+
+/// Decides whether one dispatch is accounted for. A served request is exactly one hit, or one miss
+/// caught by the default; a refused request is tolerated only when it is a miss nothing covered
+/// (no pod, a routing decline, a refused failover) and exactly one miss was counted. Any other
+/// error (invalid features, the resume limit, a failing pod) or a counter change that fits
+/// neither is a harness failure: the experiment must not read counters off a run that broke.
+fn accounted_dispatch(
+    probe: &str,
+    outcome: &Result<(), RuntimeError>,
+    delta: CounterDelta,
+) -> Result<(), String> {
+    let tolerated = match outcome {
+        Ok(()) => matches!(
+            (delta.hits, delta.misses, delta.failovers),
+            (1, 0, 0) | (0, 1, 1)
+        ),
+        Err(error) => {
+            let uncovered_miss = match error {
+                RuntimeError::PodUnavailable { .. } | RuntimeError::FailoverRefused { .. } => true,
+                RuntimeError::RouteFailed { reason } => matches!(
+                    *reason,
+                    "routing abstained" | "routing has no learned representation"
+                ),
+                _ => false,
+            };
+            uncovered_miss && (delta.hits, delta.misses, delta.failovers) == (0, 1, 0)
+        }
+    };
+    if tolerated {
+        Ok(())
+    } else {
+        Err(format!(
+            "reflex dispatch of {probe} is not accounted for ({outcome:?}, hits +{}, misses +{}, failovers +{})",
+            delta.hits, delta.misses, delta.failovers
+        ))
+    }
+}
+
 /// The default pod's attempt budget: the routed attempt and the default.
 const REFLEX_MAX_ATTEMPTS: u8 = 2;
 
@@ -660,15 +739,20 @@ fn reflex_pass(
         .into_iter()
         .min()
         .ok_or("the registry has no pod")?;
+    // The default is bound to the implementation the registry holds: its namespace and
+    // generation are the registry's, and the lifecycle holds exactly that generation live.
+    let namespace = registry
+        .namespace(project, &default_pod)
+        .cloned()
+        .ok_or("the default pod is registered without a namespace")?;
+    let generation = registry
+        .generation(project, &default_pod)
+        .ok_or("the default pod is registered without a generation")?;
     let revision = PodRevisionAddress {
-        address: PodAddress::new(
-            project.clone(),
-            NamespaceId::from("r015"),
-            default_pod.clone(),
-        )
-        .map_err(|error| format!("default pod address: {error:?}"))?,
+        address: PodAddress::new(project.clone(), namespace, default_pod.clone())
+            .map_err(|error| format!("default pod address: {error:?}"))?,
         semantic_revision: [1; 32],
-        generation: Generation(1),
+        generation,
     };
     let mut runtime = PtrRuntime::new(PtrConfig::default()).map_err(|e| format!("{e:?}"))?;
     runtime
@@ -682,7 +766,7 @@ fn reflex_pass(
         .set_fallback_plan(SetFallbackPlan {
             project: project.clone(),
             capability: CapabilityId::from("answer"),
-            plan: FallbackPlan::new(Some(default_pod.clone()), REFLEX_MAX_ATTEMPTS)
+            plan: DefaultPodPlan::new(Some(default_pod.clone()), REFLEX_MAX_ATTEMPTS)
                 .map_err(|error| error.to_string())?,
             default_revision: Some(revision),
         })
@@ -700,25 +784,35 @@ fn reflex_pass(
         routed: Mutex::new(BTreeMap::new()),
     };
 
-    let (mut hits_correct, mut default_only_correct) = (0u64, 0u64);
+    let (mut hits_correct, mut default_only_correct, mut dispatched) = (0u64, 0u64, 0u64);
     for probe in probes {
-        let hits_before = runtime.reflex_counters().hits();
-        // A refused request (nothing covered it) is a counted miss, not a harness failure.
-        let _ = runtime.run_resumable_with_pods_using_router(
-            RequestId::from(probe.request_id.as_str()),
-            project,
-            "probe",
-            &AskOnce,
-            registry,
-            &sampler,
-            &AcceptAll,
-            2,
-        );
+        let before = runtime.reflex_counters();
+        let outcome = runtime
+            .run_resumable_with_pods_using_router(
+                RequestId::from(probe.request_id.as_str()),
+                project,
+                "probe",
+                &AskOnce,
+                registry,
+                &sampler,
+                &AcceptAll,
+                2,
+            )
+            .map(|_| ());
+        let after = runtime.reflex_counters();
+        let delta = CounterDelta {
+            hits: after.hits().saturating_sub(before.hits()),
+            misses: after.misses().saturating_sub(before.misses()),
+            failovers: after.failovers().saturating_sub(before.failovers()),
+        };
+        // Only an uncovered miss is tolerated; anything else is a harness failure.
+        accounted_dispatch(&probe.request_id, &outcome, delta)?;
+        dispatched += 1;
         if probe.label.as_ref() == Some(&default_pod) {
             default_only_correct += 1;
         }
         // A hit is the learned router's own dispatch; it is correct when the probe names that pod.
-        if runtime.reflex_counters().hits() > hits_before {
+        if delta.hits == 1 {
             let routed = sampler
                 .routed
                 .lock()
@@ -747,7 +841,8 @@ fn reflex_pass(
     Ok(json!({
         "default_pod": default_pod.to_string(),
         "max_attempts": REFLEX_MAX_ATTEMPTS,
-        "requests": probes.len(),
+        // Requests whose outcome the counters accounted for, not the number of probes.
+        "requests": dispatched,
         "dispatch_hits": counters.hits(),
         "misses": misses,
         "failovers": failovers,
@@ -790,9 +885,40 @@ fn route<R: Router + ?Sized>(
         Ok(Some(choice)) => Ok(Outcome::Routed(choice.route().pod_id.clone())),
         Ok(None) => Ok(Outcome::Abstained),
         Err(error) => match error.error() {
-            RouteError::Abstained { .. } => Ok(Outcome::Abstained),
+            // A learned router with no activated representation at all (every gate failed)
+            // declines like one with partial coverage; the seed is then INVALID through the
+            // coverage rule `representations_refused <= 0`, not a harness failure.
+            RouteError::Abstained { .. } | RouteError::NoRepresentation { .. } => {
+                Ok(Outcome::Abstained)
+            }
             other => Err(other.to_string()),
         },
+    }
+}
+
+/// `dragonfly-addressing --preflight`: check that a confirmatory run can start here (uv, the
+/// pinned interpreter, the locked packages, the pinned encoder) without reserving or spending a
+/// seed. Exit status 0 when it can, 2 when it cannot.
+pub fn preflight() {
+    let outcome = Scratch::create(0).and_then(|scratch| {
+        let mut command = preflight_command(&scratch.0.join("venv"));
+        let program = command.get_program().to_string_lossy().into_owned();
+        let status = command
+            .status()
+            .map_err(|error| format!("cannot start the training step ({program}): {error}"))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!(
+                "the preflight failed ({status}); a confirmatory run needs uv, Python \
+                 {PYTHON_VERSION}, the packages training/uv.lock names and the encoder the \
+                 preregistration pins"
+            ))
+        }
+    });
+    if let Err(message) = outcome {
+        eprintln!("ptr-bench dragonfly-addressing --preflight: {message}");
+        std::process::exit(2);
     }
 }
 
@@ -840,6 +966,21 @@ mod tests {
     }
 
     #[test]
+    fn the_preflight_runs_the_training_step_in_the_confirmatory_environment_without_a_seed() {
+        let command = preflight_command(Path::new("/scratch/venv"));
+        assert_eq!(command.get_program(), "uv");
+        let args = words(&command);
+        assert_eq!(
+            &args[..5],
+            ["run", "--locked", "--python", PYTHON_VERSION, "--project"]
+        );
+        assert_eq!(args.last().map(String::as_str), Some("--preflight"));
+        for absent in ["--seed", "--out", "--smoke"] {
+            assert!(!args.contains(&absent.to_owned()), "{absent} in {args:?}");
+        }
+    }
+
+    #[test]
     fn a_smoke_run_uses_the_plain_interpreter_and_marks_itself() {
         let command = training_command(
             1001,
@@ -851,6 +992,302 @@ mod tests {
         let args = words(&command);
         assert_eq!(args.last().map(String::as_str), Some("--smoke"));
         assert!(!args.contains(&"uv".to_owned()) && !args.contains(&"--locked".to_owned()));
+    }
+
+    #[test]
+    fn the_confirmatory_interpreter_is_pinned_exactly() {
+        let command = training_command(2017, Path::new("/o"), false, Path::new("/v"));
+        let args = words(&command);
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--python", PYTHON_VERSION]));
+        assert!(
+            PYTHON_VERSION
+                .split('.')
+                .all(|part| part.parse::<u32>().is_ok())
+                && PYTHON_VERSION.split('.').count() == 3
+        );
+        // A smoke run takes whatever interpreter is there and only records it.
+        let smoke = training_command(1001, Path::new("/o"), true, Path::new("/v"));
+        assert!(!words(&smoke).contains(&"--python".to_owned()));
+    }
+
+    /// A world in which every representation failed its activation gate.
+    fn world_with_failed_gates(dir: &Path) {
+        let encoder = EncoderRef {
+            id: "test-encoder".into(),
+            revision: "r1".into(),
+        };
+        let gate = ptr_router::GateReport {
+            alias_threshold_permille: 800,
+            alias_min_permille: 700,
+            negative_threshold_permille: 900,
+            negative_reject_permille: 960,
+            alias_count: 4,
+            negative_count: 20,
+        };
+        let mut pods = Vec::new();
+        for (index, name) in ["alpha", "beta"].into_iter().enumerate() {
+            let mut z = vec![0.0f32; 3];
+            z[index] = 1.0;
+            let representation = PodRepresentation::new(PodRepresentationParts {
+                project: ProjectId::from("demo"),
+                namespace: ptr_types::NamespaceId::from("supply"),
+                pod: PodId::from(name),
+                identity: ptr_types::PodIdentity::from(format!("pod:{name}").as_str()),
+                cluster_key: ptr_types::ClusterKey([1; 32]),
+                encoder: encoder.clone(),
+                generation: ptr_types::Generation(1),
+                z,
+                bias: 10.0,
+                weights: ptr_router::ScoreWeights::default(),
+                gate,
+                activated: false,
+            })
+            .unwrap();
+            let (manifest, weights) = representation.to_artifact();
+            let mut manifest_json: Value = serde_json::from_str(&manifest).unwrap();
+            manifest_json["weights_file"] = json!(format!("{name}.bin"));
+            std::fs::write(dir.join(format!("{name}.bin")), weights).unwrap();
+            std::fs::write(dir.join(format!("{name}.json")), manifest_json.to_string()).unwrap();
+            pods.push(json!({
+                "pod_id": name,
+                "generation": 1,
+                "manifest": format!("{name}.json"),
+                "status": "not-activated",
+                "description_vector": [1.0, 0.0, 0.0],
+            }));
+        }
+        let probes: Vec<Value> = (0..4)
+            .map(|index| {
+                json!({
+                    "text": "question",
+                    "label": if index < 2 { json!("alpha") } else { Value::Null },
+                    "kind": "held-out",
+                    "vector": [1.0, 0.0, 0.0],
+                })
+            })
+            .collect();
+        let world = json!({
+            "seed": 1,
+            "encoder": {"id": "test-encoder", "revision": "r1"},
+            "dims": 3,
+            "project": "demo",
+            "namespace": "supply",
+            "smoke": true,
+            "evidence": "none (stand-in encoder)",
+            "environment": {"python": "3.13.16"},
+            "pods": pods,
+            "probes": probes,
+        });
+        std::fs::write(dir.join("world.json"), world.to_string()).unwrap();
+    }
+
+    #[test]
+    fn a_world_where_every_gate_fails_still_yields_a_result_that_the_coverage_rule_invalidates() {
+        let scratch = Scratch::create(u64::MAX - 1).unwrap();
+        world_with_failed_gates(&scratch.0);
+        let result = evaluate_world(1, true, &scratch.0).unwrap();
+        assert_eq!(result["representations_loaded"], 0);
+        assert_eq!(result["representations_refused"], 2);
+        // The learned arm declines every probe instead of failing the harness.
+        let learned = &result["arms"]["learned"];
+        assert_eq!(learned["abstained"], 4);
+        assert_eq!(learned["correct"], 0);
+        assert_eq!(learned["false_routes"], 0);
+        // criteria.toml marks such a seed INVALID: its coverage list holds this rule.
+        let criteria = include_str!(
+            "../../../../experiments/runtime/R015-dragonfly-pod-addressing/criteria.toml"
+        );
+        assert!(criteria.contains("\"representations_refused <= 0\""));
+        assert!(result["representations_refused"].as_i64().unwrap() > 0);
+    }
+
+    #[test]
+    fn a_world_where_every_gate_fails_runs_the_reflex_pass_and_counts_every_decline_as_a_miss() {
+        // No representation is activated, so the learned router has nothing to score on any probe:
+        // every dispatch is a NoRepresentation miss caught by the default pod. The pass must
+        // still produce its block (no harness failure) and count what it accounted for.
+        let scratch = Scratch::create(u64::MAX - 2).unwrap();
+        world_with_failed_gates(&scratch.0);
+        let result = evaluate_world(1, true, &scratch.0).unwrap();
+        let reflex = &result["reflex"];
+        assert_eq!(reflex["requests"], result["probes"]);
+        assert_eq!(reflex["dispatch_hits"], 0);
+        assert_eq!(reflex["misses"], 4);
+        assert_eq!(reflex["failovers"], 4);
+        assert_eq!(reflex["miss_reasons"]["no_representation"], 4);
+        assert_eq!(reflex["inconsistent"], 0);
+        // The seed is INVALID for the routing claim (refused representations) and for the
+        // dispatch claim (no hit), whatever the failover claim says.
+        let rules = criteria_rules();
+        assert!(!rules_hold(&rules.routing_coverage, &result));
+        assert!(!rules_hold(&rules.dispatch_coverage, &result));
+    }
+
+    fn delta(hits: u64, misses: u64, failovers: u64) -> CounterDelta {
+        CounterDelta {
+            hits,
+            misses,
+            failovers,
+        }
+    }
+
+    #[test]
+    fn the_reflex_pass_tolerates_only_accounted_outcomes() {
+        let unavailable = RuntimeError::PodUnavailable {
+            capability: "answer".into(),
+            input_type: "Text".into(),
+        };
+        let declined = RuntimeError::RouteFailed {
+            reason: "routing abstained",
+        };
+        // Served: one hit, or one miss caught by the default.
+        assert!(accounted_dispatch("p", &Ok(()), delta(1, 0, 0)).is_ok());
+        assert!(accounted_dispatch("p", &Ok(()), delta(0, 1, 1)).is_ok());
+        // A miss nothing covered: tolerated, with exactly one miss counted.
+        assert!(accounted_dispatch("p", &Err(unavailable.clone()), delta(0, 1, 0)).is_ok());
+        assert!(accounted_dispatch("p", &Err(declined), delta(0, 1, 0)).is_ok());
+        // Served without any counter change, or with two, is not accounted for.
+        assert!(accounted_dispatch("p", &Ok(()), delta(0, 0, 0)).is_err());
+        assert!(accounted_dispatch("p", &Ok(()), delta(1, 1, 1)).is_err());
+        // An uncovered miss that was not counted is not accounted for either.
+        assert!(accounted_dispatch("p", &Err(unavailable), delta(0, 0, 0)).is_err());
+    }
+
+    #[test]
+    fn the_reflex_pass_fails_the_harness_on_an_unexpected_runtime_error() {
+        for error in [
+            RuntimeError::ModelResumeLimit { max_rounds: 2 },
+            RuntimeError::Pod("pod failed".into()),
+            RuntimeError::RouteFailed {
+                reason: "routing features invalid",
+            },
+            RuntimeError::InvalidConfig("x".into()),
+        ] {
+            // Even when a miss was counted, an error that is no classified decline is a failure.
+            let outcome = accounted_dispatch("probe-3", &Err(error), delta(0, 1, 0));
+            let message = outcome.expect_err("an unexpected error must stop the harness");
+            assert!(message.contains("probe-3"), "{message}");
+        }
+    }
+
+    /// The coverage rules of `criteria.toml`: the routing claim's (top level) and the dispatch
+    /// and failover claims'.
+    struct CriteriaRules {
+        routing_coverage: Vec<String>,
+        failover_coverage: Vec<String>,
+        dispatch_coverage: Vec<String>,
+    }
+
+    fn criteria_rules() -> CriteriaRules {
+        let criteria: toml::Table = include_str!(
+            "../../../../experiments/runtime/R015-dragonfly-pod-addressing/criteria.toml"
+        )
+        .parse()
+        .expect("criteria.toml parses");
+        let list = |table: &toml::Table| -> Vec<String> {
+            table["coverage"]
+                .as_array()
+                .expect("coverage is a list")
+                .iter()
+                .map(|rule| rule.as_str().expect("a rule is a string").to_owned())
+                .collect()
+        };
+        CriteriaRules {
+            routing_coverage: list(&criteria),
+            failover_coverage: list(
+                criteria["claims"]["reflex_failover_coverage"]
+                    .as_table()
+                    .unwrap(),
+            ),
+            dispatch_coverage: list(
+                criteria["claims"]["reflex_dispatch_hits"]
+                    .as_table()
+                    .unwrap(),
+            ),
+        }
+    }
+
+    /// The rule grammar of `criteria.toml`: `<left> <op> <right>`, a token an integer literal or a
+    /// path of object keys; a reference that is missing, null or not an integer makes the rule
+    /// not hold (the seed is INVALID).
+    fn rule_holds(rule: &str, result: &Value) -> bool {
+        let tokens: Vec<&str> = rule.split(' ').collect();
+        assert_eq!(tokens.len(), 3, "{rule}");
+        let value = |token: &str| -> Option<i64> {
+            token.parse::<i64>().ok().or_else(|| {
+                token
+                    .split('.')
+                    .try_fold(result, |node, key| node.get(key))
+                    .and_then(Value::as_i64)
+            })
+        };
+        let (Some(left), Some(right)) = (value(tokens[0]), value(tokens[2])) else {
+            return false;
+        };
+        match tokens[1] {
+            ">=" => left >= right,
+            "<=" => left <= right,
+            "==" => left == right,
+            other => panic!("unknown operator {other}"),
+        }
+    }
+
+    fn rules_hold(rules: &[String], result: &Value) -> bool {
+        rules.iter().all(|rule| rule_holds(rule, result))
+    }
+
+    #[test]
+    fn the_coverage_rules_fix_the_design_counts_exactly() {
+        let rules = criteria_rules().routing_coverage;
+        for exact in ["probes == 43", "labelled_probes == 36", "pods == 6"] {
+            assert!(rules.iter().any(|rule| rule == exact), "{exact} missing");
+        }
+        // No count of the design may be a lower bound: more probes or pods than designed is a
+        // different experiment, not extra evidence.
+        for key in ["probes", "labelled_probes", "pods"] {
+            assert!(
+                !rules
+                    .iter()
+                    .any(|rule| rule.starts_with(&format!("{key} >="))),
+                "{key} is only bounded from below"
+            );
+        }
+        let design = json!({"probes": 43, "labelled_probes": 36, "pods": 6});
+        for exact in ["probes == 43", "labelled_probes == 36", "pods == 6"] {
+            assert!(rule_holds(exact, &design));
+        }
+        // One probe, one labelled probe or one pod more fails the rule.
+        for (key, rule) in [
+            ("probes", "probes == 43"),
+            ("labelled_probes", "labelled_probes == 36"),
+            ("pods", "pods == 6"),
+        ] {
+            let mut more = design.clone();
+            more[key] = json!(more[key].as_i64().unwrap() + 1);
+            assert!(!rule_holds(rule, &more), "{rule} holds for {more}");
+        }
+        // A missing reference is not a pass.
+        assert!(!rule_holds("probes == 43", &json!({})));
+    }
+
+    #[test]
+    fn the_failover_claim_is_invalid_without_a_miss_and_the_dispatch_claim_without_a_hit() {
+        let rules = criteria_rules();
+        let reflex = |misses: i64, hits: i64| {
+            json!({"probes": 43, "reflex": {
+                "requests": 43, "misses": misses, "dispatch_hits": hits, "inconsistent": 0}})
+        };
+        assert!(rules_hold(&rules.failover_coverage, &reflex(5, 38)));
+        assert!(!rules_hold(&rules.failover_coverage, &reflex(0, 43)));
+        assert!(rules_hold(&rules.dispatch_coverage, &reflex(5, 38)));
+        assert!(!rules_hold(&rules.dispatch_coverage, &reflex(43, 0)));
+        // A run that accounted for fewer requests than probes is not a result.
+        let mut short = reflex(5, 38);
+        short["reflex"]["requests"] = json!(42);
+        assert!(!rules_hold(&rules.failover_coverage, &short));
+        assert!(!rules_hold(&rules.dispatch_coverage, &short));
     }
 
     #[test]
@@ -885,6 +1322,7 @@ mod tests {
                 "reflex_default_pod_rule",
                 "\"lexically-smallest-pod-id\"".into(),
             ),
+            line("python_version", format!("\"{PYTHON_VERSION}\"")),
             line(
                 "sweep_abstain_below_permille",
                 list(SWEEP.iter().map(|pair| pair.0).collect()),

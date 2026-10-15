@@ -1,7 +1,7 @@
 //! Fallback plan and honest reflex counters.
 //!
 //! A router may decline (abstain), have nothing to score, or pick a pod that then fails. This
-//! module holds the pure data for what happens next: the [`FallbackPlan`] a host configures, the
+//! module holds the pure data for what happens next: the [`DefaultPodPlan`] a host configures, the
 //! [`MissReason`] that says why the primary path produced no answer, and the [`ReflexCounters`]
 //! that count what happened.
 //!
@@ -28,21 +28,21 @@ pub const LATENCY_WINDOW: usize = 1024;
 /// within an attempt budget. The plan names a pod; whether that pod may serve a given request is
 /// decided at every use (registry candidate, live generation, effect class, verifier).
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct FallbackPlan {
+pub struct DefaultPodPlan {
     default_pod: Option<PodId>,
     max_attempts: u8,
 }
 
-/// A [`FallbackPlan`] that cannot be built.
+/// A [`DefaultPodPlan`] that cannot be built.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum FallbackPlanError {
+pub enum DefaultPodPlanError {
     /// A plan must allow at least one dispatch attempt.
     ZeroAttempts,
     /// More attempts than [`MAX_FALLBACK_ATTEMPTS`].
     TooManyAttempts { max: u8, actual: u8 },
 }
 
-impl fmt::Display for FallbackPlanError {
+impl fmt::Display for DefaultPodPlanError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ZeroAttempts => f.write_str("a fallback plan must allow at least one attempt"),
@@ -53,22 +53,22 @@ impl fmt::Display for FallbackPlanError {
     }
 }
 
-impl std::error::Error for FallbackPlanError {}
+impl std::error::Error for DefaultPodPlanError {}
 
-impl FallbackPlan {
+impl DefaultPodPlan {
     /// A plan with `default_pod` (or none) and a budget of `max_attempts` dispatch attempts per
     /// pod request. The attempt that went to a routed pod counts; a miss before any dispatch
     /// (an abstention, say) has used none. `max_attempts = 1` therefore lets the default serve
     /// only a request that was not dispatched before.
     ///
     /// # Errors
-    /// [`FallbackPlanError`] when `max_attempts` is zero or above [`MAX_FALLBACK_ATTEMPTS`].
-    pub fn new(default_pod: Option<PodId>, max_attempts: u8) -> Result<Self, FallbackPlanError> {
+    /// [`DefaultPodPlanError`] when `max_attempts` is zero or above [`MAX_FALLBACK_ATTEMPTS`].
+    pub fn new(default_pod: Option<PodId>, max_attempts: u8) -> Result<Self, DefaultPodPlanError> {
         if max_attempts == 0 {
-            return Err(FallbackPlanError::ZeroAttempts);
+            return Err(DefaultPodPlanError::ZeroAttempts);
         }
         if max_attempts > MAX_FALLBACK_ATTEMPTS {
-            return Err(FallbackPlanError::TooManyAttempts {
+            return Err(DefaultPodPlanError::TooManyAttempts {
                 max: MAX_FALLBACK_ATTEMPTS,
                 actual: max_attempts,
             });
@@ -154,6 +154,10 @@ pub enum UncoveredReason {
     GenerationNotLive,
     /// The default pod declares an effect other than pure or read.
     EffectNotAllowed,
+    /// The registry holds another implementation of the default pod than the revision the plan
+    /// names and the lifecycle checked: a different namespace or generation, or one registered
+    /// without them. The generation that was checked is not the code that would run.
+    StaleFallback,
     /// The default pod was dispatched and failed, or its output was not promoted (the verifier
     /// refused it, or a taint or type check did).
     DefaultFailed,
@@ -170,6 +174,7 @@ impl UncoveredReason {
             Self::NotACandidate => "not_a_candidate",
             Self::GenerationNotLive => "generation_not_live",
             Self::EffectNotAllowed => "effect_not_allowed",
+            Self::StaleFallback => "stale_fallback",
             Self::DefaultFailed => "default_failed",
         }
     }
@@ -426,16 +431,16 @@ mod tests {
         #[test]
         fn zero_attempts_are_refused() {
             assert_eq!(
-                FallbackPlan::new(Some(pod("a")), 0),
-                Err(FallbackPlanError::ZeroAttempts)
+                DefaultPodPlan::new(Some(pod("a")), 0),
+                Err(DefaultPodPlanError::ZeroAttempts)
             );
         }
 
         #[test]
         fn attempts_above_the_cap_report_the_cap_and_the_request() {
             assert_eq!(
-                FallbackPlan::new(None, MAX_FALLBACK_ATTEMPTS + 1),
-                Err(FallbackPlanError::TooManyAttempts {
+                DefaultPodPlan::new(None, MAX_FALLBACK_ATTEMPTS + 1),
+                Err(DefaultPodPlanError::TooManyAttempts {
                     max: MAX_FALLBACK_ATTEMPTS,
                     actual: MAX_FALLBACK_ATTEMPTS + 1
                 })
@@ -444,7 +449,7 @@ mod tests {
 
         #[test]
         fn a_plan_keeps_its_default_and_budget() {
-            let plan = FallbackPlan::new(Some(pod("a")), 2).expect("valid plan");
+            let plan = DefaultPodPlan::new(Some(pod("a")), 2).expect("valid plan");
             assert_eq!(plan.default_pod(), Some(&pod("a")));
             assert_eq!(plan.max_attempts(), 2);
         }

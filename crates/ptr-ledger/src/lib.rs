@@ -464,6 +464,8 @@ pub const MAX_INPUT_IDENTITY_BYTES: usize = 256;
 
 /// The longest target an [`LedgerEvent::EgressRefused`] names, in bytes.
 pub const MAX_EGRESS_TARGET_BYTES: usize = 256;
+/// The longest pod identity a head move may name, in bytes; a derived identity is far shorter.
+pub const MAX_POD_HEAD_IDENTITY_BYTES: usize = 256;
 
 /// How an [`LedgerEvent::InputInvalidated`] ends the life of its input. The codes are pinned
 /// data: Revoked 0, Superseded 1.
@@ -2782,8 +2784,10 @@ fn scope_kind_from_code(code: u8) -> io::Result<ScopeLifecycleKind> {
     }
 }
 
-/// A head move names a non-empty identity, two valid revision addresses and a strictly rising
-/// generation: the one canonical form. The decoder and the append paths both call this.
+/// A head move names a non-empty, bounded identity without control characters (it is part of
+/// the `pod-head:<project>/<identity>` projection key, which PostgreSQL `text` and `jsonb`
+/// must be able to hold: they refuse U+0000), two valid revision addresses and a strictly
+/// rising generation: the one canonical form. The decoder and the append paths both call this.
 fn check_pod_head_advanced(event: &LedgerEvent) -> Result<(), io::Error> {
     let LedgerEvent::PodHeadAdvanced {
         project,
@@ -2794,7 +2798,10 @@ fn check_pod_head_advanced(event: &LedgerEvent) -> Result<(), io::Error> {
     else {
         return Ok(());
     };
-    if identity.0.is_empty() {
+    if identity.0.is_empty()
+        || identity.0.len() > MAX_POD_HEAD_IDENTITY_BYTES
+        || identity.0.chars().any(char::is_control)
+    {
         return Err(integrity::invalid("PTR_LEDGER_POD_HEAD_IDENTITY"));
     }
     // The project is a path segment of the projection key (`pod-head:<project>/<identity>`).
@@ -3835,12 +3842,24 @@ mod effect_record_tests {
         if let LedgerEvent::PodHeadAdvanced { project, .. } = &mut empty_project {
             project.0.clear();
         }
+        let mut nul_identity = head_event(None, 1);
+        if let LedgerEvent::PodHeadAdvanced { identity, .. } = &mut nul_identity {
+            identity.0.push('\0');
+        }
+        let mut long_identity = head_event(None, 1);
+        if let LedgerEvent::PodHeadAdvanced { identity, .. } = &mut long_identity {
+            identity.0 = "p".repeat(MAX_POD_HEAD_IDENTITY_BYTES + 1);
+        }
         let mut bad_segment = head_event(None, 1);
         if let LedgerEvent::PodHeadAdvanced { new, .. } = &mut bad_segment {
             new.address.pod_id = PodId::from("a/b");
         }
         let bad = [
             empty_identity,
+            // The identity is part of a PostgreSQL text key: no NUL or other control
+            // character, and bounded.
+            nul_identity,
+            long_identity,
             zero_revision,
             bad_segment,
             // The record's project must be the project of every address it names.

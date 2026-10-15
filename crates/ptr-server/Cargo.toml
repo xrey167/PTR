@@ -19,6 +19,8 @@ ptr-protocol = { workspace = true }
 ptr-router = { workspace = true }
 ptr-ledger = { workspace = true }
 ptr-verifier = { workspace = true }
+ptr-observe = { workspace = true }
+ptr-ingress = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }

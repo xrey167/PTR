@@ -38,7 +38,10 @@ Read from the tree at the merge of #136, before any code was written for this pl
   (`crates/ptr-runtime/src/placement.rs:137-169`), and `RuntimeStageLiveness::placement_epoch`
   reads only that epoch (`crates/ptr-runtime/src/split_stage.rs:63-68`). Rule 4 of section 1
   would not hold for a device failure until placement bumps the epoch of every placement on a
-  device that disappeared or failed. That change comes first.
+  device that disappeared or failed. That change came first: since wave 1 a placement on a device
+  that vanished or failed, and every placement on a failed or replaced node, is revoked at that
+  event (`crates/ptr-runtime/src/placement.rs`, tests in `crates/ptr-runtime/tests/placement.rs`
+  and `tests/split_stage.rs`).
 - **`candle-cuda` cannot be built without `nvcc`** (`crates/ptr-pods/CANDLE_CUDA.md`, `ci.yml`
   comment on the feature). The CUDA carriers therefore depend on `cudarc` directly with dynamic
   loading, so that CI compiles them without a toolkit; their behaviour on a card is checked only on
@@ -88,8 +91,9 @@ TensorHandle {
   placement_epoch,                       // captured at production, revalidated at every use
   consumer,                              // the stage the handle is addressed to (audience)
   parent_operation_id,                   // the call this handle belongs to, checked against the consumer's call
-  deadline_ms,                           // bounded: at most now + lifetime + skew at admission
+  signed_absolute_deadline_ms,           // absolute; bounded: at most now + lifetime + skew at admission
   handle_nonce,                          // single use
+  signature,                             // Ed25519 over every field above, by the producer's registered key
 }
 ```
 
@@ -114,7 +118,7 @@ generation, digest and fence epoch), the **payload types** the operation accepts
 **authority-derived project** (`ProjectId`) the operation runs in. Pod and stage ids are unique
 only within a project (`PodRegistry` allows the same Pod id in two projects), so every lookup of
 the record's placement, inputs and worker session is keyed by that project, and a handle whose
-consumer placement, inputs or worker session belong to another project is refused. Admission and
+consumer placement, inputs or worker session belong to another project is refused. The placement controller keys placements, leases and freezes by (`ProjectId`, `PodId`), and handle admission and consumption read the placement epoch for the project of the call (`StageLiveness::placement_epoch_in`), so a stage of the same name in another project is not this handle's stage. Admission and
 consumption both ask the authority whether the operation is known, every input is still live at
 the current committed anchor, every Raw ancestor is still present (not erased) with its recorded
 digest, the consumer stage still holds the recorded destination placement and epoch and is
@@ -377,7 +381,7 @@ from the data side:
 | Carrier | When | Mechanism | Zero copies? |
 |---|---|---|---|
 | `InProcess` | same process | the tensor object itself, with unique ownership moved to the consumer (rule 3a) | yes, only under moved unique ownership; a candle tensor with shared storage or a DLPack capsule across a language boundary is copied into a receiver-owned buffer (one copy) |
-| `HostShm` | same host, other process, CPU tensor | a dedicated, exact-size, sealed `memfd` per export (Linux; mapped with `memmap2`, already in `Cargo.lock`); a named shared mapping cannot be sealed, so it is never a `HostShm` carrier: on a platform without `memfd` the bytes are copied into receiver-owned memory before verification and use | yes (sealed `memfd` only) |
+| `HostShm` | same host, other process, CPU tensor | a dedicated, exact-size, sealed `memfd` per export (Linux; created, sealed and mapped with `rustix` (`memfd_create`, `fcntl_add_seals`, `mmap`), already in `Cargo.lock`); a named shared mapping cannot be sealed, so it is never a `HostShm` carrier: on a platform without `memfd` the bytes are copied into receiver-owned memory before verification and use | yes (sealed `memfd` only) |
 | `CudaIpc` | same host, other process, same GPU | an isolated, supervisor-owned staging buffer exported in legacy form (`cuIpcGetMemHandle` / `cuIpcOpenMemHandle`, `cudaMalloc` rounded to 2 MiB; trusted processes only, never to a Pod worker) or VMM form (`cuMemExportToShareableHandle` to a POSIX descriptor passed with `SCM_RIGHTS`, `cuMemImportFromShareableHandle` and `cuMemMap`), base and size checked before export, through `cudarc` with dynamic loading (0.19.10 is already in `Cargo.lock` through candle); event handle for stream ordering; the consumer copies into its own allocation (rule 3a) | no: one device-to-device copy |
 | `DevicePeer` | same host, other GPU, other process, peer access available | the same export as `CudaIpc` (VMM for a Pod worker, legacy only between trusted processes; supervisor-owned staging buffer on the source device); the consumer imports it (`cuIpcOpenMemHandle` enables peer access for a context on another device; for VMM, `cuMemSetAccess` grants its device) and copies peer-to-peer on a stream into a receiver-owned allocation on its own device; a process-local pointer is never a locator | one device-to-device copy |
 | `PinnedHost` | same host, other GPU, no peer access; and the RAM tier | GPU→pinned host→GPU with two stream-ordered copies; the pinned buffer is itself a `HostShm` region | two copies |
@@ -393,7 +397,10 @@ therefore ships with `PinnedHost` as its working path and `DevicePeer` as a prob
 Peer access being available does not make it faster: some boards route peer traffic through
 the CPU root complex. Until E011's paired `DevicePeer` against `PinnedHost` claim has been
 measured, the carrier table picks `DevicePeer` for a device pair only when this host's own
-calibration record shows it faster than `PinnedHost` for that pair, and `PinnedHost` otherwise.
+calibration record shows it **strictly** faster than `PinnedHost` for that pair (a tie goes to
+`PinnedHost`), and `PinnedHost` otherwise. The probe and the calibration live in the per-host
+`CarrierTable` of `ptr-runtime` (`carrier_select.rs`), beside `NodeRecord`, one row per
+**ordered** device pair; peer access without a calibration is not enough.
 
 ## 3. The stages
 
@@ -422,6 +429,25 @@ that reads the same tensors. Today every Pod of the reference path runs inside `
   unmaps before sending `Consumed`.
 - `CudaIpc` carrier for a single GPU shared by two processes (the worker holds the model, the
   authority process holds the verifier and admission; or two expert workers on one card).
+  *Implemented on a CPU double* (`bins/ptr-worker`, `PodHost::start_produce_staged`,
+  `admit_staged`, `consume_staged`; the guardian's `--backend fake`, workers with
+  `--staging fake`; nothing has run on a GPU): the host chooses `CudaIpc` only with a usable staging
+  host, both workers on one placed device, the same import and full confinement, and falls back to
+  `HostShm`, then `Bytes`, otherwise. The producer receives a descriptor of the leased buffer and
+  the tensor in a sealed `memfd`, so this path has neither the control frame limit nor the
+  guardian's fill limit; the signed locator must equal the host's template; admission claims the
+  export record (producer session, consumer session, `parent_operation_id`, device, allocation
+  size) **before** the table sees the handle; the consumer gets a fresh descriptor and the record
+  and copies the tensor into its own memory before the digest is checked. Charging: the host-wide
+  ledger charges session pairs, once per admitted handle, with the record's footprint, and
+  releases at the pair's verified teardown; the pool's per-session book is separate; a buffer
+  reused for a new consumer is therefore counted by the ledger again until the producer is reaped
+  (an over-count of admitted bytes). The ledger bounds only admitted bytes: leases that are never
+  admitted are bounded by the pool's limits alone, which must be at or below the ledger's caps.
+  A CUDA import is not chosen yet (its producer cannot write), and the host classifies each
+  worker's seccomp profile from its probe, requires it to be the requested one and decides
+  carriers on the confinement together with the profile (a self-report of the started image). The producer side of the *CUDA* backend (writing through an imported VMM
+  descriptor) is not built; only the guardian's fill exists there.
 - The **authority rule of doc 40 section 2.3** becomes code: a worker holds no ledger handle and
   no admission grant; every output it produces is admitted by the authority process.
 
@@ -443,12 +469,79 @@ A descriptor can therefore not leave the domain except through the supervisor. W
 confinement is not available (another OS, or a kernel without seccomp or cgroup v2), the shared
 carriers are disabled for that worker and its data goes by `Bytes`, a copy.
 
+**GPU worker profile (weaker, explicit, unverified on a GPU).** A worker that must call the CUDA
+driver cannot run under that allowlist: the driver reaches the kernel through `ioctl` on
+`/dev/nvidiactl`, `/dev/nvidia<N>` and `/dev/nvidia-uvm`, and the CPU allowlist permits three
+requests (`FIONBIO`, `FIOCLEX`, `FIONCLEX`). `ptr-fabric` therefore has a second allowlist, the
+`Gpu` value of `SeccompProfile`. It is the CPU allowlist with **one** change: `ioctl` accepts any
+request except thirteen that no driver uses: terminal control (`TIOCSTI`, `TIOCLINUX`,
+`TIOCCONS`, `TIOCSETD`, `TIOCSPGRP`, `TIOCSCTTY`, `TIOCNOTTY`, `TIOCVHANGUP`), two that open a new
+descriptor (`TIOCGPTPEER`, `SIOCUNIXFILE`, the latter being the `open` that `openat` refuses) and
+three that route signals (`FIOASYNC`, `FIOSETOWN`, `SIOCSPGRP`, which would reopen the signal
+routing that `F_SETOWN` refuses). The other `SIOC*` and `FS_IOC_*` families are **still reachable**
+on any descriptor the worker holds (the control socket, received memfds); the ones that change
+anything need `CAP_NET_ADMIN` or `CAP_SYS_ADMIN`, so the profile depends on the worker holding no
+capability. `Supervisor::spawn` provides that (bounding set dropped and ambient set cleared, then
+`capset` to empty, then `no_new_privs`, in the forked child before `exec`: `supervisor.rs`, steps
+4 and 6 of its module docs); the seccomp installer itself drops nothing. `mmap`, `munmap`, `mprotect`, `mremap` and `madvise` are already allowed in the base
+list without a descriptor or protection restriction, so the driver's mappings need nothing more.
+Everything that opens a new resource stays refused: `open`, `openat`, `socket`, `socketpair`,
+`connect`, `bind`, `accept`, `pidfd_getfd`, `pidfd_open`, `ptrace`, `process_vm_*`, `io_uring_*`,
+`fork`, `execve`, `unshare`, `setns`; `clone` stays threads-only. Because `open` is refused, the
+worker initialises CUDA **before** it installs the filter (`prepare_gpu_worker`: driver, `cuInit`,
+the primary context of one device, and a warm-up of the VMM import and the pinned registration
+paths), and afterwards uses only that device. What stays out of reach after the filter: the first
+context of another device, `dlopen` of further libraries (PTX JIT, `libcudart`, `libcublas`),
+and `/proc` or `/sys` queries the warm-up did not make once.
+
+*What is weaker, and why.* The CPU worker's descriptor confinement leans on a tiny kernel
+surface: a hostile worker can reach almost no kernel code through descriptors it holds. The GPU
+profile adds the whole `ioctl` interface of the NVIDIA kernel modules on three descriptors the
+worker already owns. That interface cannot be narrowed here: the request numbers are the
+driver's, differ between `nvidiactl` (`_IOWR('F', ..)` codes) and `nvidia-uvm` (plain numbers),
+and change with driver versions; a list cannot be written without the card to trace. *Residual
+risk:* a bug in those modules reachable through an ioctl can be triggered by a compromised GPU
+worker, which can then act as the kernel (leave its cgroup, user id and network namespace, read
+other processes' memory). Rule 3b's guarantee that a descriptor cannot leave the domain except
+through the supervisor holds for the userspace calls the filter refuses, not against a kernel
+exploit. It is accepted only for the CUDA carriers and is not applied to a worker that does not
+need the driver.
+
+*How the host sees it.* The profile is a typed value, not an inference. `WorkerConfinement`
+pairs the observed `Confinement` with a `SeccompProfile`; the profile is supplied by the caller and
+must be the **observed** one, not the one requested. `carrier_permitted_for` permits `HostShm`,
+`CudaIpc`, `DevicePeer` and `PinnedHost` only when every mechanism (own user id, cgroup v2, network
+namespace, and the seccomp filter of that profile, with `no_new_privs`) is observed, for either
+profile, and `Bytes` and `Remote` always; nothing else. The kernel shows only that *a* filter is
+installed (`Seccomp: 2`), so the worker's own probe (`probe_profile_calls`) adds one call,
+`ioctl(-1, FIONREAD)`, to the forbidden-call report: `EPERM` under the CPU filter, `EBADF` (the
+kernel answering) under the GPU filter. `observed_profile` classifies the report as `Cpu`, `Gpu` or
+`Unproven`; a report without that entry, or with any forbidden call not refused, is `Unproven`.
+`ptr-fabric` provides these pieces; the host **requires** that the observed profile equal the one
+it asked for, and that wiring (`probe_profile_calls` in every confined worker, the comparison in
+`bins/ptr-worker`'s spawn check) is part of this wave's integration in `bins/ptr-worker` and is not
+in `ptr-fabric`. Like the forbidden-call check this is a self-report of a binary the supervisor
+started, not a kernel proof. The refusals under the GPU filter are tested without a GPU
+(`tests/worker_confine.rs`); the two ignored tests of `tests/gpu_worker.rs`
+(docs/GPU_HANDOVER.md section 12) are the only check with a card, and have not run, so everything
+about the driver's behaviour under this filter is unverified.
+
 ### S2 — one host, several processes, several GPUs
 
 **Build.** `PodPlacementController` already models several devices per node
 (`NodeRecord.devices`, `crates/ptr-runtime/src/placement.rs:33`). S2 adds a per-host **carrier
-table**: for each ordered device pair, whether `DevicePeer` is available (probed once at node
-registration, recorded in the `DeviceRecord`, never assumed) and otherwise `PinnedHost`. The
+table** (`CarrierTable` in `crates/ptr-runtime/src/carrier_select.rs`, a structure beside
+`NodeRecord`; `DeviceRecord`, `NodeRecord` and `Placement` are unchanged, because the frozen E007
+rig builds them by struct literal): for each ordered device pair, whether `DevicePeer` is available
+(probed once at node registration, recorded in the table, never assumed) with this host's
+calibration. `DevicePeer` is chosen only for a pair probed `Peer` whose calibration is strictly
+faster than `PinnedHost`; every other pair gets `PinnedHost`. A device that fails or vanishes
+loses its rows (`reconcile` after a heartbeat). `select_carrier` also fixes rows this document did
+not spell out: the same process across two devices uses the cross-process rows (the bytes still
+cross devices); a hop between host memory and a GPU is `PinnedHost`; an endpoint that is not fully
+confined (`Partial` or `None`) gets `Bytes` for every shared carrier; a failed or vanished device
+is a refusal, never a fallback; shared storage in one process is a `Bytes` copy, and `InProcess`
+needs moved unique ownership. The
 pipeline split of E007 gets its second half: stage k on device 0, stage k+1 on device 1, in two
 worker processes, frames carried by handle instead of bytes.
 
@@ -572,7 +665,7 @@ need hardware the owner does not have and change nothing in the contract.
 |---|---|---|
 | `Carrier`, `TensorHandle`, `CarrierLocator`, `HandleError` (codec errors) | `ptr-protocol` | next to `ActivationFrame`; schema-versioned like the frame |
 | handle admission, handle table, tombstones, `HandleRejection` (wraps `ChainFault`) | `ptr-runtime` (a `handle_admission` module next to `split_stage`) | one function for every carrier; the frame path becomes the `Remote` carrier of it |
-| `HostShm`, `CudaIpc`, `DevicePeer`, `PinnedHost` carriers | new crate `ptr-fabric` | backend-specific code stays out of domain crates (`CLAUDE.md`: backend types must not leak); `cudarc` and `memmap2` live here behind features |
+| `HostShm`, `CudaIpc`, `DevicePeer`, `PinnedHost` carriers | new crate `ptr-fabric` | backend-specific code stays out of domain crates (`CLAUDE.md`: backend types must not leak); `cudarc` and `rustix` (memfd, seals, mmap) live here behind features |
 | worker process protocol | `ptr-podwire` (control) and `ptr-fabric` (data) | reuses PodWire request and response types |
 | `PinnedHostTierBackend`, direct-read `FileTierBackend` | `ptr-storage` | behind features, CI jobs like `storage-tiers` |
 | carrier table per node, peer probe | `ptr-runtime::placement` | recorded in `DeviceRecord` |

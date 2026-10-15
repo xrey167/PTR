@@ -2,19 +2,21 @@
 //!
 //! The task is an expression over integers with `+ - * /`, unary `+ -` and parentheses. It is
 //! parsed and evaluated by an independent bounded recursive-descent evaluator (no `eval`, no
-//! floating point): every value is an exact reduced rational of `i128`s, every operation is
-//! checked, and every intermediate magnitude is bounded by [`MAX_MAGNITUDE`]. The candidate is the
-//! claimed result, an integer (`-12`) or a rational (`7/3`); it passes only if it equals the exact
-//! value.
+//! floating point): every value is an exact reduced rational of arbitrary-precision integers
+//! (the in-crate `bigint` kernel, at most [`MAX_VALUE_LIMBS`] 32-bit limbs per numerator or
+//! denominator, about 154 digits), every operation is checked, and the final value must be within
+//! [`MAX_MAGNITUDE`]. The candidate is the claimed result, an integer (`-12`) or a rational
+//! (`7/3`); it passes only if it equals the exact value.
 //!
 //! The candidate is judged by value, not by spelling: `007`, `-0` and `6/4` are accepted numerals
 //! (equal to 7, 0 and 3/2); only a non-numeral (`+7`, `7.5`, unicode digits, `7/0`) is
 //! `arith.format`.
 //!
-//! Coverage limit: every reduced intermediate must stay within [`MAX_MAGNITUDE`] (10^30) and
-//! every unreduced product or sum within `i128`, so a legitimate task such as
-//! `10^20 * 10^20 / 10^20` is `Unknown` (`arith.task`), never a wrong `Pass`. An `i128::MIN`
-//! intermediate is refused before any absolute value is taken.
+//! Coverage limit: intermediates may be far larger than the result (`10^20 * 10^20 / 10^20` is
+//! evaluated exactly and passes for `10^20`), but the FINAL numerator and denominator must stay
+//! within [`MAX_MAGNITUDE`] (10^30, the candidate bound), and no reduced intermediate may exceed
+//! [`MAX_VALUE_LIMBS`] limbs; beyond either the task is `Unknown` (`arith.task`), never a wrong
+//! `Pass`.
 //!
 //! A task the evaluator cannot decide (syntax error, oversize, nesting beyond
 //! [`MAX_NESTING`], an intermediate beyond the bound, division by zero) makes the report
@@ -24,6 +26,7 @@
 
 use ptr_types::{Probability, VerificationLevel};
 
+use crate::bigint::{BigInt, BigIntError};
 use crate::codes::finding;
 use crate::{Finding, NamedVerifier, VerificationReport, VerificationStatus, Verifier};
 
@@ -36,7 +39,12 @@ pub const MAX_NESTING: usize = 48;
 /// Largest absolute numerator or denominator of any value, task intermediate or candidate.
 pub const MAX_MAGNITUDE: i128 = 1_000_000_000_000_000_000_000_000_000_000; // 10^30
 
-/// An exact rational, always reduced with a positive denominator.
+/// Most 32-bit limbs of a reduced intermediate numerator or denominator (512 bits).
+pub const MAX_VALUE_LIMBS: usize = 16;
+
+/// An exact rational of `i128`s, always reduced with a positive denominator, bounded by
+/// [`MAX_MAGNITUDE`]. It holds the final task value and the candidate; the evaluator's
+/// intermediates are [`BigRational`]s.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct Rational {
     num: i128,
@@ -72,10 +80,7 @@ impl Rational {
         Some(Self { num, den })
     }
 
-    fn int(value: i128) -> Option<Self> {
-        Self::new(value, 1)
-    }
-
+    #[cfg(test)]
     fn add(self, other: Self) -> Option<Self> {
         let num = self
             .num
@@ -84,10 +89,7 @@ impl Rational {
         Self::new(num, self.den.checked_mul(other.den)?)
     }
 
-    fn neg(self) -> Option<Self> {
-        Self::new(self.num.checked_neg()?, self.den)
-    }
-
+    #[cfg(test)]
     fn mul(self, other: Self) -> Option<Self> {
         Self::new(
             self.num.checked_mul(other.num)?,
@@ -95,6 +97,7 @@ impl Rational {
         )
     }
 
+    #[cfg(test)]
     fn div(self, other: Self) -> Option<Self> {
         if other.num == 0 {
             return None;
@@ -103,6 +106,82 @@ impl Rational {
             self.num.checked_mul(other.den)?,
             self.den.checked_mul(other.num)?,
         )
+    }
+}
+
+/// An exact reduced rational of [`BigInt`]s with a positive denominator, at most
+/// [`MAX_VALUE_LIMBS`] limbs each. Every operation is checked; none panics.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct BigRational {
+    num: BigInt,
+    den: BigInt,
+}
+
+impl From<BigIntError> for TaskError {
+    fn from(error: BigIntError) -> Self {
+        match error {
+            BigIntError::TooLarge | BigIntError::InvalidDecimal => Self::Overflow,
+            BigIntError::DivisionByZero => Self::DivisionByZero,
+        }
+    }
+}
+
+impl BigRational {
+    fn new(num: BigInt, den: BigInt) -> Result<Self, TaskError> {
+        if den.is_zero() {
+            return Err(TaskError::DivisionByZero);
+        }
+        // `den != 0`, so the gcd is at least 1 and both divisions are exact.
+        let g = num.gcd(&den);
+        let mut num = num.div_exact(&g)?.ok_or(TaskError::Overflow)?;
+        let mut den = den.div_exact(&g)?.ok_or(TaskError::Overflow)?;
+        if den.is_negative() {
+            num = num.neg();
+            den = den.neg();
+        }
+        if num.limbs() > MAX_VALUE_LIMBS || den.limbs() > MAX_VALUE_LIMBS {
+            return Err(TaskError::Overflow);
+        }
+        Ok(Self { num, den })
+    }
+
+    fn int(value: BigInt) -> Result<Self, TaskError> {
+        Self::new(value, BigInt::from_i128(1))
+    }
+
+    fn add(&self, other: &Self) -> Result<Self, TaskError> {
+        let num = self.num.mul(&other.den)?.add(&other.num.mul(&self.den)?)?;
+        Self::new(num, self.den.mul(&other.den)?)
+    }
+
+    fn sub(&self, other: &Self) -> Result<Self, TaskError> {
+        let num = self.num.mul(&other.den)?.sub(&other.num.mul(&self.den)?)?;
+        Self::new(num, self.den.mul(&other.den)?)
+    }
+
+    fn neg(&self) -> Self {
+        Self {
+            num: self.num.neg(),
+            den: self.den.clone(),
+        }
+    }
+
+    fn mul(&self, other: &Self) -> Result<Self, TaskError> {
+        Self::new(self.num.mul(&other.num)?, self.den.mul(&other.den)?)
+    }
+
+    fn div(&self, other: &Self) -> Result<Self, TaskError> {
+        if other.num.is_zero() {
+            return Err(TaskError::DivisionByZero);
+        }
+        Self::new(self.num.mul(&other.den)?, self.den.mul(&other.num)?)
+    }
+
+    /// The value as a bounded [`Rational`]; beyond [`MAX_MAGNITUDE`] it is an overflow.
+    fn to_small(&self) -> Result<Rational, TaskError> {
+        let num = self.num.to_i128().ok_or(TaskError::Overflow)?;
+        let den = self.den.to_i128().ok_or(TaskError::Overflow)?;
+        Rational::new(num, den).ok_or(TaskError::Overflow)
     }
 }
 
@@ -149,45 +228,42 @@ impl Evaluator<'_> {
         self.bytes.get(self.pos).copied()
     }
 
-    fn expr(&mut self, depth: usize) -> Result<Rational, TaskError> {
+    fn expr(&mut self, depth: usize) -> Result<BigRational, TaskError> {
         let mut value = self.term(depth)?;
         while let Some(op @ (b'+' | b'-')) = self.peek() {
             self.pos += 1;
             let rhs = self.term(depth)?;
-            let rhs = if op == b'-' {
-                rhs.neg().ok_or(TaskError::Overflow)?
+            value = if op == b'-' {
+                value.sub(&rhs)?
             } else {
-                rhs
+                value.add(&rhs)?
             };
-            value = value.add(rhs).ok_or(TaskError::Overflow)?;
         }
         Ok(value)
     }
 
-    fn term(&mut self, depth: usize) -> Result<Rational, TaskError> {
+    fn term(&mut self, depth: usize) -> Result<BigRational, TaskError> {
         let mut value = self.unary(depth)?;
         while let Some(op @ (b'*' | b'/')) = self.peek() {
             self.pos += 1;
             let rhs = self.unary(depth)?;
             value = if op == b'*' {
-                value.mul(rhs).ok_or(TaskError::Overflow)?
-            } else if rhs.num == 0 {
-                return Err(TaskError::DivisionByZero);
+                value.mul(&rhs)?
             } else {
-                value.div(rhs).ok_or(TaskError::Overflow)?
+                value.div(&rhs)?
             };
         }
         Ok(value)
     }
 
-    fn unary(&mut self, depth: usize) -> Result<Rational, TaskError> {
+    fn unary(&mut self, depth: usize) -> Result<BigRational, TaskError> {
         if depth >= MAX_NESTING {
             return Err(TaskError::Nesting);
         }
         match self.peek() {
             Some(b'-') => {
                 self.pos += 1;
-                self.unary(depth + 1)?.neg().ok_or(TaskError::Overflow)
+                self.unary(depth + 1).map(|value| value.neg())
             }
             Some(b'+') => {
                 self.pos += 1;
@@ -207,19 +283,18 @@ impl Evaluator<'_> {
         }
     }
 
-    fn literal(&mut self) -> Result<Rational, TaskError> {
+    fn literal(&mut self) -> Result<BigRational, TaskError> {
         let start = self.pos;
-        let mut value: i128 = 0;
-        while let Some(digit @ b'0'..=b'9') = self.bytes.get(self.pos).copied() {
-            value = value
-                .checked_mul(10)
-                .and_then(|v| v.checked_add(i128::from(digit - b'0')))
-                .filter(|v| *v <= MAX_MAGNITUDE)
-                .ok_or(TaskError::Overflow)?;
+        while self.bytes.get(self.pos).is_some_and(u8::is_ascii_digit) {
             self.pos += 1;
         }
-        debug_assert!(self.pos > start);
-        Rational::int(value).ok_or(TaskError::Overflow)
+        let digits = std::str::from_utf8(&self.bytes[start..self.pos])
+            .map_err(|_| TaskError::Syntax(start))?;
+        let value = BigInt::parse_decimal(digits).map_err(|error| match error {
+            BigIntError::InvalidDecimal => TaskError::Syntax(start),
+            other => TaskError::from(other),
+        })?;
+        BigRational::int(value)
     }
 }
 
@@ -235,7 +310,7 @@ fn evaluate_task(task: &str) -> Result<Rational, TaskError> {
     if evaluator.peek().is_some() {
         return Err(TaskError::Syntax(evaluator.pos));
     }
-    Ok(value)
+    value.to_small()
 }
 
 enum CandidateError {
@@ -280,22 +355,39 @@ fn parse_candidate(text: &str) -> Result<Rational, CandidateError> {
 /// Verifies a claimed result against one arithmetic task. See the module documentation.
 #[derive(Clone, Debug)]
 pub struct ArithmeticVerifier {
+    /// At most [`MAX_TASK_BYTES`] bytes: a longer task is never retained whole.
     task: String,
+    task_len: usize,
     expected: Result<Rational, TaskError>,
 }
 
 impl ArithmeticVerifier {
     /// A verifier for `task`. The task is evaluated once, here; an undecidable task is reported
     /// as `Unknown` by every [`verify`](Verifier::verify).
+    ///
+    /// A task longer than [`MAX_TASK_BYTES`] is `Unknown` (`Oversize`) and only its first
+    /// [`MAX_TASK_BYTES`] bytes (cut on a character boundary) are kept, so an untrusted
+    /// multi-megabyte task costs no more memory than the bound.
     pub fn new(task: &str) -> Self {
+        let mut keep = task.len().min(MAX_TASK_BYTES);
+        while !task.is_char_boundary(keep) {
+            keep -= 1;
+        }
         Self {
-            task: task.to_owned(),
+            task: task[..keep].to_owned(),
+            task_len: task.len(),
             expected: evaluate_task(task),
         }
     }
 
+    /// The task as given, or its first [`MAX_TASK_BYTES`] bytes when it was longer.
     pub fn task(&self) -> &str {
         &self.task
+    }
+
+    /// The byte length of the task as given (it may exceed what [`task`](Self::task) returns).
+    pub fn task_len(&self) -> usize {
+        self.task_len
     }
 }
 
@@ -592,6 +684,122 @@ mod tests {
     }
 
     #[test]
+    fn intermediates_beyond_i128_are_exact_when_the_result_is_in_range() {
+        let e20 = "100000000000000000000";
+        let task = "100000000000000000000 * 100000000000000000000 / 100000000000000000000";
+        let report = check(task, e20);
+        assert_eq!(report.status, VerificationStatus::Pass);
+        assert!(report.findings.is_empty());
+        // Wrong candidates are hard value findings, not Unknown.
+        for wrong in [
+            "100000000000000000001",
+            "99999999999999999999",
+            "1",
+            "-100000000000000000000",
+        ] {
+            let report = check(task, wrong);
+            assert_eq!(report.status, VerificationStatus::Fail, "{wrong}");
+            assert_eq!(codes(&report), ["arith.value"], "{wrong}");
+        }
+        // Rational results through huge intermediates reduce exactly.
+        let task = "100000000000000000000 * 100000000000000000000 / (3 * 100000000000000000000)";
+        assert_eq!(
+            check(task, "100000000000000000000/3").status,
+            VerificationStatus::Pass
+        );
+        // (10^25 + 1)^2 - 10^50 - 2 * 10^25 = 1, with intermediates of 10^50.
+        let big = "10000000000000000000000001";
+        let task = format!("{big} * {big} - 10000000000000000000000000 * 10000000000000000000000000 - 2 * 10000000000000000000000000");
+        assert_eq!(check(&task, "1").status, VerificationStatus::Pass);
+    }
+
+    #[test]
+    fn a_final_value_beyond_the_candidate_bound_is_still_unknown() {
+        // 10^40 is computed exactly but cannot be compared with a bounded candidate.
+        let task = "100000000000000000000 * 100000000000000000000";
+        let report = check(task, "1");
+        assert_eq!(report.status, VerificationStatus::Unknown);
+        assert_eq!(codes(&report), ["arith.task"]);
+        assert!(report.findings[0].message.contains("magnitude bound"));
+    }
+
+    #[test]
+    fn reduced_intermediates_beyond_the_limb_bound_are_unknown() {
+        let hundred_digits = format!("1{}", "0".repeat(100));
+        let task = format!("{hundred_digits} * {hundred_digits} / {hundred_digits}");
+        let report = check(&task, "1");
+        assert_eq!(report.status, VerificationStatus::Unknown);
+        assert_eq!(codes(&report), ["arith.task"]);
+        // A literal beyond the integer kernel's own bound is refused as well, not allocated.
+        let huge = "9".repeat(500);
+        assert_eq!(check(&huge, "1").status, VerificationStatus::Unknown);
+        // Division by a huge zero-valued expression is still a division by zero.
+        let report = check(
+            &format!("{hundred_digits} / ({hundred_digits} - {hundred_digits})"),
+            "1",
+        );
+        assert_eq!(codes(&report), ["arith.task"]);
+        assert!(report.findings[0].message.contains("divides by zero"));
+    }
+
+    struct XorShift(u64);
+    impl XorShift {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 >> 12;
+            self.0 ^= self.0 << 25;
+            self.0 ^= self.0 >> 27;
+            self.0.wrapping_mul(0x2545_F491_4F6C_DD1D)
+        }
+        fn small(&mut self) -> i128 {
+            i128::from(self.next() % 2001) - 1000
+        }
+    }
+
+    #[test]
+    fn random_integer_expressions_agree_with_i128() {
+        let mut rng = XorShift(0x1234_5678_9ABC_DEF1);
+        for _ in 0..1500 {
+            let (a, b, c, d) = (rng.small(), rng.small(), rng.small(), rng.small());
+            // Spelled with parentheses for negatives: the grammar has unary minus.
+            let task = format!("(({a}) * ({b}) + ({c})) * ({d}) - ({a}) * ({d}) + ({b})");
+            let expected = (a * b + c) * d - a * d + b;
+            assert_eq!(
+                check(&task, &expected.to_string()).status,
+                VerificationStatus::Pass,
+                "{task}"
+            );
+            let wrong = check(&task, &(expected + 1).to_string());
+            assert_eq!(codes(&wrong), ["arith.value"], "{task}");
+            if b != 0 {
+                // a * b / b == a exactly, and a / b matches the reduced rational.
+                let task = format!("({a}) * ({b}) / ({b})");
+                assert_eq!(
+                    check(&task, &a.to_string()).status,
+                    VerificationStatus::Pass,
+                    "{task}"
+                );
+                let g = {
+                    let (mut x, mut y) = (a.unsigned_abs(), b.unsigned_abs());
+                    while y != 0 {
+                        (x, y) = (y, x % y);
+                    }
+                    i128::try_from(x).unwrap().max(1)
+                };
+                let (mut n, mut d) = (a / g, b / g);
+                if d < 0 {
+                    (n, d) = (-n, -d);
+                }
+                let task = format!("({a}) / ({b})");
+                assert_eq!(
+                    check(&task, &format!("{n}/{d}")).status,
+                    VerificationStatus::Pass,
+                    "{task}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn verification_is_deterministic() {
         let verifier = ArithmeticVerifier::new("3 * (4 + 5) / 7");
         for candidate in ["27/7", "4", "x", ""] {
@@ -600,5 +808,31 @@ mod tests {
         }
         assert_eq!(NamedVerifier::<String>::name(&verifier), "arithmetic");
         assert_eq!(verifier.task(), "3 * (4 + 5) / 7");
+    }
+
+    #[test]
+    fn an_oversize_task_is_not_retained_whole_and_stays_oversize() {
+        let task = "1+".repeat(2 * 1024 * 1024);
+        let verifier = ArithmeticVerifier::new(&task);
+        assert!(
+            verifier.task().len() <= MAX_TASK_BYTES,
+            "{}",
+            verifier.task().len()
+        );
+        assert_eq!(verifier.task_len(), task.len());
+        assert!(format!("{verifier:?}").len() < 4 * MAX_TASK_BYTES);
+        let report = verifier.verify(&"2".to_owned());
+        assert_eq!(report.status, VerificationStatus::Unknown);
+        assert_eq!(codes(&report), ["arith.task"]);
+        assert!(report.findings[0].message.contains("longer than"));
+    }
+
+    #[test]
+    fn the_retained_prefix_of_an_oversize_task_cuts_on_a_char_boundary() {
+        let task = "\u{e9}".repeat(MAX_TASK_BYTES);
+        let verifier = ArithmeticVerifier::new(&task);
+        assert!(verifier.task().len() <= MAX_TASK_BYTES);
+        assert!(task.starts_with(verifier.task()));
+        assert_eq!(verifier.task_len(), task.len());
     }
 }

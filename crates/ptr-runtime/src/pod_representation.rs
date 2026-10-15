@@ -13,7 +13,9 @@
 //! binding's provenance and compared on every admission: a payload swapped under a valid binding
 //! is refused.
 
-use crate::neural::{Denial, NeuralError, NeuralState, NeuralStateCache, StateDeclaration};
+use crate::neural::{
+    Denial, NeuralError, NeuralState, NeuralStateCache, StateBinding, StateDeclaration,
+};
 use crate::pod_head::pod_lifecycle_target;
 use crate::{PtrRuntime, RuntimeError};
 use ptr_router::{
@@ -42,6 +44,11 @@ pub struct BindPodRepresentation<'a> {
 pub enum PodRepresentationError {
     /// The representation belongs to another project than `pod`.
     ProjectMismatch {
+        representation: String,
+        address: String,
+    },
+    /// The representation is for the same pod id in another lifecycle namespace than `pod`.
+    NamespaceMismatch {
         representation: String,
         address: String,
     },
@@ -107,6 +114,14 @@ impl PtrRuntime {
                 },
             ));
         }
+        if representation.namespace() != &pod.address.namespace {
+            return Err(RuntimeError::PodRepresentation(
+                PodRepresentationError::NamespaceMismatch {
+                    representation: representation.namespace().to_string(),
+                    address: pod.address.namespace.to_string(),
+                },
+            ));
+        }
         if representation.pod() != &pod.address.pod_id {
             return Err(RuntimeError::PodRepresentation(
                 PodRepresentationError::PodMismatch {
@@ -164,23 +179,7 @@ impl PtrRuntime {
         state: &NeuralState,
     ) -> Result<PodRepresentation, RepresentationDenial> {
         let admitted = self.admit(state).map_err(RepresentationDenial::State)?;
-        let representation = PodRepresentation::from_payload(admitted.payload())
-            .map_err(RepresentationDenial::Payload)?;
-        let recorded = admitted.binding().provenance.iter().any(|entry| {
-            entry.source.0 == format!("{PROVENANCE_PREFIX}{}", digest_hex(representation.digest()))
-        });
-        let bound_to_its_pod = admitted
-            .binding()
-            .generations
-            .iter()
-            .all(|(target, generation)| {
-                *generation == representation.generation() && target_names(target, &representation)
-            })
-            && admitted.binding().generations.len() == 1;
-        if !recorded || !bound_to_its_pod {
-            return Err(RepresentationDenial::BindingMismatch);
-        }
-        Ok(representation)
+        self.check_representation(admitted.binding(), admitted.payload())
     }
 
     /// The representations of `cache` that are admitted now, named by pod and digest: the set a
@@ -212,20 +211,15 @@ impl PtrRuntime {
         let mut store = RepresentationStore::new(encoder);
         let mut refused = Vec::new();
         for key in cache.keys() {
-            let outcome = match cache.admit(self, key) {
-                Err(denial) => Err(RepresentationRefusal::Admission(
-                    RepresentationDenial::State(denial),
-                )),
-                Ok(_) => self
-                    .admit_cached_representation(cache, key)
-                    .map_err(RepresentationRefusal::Admission)
-                    .and_then(|representation| {
-                        store
-                            .insert(representation)
-                            .map(|_| ())
-                            .map_err(RepresentationRefusal::Store)
-                    }),
-            };
+            let outcome = self
+                .admit_cached_representation(cache, key)
+                .map_err(RepresentationRefusal::Admission)
+                .and_then(|representation| {
+                    store
+                        .insert(representation)
+                        .map(|_| ())
+                        .map_err(RepresentationRefusal::Store)
+                });
             if let Err(reason) = outcome {
                 refused.push((key.to_owned(), reason));
             }
@@ -233,6 +227,7 @@ impl PtrRuntime {
         AdmittedRepresentations { store, refused }
     }
 
+    /// One admission decision per cached entry, reading the payload in place (no copy).
     fn admit_cached_representation(
         &self,
         cache: &NeuralStateCache,
@@ -241,19 +236,62 @@ impl PtrRuntime {
         let admitted = cache
             .admit(self, key)
             .map_err(RepresentationDenial::State)?;
-        let state = NeuralState::new(admitted.binding().clone(), admitted.payload().to_vec());
-        self.admit_pod_representation(&state)
+        self.check_representation(admitted.binding(), admitted.payload())
+    }
+
+    /// The checks after the neural-state admission: the binding names exactly one pod target and
+    /// records a representation digest (checked before the payload is parsed, so state of another
+    /// kind costs no parse), the payload is that representation, its own target is named and the
+    /// target was committed by its project. Which registered implementation it may score is the
+    /// learned router's check against the registry's namespace.
+    fn check_representation(
+        &self,
+        binding: &StateBinding,
+        payload: &[u8],
+    ) -> Result<PodRepresentation, RepresentationDenial> {
+        let names_a_representation = binding.generations.len() == 1
+            && binding
+                .provenance
+                .iter()
+                .any(|entry| entry.source.0.starts_with(PROVENANCE_PREFIX));
+        if !names_a_representation {
+            return Err(RepresentationDenial::BindingMismatch);
+        }
+        let representation =
+            PodRepresentation::from_payload(payload).map_err(RepresentationDenial::Payload)?;
+        let recorded = binding.provenance.iter().any(|entry| {
+            entry.source.0 == format!("{PROVENANCE_PREFIX}{}", digest_hex(representation.digest()))
+        });
+        let bound_to_its_pod = binding.generations.iter().all(|(target, generation)| {
+            *generation == representation.generation()
+                && target_names(target, &representation)
+                // The lifecycle target must have been committed by the representation's own
+                // project.
+                && self.capsule_project(target) == Some(representation.project().0.as_str())
+        });
+        if !recorded || !bound_to_its_pod {
+            return Err(RepresentationDenial::BindingMismatch);
+        }
+        Ok(representation)
     }
 }
 
+/// `pod:<project>/<namespace>/<pod>` split into its three parts.
+fn split_pod_target(target: &str) -> Option<(&str, &str, &str)> {
+    let mut parts = target.strip_prefix("pod:")?.split('/');
+    let (project, namespace, pod) = (parts.next()?, parts.next()?, parts.next()?);
+    parts.next().is_none().then_some((project, namespace, pod))
+}
+
 /// Whether the lifecycle target `pod:<project>/<namespace>/<pod>` names the representation's own
-/// project and pod.
+/// project, namespace and pod. A representation never moves to the lifecycle target of the same
+/// pod id in another namespace, so revoking its own target denies it everywhere.
 fn target_names(target: &str, representation: &PodRepresentation) -> bool {
-    let Some(rest) = target.strip_prefix("pod:") else {
-        return false;
-    };
-    let parts: Vec<&str> = rest.split('/').collect();
-    parts.len() == 3 && parts[0] == representation.project().0 && parts[2] == representation.pod().0
+    split_pod_target(target).is_some_and(|(project, namespace, pod)| {
+        project == representation.project().0
+            && namespace == representation.namespace().0
+            && pod == representation.pod().0
+    })
 }
 
 fn digest_hex(digest: &[u8; 32]) -> String {

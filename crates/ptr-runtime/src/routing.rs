@@ -12,7 +12,7 @@ use ptr_events::RuntimeEvent;
 use ptr_pods::DynPod;
 use ptr_router::{
     CheckedRouter, EncodedWith, EncoderRef, MissReason, PodRouter, RouteError, RouteFeatures,
-    RouteRequest, RoutedChoice, RoutedError, Router,
+    RouteRequest, RoutedChoice, RoutedError, Router, MAX_REPRESENTATIONS,
 };
 use ptr_types::{CapabilityId, Digest, ProjectId, RequestId, TypeId};
 use sha2::{Digest as _, Sha256};
@@ -111,6 +111,10 @@ pub enum EmbeddingSamplerError {
         embedder: EncoderRef,
         store: EncoderRef,
     },
+    /// The admission cache holds more entries than one store can hold representations
+    /// ([`MAX_REPRESENTATIONS`]); every entry is re-admitted on every request, so the cache is
+    /// bounded here (Invariant 8).
+    AdmissionCacheTooLarge { len: usize, max: usize },
 }
 
 impl std::fmt::Display for EmbeddingSamplerError {
@@ -121,6 +125,10 @@ impl std::fmt::Display for EmbeddingSamplerError {
                 "query embedder {}@{} does not match the representation store's encoder {}@{}",
                 embedder.id, embedder.revision, store.id, store.revision
             ),
+            Self::AdmissionCacheTooLarge { len, max } => write!(
+                f,
+                "the admission cache holds {len} entries, more than the {max} a sampler re-admits per request"
+            ),
         }
     }
 }
@@ -130,12 +138,20 @@ impl std::error::Error for EmbeddingSamplerError {}
 impl<R: Router + EncodedWith> EmbeddingSampler<R> {
     /// # Errors
     /// [`EmbeddingSamplerError::EncoderMismatch`] when `embedder` encodes with another model or
-    /// revision than the router's representation store.
+    /// revision than the router's representation store, and
+    /// [`EmbeddingSamplerError::AdmissionCacheTooLarge`] for an admission cache with more than
+    /// [`MAX_REPRESENTATIONS`] entries.
     pub fn new(
         router: CheckedRouter<R>,
         embedder: Arc<dyn QueryEmbedder>,
         admission: NeuralStateCache,
     ) -> Result<Self, EmbeddingSamplerError> {
+        if admission.len() > MAX_REPRESENTATIONS {
+            return Err(EmbeddingSamplerError::AdmissionCacheTooLarge {
+                len: admission.len(),
+                max: MAX_REPRESENTATIONS,
+            });
+        }
         if embedder.encoder() != router.inner().encoder() {
             return Err(EmbeddingSamplerError::EncoderMismatch {
                 embedder: embedder.encoder().clone(),
@@ -169,13 +185,17 @@ impl<R: Router + Send + Sync> PodSampler for EmbeddingSampler<R> {
 
     /// The query vector and the representations of the admission cache that are admitted by the
     /// runtime's committed facts right now: revoked, superseded, mis-bound or foreign-project
-    /// states are left out on every request.
+    /// states are left out on every request. With nothing admitted the embedder is not run: no
+    /// representation could use the vector, and an encoder failure must not hide that outcome.
     fn features_at(
         &self,
         runtime: &PtrRuntime,
         query: &RouteQuery<'_>,
     ) -> Result<RouteFeatures, RouteError> {
         let admitted = runtime.admitted_representation_set(&self.admission);
+        if admitted.is_empty() {
+            return Ok(RouteFeatures::new().with_admitted_representations(admitted));
+        }
         Ok(RouteFeatures::new()
             .with_vector(self.embedder.embed(query)?)?
             .with_admitted_representations(admitted))
@@ -322,6 +342,12 @@ impl PtrRuntime {
                 .and_then(|route| pods.get(project, &route.pod_id))
                 .ok_or_else(unavailable),
             PodSelection::Sampled(sampler) => {
+                // Without an eligible pod there is nothing to score: answer `PodUnavailable`
+                // exactly as the router would, without running the encoder (whose failure would
+                // otherwise turn the unavailable answer into a route failure).
+                if pods.candidates(project, capability, input_type).is_empty() {
+                    return Err(unavailable());
+                }
                 let features = sampler
                     .features_at(
                         self,
