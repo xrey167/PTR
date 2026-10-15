@@ -1,10 +1,13 @@
 //! The CUDA driver: whether it is there, what it can do, and a primary-context guard.
 //!
-//! `cudarc` is built with `dynamic-loading`: `libcuda` is opened on the first driver call, and
-//! when it cannot be opened that call **panics**. The only door to a driver call in this crate
-//! is [`CudaDriver::open`], which asks `is_culib_present` first and returns a typed
-//! [`CudaError::NoDriver`] when it is false. Every GPU operation takes a `&CudaDriver`, so no
-//! call can be made without that proof.
+//! With feature `cuda-ipc`, `cudarc` is built with `dynamic-loading`: `libcuda` is opened on the
+//! first driver call, and when it cannot be opened that call **panics**. The only door to a
+//! driver call in this crate is [`CudaDriver::open`], which asks whether the library can be
+//! opened first (`is_culib_present` with `cuda-ipc`, a `dlopen` of `libcuda.so.1` with
+//! `cuda-ipc-core` alone, where the linking mode is whatever the rest of the build chose) and
+//! returns a typed [`CudaError::NoDriver`] when it cannot. Under dynamic linking a missing
+//! `libcuda` fails the process load before this code runs. Every GPU operation takes a
+//! `&CudaDriver`, so no call can be made without that proof.
 
 use std::any::Any;
 use std::ffi::{c_int, CStr};
@@ -18,11 +21,37 @@ use super::CudaError;
 /// `cuInit` ran once, or why the driver is unusable. Cached: probing again changes nothing.
 static INIT: OnceLock<Result<(), String>> = OnceLock::new();
 
+/// Whether the driver library can be opened by name.
+#[cfg(feature = "cuda-ipc")]
+fn driver_library_present() -> bool {
+    // SAFETY: `is_culib_present` only tries to open the driver library by its candidate names
+    // and reports whether one opened; it calls nothing in it.
+    unsafe { sys::is_culib_present() }
+}
+
+/// Whether the driver library can be opened by name. Without `cuda-ipc` the linking mode of
+/// `cudarc` is not ours to know (`is_culib_present` exists only under dynamic loading), so ask
+/// the dynamic loader directly; under dynamic linking the library is loaded already.
+#[cfg(not(feature = "cuda-ipc"))]
+fn driver_library_present() -> bool {
+    ["libcuda.so.1", "libcuda.so"].iter().any(|name| {
+        let Ok(name) = std::ffi::CString::new(*name) else {
+            return false;
+        };
+        // SAFETY: `name` is a valid NUL-terminated string; the handle is closed right away.
+        let handle = unsafe { libc::dlopen(name.as_ptr(), libc::RTLD_LAZY) };
+        if handle.is_null() {
+            return false;
+        }
+        // SAFETY: `handle` came from a successful `dlopen`.
+        unsafe { libc::dlclose(handle) };
+        true
+    })
+}
+
 fn initialise() -> &'static Result<(), String> {
     INIT.get_or_init(|| {
-        // SAFETY: `is_culib_present` only tries to open the driver library by its candidate
-        // names and reports whether one opened; it calls nothing in it.
-        if !unsafe { sys::is_culib_present() } {
+        if !driver_library_present() {
             return Err("the CUDA driver library (libcuda) cannot be loaded".to_owned());
         }
         // A driver that lacks `cuInit` makes the loader panic; that is "no usable driver", not a

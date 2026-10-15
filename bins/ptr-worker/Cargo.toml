@@ -12,6 +12,12 @@ default = []
 # and releases quota charges when a worker is reaped. Linux only; on every other target the
 # feature compiles to nothing, so enabling it never breaks a Windows or macOS build.
 data-plane = ["dep:ptr-fabric", "ptr-fabric/worker-supervisor", "dep:ptr-runtime", "dep:ed25519-dalek"]
+# The CUDA staging backend of the guardian (`ptr-worker guardian --backend cuda`), through
+# ptr-fabric. `cuda-ipc` is the toolkit-free dynamic-loading variant CI compiles; `cuda-ipc-core`
+# names no linking mode and is for a build that also links candle's CUDA. Never both with
+# `candle-cuda` on `cuda-ipc`: see the notes in ptr-fabric's Cargo.toml.
+cuda-ipc-core = ["data-plane", "ptr-fabric/cuda-ipc-core"]
+cuda-ipc = ["cuda-ipc-core", "ptr-fabric/cuda-ipc"]
 # Lets the worker misbehave on purpose (`--fault bad-signature|silent`) so the supervisor's
 # refusals can be tested. Never part of a release build.
 fault-injection = ["data-plane", "dep:libc"]
@@ -27,6 +33,11 @@ ptr-runtime = { workspace = true, optional = true }
 ed25519-dalek = { workspace = true, optional = true }
 # Only for the fault-injection modes that hand over a deliberately wrong memfd. Already locked.
 libc = { version = "=0.2.189", optional = true }
+
+[[test]]
+name = "staging_guardian"
+path = "tests/staging_guardian.rs"
+required-features = ["data-plane"]
 
 [[test]]
 name = "pod_data_plane"

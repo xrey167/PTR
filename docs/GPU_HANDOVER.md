@@ -883,7 +883,7 @@ each PC alone: the same-card `CudaIpc` row between two processes, and the host-t
 `tests/cuda_ipc_process.rs` (`required-features = ["cuda-ipc", "worker-channel"]`) holds
 `an_export_crosses_a_process_boundary_and_verifies` and
 `a_forwarded_record_is_refused_in_the_other_process`. None of them has run on a GPU: CI and the
-development host have no card. The legacy `cuIpc*` form is not built (only the VMM export over a
+development host have no card. Three more `#[ignore]` GPU tests cover the staging lifecycle (pool, guardian): `tests/staging_cuda.rs` of ptr-fabric (`the_pool_lifecycle_runs_on_a_gpu`, `the_device_cap_is_a_typed_refusal_on_a_gpu`; needs `cuda-ipc-core`, which `cuda-ipc` includes, so the `--ignored` command below runs them too) and `the_guardian_holds_vmm_allocations_on_a_gpu` in `bins/ptr-worker/tests/staging_guardian.rs` (`cargo +1.99.0 test -p ptr-worker --features cuda-ipc --test staging_guardian --locked -- --ignored --nocapture`); the count of eight below does not include them. The legacy `cuIpc*` form is not built (only the VMM export over a
 POSIX descriptor). The LAN test (12.4) is not built: E011 (carrier calibration) and E013 (two-host
 split) are `planned` and have no harness; record it as `not built`, never as a failed check.
 

@@ -19,11 +19,33 @@ worker-confine = ["worker-channel", "dep:libc"]
 # The worker supervisor: spawn a confined worker process, watch it, reap its whole cgroup and
 # drain its channel (doc 42 stage S1). Linux only.
 worker-supervisor = ["worker-confine"]
-# The CUDA foundations of the CudaIpc, DevicePeer and PinnedHost carriers (doc 42 stage S2):
-# the driver probe, the VMM staging export and import, and the pinned registration of a HostShm
-# region, through `cudarc` with dynamic loading. Linux only. Nothing here links `libcuda`: a
-# host without a driver gets a typed "no driver" result, never a panic and never a link error.
-cuda-ipc = ["shm-backend", "dep:cudarc"]
+# The CUDA foundations of the CudaIpc, DevicePeer and PinnedHost carriers and the CUDA staging
+# backend (doc 42 stages S2 and S3): the driver probe, the VMM staging export and import, and
+# the pinned registration of a HostShm region, through `cudarc`. Linux only. Two variants,
+# because `cudarc` allows one linking mode per build:
+#
+# * `cuda-ipc-core` carries the code and `cudarc` with `std` and `driver`, plus
+#   `fallback-dynamic-loading` (a no-op as soon as another crate in the build picks a linking
+#   mode) and `cuda-version-from-build-system` with `fallback-latest` (candle's own choice; the
+#   fallback only matters on a host without `nvcc`). It names no linking mode and no fixed CUDA
+#   version, so a build that also enables `candle-cuda` (dynamic linking, version from `nvcc`)
+#   unifies with it; on its own it falls back to dynamic loading and the newest bindings.
+# * `cuda-ipc` is the toolkit-free variant CI uses: `cuda-ipc-core` plus `dynamic-loading` and
+#   the fixed `cuda-12080` bindings. Do not combine it with `candle-cuda`: cudarc's build script
+#   panics when `dynamic-loading` and `dynamic-linking` are both on.
+#
+# With `cuda-ipc` nothing links `libcuda`: a host without a driver gets a typed "no driver"
+# result, never a panic and never a link error. Under dynamic linking (core with `candle-cuda`)
+# a missing `libcuda` fails when the process loads, before any code runs.
+cuda-ipc-core = [
+    "shm-backend",
+    "dep:cudarc",
+    "dep:libc",
+    "cudarc/fallback-dynamic-loading",
+    "cudarc/cuda-version-from-build-system",
+    "cudarc/fallback-latest",
+]
+cuda-ipc = ["cuda-ipc-core", "cudarc/dynamic-loading", "cudarc/cuda-12080"]
 
 [dependencies]
 # The handle, its locators and the digest rule the carriers check against.
@@ -38,13 +60,11 @@ rustix = { version = "=1.1.5", optional = true, default-features = false, featur
 # syscall numbers of the allowlist. Version already in the lockfile.
 libc = { version = "=0.2.189", optional = true }
 
-# The driver binding of the `cuda-ipc` feature. Version and features pinned: `driver` for the
-# `cu*` entry points, `dynamic-loading` so `libcuda` is opened at run time (and `is_culib_present`
-# tells whether it can be), and `cuda-12080` for the bindings. Never
-# `cuda-version-from-build-system`: its build script panics on a host without `nvcc`. Version
-# already in the lockfile through candle, so no package is added.
-# Conflicts with `candle-cuda` in the same build (dynamic-loading vs dynamic-linking); see component.toml.
-cudarc = { version = "=0.19.10", optional = true, default-features = false, features = ["std", "driver", "dynamic-loading", "cuda-12080"] }
+# The driver binding of `cuda-ipc-core` and `cuda-ipc`. Version pinned; the base features are
+# `std` and `driver` (the `cu*` entry points); the linking mode and the bindings version come
+# from the feature table above. Version already in the lockfile through candle, so no package
+# is added.
+cudarc = { version = "=0.19.10", optional = true, default-features = false, features = ["std", "driver"] }
 
 [dev-dependencies]
 ptr-types = { workspace = true }
@@ -75,12 +95,22 @@ path = "tests/cuda_gating.rs"
 [[test]]
 name = "cuda_ipc"
 path = "tests/cuda_ipc.rs"
-required-features = ["cuda-ipc"]
+required-features = ["cuda-ipc-core"]
 
 [[test]]
 name = "cuda_ipc_process"
 path = "tests/cuda_ipc_process.rs"
-required-features = ["cuda-ipc", "worker-channel"]
+required-features = ["cuda-ipc-core", "worker-channel"]
+
+[[test]]
+name = "staging_pool"
+path = "tests/staging_pool.rs"
+required-features = ["shm-backend"]
+
+[[test]]
+name = "staging_cuda"
+path = "tests/staging_cuda.rs"
+required-features = ["cuda-ipc-core"]
 
 [[test]]
 name = "worker_supervisor"

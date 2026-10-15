@@ -4,7 +4,7 @@
 //! "no driver" path). The GPU tests are `#[ignore]`d: they need an NVIDIA GPU and driver and are
 //! run on the owner's PC per docs/GPU_HANDOVER.md. Nothing in them has run in this repository's
 //! CI or on the host that wrote them.
-#![cfg(all(feature = "cuda-ipc", target_os = "linux"))]
+#![cfg(all(feature = "cuda-ipc-core", target_os = "linux"))]
 
 use ptr_fabric::{
     audit_export_padding, check_import, footprint_legacy, footprint_memfd, footprint_vmm,
