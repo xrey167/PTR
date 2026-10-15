@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "pod-routing"
+path = "evaluations/components/pod-routing"
+tests_dir = "tests"

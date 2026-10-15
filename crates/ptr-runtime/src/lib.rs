@@ -24,6 +24,8 @@ mod moved_tensor;
 pub mod neural;
 pub mod persistence;
 pub mod placement;
+pub mod pod_head;
+pub mod pod_representation;
 pub mod policy;
 pub mod protected_state;
 pub mod routing;
@@ -45,7 +47,7 @@ pub use carrier_select::{
     EndpointCapabilities, EndpointConfinement, HostProcess, PayloadOwnership, PeerProbe,
     SelectionReason, TensorLocation, MAX_DEVICES_PER_NODE,
 };
-pub use directory::{InMemoryPodDirectory, PodDirectory};
+pub use directory::{InMemoryPodDirectory, PodDirectory, PodHeadSource};
 pub use handle_admission::{
     revalidate_operation, AdmittedHandle, ConsumeRequest, ConsumedHandle, HandleAdmissionRequest,
     HandlePolicy, HandlePolicyViolation, HandleRejection, HandleSource, HandleTable,
@@ -110,6 +112,11 @@ pub use placement::{
     DeviceHealth, DeviceRecord, FencedStateLease, FencingToken, NodeHealth, NodeRecord, Placement,
     PlacementEpoch, PlacementError, PodPlacementController, ProjectPlacementRequest,
 };
+pub use pod_head::{pod_lifecycle_target, AdvancePodHead, PodHeadError, PodHeadStatus};
+pub use pod_representation::{
+    AdmittedRepresentations, BindPodRepresentation, PodRepresentationError, RepresentationDenial,
+    RepresentationRefusal,
+};
 #[cfg(feature = "oidc-http")]
 pub use policy::ReqwestPolicyBundleLoader;
 pub use policy::{
@@ -118,7 +125,7 @@ pub use policy::{
     SignedPolicyBundle,
 };
 pub use protected_state::ProtectedStateCoordinator;
-pub use routing::PodSampler;
+pub use routing::{EmbeddingSampler, EmbeddingSamplerError, PodSampler, QueryEmbedder, RouteQuery};
 pub use sandbox::{
     ExternalSandboxExecutor, NativeSandboxExecutor, NetworkMode, SandboxBackend, SandboxError,
     SandboxExecutor, SandboxLease, SandboxProfile, SandboxRequest, SandboxResponse,
@@ -526,6 +533,10 @@ pub enum RuntimeError {
     },
     /// The taint registry refused a change, a replayed record or a restored state (fail closed).
     KvTaint(kv_taint::KvTaintError),
+    /// A pod head move or a stored head was refused (see [`pod_head::PodHeadError`]).
+    PodHead(Box<pod_head::PodHeadError>),
+    /// A learned pod representation could not be bound to its pod.
+    PodRepresentation(pod_representation::PodRepresentationError),
     PodUnavailable {
         capability: String,
         input_type: String,
@@ -691,6 +702,18 @@ pub enum RuntimeError {
         current: String,
         requested: String,
     },
+    /// A `pod:<project>/<namespace>/<pod>` capsule was committed under another project than the one
+    /// it names.
+    PodCapsuleProjectMismatch {
+        capsule: String,
+        embedded: String,
+        project: String,
+    },
+    /// A `pod:<project>/<namespace>/<pod>` capsule was committed at generation 0, which no pod
+    /// revision has (`PodSemanticManifest::validate` refuses it), so it can never become live.
+    PodCapsuleGenerationZero {
+        capsule: String,
+    },
     ReservedTargetNamespace {
         target: String,
     },
@@ -849,6 +872,9 @@ pub struct PtrRuntime {
     /// Live approximate-KV taint subjects, projected from the committed `KvTaintCommitted`
     /// records; actions in it are refused by `authorize_action`.
     taint: kv_taint::TaintRegistry,
+    /// Head of each stable pod identity, projected from the committed `PodHeadAdvanced`
+    /// records.
+    pod_heads: pod_head::PodHeads,
 }
 
 impl PtrRuntime {
@@ -939,6 +965,7 @@ impl PtrRuntime {
             kv_catalog: None,
             semantic_edits: kv_prefix::SemanticEdits::default(),
             taint: kv_taint::TaintRegistry::default(),
+            pod_heads: pod_head::PodHeads::default(),
         })
     }
 
@@ -2975,6 +3002,20 @@ impl PtrRuntime {
                 if target.starts_with("constraint:") || target.starts_with("procedure:") {
                     return Err(RuntimeError::ReservedTargetNamespace { target });
                 }
+                // A pod lifecycle target names its project; only that project may commit it, or
+                // one project could make another project's pod head or representation live.
+                if let Some(embedded) = pod_head::pod_capsule_project(&target) {
+                    if embedded != project.to_string() {
+                        return Err(RuntimeError::PodCapsuleProjectMismatch {
+                            capsule: target.clone(),
+                            embedded: embedded.to_owned(),
+                            project: project.to_string(),
+                        });
+                    }
+                    if generation.0 == 0 {
+                        return Err(RuntimeError::PodCapsuleGenerationZero { capsule: target });
+                    }
+                }
                 if let Some(current) = self.capsule_projects.get(&target) {
                     if current != &project.to_string() {
                         return Err(RuntimeError::CapsuleProjectMismatch {
@@ -3340,6 +3381,13 @@ impl PtrRuntime {
             // A refusal confers nothing and loads nothing; its shape is the codec's to hold.
             LedgerEvent::EgressRefused { .. } => ptr_ledger::check_encodable(event)
                 .map_err(|error| RuntimeError::Ledger(error.to_string())),
+            // A compare-and-swap on the head of one pod identity, checked again on replay.
+            LedgerEvent::PodHeadAdvanced {
+                project,
+                identity,
+                old,
+                new,
+            } => self.validate_pod_head_advance(project, identity, old.as_ref(), new),
         }
     }
 
@@ -3626,6 +3674,15 @@ impl PtrRuntime {
                     })?;
             }
             LedgerEvent::ProtectedStateCommitted { .. } => {}
+            LedgerEvent::PodHeadAdvanced {
+                project,
+                identity,
+                new,
+                ..
+            } => {
+                self.pod_heads
+                    .set(project.clone(), identity.clone(), new.clone());
+            }
         }
 
         self.state.apply(committed);

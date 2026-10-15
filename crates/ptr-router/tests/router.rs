@@ -1,5 +1,4 @@
-use ptr_pods::{DynPod, PodManifest, PodRegistry};
-use ptr_protocol::TypedPayload;
+use ptr_pods::{PodManifest, PodRegistry};
 use ptr_router::{
     route_checked, CheckedRouter, DecisionNonce, DistributionError, NonceSequence, PodRouter,
     PolicyFailure, Propensity, RouteDistribution, RouteError, RouteFeatures, RouteRequest,
@@ -11,69 +10,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-struct TestPod(PodManifest);
-impl DynPod for TestPod {
-    fn manifest(&self) -> &PodManifest {
-        &self.0
-    }
-    fn invoke(&self, input: TypedPayload) -> Result<TypedPayload, String> {
-        Ok(input)
-    }
-}
-
-fn key() -> SamplingKey {
-    SamplingKey::from_bytes([0x5a; 32])
-}
-
-fn nonce() -> DecisionNonce {
-    DecisionNonce::from_bytes([0x11; 16])
-}
-
-fn nonces() -> NonceSequence {
-    NonceSequence::starting_at([0x22; 8], 0)
-}
-
-fn route<R: Router + ?Sized>(
-    router: &R,
-    request: &RouteRequest<'_>,
-) -> Result<Option<RoutedChoice>, RoutedError> {
-    route_checked(router, request, &key(), &nonce())
-}
-
-fn registry(project: &ProjectId, ids: &[&str]) -> PodRegistry {
-    let mut registry = PodRegistry::default();
-    for id in ids {
-        registry.register(Arc::new(TestPod(PodManifest {
-            project: project.clone(),
-            id: PodId::from(*id),
-            capabilities: vec![CapabilityId::from("read")],
-            accepts: vec![TypeId::from("Text")],
-            produces: vec![TypeId::from("Text")],
-            effects: vec![Effect::Pure],
-            protocol_version: 1,
-        })));
-    }
-    registry
-}
-
-fn request<'a>(
-    registry: &'a PodRegistry,
-    project: &'a ProjectId,
-    cap: &'a CapabilityId,
-    ty: &'a TypeId,
-    id: &'a RequestId,
-    features: &'a RouteFeatures,
-) -> RouteRequest<'a> {
-    RouteRequest {
-        registry,
-        project,
-        capability: cap,
-        input_type: ty,
-        request_id: id,
-        request_digest: [7; 32],
-        features,
-    }
-}
+mod common;
+use common::{key, nonce, nonces, registry, request, route, TestPod};
 
 #[test]
 fn router_matches_select_and_logs_certain_propensity() {

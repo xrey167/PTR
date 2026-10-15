@@ -12,6 +12,10 @@ Sources: component count from [docs/components/STATUS.md](docs/components/STATUS
 - **Invalid:** Q003-v2 postgres-hybrid (INVALID, incomplete: seeds 43/71/101 never ran and seed 29 stopped by owner decision; registry `superseded`; its line below, first written on branch `claude/dev-q003v3` in commit 8c3a5398).
 - **Planned:** every other registry entry with status `planned`, including the GPU experiments C002, C003, C005, C006, F004-F006, M004-M007, M010-M016 and E004-E006 (M010-M015 tune on the pilot seed 1001, never on a confirmatory seed).
 
+## Research integration
+
+Plan and per-package status: [docs/RESEARCH_INTEGRATION_PLAN_20261013.md](docs/RESEARCH_INTEGRATION_PLAN_20261013.md). WP1 pod linking (identity, ledger-committed head, advisory learned addresses): in review, implemented at library level ([doc 43](docs/architecture/43-pod-linking.md)); experiment R015 has a harness and no frozen result. WP2 to WP5: planned.
+
 ## Implemented and validated
 
 - 34 Rust workspace crates plus four binaries (`ptr-bench`, `ptr-worker`, `ptrctl`, `ptrd`), including typed file/environment/CLI configuration and a central `ptr-runtime` orchestrator; [docs/components/STATUS.md](docs/components/STATUS.md) is the generated inventory and the authority for the count (34 components: 1 foundation, 33 prototype, as generated on this branch since 2026-10-14, when the last ten scaffold crates and the ptr-core research scaffold gained executable, tested behaviour; the label does not mean task-trained or wired into the request path, see each crate's `missing` list; `crates/` holds exactly those 34 `ptr-*` crates, the four binaries are not components)

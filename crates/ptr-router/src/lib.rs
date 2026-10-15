@@ -3,6 +3,7 @@ mod candidate;
 mod constraints;
 mod degradation;
 mod findings;
+mod learned;
 mod learning;
 mod ope;
 #[cfg(test)]
@@ -38,6 +39,12 @@ pub use findings::{
     RegistryGeneration, RegistryUpdate, ReportClass, RouteClass, RouteOutcome, RouterBuildError,
     RouterConfig, RouterLimits, ScoringContext, UniformScorer,
 };
+pub use learned::{
+    ActivationPolicy, EncodedWith, EncoderRef, GateReport, LearnedPodRouter, LearnedRouterConfig,
+    PodRepresentation, PodRepresentationParts, RepresentationError, RepresentationStore,
+    ScoreWeights, ACTIVATION_ALIAS_PERMILLE, ACTIVATION_NEGATIVE_REJECT_PERMILLE,
+    MAX_MANIFEST_BYTES, MAX_REPRESENTATIONS, MAX_REPRESENTATION_DIMS, REPRESENTATION_SCHEMA,
+};
 pub use learning::{
     ArmCounts, LearnedPolicy, LearnerConfig, LearningError, LoggedDecision, RewardModel,
     RoutingLearner, VerifierReward, MAX_ARMS, MAX_DRAWS, MAX_LOG,
@@ -64,8 +71,9 @@ pub use recipe::{
     MAX_BACKEND_ID_BYTES, MAX_STAGES,
 };
 pub use router::{
-    route_checked, CheckedRouter, DistributionError, PolicyFailure, RouteDistribution, RouteError,
-    RouteFeatures, RouteRequest, RoutedChoice, RoutedError, Router,
+    route_checked, AbstentionReason, AdmittedRepresentation, CheckedRouter, DistributionError,
+    PolicyFailure, RouteDistribution, RouteError, RouteFeatures, RouteRequest, RoutedChoice,
+    RoutedError, Router,
 };
 pub use sampling::{DecisionNonce, NonceExhausted, NonceSequence, SamplingKey};
 pub use self_model::{

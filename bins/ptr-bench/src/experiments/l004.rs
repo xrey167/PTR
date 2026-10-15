@@ -1103,6 +1103,7 @@ fn expected_topic(event: &LedgerEvent) -> &'static str {
         LedgerEvent::InputInvalidated { .. } => "expert.input_invalidated",
         LedgerEvent::ExpertAuthorityChanged { .. } => "expert.authority_changed",
         LedgerEvent::EgressRefused { .. } => "egress.refused",
+        LedgerEvent::PodHeadAdvanced { .. } => "pod.head_advanced",
     }
 }
 
@@ -1203,6 +1204,9 @@ fn expected_subject(record: &CommittedEvent) -> String {
             source: ptr_ledger::EgressRefusalSource::Overflow,
             ..
         } => "egress-overflow".to_owned(),
+        LedgerEvent::PodHeadAdvanced {
+            project, identity, ..
+        } => format!("pod-head:{project}/{identity}"),
     }
 }
 
