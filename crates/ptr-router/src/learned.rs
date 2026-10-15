@@ -233,15 +233,30 @@ pub struct PodRepresentation {
 
 impl PodRepresentation {
     /// Validates `parts` and computes the digest.
+    ///
+    /// # Errors
+    /// The validation errors of the parts, and [`RepresentationError::ManifestTooLarge`] when the
+    /// manifest [`PodRepresentation::to_artifact`] writes would exceed [`MAX_MANIFEST_BYTES`], so
+    /// that [`PodRepresentation::from_artifact`] reads back every representation built here.
     pub fn new(parts: PodRepresentationParts) -> Result<Self, RepresentationError> {
         validate_parts(&parts)?;
         let z_norm = norm(&parts.z);
         let digest = digest_of(&parts);
-        Ok(Self {
+        let representation = Self {
             parts,
             z_norm,
             digest,
-        })
+        };
+        // A representation the loader would refuse is not built: every accepted one survives
+        // its own artifact and payload round trip.
+        let manifest_len = representation.to_artifact().0.len();
+        if manifest_len > MAX_MANIFEST_BYTES {
+            return Err(RepresentationError::ManifestTooLarge {
+                max: MAX_MANIFEST_BYTES,
+                actual: manifest_len,
+            });
+        }
+        Ok(representation)
     }
 
     /// Reads the manifest and weights file written by the exporter.

@@ -595,6 +595,29 @@ fn an_oversized_manifest_is_refused_before_it_is_parsed() {
 }
 
 #[test]
+fn a_representation_whose_manifest_the_loader_would_refuse_is_not_built() {
+    let mut oversized = parts("alpha", vec![1.0, 0.0, 0.0], 10.0, 1);
+    oversized.identity = PodIdentity::from("i".repeat(MAX_MANIFEST_BYTES).as_str());
+    assert!(matches!(
+        PodRepresentation::new(oversized),
+        Err(RepresentationError::ManifestTooLarge { max, actual })
+            if max == MAX_MANIFEST_BYTES && actual > MAX_MANIFEST_BYTES
+    ));
+
+    // Every representation that is built reads back from its own artifact and payload.
+    let built = representation("alpha", vec![1.0, 0.0, 0.0], 10.0, 1);
+    let (manifest, weights) = built.to_artifact();
+    assert_eq!(
+        PodRepresentation::from_artifact(&manifest, &weights),
+        Ok(built.clone())
+    );
+    assert_eq!(
+        PodRepresentation::from_payload(&built.to_payload()),
+        Ok(built)
+    );
+}
+
+#[test]
 fn invalid_representations_are_refused_with_the_reason() {
     let refuse = |edit: &dyn Fn(&mut PodRepresentationParts)| {
         let mut broken = parts("alpha", vec![1.0, 0.0, 0.0], 10.0, 1);

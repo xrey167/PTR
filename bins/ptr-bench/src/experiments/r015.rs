@@ -63,6 +63,7 @@ use ptr_types::{
 use ptr_verifier::{VerificationReport, VerificationStatus, Verifier};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
@@ -380,6 +381,10 @@ fn evaluate_world(seed: u64, smoke: bool, dir: &Path) -> Result<Value, String> {
     let mut registry = PodRegistry::default();
     let mut representations: Vec<PodRepresentation> = Vec::new();
     let mut descriptions: Vec<(PodId, Vec<f32>)> = Vec::new();
+    // Artifacts that are valid but learned for another project, namespace, pod or generation than
+    // the world entry that names them. They count as refused, so the seed is INVALID through the
+    // coverage rule `representations_refused <= 0` instead of being judged as a routing result.
+    let mut unbound: u64 = 0;
     for pod in world["pods"].as_array().ok_or("pods missing")? {
         let pod_id = PodId::from(pod["pod_id"].as_str().ok_or("pod_id missing")?);
         let generation =
@@ -398,7 +403,7 @@ fn evaluate_world(seed: u64, smoke: bool, dir: &Path) -> Result<Value, String> {
             })),
         );
         descriptions.push((
-            pod_id,
+            pod_id.clone(),
             f32_vector(&pod["description_vector"], "description")?,
         ));
         let manifest_path = dir.join(pod["manifest"].as_str().ok_or("manifest missing")?);
@@ -413,15 +418,19 @@ fn evaluate_world(seed: u64, smoke: bool, dir: &Path) -> Result<Value, String> {
         );
         let weights = std::fs::read(&weights_path)
             .map_err(|error| format!("cannot read {}: {error}", weights_path.display()))?;
-        representations.push(
-            PodRepresentation::from_artifact(&manifest, &weights)
-                .map_err(|error| format!("{}: {error}", manifest_path.display()))?,
-        );
+        let representation = PodRepresentation::from_artifact(&manifest, &weights)
+            .map_err(|error| format!("{}: {error}", manifest_path.display()))?;
+        if representation_is_bound(&representation, &project, &namespace, &pod_id, generation) {
+            representations.push(representation);
+        } else {
+            unbound += 1;
+        }
     }
     let loaded = learned_router(&encoder, &representations, 500, 150)?
         .store()
         .len() as u64;
-    let refused = representations.len() as u64 - loaded;
+    let refused = unbound + (representations.len() as u64 - loaded);
+    let registered: BTreeSet<PodId> = descriptions.iter().map(|(pod, _)| pod.clone()).collect();
 
     let learned = learned_router(
         &encoder,
@@ -454,6 +463,10 @@ fn evaluate_world(seed: u64, smoke: bool, dir: &Path) -> Result<Value, String> {
         (Tally::default(), Tally::default(), Tally::default());
     let mut sweep_tallies = vec![Tally::default(); SWEEP.len()];
     let mut reflex_probes: Vec<ReflexProbe> = Vec::new();
+    // Labels that name no registered pod. A malformed world is INVALID through the coverage rule
+    // `unregistered_labels <= 0`; the oracle would otherwise route to the unknown label and count
+    // it as correct.
+    let mut unregistered_labels: u64 = 0;
     for (index, probe) in world["probes"]
         .as_array()
         .ok_or("probes missing")?
@@ -461,6 +474,9 @@ fn evaluate_world(seed: u64, smoke: bool, dir: &Path) -> Result<Value, String> {
         .enumerate()
     {
         let label = probe["label"].as_str().map(PodId::from);
+        if label.as_ref().is_some_and(|pod| !registered.contains(pod)) {
+            unregistered_labels += 1;
+        }
         let query = f32_vector(&probe["vector"], "probe vector")?;
         let features = RouteFeatures::new()
             .with_vector(query.clone())
@@ -546,6 +562,7 @@ fn evaluate_world(seed: u64, smoke: bool, dir: &Path) -> Result<Value, String> {
         "representations_refused": refused,
         "probes": learned_tally.probes,
         "labelled_probes": learned_tally.labelled,
+        "unregistered_labels": unregistered_labels,
         "arms": {
             "learned": learned_tally.metrics(),
             "learned_no_abstain": no_abstain_tally.metrics(),
@@ -875,6 +892,20 @@ fn reflex_pass(
     }))
 }
 
+/// Whether `representation` was learned for exactly the world entry that names it.
+fn representation_is_bound(
+    representation: &PodRepresentation,
+    project: &ProjectId,
+    namespace: &NamespaceId,
+    pod: &PodId,
+    generation: ptr_types::Generation,
+) -> bool {
+    representation.project() == project
+        && representation.namespace() == namespace
+        && representation.pod() == pod
+        && representation.generation() == generation
+}
+
 fn route<R: Router + ?Sized>(
     router: &R,
     request: &RouteRequest<'_>,
@@ -1014,13 +1045,20 @@ mod tests {
 
     /// A world in which every representation failed its activation gate.
     fn world_with_failed_gates(dir: &Path) {
+        write_world(dir, false);
+    }
+
+    /// A two-pod world (`alpha`, `beta`, namespace `supply`, generation 1) whose representations
+    /// passed (`activated`) or failed their activation gate.
+    fn write_world(dir: &Path, activated: bool) {
         let encoder = EncoderRef {
             id: "test-encoder".into(),
             revision: "r1".into(),
         };
         let gate = ptr_router::GateReport {
             alias_threshold_permille: 800,
-            alias_min_permille: 700,
+            // Above the alias threshold only when the gate passed.
+            alias_min_permille: if activated { 850 } else { 700 },
             negative_threshold_permille: 900,
             negative_reject_permille: 960,
             alias_count: 4,
@@ -1042,7 +1080,7 @@ mod tests {
                 bias: 10.0,
                 weights: ptr_router::ScoreWeights::default(),
                 gate,
-                activated: false,
+                activated,
             })
             .unwrap();
             let (manifest, weights) = representation.to_artifact();
@@ -1054,7 +1092,7 @@ mod tests {
                 "pod_id": name,
                 "generation": 1,
                 "manifest": format!("{name}.json"),
-                "status": "not-activated",
+                "status": if activated { "activated" } else { "not-activated" },
                 "description_vector": [1.0, 0.0, 0.0],
             }));
         }
@@ -1101,6 +1139,66 @@ mod tests {
         );
         assert!(criteria.contains("\"representations_refused <= 0\""));
         assert!(result["representations_refused"].as_i64().unwrap() > 0);
+    }
+
+    fn edit_world(dir: &Path, edit: impl FnOnce(&mut Value)) {
+        let path = dir.join("world.json");
+        let mut world = read_json(&path).unwrap();
+        edit(&mut world);
+        std::fs::write(path, world.to_string()).unwrap();
+    }
+
+    #[test]
+    fn an_artifact_learned_for_another_world_entry_counts_as_refused() {
+        let scratch = Scratch::create(u64::MAX - 2).unwrap();
+        write_world(&scratch.0, true);
+        let result = evaluate_world(1, true, &scratch.0).unwrap();
+        assert_eq!(result["representations_loaded"], 2);
+        assert_eq!(result["representations_refused"], 0);
+
+        // The world registers beta at generation 2, its artifact was learned for generation 1.
+        edit_world(&scratch.0, |world| {
+            world["pods"][1]["generation"] = json!(2)
+        });
+        let result = evaluate_world(1, true, &scratch.0).unwrap();
+        assert_eq!(result["representations_loaded"], 1);
+        assert_eq!(result["representations_refused"], 1);
+
+        // Both artifacts were learned for namespace supply, the world names another one.
+        write_world(&scratch.0, true);
+        edit_world(&scratch.0, |world| world["namespace"] = json!("other"));
+        let result = evaluate_world(1, true, &scratch.0).unwrap();
+        assert_eq!(result["representations_loaded"], 0);
+        assert_eq!(result["representations_refused"], 2);
+
+        // An artifact under another pod's entry.
+        write_world(&scratch.0, true);
+        edit_world(&scratch.0, |world| {
+            world["pods"][1]["manifest"] = json!("alpha.json");
+        });
+        let result = evaluate_world(1, true, &scratch.0).unwrap();
+        assert_eq!(result["representations_refused"], 1);
+    }
+
+    #[test]
+    fn a_label_that_names_no_registered_pod_invalidates_the_seed() {
+        let scratch = Scratch::create(u64::MAX - 3).unwrap();
+        write_world(&scratch.0, true);
+        let result = evaluate_world(1, true, &scratch.0).unwrap();
+        assert_eq!(result["unregistered_labels"], 0);
+
+        edit_world(&scratch.0, |world| {
+            world["probes"][0]["label"] = json!("gamma")
+        });
+        let result = evaluate_world(1, true, &scratch.0).unwrap();
+        assert_eq!(result["unregistered_labels"], 1);
+        // The oracle routes to the unknown label and counts it as correct, so only the coverage
+        // rule keeps such a world from being judged.
+        assert_eq!(result["arms"]["oracle"]["correct"], 2);
+        let criteria = include_str!(
+            "../../../../experiments/runtime/R015-dragonfly-pod-addressing/criteria.toml"
+        );
+        assert!(criteria.contains("\"unregistered_labels <= 0\""));
     }
 
     #[test]

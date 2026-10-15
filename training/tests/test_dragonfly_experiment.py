@@ -103,6 +103,31 @@ class EntrypointTest(unittest.TestCase):
             self.assertIn("preflight passed", stderr.getvalue())
             self.assertEqual(list(Path(raw).iterdir()), [config], "a preflight builds no world")
 
+    def test_the_preflight_refuses_a_vector_that_is_zero_or_not_finite(self) -> None:
+        dims = experiment.ENCODER_DIMS
+        overflow = [1e200] * dims
+        for name, vector in (
+            ("zero", [0.0] * dims),
+            ("nan", [float("nan")] + [0.0] * (dims - 1)),
+            ("infinity", [float("inf")] + [1.0] * (dims - 1)),
+            ("overflowing norm", overflow),
+            ("short", [1.0] * (dims - 1)),
+        ):
+            with self.subTest(name), tempfile.TemporaryDirectory() as raw:
+                config = _config(Path(raw), "m", "r")
+                standin = mock.Mock(dims=dims, encoder_id="m", encoder_revision="r")
+                standin.encode.return_value = vector
+                report = {"python": _running_python(), "python_matches": True, "matches_lock": True}
+                stderr = io.StringIO()
+                with (
+                    mock.patch.object(experiment, "pinned_encoder", return_value=standin),
+                    mock.patch.object(experiment, "environment_report", return_value=report),
+                    contextlib.redirect_stderr(stderr),
+                ):
+                    status = main(["--preflight", "--config", str(config)])
+                self.assertEqual(status, 2)
+                self.assertIn("unusable vector", stderr.getvalue())
+
     def test_the_preflight_takes_no_seed_and_no_smoke_and_a_run_needs_a_seed(self) -> None:
         for argv in (["--preflight", "--seed", "1"], ["--preflight", "--smoke"], ["--smoke"]):
             with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
