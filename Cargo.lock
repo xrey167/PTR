@@ -4868,8 +4868,12 @@ dependencies = [
 name = "ptr-worker"
 version = "0.1.0"
 dependencies = [
+ "ed25519-dalek",
+ "libc",
+ "ptr-fabric",
  "ptr-pods",
  "ptr-protocol",
+ "ptr-runtime",
  "ptr-types",
 ]
 

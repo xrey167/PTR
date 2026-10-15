@@ -884,3 +884,40 @@ fn the_supervisor_can_list_tracked_pairs_and_release_those_of_dropped_tables() {
     assert!(quota.tracked_pairs().is_empty());
     assert_eq!(quota.usage().host_bytes, 0);
 }
+
+#[test]
+fn unregistering_by_session_leaves_a_respawned_producer_alone() {
+    let world = world();
+    let quota = quota(100 * PAGE, 100 * PAGE, 100 * PAGE, 8);
+    let mut table = table("a", &quota, &[("p", 1)]);
+    // The producer is respawned under session 2.
+    assert!(table
+        .register_producer("p", signer().verifying_key(), "stage", WorkerSession(2))
+        .expect("respawned")
+        .is_empty());
+    // Fencing the old session is a no-op: the new one still admits.
+    assert!(table
+        .unregister_producer_session("p", WorkerSession(1))
+        .is_empty());
+    admit(
+        &mut table,
+        &world,
+        "p",
+        101,
+        &handle(&world, "a", Carrier::HostShm, 1),
+    )
+    .expect("the respawned producer is still registered");
+    // Fencing the current session does unregister it.
+    let _ = table.unregister_producer_session("p", WorkerSession(2));
+    assert_eq!(
+        admit(
+            &mut table,
+            &world,
+            "p",
+            101,
+            &handle(&world, "a", Carrier::HostShm, 2)
+        )
+        .unwrap_err(),
+        HandleRejection::UnknownPrincipal
+    );
+}

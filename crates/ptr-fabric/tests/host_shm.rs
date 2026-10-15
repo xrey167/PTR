@@ -401,3 +401,30 @@ fn an_expectation_from_a_handle_above_the_bound_is_refused() {
         }
     );
 }
+
+#[test]
+fn the_supervisor_inspects_a_region_before_it_admits_the_handle() {
+    let _serial = serial();
+    let export = ShmExport::create(&tensor(10_000)).expect("export");
+    let region = ptr_fabric::inspect_region(export.fd()).expect("inspect");
+    assert_eq!(region.byte_len, 10_000);
+    assert_eq!(region.footprint_bytes, export.footprint_bytes());
+    assert_eq!(region.footprint_bytes % host_page_size(), 0);
+    // A memfd that is still writable and resizable is refused, seal by seal.
+    let open = memfd_create(
+        "ptr-inspect-test",
+        MemfdFlags::CLOEXEC | MemfdFlags::ALLOW_SEALING,
+    )
+    .expect("memfd");
+    ftruncate(&open, 4096).expect("size");
+    assert_eq!(
+        ptr_fabric::inspect_region(std::os::fd::AsFd::as_fd(&open)).unwrap_err(),
+        FabricError::MissingSeal(Seal::Write)
+    );
+    // A descriptor that cannot carry seals at all is not a region.
+    let file = File::open("/proc/self/status").expect("a regular file");
+    assert_eq!(
+        ptr_fabric::inspect_region(std::os::fd::AsFd::as_fd(&file)).unwrap_err(),
+        FabricError::NotSealable
+    );
+}

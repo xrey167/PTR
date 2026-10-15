@@ -8,3 +8,4 @@ flowchart LR
     D -. "verify_content / content_digest" .-> H
     S -. "descriptor over the control socket" .-> W["worker channel\nSOCK_SEQPACKET + SCM_RIGHTS\n(worker-channel, Linux)"]
     W --> K["confine: probe, carrier policy,\nseccomp allowlist (worker-confine, Linux)"]
+    W --> U["supervisor: spawn, confine, observe,\npoll, reap + drain (worker-supervisor, Linux)"]

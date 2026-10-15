@@ -261,6 +261,23 @@ jobs:
       - run: cargo +1.99.0 test -p ptr-fabric --features shm-backend --locked
       - run: cargo +1.99.0 test -p ptr-fabric --features worker-channel,worker-confine --locked
 
+  pod-worker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - run: cargo +stable clippy -p ptr-fabric --features worker-supervisor --all-targets --locked -- -D warnings
+      - run: cargo +stable clippy -p ptr-worker --features data-plane --all-targets --locked -- -D warnings
+      - run: cargo +stable clippy -p ptr-worker --all-features --all-targets --locked -- -D warnings
+      - run: cargo +stable test -p ptr-fabric --features worker-supervisor --lib --locked
+      - run: cargo +stable test -p ptr-worker --all-features --lib --bins --test stdio_session --locked
+      - run: python scripts/run_pod_worker_tests.py --toolchain stable
+      - run: rustup toolchain install 1.99.0 --profile minimal
+      - run: python scripts/run_pod_worker_tests.py --toolchain 1.99.0
+
   storage-tiers:
     runs-on: ubuntu-latest
     steps:

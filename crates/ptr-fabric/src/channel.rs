@@ -197,6 +197,22 @@ impl Channel {
         }
     }
 
+    /// Take over the descriptor an exec'd worker inherited from its supervisor (the number the
+    /// supervisor put on the command line). Refuses a descriptor that is not a connected
+    /// `SOCK_SEQPACKET` socket, and closes it in that case.
+    ///
+    /// # Safety
+    ///
+    /// `raw` must be an open descriptor that nothing else in this process owns or closes: the
+    /// channel takes ownership and closes it on drop. A worker calls this once, at start, with
+    /// the number the supervisor passed.
+    pub unsafe fn from_inherited_fd(raw: std::os::fd::RawFd) -> Result<Self, ChannelError> {
+        use std::os::fd::FromRawFd;
+        // SAFETY: the caller guarantees `raw` is an open descriptor with no other owner.
+        let fd = unsafe { OwnedFd::from_raw_fd(raw) };
+        Self::from_fd(fd)
+    }
+
     /// Give up the socket, for example to pass it to a child.
     pub fn into_fd(self) -> OwnedFd {
         self.fd
@@ -288,6 +304,38 @@ impl Channel {
     pub fn recv(&self) -> Result<Frame, ChannelError> {
         let raw = receive_past_reset(&self.fd, RecvFlags::CMSG_CLOEXEC)?;
         raw.into_frame(&self.fd)
+    }
+
+    /// Wait until a frame (or the end of the peer) can be received: `true` when the socket is
+    /// readable or hung up, `false` when `timeout` passed first. `None` waits without bound.
+    /// A following [`try_recv`](Self::try_recv) does not block; a supervisor uses the pair to
+    /// bound how long it waits for a worker.
+    pub fn wait_readable(
+        &self,
+        timeout: Option<std::time::Duration>,
+    ) -> Result<bool, ChannelError> {
+        let mut fds = [PollFd::new(&self.fd, PollFlags::IN)];
+        let deadline = timeout.map(|limit| std::time::Instant::now() + limit);
+        loop {
+            let remaining =
+                deadline.map(|end| end.saturating_duration_since(std::time::Instant::now()));
+            let spec = remaining.map(|left| Timespec {
+                tv_sec: i64::try_from(left.as_secs()).unwrap_or(i64::MAX),
+                tv_nsec: i64::from(left.subsec_nanos()),
+            });
+            match poll(&mut fds, spec.as_ref()) {
+                Ok(0) => return Ok(false),
+                Ok(_) => return Ok(true),
+                Err(Errno::INTR) => {}
+                Err(error) => return Err(io_error(error)),
+            }
+        }
+    }
+
+    /// Has the peer closed its end (`POLLHUP`)? True even while frames it sent are still
+    /// queued, so it says "the peer is gone", not "nothing is left to read".
+    pub fn peer_hung_up(&self) -> bool {
+        peer_hung_up(&self.fd)
     }
 
     /// Like [`recv`](Self::recv) but returns [`ChannelError::WouldBlock`] when nothing is

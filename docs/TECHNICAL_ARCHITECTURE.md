@@ -28,10 +28,10 @@ its owner; the only tolerated exception is `ptr-bench` → `tokio-postgres`
 | 1 | foundation | one concern each, depend on the kernel only | `ptr-semdb`, `ptr-ledger`, `ptr-model-api`, `ptr-security`, `ptr-protocol`, `ptr-storage`, `ptr-fabric`, `ptr-memory`, `ptr-lineage`, `ptr-core`, `ptr-exec`, `ptr-events`, `ptr-config`, `ptr-analytics`, `ptr-ingress`, `ptr-inspect`, `ptr-observe` |
 | 2 | domain | built on foundation crates | `ptr-verifier`, `ptr-search`, `ptr-net`, `ptr-labeling` |
 | 3 | composition | combine domain crates | `ptr-pods`, `ptr-branch`, `ptr-feedback`, `ptr-fastmem`, `ptr-cluster` |
-| 4 | projection | routing and materialization | `ptr-router`, `ptr-state`, `ptr-worker` |
+| 4 | projection | routing and materialization | `ptr-router`, `ptr-state` |
 | 5 | orchestration | the runtime and the PostgreSQL substrate | `ptr-runtime`, `ptr-pg` |
 | 6 | surface | HTTP API and the runtime-level wires | `ptr-server`, `ptr-execwire`, `ptr-podwire` |
-| 7 | binary | composition only | `ptrd`, `ptrctl`, `ptr-bench` |
+| 7 | binary | composition only | `ptrd`, `ptrctl`, `ptr-bench`, `ptr-worker` |
 
 Backend ownership: `iroh`, `wireguard-uapi`, `wintun` → `ptr-net`; `raft`, `raft-engine` →
 `ptr-ledger`; `turso` → `ptr-state`; `tokio-postgres`, `deadpool-postgres` → `ptr-pg`; `opendal` →
