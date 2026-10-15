@@ -31,6 +31,7 @@ import argparse
 import hashlib
 import importlib.metadata
 import json
+import math
 import platform
 import random
 import re
@@ -355,7 +356,16 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as error:  # noqa: BLE001 - any failure of the model is a failed preflight
             print(f"ptr_training.dragonfly.experiment: the pinned encoder fails: {error}", file=sys.stderr)
             return 2
-        if len(probe) != encoder.dims or not any(probe):
+        values = [float(value) for value in probe]
+        # `any` counts NaN and infinity as non-zero, so finiteness is checked element by element
+        # and on the norm the trainer normalizes by.
+        norm = math.sqrt(math.fsum(value * value for value in values)) if values else 0.0
+        if (
+            len(values) != encoder.dims
+            or not all(math.isfinite(value) for value in values)
+            or not math.isfinite(norm)
+            or norm == 0.0
+        ):
             print(
                 "ptr_training.dragonfly.experiment: the pinned encoder returned an unusable vector",
                 file=sys.stderr,
