@@ -222,11 +222,20 @@ impl Report {
     /// is unmet or a control did not trip (a vacuous or broken run, whatever else fired), else
     /// 1 when a falsifier fired, else 0.
     pub fn exit_status(&self) -> i32 {
-        if !self.coverage_unmet.is_empty() || !self.controls_dead.is_empty() {
-            2
-        } else {
-            i32::from(!self.falsifiers_tripped.is_empty())
-        }
+        exit_code(
+            &self.coverage_unmet,
+            &self.controls_dead,
+            &self.falsifiers_tripped,
+        )
+    }
+}
+
+/// The one classification of a run, shared by the process status and the printed record.
+fn exit_code(coverage_unmet: &[String], controls_dead: &[String], falsifiers: &[String]) -> i32 {
+    if !coverage_unmet.is_empty() || !controls_dead.is_empty() {
+        2
+    } else {
+        i32::from(!falsifiers.is_empty())
     }
 }
 
@@ -493,9 +502,7 @@ fn report(c: &Counters, seed: u64, sequences: u64, elapsed_ms: i64) -> Report {
         "timing".into(),
         Json::obj([("elapsed_ms", int(elapsed_ms))]),
     ));
-    let exit = i32::from(
-        !falsifiers_tripped.is_empty() || !coverage_unmet.is_empty() || !controls_dead.is_empty(),
-    );
+    let exit = exit_code(&coverage_unmet, &controls_dead, &falsifiers_tripped);
     fields.push(("exit_status".into(), int(i64::from(exit))));
     Report {
         json: Json::Obj(fields),
@@ -578,6 +585,17 @@ mod tests {
             format!("{before}{rest}")
         };
         assert_eq!(strip(&first), strip(&second));
+    }
+
+    #[test]
+    fn a_harness_failure_exits_2_and_only_a_falsifier_alone_exits_1() {
+        let some = vec!["x".to_string()];
+        let none: Vec<String> = Vec::new();
+        assert_eq!(exit_code(&none, &none, &none), 0);
+        assert_eq!(exit_code(&none, &none, &some), 1);
+        assert_eq!(exit_code(&some, &none, &none), 2);
+        assert_eq!(exit_code(&none, &some, &none), 2);
+        assert_eq!(exit_code(&some, &some, &some), 2);
     }
 
     #[test]

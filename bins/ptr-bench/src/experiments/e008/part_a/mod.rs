@@ -126,17 +126,16 @@ fn product_finding(get: &dyn Fn(&str) -> i64) -> bool {
 }
 
 /// Whether the cases and controls leave a run that can be judged. `Err` is the harness's fault
-/// (exit 2); `Ok` lets the record be printed, with exit 1 if a falsifier fired.
+/// (exit 2); `Ok` lets the record be printed, with exit 1 if a falsifier fired. A case that
+/// could not run is a validity failure, which precedes every falsifier; a dead control only
+/// yields to an observed product finding (controls come after falsifiers).
 fn run_standing(
     get: &dyn Fn(&str) -> i64,
     control_trips: &dyn Fn(&str) -> i64,
     failures: &[String],
 ) -> Result<(), String> {
     if !failures.is_empty() {
-        if !product_finding(get) {
-            return Err(format!("a case could not run: {}", failures.join("; ")));
-        }
-        return Ok(());
+        return Err(format!("a case could not run: {}", failures.join("; ")));
     }
     for control in controls::CONTROLS {
         if control_trips(control) < 1 && !product_finding(get) {
@@ -653,7 +652,8 @@ mod tests {
     fn an_observed_violation_takes_precedence_over_a_dead_control_and_validity_over_both() {
         let stale = counters(&["outputs_after_upstream_invalidation"]);
         assert!(run_standing(&stale, &|_| 0, &[]).is_ok());
-        assert!(run_standing(&stale, &|_| 1, &["x".to_string()]).is_ok());
+        // A case that could not run is the harness's failure even beside a product finding.
+        assert!(run_standing(&stale, &|_| 1, &["x".to_string()]).is_err());
         let invalid = counters(&[
             "outputs_after_upstream_invalidation",
             "procedure_mismatches",

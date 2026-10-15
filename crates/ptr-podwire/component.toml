@@ -67,9 +67,12 @@ missing = [
   "A forward clock spike pins the assembler: the clock never goes back (it keeps the highest time seen), so one call with a time far in the future (a bad clock step, a test passing u64::MAX) makes every later chunk read Expired for good. The direction is safe (nothing is wrongly admitted), the cost is liveness only, and a restart of the receiver is the remedy.",
   "A frame in flight is copied several times at completion (chunks, joined bytes, decoded tensor) and only the chunks count against the byte cap.",
   "The release buffer of the assembler (ids of abandoned or expired frames' chunks, about 32 per frame) is drained only by expire(): a receiver that only calls offer() grows it without bound (no production caller exists; the E007 harness calls expire()). The duty to call expire() is part of the contract. The key-rotation policy drop and the release-once behaviour are covered by unit tests, not by planted E007 mutations.",
+  "Replay state across principal ids is found by scanning the tables, not indexed: a principal table is never removed, so offer() checks every table registered with the same (key, stage identity) and the cost of that check grows with the number of endpoint identities a receiver has seen (sender restarts) for its lifetime (Codex P2 on PR #167; bounded by the deployment's registrations, no retire path yet)",
+  "A tombstone belongs to its table's current binding: when a principal id is re-registered with another key or stage its retained tombstones stay in its table under the new binding, so a later principal id registered with the original (key, stage identity) does not see them and a still-live signed frame from before the rotation can be delivered once more under that id until its deadline plus skew (Codex P2 on PR #167; needs tombstones keyed by their originating binding)",
 ]
 
 next = [
+  "Key replay state by (verifying key, stage identity) in one shared index, with the originating binding on each tombstone and a retire path for principal tables that hold nothing (closes both P2 limits of PR #167 together; must keep the frozen E007 mutation anchors of offer() or move them with a successor experiment)",
   "Journal the access policy per ADR-0022 spec S7 (decided with D5: history governs membership, the host still supplies authority), after the admission journal of spec S4",
   "Build the accept loop in ptrd under ptr-net's ServePolicy (ADR-0022, spec S3) once a multi-host deployment exists",
 ]

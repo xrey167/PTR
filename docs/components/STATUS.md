@@ -31,7 +31,7 @@
 | [ptr-observe](../../crates/ptr-observe/README.md) | `prototype` | 14 | 2629 | 11 | 70 | 21 | 5 | F001:frozen, E003:planned | observability:open |
 | [ptr-pg](../../crates/ptr-pg/README.md) | `prototype` | 17 | 6816 | 3 | 170 | 48 | 13 | L004:completed, Q003:superseded, Q003-v2:superseded, Q003-v3:frozen | relational-substrate:open, materialized-state:open, lexical-search:open, local-vector-search:open, event-streaming:open |
 | [ptr-pods](../../crates/ptr-pods/README.md) | `prototype` | 40 | 19165 | 28 | 357 | 59 | 15 | R002:planned, E001:planned, E007:frozen | environment-runtime:open |
-| [ptr-podwire](../../crates/ptr-podwire/README.md) | `prototype` | 5 | 5755 | 5 | 110 | 45 | 15 | E007:frozen | — |
+| [ptr-podwire](../../crates/ptr-podwire/README.md) | `prototype` | 5 | 5755 | 5 | 110 | 45 | 17 | E007:frozen | — |
 | [ptr-protocol](../../crates/ptr-protocol/README.md) | `prototype` | 10 | 7179 | 4 | 139 | 20 | 6 | R002:planned, E001:planned, E007:frozen, E008:planned | network-codec:open, local-serialization:open |
 | [ptr-router](../../crates/ptr-router/README.md) | `prototype` | 18 | 9727 | 14 | 216 | 32 | 9 | M004:planned, R002:planned, E003:planned | inference-serving:open, distributed-data-compute:open |
 | [ptr-runtime](../../crates/ptr-runtime/README.md) | `prototype` | 65 | 57863 | 99 | 1493 | 172 | 56 | E001:planned, E003:planned, E004:planned, E007:frozen, E008:planned, L001-v2:frozen, R011:frozen, R012:frozen | — |
