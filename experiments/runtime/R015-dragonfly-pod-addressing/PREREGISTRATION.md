@@ -69,8 +69,9 @@ The rules are in `criteria.toml`, in a fixed grammar, and are all that judges.
 - GO only if both hold on all five seeds. A single seed that fails either is NO-GO: the representations stay
   deactivated and the default `PodRouter` stays the only router. Seeds are not re-run, replaced or dropped.
 - Validity controls (coverage): the oracle reaches the ceiling (accuracy 1000 permille, no false route), the
-  constant-score router does not beat description cosine, every representation passed its activation gate, and the
-  probe counts are those of the design. A seed missing one is INVALID: the verdict is "no result", the cause is fixed
+  constant-score router does not beat description cosine, every representation passed its activation gate and was
+  learned for the project, namespace, pod and generation of the world entry that names it, every probe label names
+  a registered pod, and the probe counts are those of the design. A seed missing one is INVALID: the verdict is "no result", the cause is fixed
   under a successor experiment, and the seed is not reused.
 - Stop: all five seeds are run, in order, once. If a seed is INVALID the series stops there and the verdict is "no
   result"; if a seed fails the primary rules the series still completes, so the negative result is complete.

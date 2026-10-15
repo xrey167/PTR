@@ -17,8 +17,10 @@
 # - coverage: prerequisites. A seed that misses one is INVALID (vacuous), not a pass and not a failure.
 #   The oracle and constant-score rules are the validity controls: the oracle is the ceiling and must
 #   reach it, the constant-score router is the floor and must not beat description cosine, and every
-#   representation must have passed its activation gate (otherwise the learned arm abstains on partial
-#   coverage and the comparison is not the one preregistered).
+#   representation must have passed its activation gate and been learned for the project, namespace,
+#   pod and generation of the world entry that names it (otherwise the learned arm abstains on partial
+#   coverage and the comparison is not the one preregistered). Every probe label must name a registered
+#   pod (`unregistered_labels`), or the oracle would count a route to an unknown label as correct.
 # - falsifiers: the primary criterion, from the plan. On every confirmatory seed the learned router has
 #   a routing accuracy at least that of the cosine-only baseline (margin 0) and a false-route rate
 #   strictly below it. The strictness is `false_route_gap_permille >= 1`: the gap is the cosine-only
@@ -40,6 +42,7 @@ coverage = [
   "labelled_probes >= 36",
   "pods >= 6",
   "representations_refused <= 0",
+  "unregistered_labels <= 0",
   "arms.oracle.routing_accuracy_permille >= 1000",
   "arms.oracle.false_route_permille <= 0",
   "arms.constant_score.routing_accuracy_permille <= arms.cosine_only.routing_accuracy_permille",
