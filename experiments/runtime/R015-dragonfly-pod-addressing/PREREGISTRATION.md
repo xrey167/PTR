@@ -67,7 +67,8 @@ when the primary path misses (an abstention, a pod without a learned address, a 
 default pod may serve the request through the same verifier path. The harness measures it in a `reflex` block:
 the `learned` arm is put behind the runtime's real failover path, with a fallback plan naming the lexically
 smallest pod id as the default (fixed here, before any run; its lifecycle generation is live), and each of the
-43 probes is dispatched as a Pod request. Two claims, one metric each, kept apart:
+43 probes is dispatched as a Pod request. The harness host admits exactly the activated
+representations the router's store holds (the runtime fails closed for a sampler that admits none). Two claims, one metric each, kept apart:
 
 - `reflex_failover_coverage` (mechanism). Metric `reflex.failover_coverage_permille`: failovers over misses,
   integer permille rounded down. Claim: every miss of the learned router is caught by the default pod

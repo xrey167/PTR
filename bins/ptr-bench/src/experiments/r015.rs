@@ -48,10 +48,10 @@ use ptr_model_api::{
 use ptr_pods::{DynPod, PodManifest, PodRegistry};
 use ptr_protocol::TypedPayload;
 use ptr_router::{
-    route_checked, CheckedRouter, DecisionNonce, DefaultPodPlan, EncoderRef, LearnedPodRouter,
-    LearnedRouterConfig, NonceSequence, PodRepresentation, PodRepresentationParts, PodRouter,
-    RepresentationStore, RouteError, RouteFeatures, RouteRequest, RoutedChoice, RoutedError,
-    Router, SamplingKey,
+    route_checked, AdmittedRepresentation, CheckedRouter, DecisionNonce, DefaultPodPlan,
+    EncoderRef, LearnedPodRouter, LearnedRouterConfig, NonceSequence, PodRepresentation,
+    PodRepresentationParts, PodRouter, RepresentationStore, RouteError, RouteFeatures,
+    RouteRequest, RoutedChoice, RoutedError, Router, SamplingKey,
 };
 use ptr_runtime::{
     pod_lifecycle_target, PodSampler, PtrRuntime, RouteQuery, RuntimeError, SetFallbackPlan,
@@ -357,6 +357,17 @@ fn run_seed(seed: u64, smoke: bool) -> Result<Value, String> {
 
 /// Routes the probes of the world in `dir` with every arm and returns the result object.
 fn evaluate_world(seed: u64, smoke: bool, dir: &Path) -> Result<Value, String> {
+    evaluate_world_admitting(seed, smoke, dir, admitted_representations)
+}
+
+/// [`evaluate_world`] with the host's admission of the loaded representations made explicit, so a
+/// test can show that a host admitting none scores nothing.
+fn evaluate_world_admitting(
+    seed: u64,
+    smoke: bool,
+    dir: &Path,
+    admit: fn(&[PodRepresentation]) -> BTreeSet<AdmittedRepresentation>,
+) -> Result<Value, String> {
     let world = read_json(&dir.join("world.json"))?;
     let world_smoke = world["smoke"].as_bool().ok_or("world.smoke missing")?;
     if world_smoke != smoke {
@@ -530,6 +541,7 @@ fn evaluate_world(seed: u64, smoke: bool, dir: &Path) -> Result<Value, String> {
         &registry,
         &project,
         &reflex_probes,
+        admit(&representations),
         // The baseline of the dispatch claim: description cosine answers every probe.
         DispatchBaseline {
             correct: cosine_tally.correct,
@@ -604,6 +616,10 @@ struct ReflexProbe {
 struct HarnessSampler {
     router: CheckedRouter<LearnedPodRouter>,
     vectors: BTreeMap<String, Vec<f32>>,
+    /// The representations this host admits for every request: those the router's store holds.
+    /// A sampler that names none routes against an empty set (fail closed), so every request
+    /// would be a no-representation miss.
+    admitted: BTreeSet<AdmittedRepresentation>,
     /// The pod the router chose, by request id.
     routed: Mutex<BTreeMap<String, PodId>>,
 }
@@ -629,8 +645,26 @@ impl PodSampler for HarnessSampler {
             .ok_or_else(|| RouteError::InvalidFeatures {
                 message: "no query vector for the request".into(),
             })?;
-        RouteFeatures::new().with_vector(vector)
+        Ok(RouteFeatures::new()
+            .with_vector(vector)?
+            .with_admitted_representations(self.admitted.clone()))
     }
+}
+
+/// The representations the learned router's store accepts (the activated ones), named by
+/// project, pod and digest: what the harness host admits, since it has no lifecycle-bound cache.
+fn admitted_representations(
+    representations: &[PodRepresentation],
+) -> BTreeSet<AdmittedRepresentation> {
+    representations
+        .iter()
+        .filter(|representation| representation.activated())
+        .map(|representation| AdmittedRepresentation {
+            project: representation.project().clone(),
+            pod: representation.pod().clone(),
+            digest: *representation.digest(),
+        })
+        .collect()
 }
 
 /// Asks for one Pod of the experiment's capability and finishes after its answer.
@@ -745,6 +779,7 @@ fn reflex_pass(
     registry: &PodRegistry,
     project: &ProjectId,
     probes: &[ReflexProbe],
+    admitted: BTreeSet<AdmittedRepresentation>,
     baseline: DispatchBaseline,
 ) -> Result<Value, String> {
     let default_pod = registry
@@ -798,6 +833,7 @@ fn reflex_pass(
             .iter()
             .map(|probe| (probe.request_id.clone(), probe.vector.clone()))
             .collect(),
+        admitted,
         routed: Mutex::new(BTreeMap::new()),
     };
 
@@ -1206,7 +1242,7 @@ mod tests {
         // No representation is activated, so the learned router has nothing to score on any probe:
         // every dispatch is a NoRepresentation miss caught by the default pod. The pass must
         // still produce its block (no harness failure) and count what it accounted for.
-        let scratch = Scratch::create(u64::MAX - 2).unwrap();
+        let scratch = Scratch::create(u64::MAX - 6).unwrap();
         world_with_failed_gates(&scratch.0);
         let result = evaluate_world(1, true, &scratch.0).unwrap();
         let reflex = &result["reflex"];
@@ -1221,6 +1257,48 @@ mod tests {
         let rules = criteria_rules();
         assert!(!rules_hold(&rules.routing_coverage, &result));
         assert!(!rules_hold(&rules.dispatch_coverage, &result));
+    }
+
+    #[test]
+    fn a_world_with_activated_representations_dispatches_through_the_admitted_learned_router() {
+        // Both representations are activated and admitted: alpha (the default pod too) scores
+        // high on every probe, so all four dispatches are the router's own hits, none a miss.
+        let scratch = Scratch::create(u64::MAX - 4).unwrap();
+        write_world(&scratch.0, true);
+        let result = evaluate_world(1, true, &scratch.0).unwrap();
+        let reflex = &result["reflex"];
+        assert_eq!(reflex["requests"], 4);
+        assert_eq!(reflex["dispatch_hits"], 4);
+        assert_eq!(reflex["misses"], 0);
+        assert_eq!(reflex["failovers"], 0);
+        // Two probes name alpha; the other two name no pod and are routed to alpha anyway.
+        assert_eq!(reflex["dispatch_hits_correct"], 2);
+
+        // One probe far from both addresses: the router abstains, the default catches the miss.
+        edit_world(&scratch.0, |world| {
+            world["probes"][3]["vector"] = json!([0.0, 0.0, 1.0]);
+        });
+        let result = evaluate_world(1, true, &scratch.0).unwrap();
+        let reflex = &result["reflex"];
+        assert_eq!(reflex["dispatch_hits"], 3);
+        assert_eq!(reflex["misses"], 1);
+        assert_eq!(reflex["failovers"], 1);
+        assert_eq!(reflex["miss_reasons"]["abstained_low_score"], 1);
+        assert_eq!(reflex["failover_coverage_permille"], 1000);
+    }
+
+    #[test]
+    fn a_host_that_admits_no_representation_scores_nothing() {
+        // The counter-check of the admission set: the same world, the same activated
+        // representations, but nothing admitted. The runtime routes against an empty set (fail
+        // closed), so every dispatch is a no-representation miss and none a hit.
+        let scratch = Scratch::create(u64::MAX - 5).unwrap();
+        write_world(&scratch.0, true);
+        let result = evaluate_world_admitting(1, true, &scratch.0, |_| BTreeSet::new()).unwrap();
+        let reflex = &result["reflex"];
+        assert_eq!(reflex["dispatch_hits"], 0);
+        assert_eq!(reflex["misses"], 4);
+        assert_eq!(reflex["miss_reasons"]["no_representation"], 4);
     }
 
     fn delta(hits: u64, misses: u64, failovers: u64) -> CounterDelta {
