@@ -105,7 +105,7 @@ impl ModelError {
     pub fn duplicate_request() -> Self {
         Self::with_kind(
             ModelErrorKind::DuplicateRequest,
-            "request id is already live on this router",
+            "request id already names a live invocation",
         )
     }
 

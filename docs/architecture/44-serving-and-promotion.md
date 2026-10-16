@@ -213,7 +213,7 @@ simulator training happens in PTR until `predictive` has been true on a real gen
   still-open run always has its successor and another principal cannot take the slot meanwhile. The entry
   also keeps the admission's deadline and cancel flag, and every resume path (continuation and trait) is refused once the
   batcher is closed, past its deadline or cancelled, before and after the gate (the closed check is repeated right before the
-  backend call, for a batch as for a resume; `AdaptiveBatcher::close` closes a batcher without dropping it). Plain
+  backend call, for a batch as for a resume; `AdaptiveBatcher::close` closes a batcher without dropping it and, under the queue lock, answers every queued caller with `closed` itself, so none waits on a worker stuck in a slow or hanging backend call; `infer_scoped` checks `closed` before it reserves capacity, so a closed batcher with a full table says `closed` and not `overloaded`). A request id is *live* from `infer_scoped` (the reservation, while the model runs) until its continuation ends, is dropped, evicted or swept, or the run finished or failed; a resume in flight and the successor keep it live. A second `infer_scoped` under a live id, under any scope, is refused with `ModelError::duplicate_request` before the backend runs, because every resume of the continuation rebuilds the same (request id, context, round). Plain
   `infer` and `infer_with` open no continuation. The unscoped
   `resume` of the trait is served only by a batcher built without a gate (which serves no adapter) and is refused when a
   gate is configured. A gate that panics has not admitted the key (refused as revoked, counted); a worker that ends for

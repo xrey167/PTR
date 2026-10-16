@@ -224,6 +224,18 @@ struct Continuations {
     /// Slots promised to calls whose model is still running, in total and per principal.
     reserved: usize,
     reserved_by: std::collections::HashMap<PrincipalKey, usize>,
+    /// Request ids of every live scoped invocation: a reservation whose model is running or an
+    /// open continuation (a resume in flight included). An id leaves the set when its
+    /// continuation ends, is dropped, is evicted or swept, or its reservation is not committed.
+    live: std::collections::HashSet<RequestId>,
+}
+
+/// Why a slot could not be reserved.
+enum Refusal {
+    /// The request id is already live: nothing was run.
+    Duplicate,
+    /// The table or the principal's reservations are full.
+    Full,
 }
 
 /// A slot promised before the model runs. Released on drop unless committed, so an error, a
@@ -231,18 +243,25 @@ struct Continuations {
 struct Reservation<'a> {
     table: &'a Mutex<Continuations>,
     principal: PrincipalKey,
+    request_id: RequestId,
     active: bool,
 }
 
 impl<'a> Reservation<'a> {
-    fn take(table: &'a Mutex<Continuations>, principal: &PrincipalKey, now: u64) -> Option<Self> {
-        let reserved = table
+    fn take(
+        table: &'a Mutex<Continuations>,
+        principal: &PrincipalKey,
+        request_id: &RequestId,
+        now: u64,
+    ) -> Result<Self, Refusal> {
+        table
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .reserve(principal, now);
-        reserved.then(|| Self {
+            .reserve(principal, request_id, now)?;
+        Ok(Self {
             table,
             principal: principal.clone(),
+            request_id: request_id.clone(),
             active: true,
         })
     }
@@ -264,6 +283,11 @@ impl Drop for Reservation<'_> {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .unreserve(&self.principal);
+            self.table
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .live
+                .remove(&self.request_id);
         }
     }
 }
@@ -309,20 +333,30 @@ impl Continuations {
     /// exceed its own quota ([`MAX_CONTINUATIONS_PER_PRINCIPAL`]), so one principal's slow calls
     /// cannot take the global capacity from the others. The request is refused, nothing is
     /// evicted.
-    fn reserve(&mut self, principal: &PrincipalKey, now: u64) -> bool {
+    fn reserve(
+        &mut self,
+        principal: &PrincipalKey,
+        request_id: &RequestId,
+        now: u64,
+    ) -> Result<(), Refusal> {
+        // First, before any capacity question: a live id is refused whatever the load.
+        if self.live.contains(request_id) {
+            return Err(Refusal::Duplicate);
+        }
         if self.reserved_by.get(principal).copied().unwrap_or(0) >= MAX_CONTINUATIONS_PER_PRINCIPAL
         {
-            return false;
+            return Err(Refusal::Full);
         }
         if self.entries.len() + self.reserved >= MAX_OPEN_CONTINUATIONS {
             self.sweep(now);
         }
         if self.entries.len() + self.reserved >= MAX_OPEN_CONTINUATIONS {
-            return false;
+            return Err(Refusal::Full);
         }
         self.reserved += 1;
         *self.reserved_by.entry(principal.clone()).or_insert(0) += 1;
-        true
+        self.live.insert(request_id.clone());
+        Ok(())
     }
 
     fn unreserve(&mut self, principal: &PrincipalKey) {
@@ -353,7 +387,10 @@ impl Continuations {
                 Some(oldest) => {
                     self.close(oldest);
                 }
-                None => return false,
+                None => {
+                    self.live.remove(&continuation.request_id);
+                    return false;
+                }
             }
         }
         self.queues.entry(principal).or_default().push_back(id);
@@ -364,6 +401,7 @@ impl Continuations {
     /// Remove an entry whatever its state.
     fn close(&mut self, id: u128) -> Option<OpenContinuation> {
         let continuation = self.entries.remove(&id)?;
+        self.live.remove(&continuation.request_id);
         let principal = continuation.key.principal.clone();
         if let Some(queue) = self.queues.get_mut(&principal) {
             queue.retain(|open| *open != id);
@@ -736,7 +774,10 @@ impl<B: BatchInferenceBackend + 'static> AdaptiveBatcher<B> {
     /// [`MAX_OPEN_CONTINUATIONS`] entries. `infer` and `infer_with` open none.
     ///
     /// # Errors
-    /// As [`AdaptiveBatcher::infer_with`].
+    /// As [`AdaptiveBatcher::infer_with`], and [`ModelError::duplicate_request`] when another
+    /// scoped invocation under the same request id is still live (its continuation open, a resume
+    /// in flight included, or its model still running), checked before the backend runs. A closed
+    /// batcher answers [`ModelError::closed`] before it looks at capacity.
     pub fn infer_scoped(
         &self,
         request: &ModelRequest,
@@ -749,11 +790,24 @@ impl<B: BatchInferenceBackend + 'static> AdaptiveBatcher<B> {
         // continuation that cannot be kept, and two calls are never both promised the last slot.
         // The reservation is released unless it is committed below, so an error, a cancellation
         // or a finished run evicts nothing.
+        //
+        // A closed batcher says so before it says anything about capacity.
+        if self.shared.lock().closed {
+            return Err(ModelError::closed());
+        }
+        // A request id is live until its continuation ends or is dropped: a second scoped call
+        // under it would resume to the same (request id, context, round) and the backend could
+        // not tell the two apart, so it is refused before the backend runs.
         let now = self.shared.clock.now().0;
-        let Some(reservation) = Reservation::take(&self.shared.table, &key.principal, now) else {
-            bump(&self.shared.counters.overloaded, 1);
-            return Err(ModelError::overloaded());
-        };
+        let reservation =
+            match Reservation::take(&self.shared.table, &key.principal, &request.request_id, now) {
+                Ok(reservation) => reservation,
+                Err(Refusal::Duplicate) => return Err(ModelError::duplicate_request()),
+                Err(Refusal::Full) => {
+                    bump(&self.shared.counters.overloaded, 1);
+                    return Err(ModelError::overloaded());
+                }
+            };
         let events = self.run_inferred(request, admission)?;
         // A run that finished, or whose deadline passed or that was cancelled meanwhile, has
         // nothing to resume: no continuation (the reservation drops and nothing is evicted).
@@ -1006,7 +1060,15 @@ impl<B: BatchInferenceBackend + 'static> AdaptiveBatcher<B> {
     /// backend. The worker stops at its next look at the queue; dropping the batcher closes it
     /// and waits for the worker.
     pub fn close(&self) {
-        self.shared.lock().closed = true;
+        {
+            // Under the lock, and without the worker: queued callers are answered here even when
+            // the worker is stuck in a slow or hanging backend call.
+            let mut state = self.shared.lock();
+            state.closed = true;
+            for entry in state.queue.drain() {
+                answer(entry, Err(ModelError::closed()));
+            }
+        }
         self.shared.wake.notify_all();
     }
 }

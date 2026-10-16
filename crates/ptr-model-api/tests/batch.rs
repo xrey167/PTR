@@ -705,12 +705,12 @@ fn a_continuation_from_a_revoked_scope_is_refused_and_each_is_single_use() {
     let batcher = echo_batcher(Arc::clone(&gate) as Arc<dyn BatchGate>);
     let gen2 = scope("p", 2);
     let gen3 = scope("p", 3);
-    // One request id, identical outputs, a scope that will be revoked (A) and a live one (B).
-    let a = open(&batcher, "same-id", &gen2);
-    let a_again = open(&batcher, "same-id", &gen2);
-    let a_wrong_key = open(&batcher, "same-id", &gen2);
-    let b = open(&batcher, "same-id", &gen3);
-    let b_second = open(&batcher, "same-id", &gen3);
+    // Distinct live request ids, a scope that will be revoked (A) and a live one (B).
+    let a = open(&batcher, "a", &gen2);
+    let a_again = open(&batcher, "a-again", &gen2);
+    let a_wrong_key = open(&batcher, "a-wrong-key", &gen2);
+    let b = open(&batcher, "b", &gen3);
+    let b_second = open(&batcher, "b-second", &gen3);
     gate.0.lock().unwrap().push(2);
     // A's continuation reaches the gate under A's scope: revoked.
     assert_eq!(
@@ -1590,4 +1590,178 @@ fn a_batcher_closed_while_the_gate_decides_a_batch_never_calls_the_backend() {
         backend.seen.lock().unwrap().is_empty(),
         "the backend was called"
     );
+}
+
+/// Opens the latch when dropped, so a failed assertion cannot leave a thread blocked in the
+/// backend (a scope would wait for it for ever).
+struct OpenOnDrop<'a>(&'a Latch);
+
+impl Drop for OpenOnDrop<'_> {
+    fn drop(&mut self) {
+        self.0.open();
+    }
+}
+
+#[test]
+fn a_live_request_id_is_refused_before_the_backend_and_freed_when_its_continuation_ends() {
+    let backend = Gated::new();
+    let batcher = gated_batcher(&backend);
+    let scope_a = principal_scope("a");
+    let seen = || backend.seen.lock().unwrap().len();
+    // A run that is still inside the model already holds its id.
+    std::thread::scope(|scope| {
+        let batcher = &batcher;
+        let scope_a = &scope_a;
+        let _release = OpenOnDrop(&backend.latch);
+        let first = scope.spawn(move || {
+            batcher.infer_scoped(
+                &text_request("same", "first slow"),
+                admission_under(scope_a),
+            )
+        });
+        assert!(eventually(PATIENT, || backend
+            .entered
+            .load(Ordering::SeqCst)));
+        // On its own thread: were it not refused it would queue behind the stuck worker.
+        let (answers, answered) = std::sync::mpsc::channel();
+        scope.spawn(move || {
+            let _ = answers.send(
+                batcher
+                    .infer_scoped(
+                        &text_request("same", "second"),
+                        admission_under(&principal_scope("b")),
+                    )
+                    .err(),
+            );
+        });
+        assert_eq!(
+            answered.recv_timeout(Duration::from_secs(5)),
+            Ok(Some(ModelError::duplicate_request()))
+        );
+        assert_eq!(seen(), 1, "the refused call never reached the backend");
+        backend.latch.open();
+        let answer = first.join().expect("thread").expect("served");
+        // The open continuation keeps the id live, under any scope.
+        let held = answer.continuation.expect("waiting");
+        for other in [scope_a.clone(), principal_scope("b")] {
+            assert_eq!(
+                batcher
+                    .infer_scoped(&text_request("same", "third"), admission_under(&other))
+                    .err(),
+                Some(ModelError::duplicate_request())
+            );
+        }
+        assert_eq!(seen(), 1);
+        // Another id is unaffected.
+        assert!(batcher
+            .infer_scoped(&text_request("other", "other"), admission_under(scope_a))
+            .is_ok());
+        // A resume keeps the id live through its successor ...
+        let resumed = batcher
+            .resume_continuation(held, scope_a, observation(1, b"x"))
+            .expect("resumes");
+        let next = resumed.next.expect("next round");
+        assert_eq!(
+            batcher
+                .infer_scoped(&text_request("same", "fourth"), admission_under(scope_a))
+                .err(),
+            Some(ModelError::duplicate_request())
+        );
+        // ... and dropping the last handle frees it.
+        drop(next);
+        assert!(batcher
+            .infer_scoped(&text_request("same", "fifth"), admission_under(scope_a))
+            .is_ok());
+    });
+}
+
+#[test]
+fn a_request_id_is_free_after_a_finished_or_failed_scoped_run() {
+    let backend = Gated::new();
+    let batcher = gated_batcher(&backend);
+    let scope_a = principal_scope("a");
+    for _ in 0..3 {
+        let finished = batcher
+            .infer_scoped(&text_request("r", "finish"), admission_under(&scope_a))
+            .expect("served");
+        assert!(finished.continuation.is_none());
+    }
+    // A run refused before the model (deadline already passed) frees it too.
+    let late = BatchAdmission {
+        key: scope_a.clone(),
+        deadline: Some(Timestamp(0)),
+        cancel: None,
+    };
+    assert_eq!(
+        batcher.infer_scoped(&text_request("r", "late"), late).err(),
+        Some(ModelError::deadline_exceeded())
+    );
+    assert!(batcher
+        .infer_scoped(&text_request("r", "wait"), admission_under(&scope_a))
+        .is_ok());
+}
+
+#[test]
+fn a_closed_batcher_answers_closed_and_not_overloaded_when_the_table_is_full() {
+    use ptr_model_api::MAX_OPEN_CONTINUATIONS;
+    let batcher = echo_batcher(Arc::new(OpenGate));
+    let mut held = Vec::new();
+    for n in 0..MAX_OPEN_CONTINUATIONS {
+        held.push(open(
+            &batcher,
+            &format!("fill-{n}"),
+            &principal_scope(&format!("fill-{n}")),
+        ));
+    }
+    assert_eq!(
+        batcher
+            .infer_scoped(&request("full"), admission_under(&principal_scope("late")))
+            .err(),
+        Some(ModelError::overloaded())
+    );
+    let overloaded = batcher.stats().overloaded;
+    batcher.close();
+    assert_eq!(
+        batcher
+            .infer_scoped(&request("full"), admission_under(&principal_scope("late")))
+            .err(),
+        Some(ModelError::closed())
+    );
+    assert_eq!(
+        batcher.stats().overloaded,
+        overloaded,
+        "a closed batcher counts no overload"
+    );
+    drop(held);
+}
+
+#[test]
+fn close_answers_queued_callers_even_while_the_worker_is_stuck_in_the_backend() {
+    let backend = Gated::new();
+    let batcher = gated_batcher(&backend);
+    std::thread::scope(|scope| {
+        let batcher = &batcher;
+        let _release = OpenOnDrop(&backend.latch);
+        // The worker takes this one and blocks inside the backend.
+        let stuck = scope.spawn(move || batcher.infer(&text_request("stuck", "slow")));
+        assert!(eventually(PATIENT, || backend
+            .entered
+            .load(Ordering::SeqCst)));
+        // This one waits in the queue behind it.
+        let (answers, answered) = std::sync::mpsc::channel();
+        scope.spawn(move || {
+            let _ = answers.send(batcher.infer(&text_request("queued", "second")));
+        });
+        assert!(eventually(PATIENT, || batcher.queued() == 1));
+        batcher.close();
+        // Answered by close itself: the backend call has not returned.
+        assert_eq!(
+            answered.recv_timeout(Duration::from_secs(5)),
+            Ok(Err(ModelError::closed()))
+        );
+        assert_eq!(batcher.queued(), 0);
+        assert!(!backend.seen.lock().unwrap().contains(&"second".to_owned()));
+        backend.latch.open();
+        let _ = stuck.join().expect("thread");
+    });
 }
