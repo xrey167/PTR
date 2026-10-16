@@ -448,11 +448,14 @@ impl PtrRuntime {
         }
         if !taint_recorded {
             if let Some(taint) = input_taint {
-                if self
-                    .record_input_request_taint(request.request_id, taint)
-                    .is_err()
-                {
-                    return refuse(self, UncoveredReason::DefaultRejected);
+                // Recording the input taint is a ledger write, not a judgement of the answer: a
+                // failure of it (a fenced runtime, a full registry, a ledger error) is not a
+                // rejection of the default and is propagated unchanged.
+                if let Err(error) = self.record_input_request_taint(request.request_id, taint) {
+                    self.reflex
+                        .counters
+                        .record_uncovered(UncoveredReason::DefaultFailed);
+                    return Err(error);
                 }
             }
         }
@@ -486,11 +489,35 @@ impl PtrRuntime {
                     revision,
                 })
             }
-            // A verifier contradiction (or a taint or type refusal) of the default's output: not
-            // promoted, the miss stays uncovered, and the refusal names no pod.
-            Err(_) => refuse(self, UncoveredReason::DefaultRejected),
+            // A verifier contradiction (or a taint, type or effect refusal) of the default's
+            // output: not promoted, the miss stays uncovered, and the refusal names no pod.
+            Err(error) if is_output_rejection(&error) => {
+                refuse(self, UncoveredReason::DefaultRejected)
+            }
+            // Anything else is a failure of the runtime (a ledger error, a fenced runtime, ...),
+            // not a judgement of the answer: it is propagated unchanged, the miss stays
+            // uncovered.
+            Err(error) => {
+                self.reflex
+                    .counters
+                    .record_uncovered(UncoveredReason::DefaultFailed);
+                Err(error)
+            }
         }
     }
+}
+
+/// Whether a promotion error is a judgement of the pod's answer (the verifier contradicted it, a
+/// taint, type or effect check refused it) and not a failure of the runtime. Only these become a
+/// pod-free [`UncoveredReason::DefaultRejected`] refusal.
+fn is_output_rejection(error: &RuntimeError) -> bool {
+    matches!(
+        error,
+        RuntimeError::PodVerificationFailed { .. }
+            | RuntimeError::ApproximateSemanticContent { .. }
+            | RuntimeError::PodOutputTypeMismatch { .. }
+            | RuntimeError::PodEffectRequiresActionBoundary { .. }
+    )
 }
 
 /// The primary path that missed, as the failover needs it.
@@ -503,4 +530,212 @@ struct FailedPrimary {
     taint_recorded: bool,
     /// What the request fails with when no failover happens.
     error: RuntimeError,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ptr_config::PtrConfig;
+    use ptr_ledger::LedgerEvent;
+    use ptr_pods::PodManifest;
+    use ptr_router::{
+        AbstentionReason, CheckedRouter, NonceSequence, RouteDistribution, RouteError,
+        RouteRequest, Router, SamplingKey,
+    };
+    use ptr_types::{
+        CapsuleId, Generation, NamespaceId, PodAddress, Probability, VerificationLevel,
+    };
+    use ptr_verifier::{VerificationReport, VerificationStatus};
+
+    struct Echo(PodManifest);
+
+    impl DynPod for Echo {
+        fn manifest(&self) -> &PodManifest {
+            &self.0
+        }
+
+        fn invoke(&self, input: TypedPayload) -> Result<TypedPayload, String> {
+            Ok(input)
+        }
+    }
+
+    struct Pass;
+
+    impl Verifier<TypedPayload> for Pass {
+        fn verify(&self, _: &TypedPayload) -> VerificationReport {
+            VerificationReport {
+                status: VerificationStatus::Pass,
+                level: VerificationLevel::Deterministic,
+                score: Probability::new(1.0).unwrap(),
+                findings: vec![],
+            }
+        }
+    }
+
+    struct Abstains;
+
+    impl Router for Abstains {
+        fn policy(&self, _: &RouteRequest<'_>) -> Result<RouteDistribution, RouteError> {
+            Err(RouteError::Abstained {
+                best: PodId::from("primary"),
+                runner_up: None,
+                best_score: 0.4,
+                margin: 0.4,
+                reason: AbstentionReason::LowScore,
+            })
+        }
+    }
+
+    /// A runtime whose default pod is live, a registry holding it as the implementation the plan
+    /// names, and the router that always abstains.
+    fn setup() -> (PtrRuntime, PodRegistry, CheckedRouter<Abstains>) {
+        let project = ProjectId::from("p");
+        let mut registry = PodRegistry::default();
+        for id in ["primary", "fallback"] {
+            registry.register_at(
+                NamespaceId::from("ns"),
+                Generation(1),
+                Arc::new(Echo(ptr_pods::PodManifest {
+                    project: project.clone(),
+                    id: PodId::from(id),
+                    capabilities: vec![CapabilityId::from("cap")],
+                    accepts: vec![TypeId::from("Text")],
+                    produces: vec![TypeId::from("Text")],
+                    effects: vec![Effect::Pure],
+                    protocol_version: 1,
+                })),
+            );
+        }
+        let revision = PodRevisionAddress {
+            address: PodAddress::new(
+                project.clone(),
+                NamespaceId::from("ns"),
+                PodId::from("fallback"),
+            )
+            .unwrap(),
+            semantic_revision: [1; 32],
+            generation: Generation(1),
+        };
+        let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+        runtime
+            .commit(LedgerEvent::CapsuleCommitted {
+                project: project.0.as_str().into(),
+                capsule: CapsuleId::from(crate::pod_lifecycle_target(&revision).as_str()),
+                generation: Generation(1),
+            })
+            .unwrap();
+        runtime
+            .set_fallback_plan(crate::SetFallbackPlan {
+                project,
+                capability: CapabilityId::from("cap"),
+                plan: ptr_router::DefaultPodPlan::new(Some(PodId::from("fallback")), 2).unwrap(),
+                default_revision: Some(revision),
+            })
+            .unwrap();
+        // The request whose raw text the pod output depends on.
+        runtime.ingest_text(RequestId::from("r"), "q").unwrap();
+        let router = CheckedRouter::new(
+            Abstains,
+            SamplingKey::from_bytes([3; 32]),
+            NonceSequence::starting_at([1; 8], 0),
+        );
+        (runtime, registry, router)
+    }
+
+    fn dispatch(
+        runtime: &mut PtrRuntime,
+        registry: &PodRegistry,
+        router: &CheckedRouter<Abstains>,
+        taint: Option<KvReuseTaint>,
+    ) -> Result<DispatchedPod, RuntimeError> {
+        let project = ProjectId::from("p");
+        let request_id = RequestId::from("r");
+        let sampler: &dyn crate::PodSampler = router;
+        runtime.dispatch_pod(
+            &PodSelection::Sampled(sampler),
+            &PodRequest {
+                pods: registry,
+                project: &project,
+                request_id: &request_id,
+                capability: &CapabilityId::from("cap"),
+                input_type: &TypeId::from("Text"),
+                payload: b"q",
+            },
+            taint,
+            &Pass,
+        )
+    }
+
+    #[test]
+    fn only_judgements_of_the_answer_are_output_rejections() {
+        for rejection in [
+            RuntimeError::PodVerificationFailed { pod: "p".into() },
+            RuntimeError::PodOutputTypeMismatch {
+                pod: "p".into(),
+                expected: "a".into(),
+                actual: "b".into(),
+            },
+            RuntimeError::PodEffectRequiresActionBoundary { pod: "p".into() },
+        ] {
+            assert!(is_output_rejection(&rejection), "{rejection:?}");
+        }
+        for failure in [
+            RuntimeError::Ledger("append failed".into()),
+            RuntimeError::ExecutionFenced,
+            RuntimeError::NoSemanticGrant,
+            RuntimeError::Pod("failed".into()),
+        ] {
+            assert!(!is_output_rejection(&failure), "{failure:?}");
+        }
+    }
+
+    #[test]
+    fn a_failover_on_a_healthy_runtime_serves_the_miss() {
+        let (mut runtime, registry, router) = setup();
+        let served = dispatch(&mut runtime, &registry, &router, None).expect("failover serves");
+        assert_eq!(served.pod.manifest().id, PodId::from("fallback"));
+        assert!(runtime.reflex_counters().all_misses_covered());
+    }
+
+    #[test]
+    fn a_fenced_runtime_failure_of_the_promotion_is_propagated_not_a_default_rejection() {
+        let (mut runtime, registry, router) = setup();
+        // The runtime no longer knows the outcome of its own last append.
+        runtime.execution.begin_commit();
+        let outcome = dispatch(&mut runtime, &registry, &router, None).map(|_| ());
+        assert_eq!(outcome, Err(RuntimeError::ExecutionFenced));
+        let counters = runtime.reflex_counters();
+        assert_eq!((counters.misses(), counters.failovers()), (1, 0));
+        assert_eq!(
+            counters
+                .uncovered_reasons()
+                .get(&UncoveredReason::DefaultFailed),
+            Some(&1)
+        );
+        assert_eq!(
+            counters
+                .uncovered_reasons()
+                .get(&UncoveredReason::DefaultRejected),
+            None
+        );
+    }
+
+    #[test]
+    fn a_failure_recording_the_input_taint_is_propagated_not_a_default_rejection() {
+        let (mut runtime, registry, router) = setup();
+        runtime.execution.begin_commit();
+        let taint = Some(KvReuseTaint::Approximate {
+            report_digest: [9; 32],
+        });
+        let outcome = dispatch(&mut runtime, &registry, &router, taint).map(|_| ());
+        assert_eq!(outcome, Err(RuntimeError::ExecutionFenced));
+        let counters = runtime.reflex_counters();
+        assert_eq!((counters.misses(), counters.failovers()), (1, 0));
+        assert_eq!(
+            counters
+                .uncovered_reasons()
+                .get(&UncoveredReason::DefaultRejected),
+            None
+        );
+    }
 }
