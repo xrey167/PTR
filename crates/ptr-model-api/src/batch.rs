@@ -874,6 +874,14 @@ impl<B: BatchInferenceBackend + 'static> AdaptiveBatcher<B> {
             if state.closed {
                 return Err(ModelError::closed());
             }
+            // Cancelled requests still waiting for their group hold slots: give them back (and
+            // answer them) before a live request is refused for want of room.
+            if state.queue.is_full() {
+                for entry in state.queue.reclaim_cancelled() {
+                    bump(&counters.cancelled, 1);
+                    answer(entry, Err(ModelError::cancelled()));
+                }
+            }
             let job = Job {
                 request: request.clone(),
                 reply,

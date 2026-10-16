@@ -174,7 +174,7 @@ simulator training happens in PTR until `predictive` has been true on a real gen
 `BatchInferenceBackend`, whose provided `infer_batch` runs requests one by one: a backend gains only if it overrides it.
 
 - **Bounded (invariant 8).** The queue holds at most `queue_capacity` requests (65536 at most). A full queue answers
-  `ModelError::overloaded()` before anything grows.
+  `ModelError::overloaded()` before anything grows, but only after the requests whose cancel flag is set have been removed from the queue and answered with `cancelled` (they would otherwise hold their slots until their group is served, and live requests would be refused meanwhile; the scan is linear in the queue and runs only when it is full).
 - **Keys.** Requests are grouped by `BatchKey { project, adapter, principal, generation }`; different keys never share a model
   call. The plain `infer` uses the unscoped key; `infer_with` takes a `BatchAdmission` with the key, an optional
   deadline and an optional `CancelFlag`.

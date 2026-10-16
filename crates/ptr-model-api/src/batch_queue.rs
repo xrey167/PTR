@@ -211,6 +211,46 @@ impl<J> BatchQueue<J> {
         self.ops += 1;
     }
 
+    /// Whether the next [`BatchQueue::push`] would be refused.
+    pub(crate) fn is_full(&self) -> bool {
+        self.len >= self.policy.queue_capacity
+    }
+
+    /// Remove every request whose cancel flag is set and return it, oldest first, so the caller
+    /// can answer it. A cancelled request would otherwise hold a slot until its group is served
+    /// or its deadline passes, and a full queue would refuse live requests meanwhile. Linear in
+    /// the queue; asked only when the queue is full.
+    pub(crate) fn reclaim_cancelled(&mut self) -> Vec<Entry<J>> {
+        let cancelled: Vec<(u32, u64)> = self
+            .groups
+            .iter()
+            .flat_map(|(gid, group)| {
+                group
+                    .entries
+                    .iter()
+                    .filter(|(_, entry)| {
+                        entry.cancel.as_ref().is_some_and(CancelFlag::is_cancelled)
+                    })
+                    .map(|(seq, _)| (*gid, *seq))
+            })
+            .collect();
+        let mut reclaimed = Vec::with_capacity(cancelled.len());
+        let mut touched: Vec<u32> = cancelled.iter().map(|(gid, _)| *gid).collect();
+        touched.sort_unstable();
+        touched.dedup();
+        for gid in &touched {
+            self.unregister(*gid);
+        }
+        for (gid, seq) in cancelled {
+            reclaimed.extend(self.remove_entry(gid, seq));
+        }
+        for gid in touched {
+            self.register(gid);
+        }
+        reclaimed.sort_by_key(|entry| entry.seq);
+        reclaimed
+    }
+
     /// Queue one request. The bound is checked before the entry is added.
     pub(crate) fn push(
         &mut self,

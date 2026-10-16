@@ -1765,3 +1765,60 @@ fn close_answers_queued_callers_even_while_the_worker_is_stuck_in_the_backend() 
         let _ = stuck.join().expect("thread");
     });
 }
+
+#[test]
+fn cancelled_waiters_are_reclaimed_before_a_full_queue_refuses_a_live_request() {
+    let latch = Arc::new(Latch::default());
+    let backend = Arc::new(RecordingBackend::blocking(Arc::clone(&latch)));
+    let batcher = gated(Arc::clone(&backend), policy(1, 0, 2)).expect("built");
+    let flags = [CancelFlag::default(), CancelFlag::default()];
+    std::thread::scope(|scope| {
+        let batcher = &batcher;
+        let _release = OpenOnDrop(&latch);
+        // The worker is inside the backend; two waiters fill the queue.
+        let held = scope.spawn(move || batcher.infer_with(&request("held"), admission("a")));
+        assert!(eventually(PATIENT, || batcher.stats().dispatched == 1));
+        let (waiter_answers, waited) = std::sync::mpsc::channel();
+        for (n, flag) in flags.iter().enumerate() {
+            let cancel = flag.clone();
+            let answers = waiter_answers.clone();
+            scope.spawn(move || {
+                let _ = answers.send(batcher.infer_with(
+                    &request(&format!("waiter-{n}")),
+                    BatchAdmission {
+                        key: key("a"),
+                        deadline: None,
+                        cancel: Some(cancel),
+                    },
+                ));
+            });
+        }
+        drop(waiter_answers);
+        assert!(eventually(PATIENT, || batcher.queued() == 2));
+        // Full: a live request is refused while nobody has cancelled.
+        assert_eq!(
+            batcher.infer_with(&request("refused"), admission("a")),
+            Err(ModelError::overloaded())
+        );
+        // Everyone withdraws. The next request is accepted, and the withdrawn ones are answered.
+        for flag in &flags {
+            flag.cancel();
+        }
+        let (answers, answered) = std::sync::mpsc::channel();
+        scope.spawn(move || {
+            let _ = answers.send(batcher.infer_with(&request("live"), admission("a")));
+        });
+        // Answered while the worker is still inside the backend.
+        for _ in 0..2 {
+            assert_eq!(
+                waited.recv_timeout(Duration::from_secs(5)),
+                Ok(Err(ModelError::cancelled()))
+            );
+        }
+        assert!(eventually(PATIENT, || batcher.queued() == 1));
+        latch.open();
+        held.join().expect("thread").expect("held served");
+        assert!(answered.recv_timeout(PATIENT).expect("answered").is_ok());
+    });
+    assert_eq!(batcher.stats().cancelled, 2);
+}

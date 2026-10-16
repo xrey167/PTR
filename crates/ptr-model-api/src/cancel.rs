@@ -260,8 +260,16 @@ impl From<TokenizeError> for GenerationError {
 
 impl From<GenerationError> for ModelError {
     fn from(error: GenerationError) -> Self {
-        match error {
-            GenerationError::Backend(inner) => inner,
+        match &error {
+            GenerationError::Backend(inner) => inner.clone(),
+            // The kinds callers branch on (`is_cancelled`, `is_deadline_exceeded`) survive the
+            // conversion; every other variant is a refusal of the request itself.
+            GenerationError::Cancelled { .. } => {
+                ModelError::with_kind(crate::ModelErrorKind::Cancelled, error.to_string())
+            }
+            GenerationError::DeadlineExceeded { .. } => {
+                ModelError::with_kind(crate::ModelErrorKind::DeadlineExceeded, error.to_string())
+            }
             other => ModelError::new(other.to_string()),
         }
     }
@@ -270,6 +278,27 @@ impl From<GenerationError> for ModelError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cancellation_and_deadline_keep_their_kind_through_conversion() {
+        let cancelled = ModelError::from(GenerationError::Cancelled { at_token: 3 });
+        assert!(cancelled.is_cancelled());
+        assert!(cancelled.message().contains("cancelled at token 3"));
+        let late = ModelError::from(GenerationError::DeadlineExceeded {
+            elapsed: std::time::Duration::from_millis(9),
+            budget: std::time::Duration::from_millis(5),
+        });
+        assert!(late.is_deadline_exceeded());
+        assert!(late.message().contains("deadline exceeded"));
+        // Everything else stays a refusal of the request itself.
+        let other = ModelError::from(GenerationError::StreamClosed);
+        assert_eq!(other.kind(), crate::ModelErrorKind::Other);
+        // A backend error passes through unchanged.
+        assert_eq!(
+            ModelError::from(GenerationError::Backend(ModelError::overloaded())),
+            ModelError::overloaded()
+        );
+    }
 
     #[test]
     fn child_follows_parent_but_not_reverse() {
