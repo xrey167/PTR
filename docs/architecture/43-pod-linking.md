@@ -257,7 +257,10 @@ learned router is caught by the default; INVALID when a seed has no miss; a no-p
 stale-default sensitivity arm run over the same probes and must see the same misses and serve none) and
 `reflex_dispatch_hits`
 (benefit: the precision of the router's own dispatches beats description cosine; INVALID when it
-dispatches nothing). The faults a failover must be refused for are held by
+dispatches nothing or when one of its ablation arms (no bias, no abstention) or its sensitivity arm
+(a stricter sweep point) did not run over every probe; their precisions are reported, not judged).
+A world the lifecycle cannot hold (a pod at generation 0 or without a namespace) is reported as an
+unexercised reflex block, so the coverage rules make the seed INVALID instead of the harness failing. The faults a failover must be refused for are held by
 `crates/ptr-runtime/tests/reflex.rs`, not by the harness. R015 stays `planned`.
 
 ## What is not here

@@ -85,13 +85,27 @@ representations the router's store holds (the runtime fails closed for a sampler
   share for description cosine, which dispatches all 43 probes; signed permille, rounded down. Claim: the gap
   is at least 1. Baseline: `cosine_only`, the best non-learned router here. "Send everything to the default"
   is reported (`reflex.default_only_correct`) and not judged: it would be a strawman, since the default is one
-  pod of six. Failure criterion: a gap below 1 on any seed.
+  pod of six. Failure criterion: a gap below 1 on any seed. Ablations and sensitivity: the same probes are
+  dispatched through the same reflex path (fallback plan, admission, counters) with the router changed in one
+  respect each, executed as arms of their own: `reflex.dispatch_no_bias_*` (every bias 0),
+  `reflex.dispatch_no_abstain_*` (both thresholds 0) and `reflex.dispatch_sensitivity_*` (the sweep point
+  (600, 200), both thresholds above the treatment's (500, 150)); each reports requests, hits, misses, correct
+  hits and the same precision metric (correct hits over hits, permille). They are reported, not judged, with a
+  validity rule: each arm must have run over every probe (`requests == probes`) and printed an integer
+  precision, or the seed is INVALID for this claim. Reason for not judging them: like the routing ablations they
+  say where the benefit comes from (bias, abstention, thresholds), and judging them would add failure criteria
+  that were not preregistered with a margin; a router that matches the treatment without its bias is a finding
+  to report, not a falsifier of the benefit over cosine.
 
 The harness counts a request only when the counters account for its outcome (one hit, or one miss caught by the default, or one miss nothing covered); any other runtime error is a harness failure (exit 2), not a counted miss, so `reflex.requests` can be compared with the probe count. Both are guarded against the vacuous pass. "Every miss was caught" holds trivially with no miss, and a router
 that never dispatches has no precision, so a seed with `reflex.misses` below 1 (claim 1) or
 `reflex.dispatch_hits` below 1 (claim 2), or with any `reflex.inconsistent` recording, is INVALID for that claim:
 no result, not a pass. A seed that is INVALID or failing for one claim says nothing about the other or about the
-routing claim of section 5; each claim has its own verdict (`criteria.toml`, `[claims.*]`). The faults a
+routing claim of section 5; each claim has its own verdict (`criteria.toml`, `[claims.*]`). A world the lifecycle
+cannot hold (a registered pod without a namespace or at generation 0, which no capsule commit can make live) cannot
+run the reflex arms: the harness then prints an unexercised reflex block (every metric 0, `reflex.exercised` false)
+and the coverage rules (`reflex.requests == probes`) make the seed INVALID, in the same way as a world without
+pods, instead of exiting 2 before the validity decision. The faults a
 failover must be refused for (revoked or superseded default generation, a default outside the registry, an
 effect beyond read, a verifier contradiction) are held by the runtime's own tests, not by this harness. The
 counters are telemetry (not ledger records), and the harness reads them only to report.

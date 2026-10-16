@@ -79,6 +79,10 @@ const MIN_MARGIN_PERMILLE: u32 = 150;
 /// training step against `sys.version_info`. Restates `config.toml`'s `python_version`.
 const PYTHON_VERSION: &str = "3.13.16";
 
+/// The sweep point the dispatch claim reruns as its sensitivity control: (600, 200), the point
+/// that raises both thresholds above the treatment's (500, 150).
+const SWEEP_STRICTEST: usize = 2;
+
 /// The pre-fixed sensitivity sweep, `(abstain_below, min_margin)` in permille. They restate
 /// `config.toml`'s `sweep_abstain_below_permille` and `sweep_min_margin_permille`.
 const SWEEP: [(u32, u32); 4] = [(400, 100), (500, 150), (600, 200), (500, 300)];
@@ -531,6 +535,8 @@ fn evaluate_world_admitting(
         oracle_tally.record(label.as_ref(), &ceiling);
     }
 
+    // The strictest point of the sweep is the sensitivity point of the dispatch claim.
+    let (strict_below, strict_margin) = SWEEP[SWEEP_STRICTEST];
     let reflex = reflex_pass(
         learned_router(
             &encoder,
@@ -546,6 +552,20 @@ fn evaluate_world_admitting(
         DispatchBaseline {
             correct: cosine_tally.correct,
             dispatches: cosine_tally.probes,
+        },
+        DispatchControls {
+            no_bias: DispatchControl {
+                router: no_bias,
+                admitted: admit(&unbiased),
+            },
+            no_abstain: DispatchControl {
+                router: no_abstain,
+                admitted: admit(&representations),
+            },
+            sensitivity: DispatchControl {
+                router: learned_router(&encoder, &representations, strict_below, strict_margin)?,
+                admitted: admit(&representations),
+            },
         },
     )?;
     let sweep_report: Vec<Value> = SWEEP
@@ -905,11 +925,36 @@ fn reflex_arm(
     })
 }
 
+/// Whether the lifecycle can hold `pod` live as the reflex arms need: it has a namespace and a
+/// generation of at least 1 (generation 0 is never live) below the last one.
+fn pod_is_lifecycle_runnable(registry: &PodRegistry, project: &ProjectId, pod: &PodId) -> bool {
+    registry.namespace(project, pod).is_some()
+        && registry
+            .generation(project, pod)
+            .is_some_and(|generation| generation.0 >= 1 && generation.0 < u64::MAX)
+}
+
+/// One router the dispatch claim is also run with, over the same probes: the router and the
+/// representations its host admits (admission names a representation by digest, so an arm with
+/// rebuilt representations admits its own).
+struct DispatchControl {
+    router: LearnedPodRouter,
+    admitted: BTreeSet<AdmittedRepresentation>,
+}
+
+/// The ablations and the sensitivity point of the dispatch claim, each run through the same
+/// reflex dispatch path as the treatment and counted with the same precision metric.
+struct DispatchControls {
+    no_bias: DispatchControl,
+    no_abstain: DispatchControl,
+    sensitivity: DispatchControl,
+}
+
 /// The reflex block of a world that cannot run the pass (no pod is registered): every metric is
 /// zero, so the coverage rules (`reflex.requests == probes`, the design counts) make the seed
 /// INVALID instead of the harness failing before the validity decision.
 fn unexercised_reflex() -> Value {
-    json!({
+    let mut block = json!({
         "exercised": false,
         "default_pod": Value::Null,
         "max_attempts": REFLEX_MAX_ATTEMPTS,
@@ -942,7 +987,36 @@ fn unexercised_reflex() -> Value {
         "stale_failovers": 0,
         "stale_refusals": 0,
         "stale_failover_coverage_permille": 0,
-    })
+    });
+    merge(
+        &mut block,
+        json!({
+            "dispatch_no_bias_requests": 0,
+            "dispatch_no_bias_hits": 0,
+            "dispatch_no_bias_misses": 0,
+            "dispatch_no_bias_hits_correct": 0,
+            "dispatch_no_bias_precision_permille": 0,
+            "dispatch_no_abstain_requests": 0,
+            "dispatch_no_abstain_hits": 0,
+            "dispatch_no_abstain_misses": 0,
+            "dispatch_no_abstain_hits_correct": 0,
+            "dispatch_no_abstain_precision_permille": 0,
+            "dispatch_sensitivity_requests": 0,
+            "dispatch_sensitivity_hits": 0,
+            "dispatch_sensitivity_misses": 0,
+            "dispatch_sensitivity_hits_correct": 0,
+            "dispatch_sensitivity_precision_permille": 0,
+        }),
+    );
+    block
+}
+
+/// Adds the entries of the object `more` to the object `block` (kept apart because one `json!`
+/// literal of this size exceeds the macro recursion limit).
+fn merge(block: &mut Value, more: Value) {
+    if let (Some(block), Value::Object(more)) = (block.as_object_mut(), more) {
+        block.extend(more);
+    }
 }
 
 /// Runs the reflex pass: the treatment arm (the failover claim and the dispatch claim) and two
@@ -956,18 +1030,26 @@ fn reflex_pass(
     probes: &[ReflexProbe],
     admitted: BTreeSet<AdmittedRepresentation>,
     baseline: DispatchBaseline,
+    controls: DispatchControls,
 ) -> Result<Value, String> {
-    let Some(default_pod) = registry
-        .candidates(
-            project,
-            &CapabilityId::from("answer"),
-            &TypeId::from("Text"),
-        )
-        .into_iter()
-        .min()
-    else {
+    let candidates = registry.candidates(
+        project,
+        &CapabilityId::from("answer"),
+        &TypeId::from("Text"),
+    );
+    let Some(default_pod) = candidates.iter().min().cloned() else {
         return Ok(unexercised_reflex());
     };
+    // A world the lifecycle cannot hold (a pod without a namespace or at generation 0, or at the
+    // last generation, which the sensitivity control cannot step past) is a design error: the
+    // arms could not even commit their setup. It is reported as an unexercised block, so the
+    // coverage rules decide (INVALID) instead of the harness failing before the decision.
+    if candidates
+        .iter()
+        .any(|pod| !pod_is_lifecycle_runnable(registry, project, pod))
+    {
+        return Ok(unexercised_reflex());
+    }
     let run = |arm| {
         reflex_arm(
             arm,
@@ -982,6 +1064,20 @@ fn reflex_pass(
     let treatment = run(ReflexArm::Treatment)?;
     let no_plan = run(ReflexArm::NoPlan)?;
     let stale = run(ReflexArm::StaleDefault)?;
+    let control = |control: DispatchControl| {
+        reflex_arm(
+            ReflexArm::Treatment,
+            control.router,
+            registry,
+            project,
+            probes,
+            control.admitted,
+            &default_pod,
+        )
+    };
+    let no_bias = control(controls.no_bias)?;
+    let no_abstain = control(controls.no_abstain)?;
+    let sensitivity = control(controls.sensitivity)?;
 
     let counters = &treatment.counters;
     let (misses, failovers) = (counters.misses(), counters.failovers());
@@ -1001,7 +1097,7 @@ fn reflex_pass(
         .get(&UncoveredReason::StaleFallback)
         .copied()
         .unwrap_or(0);
-    Ok(json!({
+    let mut block = json!({
         "exercised": true,
         "default_pod": default_pod.to_string(),
         "max_attempts": REFLEX_MAX_ATTEMPTS,
@@ -1057,7 +1153,40 @@ fn reflex_pass(
             stale.counters.failovers(),
             stale.counters.misses(),
         ),
-    }))
+    });
+    merge(
+        &mut block,
+        json!({
+            // The ablations and the sensitivity point of the dispatch claim: the same probes through
+            // the same dispatch path, with the same precision metric (correct hits over hits). Reported,
+            // not judged; the validity rules only require that each ran over every probe.
+            "dispatch_no_bias_requests": no_bias.dispatched,
+            "dispatch_no_bias_hits": no_bias.counters.hits(),
+            "dispatch_no_bias_misses": no_bias.counters.misses(),
+            "dispatch_no_bias_hits_correct": no_bias.hits_correct,
+            "dispatch_no_bias_precision_permille": Tally::permille(
+            no_bias.hits_correct,
+            no_bias.counters.hits(),
+            ),
+            "dispatch_no_abstain_requests": no_abstain.dispatched,
+            "dispatch_no_abstain_hits": no_abstain.counters.hits(),
+            "dispatch_no_abstain_misses": no_abstain.counters.misses(),
+            "dispatch_no_abstain_hits_correct": no_abstain.hits_correct,
+            "dispatch_no_abstain_precision_permille": Tally::permille(
+            no_abstain.hits_correct,
+            no_abstain.counters.hits(),
+            ),
+            "dispatch_sensitivity_requests": sensitivity.dispatched,
+            "dispatch_sensitivity_hits": sensitivity.counters.hits(),
+            "dispatch_sensitivity_misses": sensitivity.counters.misses(),
+            "dispatch_sensitivity_hits_correct": sensitivity.hits_correct,
+            "dispatch_sensitivity_precision_permille": Tally::permille(
+            sensitivity.hits_correct,
+            sensitivity.counters.hits(),
+            ),
+        }),
+    );
+    Ok(block)
 }
 
 /// Whether `representation` was learned for exactly the world entry that names it.
@@ -1497,6 +1626,98 @@ mod tests {
         assert!(!rules_hold(&rules.dispatch_coverage, &result));
     }
 
+    #[test]
+    fn a_world_with_a_pod_at_generation_zero_yields_json_and_the_coverage_rules_invalidate_it() {
+        // The registry holds a pod at generation 0 (its artifact is valid for generation 1, so
+        // the binding check already refuses it). No capsule commit can make generation 0 live, so
+        // the reflex arms cannot be set up: the pass reports an unexercised block, not an error.
+        let scratch = Scratch::create(u64::MAX - 9).unwrap();
+        for (index, label) in [(0, "default pod"), (1, "another pod")] {
+            write_world(&scratch.0, true);
+            edit_world(&scratch.0, |world| {
+                world["pods"][index]["generation"] = json!(0)
+            });
+            let result = evaluate_world(1, true, &scratch.0)
+                .unwrap_or_else(|error| panic!("{label} at generation 0: {error}"));
+            assert_eq!(result["reflex"]["exercised"], false, "{label}");
+            assert_eq!(result["representations_refused"], 1, "{label}");
+            let rules = criteria_rules();
+            assert!(!rules_hold(&rules.routing_coverage, &result), "{label}");
+            assert!(!rules_hold(&rules.failover_coverage, &result), "{label}");
+            assert!(!rules_hold(&rules.dispatch_coverage, &result), "{label}");
+        }
+        // A pod whose artifact is bound to generation 0 as well is not refused by the binding,
+        // and the reflex block is still unexercised rather than a harness failure.
+        write_world(&scratch.0, true);
+        edit_world(&scratch.0, |world| {
+            world["pods"][0]["generation"] = json!(0)
+        });
+        let result = evaluate_world(1, true, &scratch.0).unwrap();
+        assert_eq!(result["reflex"]["exercised"], false);
+    }
+
+    #[test]
+    fn the_dispatch_ablations_and_sensitivity_run_over_every_probe_and_report_the_precision() {
+        let scratch = Scratch::create(u64::MAX - 10).unwrap();
+        write_world(&scratch.0, true);
+        // One probe far from both addresses: the treatment abstains on it.
+        edit_world(&scratch.0, |world| {
+            world["probes"][3]["vector"] = json!([0.0, 0.0, 1.0]);
+        });
+        let result = evaluate_world(1, true, &scratch.0).unwrap();
+        let reflex = &result["reflex"];
+        assert_eq!(reflex["dispatch_hits"], 3);
+        for arm in ["no_bias", "no_abstain", "sensitivity"] {
+            let key = |field: &str| format!("dispatch_{arm}_{field}");
+            assert_eq!(reflex[key("requests")], 4, "{arm}");
+            let hits = reflex[key("hits")].as_u64().unwrap();
+            let misses = reflex[key("misses")].as_u64().unwrap();
+            assert_eq!(hits + misses, 4, "{arm}");
+            let correct = reflex[key("hits_correct")].as_u64().unwrap();
+            assert_eq!(
+                reflex[key("precision_permille")],
+                Tally::permille(correct, hits),
+                "{arm}"
+            );
+        }
+        // Without abstention the router dispatches the far probe as well.
+        assert_eq!(reflex["dispatch_no_abstain_hits"], 4);
+        assert_eq!(reflex["dispatch_no_abstain_misses"], 0);
+        assert!(rules_hold(&criteria_rules().dispatch_coverage, &result));
+    }
+
+    #[test]
+    fn a_missing_dispatch_control_arm_makes_the_dispatch_claim_invalid() {
+        let rules = criteria_rules().dispatch_coverage;
+        let sound = json!({"probes": 43, "reflex": {
+            "requests": 43, "dispatch_hits": 38, "inconsistent": 0,
+            "dispatch_no_bias_requests": 43, "dispatch_no_bias_precision_permille": 700,
+            "dispatch_no_abstain_requests": 43, "dispatch_no_abstain_precision_permille": 650,
+            "dispatch_sensitivity_requests": 43, "dispatch_sensitivity_precision_permille": 800}});
+        assert!(rules_hold(&rules, &sound));
+        for arm in ["no_bias", "no_abstain", "sensitivity"] {
+            // An arm that ran over fewer probes.
+            let mut short = sound.clone();
+            short["reflex"][format!("dispatch_{arm}_requests")] = json!(42);
+            assert!(!rules_hold(&rules, &short), "{arm} short");
+            // An arm whose precision is absent, null or not an integer.
+            for broken in [None, Some(Value::Null), Some(json!(0.5))] {
+                let mut bad = sound.clone();
+                let object = bad["reflex"].as_object_mut().unwrap();
+                let key = format!("dispatch_{arm}_precision_permille");
+                match broken {
+                    None => {
+                        object.remove(&key);
+                    }
+                    Some(value) => {
+                        object.insert(key, value);
+                    }
+                }
+                assert!(!rules_hold(&rules, &bad), "{arm} precision");
+            }
+        }
+    }
+
     fn delta(hits: u64, misses: u64, failovers: u64) -> CounterDelta {
         CounterDelta {
             hits,
@@ -1655,7 +1876,11 @@ mod tests {
                 "requests": 43, "misses": misses, "dispatch_hits": hits, "inconsistent": 0,
                 "baseline_requests": 43, "baseline_misses": misses, "baseline_failovers": 0,
                 "stale_requests": 43, "stale_misses": misses, "stale_failovers": 0,
-                "stale_refusals": misses}})
+                "stale_refusals": misses,
+                "dispatch_no_bias_requests": 43, "dispatch_no_bias_precision_permille": 700,
+                "dispatch_no_abstain_requests": 43, "dispatch_no_abstain_precision_permille": 650,
+                "dispatch_sensitivity_requests": 43,
+                "dispatch_sensitivity_precision_permille": 800}})
         };
         assert!(rules_hold(&rules.failover_coverage, &reflex(5, 38)));
         assert!(!rules_hold(&rules.failover_coverage, &reflex(0, 43)));

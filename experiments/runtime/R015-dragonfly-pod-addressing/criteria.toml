@@ -96,11 +96,25 @@ falsifiers = [
 # constant-score floor and not "send everything to the default"). The count of correct dispatches
 # against the default alone (`reflex.default_only_correct`) and the counters of the failover path are
 # reported, not judged.
+#
+# The claim has its ablations and a sensitivity point, run through the same reflex dispatch path over
+# the same probes with the same precision metric (`reflex.dispatch_no_bias_*`,
+# `reflex.dispatch_no_abstain_*`, `reflex.dispatch_sensitivity_*`: the router without its biases, with
+# both thresholds 0, and with the sweep point (600, 200)). Their validity rule is that each ran over
+# every probe and printed an integer precision (the reference must be present and an integer, or the
+# seed is INVALID for this claim). Their values are reported, not judged: like the routing ablations
+# they explain the benefit and cannot rescue or sink it (see PREREGISTRATION.md).
 [claims.reflex_dispatch_hits]
 coverage = [
   "reflex.requests == probes",
   "reflex.dispatch_hits >= 1",
   "reflex.inconsistent <= 0",
+  "reflex.dispatch_no_bias_requests == probes",
+  "reflex.dispatch_no_bias_precision_permille >= 0",
+  "reflex.dispatch_no_abstain_requests == probes",
+  "reflex.dispatch_no_abstain_precision_permille >= 0",
+  "reflex.dispatch_sensitivity_requests == probes",
+  "reflex.dispatch_sensitivity_precision_permille >= 0",
 ]
 falsifiers = [
   "reflex.dispatch_precision_gap_permille >= 1",
