@@ -19,6 +19,9 @@ pub enum ModelErrorKind {
     Closed,
     /// A resume was presented under a scope other than the one its answer was produced under.
     ScopeMismatch,
+    /// A request id was presented while another invocation under it is still live; nothing was
+    /// run. Not retried on another replica.
+    DuplicateRequest,
     /// The backend failed for a reason that is not the request's (a panic, a malformed batch
     /// answer, an unreachable replica).
     BackendFailure,
@@ -96,6 +99,18 @@ impl ModelError {
             ModelErrorKind::ScopeMismatch,
             "resume scope differs from the scope its answer was produced under",
         )
+    }
+
+    /// A placed invocation named a request id that another live invocation already holds.
+    pub fn duplicate_request() -> Self {
+        Self::with_kind(
+            ModelErrorKind::DuplicateRequest,
+            "request id is already live on this router",
+        )
+    }
+
+    pub fn is_duplicate_request(&self) -> bool {
+        self.kind == ModelErrorKind::DuplicateRequest
     }
 
     pub fn is_scope_mismatch(&self) -> bool {

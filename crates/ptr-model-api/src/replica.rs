@@ -13,8 +13,9 @@
 //!
 //! **Resume does not fail over by default, and goes back where the run started.** A `resume`
 //! continues a run that started on some replica. [`ReplicaRouter::infer_placed`] returns the
-//! answer with a [`Placement`] (per invocation, so two calls under one request id are two
-//! placements; an unguessable token, bound in a bounded table to the router, the request id and
+//! answer with a [`Placement`] (per invocation; a request id is live until its
+//! run ends or the placement is dropped, and a second `infer_placed` under a live id is refused
+//! before any replica runs; an unguessable token, bound in a bounded table to the router, the request id and
 //! the semantic context, released when the placement is dropped), and
 //! [`ReplicaRouter::resume_placed`] checks those and consumes it: under
 //! [`ResumeFailover::Never`] the resume goes to exactly that replica, once. The plain trait
@@ -28,7 +29,7 @@ use crate::{
     ResumableInferenceBackend,
 };
 use ptr_types::{RequestId, SemanticContext};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -56,13 +57,17 @@ struct Placements {
     entries: HashMap<u128, OpenPlacement>,
     /// Slots promised to `infer_placed` calls whose replica is still running.
     reserved: usize,
+    /// Request ids of every live invocation: an open placement (a resume in flight included) or
+    /// an `infer_placed` whose replica is still running. An id is free again once its run ends,
+    /// fails or its placement is dropped.
+    live: HashSet<RequestId>,
 }
 
 /// The replica that answered one invocation, handed back by [`ReplicaRouter::infer_placed`] and
 /// consumed by [`ReplicaRouter::resume_placed`]. It carries only an unguessable 128-bit
 /// invocation token, the id of the router that issued it and a weak reference to that router's
 /// table; the replica, the request id and the semantic context live in the table under the
-/// token. It is per invocation (two calls under one request id are two placements), not
+/// token. It is per invocation (a request id is live at most once per router), not
 /// `Clone`, has no public constructor, and **dropping it releases its entry**.
 pub struct Placement {
     token: u128,
@@ -79,7 +84,9 @@ impl Drop for Placement {
                 .get(&self.token)
                 .is_some_and(|entry| !entry.in_flight)
             {
-                table.entries.remove(&self.token);
+                if let Some(entry) = table.entries.remove(&self.token) {
+                    table.live.remove(&entry.request_id);
+                }
             }
         }
     }
@@ -348,23 +355,44 @@ impl ReplicaRouter {
     /// token in a table of at most [`MAX_OPEN_PLACEMENTS`]; a full table refuses the call
     /// with [`ModelError::overloaded`] before any replica runs.
     ///
+    /// A request id is **live** from the call until its run finishes, fails or its placement is
+    /// dropped (a resume in flight included). A second `infer_placed` under a live id is refused
+    /// with [`ModelError::duplicate_request`] before any replica runs: the router forwards the
+    /// caller's id unchanged, and a stateful backend could not tell the two invocations apart.
+    /// This is checked router-wide, which is stricter than per replica but needs no knowledge of
+    /// where failover would land.
+    ///
     /// # Errors
-    /// As `infer`, and [`ModelError::overloaded`] for a full table.
+    /// As `infer`, [`ModelError::duplicate_request`] for a live id and
+    /// [`ModelError::overloaded`] for a full table.
     pub fn infer_placed(&self, request: &ModelRequest) -> Result<PlacedAnswer, ModelError> {
         {
             let mut table = self.table();
+            // Before the capacity check and before any replica runs: a stateful backend cannot
+            // tell two live invocations under one id apart, so the second is refused.
+            if table.live.contains(&request.request_id) {
+                return Err(ModelError::duplicate_request());
+            }
             if table.entries.len() + table.reserved >= MAX_OPEN_PLACEMENTS {
                 return Err(ModelError::overloaded());
             }
             table.reserved += 1;
+            table.live.insert(request.request_id.clone());
         }
         let routed = self.route(None, self.policy.max_failover, |backend| {
             backend.infer(request)
         });
         let mut table = self.table();
         table.reserved = table.reserved.saturating_sub(1);
-        let (events, replica) = routed?;
+        let (events, replica) = match routed {
+            Ok(answered) => answered,
+            Err(error) => {
+                table.live.remove(&request.request_id);
+                return Err(error);
+            }
+        };
         if matches!(events.last(), Some(ModelEvent::Finished)) {
+            table.live.remove(&request.request_id);
             return Ok(PlacedAnswer {
                 events,
                 placement: None,
@@ -430,6 +458,8 @@ impl ReplicaRouter {
         let Some(mut entry) = table.entries.remove(&placement.token) else {
             return Err(ModelError::scope_mismatch());
         };
+        // The id stays live only if the run goes on.
+        table.live.remove(&entry.request_id);
         let (events, served) = routed?;
         // A run that finished has nothing left to resume: the entry goes and no placement is made.
         if matches!(events.last(), Some(ModelEvent::Finished)) {
@@ -442,6 +472,7 @@ impl ReplicaRouter {
         let token = self.issue_token();
         entry.replica = served;
         entry.in_flight = false;
+        table.live.insert(entry.request_id.clone());
         table.entries.insert(token, entry);
         drop(table);
         Ok(PlacedAnswer {

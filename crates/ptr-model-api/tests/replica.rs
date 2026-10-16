@@ -323,10 +323,9 @@ fn a_placed_resume_without_failover_lands_on_the_replica_of_its_own_invocation_e
         },
     )
     .expect("router");
-    // The same request id twice: two invocations, two placements (a and b). The rotation now
-    // points at c.
-    let first = strict.infer_placed(&request("same-id")).expect("served");
-    let second = strict.infer_placed(&request("same-id")).expect("served");
+    // Two live invocations, two placements (a and b). The rotation now points at c.
+    let first = strict.infer_placed(&request("id-a")).expect("served");
+    let second = strict.infer_placed(&request("id-b")).expect("served");
     assert_eq!(label(first.events), "a");
     assert_eq!(label(second.events), "b");
     // Three rounds in a row on each: every round returns the placement of the replica that
@@ -337,12 +336,12 @@ fn a_placed_resume_without_failover_lands_on_the_replica_of_its_own_invocation_e
     );
     for _ in 0..3 {
         let a = strict
-            .resume_placed(on_a, &resume_request("same-id"))
+            .resume_placed(on_a, &resume_request("id-a"))
             .expect("served");
         assert_eq!(label(a.events), "a");
         on_a = a.placement.expect("waiting");
         let b = strict
-            .resume_placed(on_b, &resume_request("same-id"))
+            .resume_placed(on_b, &resume_request("id-b"))
             .expect("served");
         assert_eq!(label(b.events), "b");
         on_b = b.placement.expect("waiting");
@@ -362,13 +361,19 @@ fn placements_are_bound_to_their_invocation_router_request_and_context() {
         revision: Revision(revision),
         entries: vec![],
     };
+    // Each invocation has its own live id; the context is the second binding.
     let call = |revision: u64| ModelRequest {
         semantic_context: at(revision),
-        ..request("same-id")
+        ..request(&format!("id-{revision}"))
     };
     let resume = |revision: u64| ModelResumeRequest {
         semantic_context: at(revision),
-        ..resume_request("same-id")
+        ..resume_request(&format!("id-{revision}"))
+    };
+    // The right id under the other invocation's context.
+    let resume_under = |id: u64, revision: u64| ModelResumeRequest {
+        semantic_context: at(revision),
+        ..resume_request(&format!("id-{id}"))
     };
     let replicas = [healthy("a"), healthy("b"), healthy("c")];
     let new_router = || {
@@ -385,7 +390,7 @@ fn placements_are_bound_to_their_invocation_router_request_and_context() {
         .expect("router")
     };
     let router = new_router();
-    // One request id, two invocations on different replicas, told apart by their context.
+    // Two invocations on different replicas, told apart by their id and their context.
     let first = router.infer_placed(&call(1)).expect("served");
     let second = router.infer_placed(&call(2)).expect("served");
     assert_eq!(label(first.events), "a");
@@ -393,13 +398,13 @@ fn placements_are_bound_to_their_invocation_router_request_and_context() {
     // Swapping the placements is refused: each belongs to the context of its own invocation.
     assert_eq!(
         router
-            .resume_placed(second.placement.expect("waiting"), &resume(1))
+            .resume_placed(second.placement.expect("waiting"), &resume_under(2, 1))
             .err(),
         Some(ModelError::scope_mismatch())
     );
     assert_eq!(
         router
-            .resume_placed(first.placement.expect("waiting"), &resume(2))
+            .resume_placed(first.placement.expect("waiting"), &resume_under(1, 2))
             .err(),
         Some(ModelError::scope_mismatch())
     );
@@ -415,6 +420,9 @@ fn placements_are_bound_to_their_invocation_router_request_and_context() {
     // The rotation gave the fresh pair c and a.
     assert_eq!(label(on_first.events), "c");
     assert_eq!(label(on_second.events), "a");
+    // Their next placements still hold the ids; release them.
+    drop(on_first.placement);
+    drop(on_second.placement);
     // Another router's placement is refused, and so is a different request id.
     let other = new_router();
     let foreign = other.infer_placed(&call(1)).expect("served");
@@ -549,5 +557,83 @@ fn a_finished_run_creates_no_placement_and_never_fills_the_table() {
             .resume_placed(placed.placement.expect("waiting"), &resume_request(&id))
             .expect("resumes");
         assert!(resumed.placement.is_none());
+    }
+}
+
+#[test]
+fn a_live_request_id_is_refused_before_any_replica_runs_and_freed_when_it_ends() {
+    let replicas = [healthy("a"), healthy("b")];
+    let strict = ReplicaRouter::new(
+        replicas
+            .iter()
+            .map(|r| Arc::clone(r) as Arc<dyn ResumableInferenceBackend>)
+            .collect(),
+        ReplicaPolicy {
+            max_failover: 0,
+            resume: ResumeFailover::Never,
+        },
+    )
+    .expect("router");
+    let calls = || -> usize {
+        replicas
+            .iter()
+            .map(|r| r.calls.load(Ordering::SeqCst))
+            .sum()
+    };
+    let first = strict.infer_placed(&request("same-id")).expect("served");
+    assert_eq!(label(first.events), "a");
+    let before = calls();
+    // The second invocation under the live id is refused, typed, and no replica ran.
+    let refused = strict.infer_placed(&request("same-id")).err();
+    assert_eq!(refused, Some(ModelError::duplicate_request()));
+    assert!(refused.is_some_and(|error| error.is_duplicate_request() && !error.allows_failover()));
+    assert_eq!(calls(), before, "refused before any replica ran");
+    // Another id is unaffected, and the resume of the first lands on its own replica.
+    let other = strict.infer_placed(&request("other-id")).expect("served");
+    assert_eq!(label(other.events), "b");
+    let resumed = strict
+        .resume_placed(
+            first.placement.expect("waiting"),
+            &resume_request("same-id"),
+        )
+        .expect("resumes");
+    assert_eq!(label(resumed.events), "a");
+    // The id stays live across the resume (its next placement holds it) ...
+    let held = resumed.placement.expect("waiting");
+    assert_eq!(
+        strict.infer_placed(&request("same-id")).err(),
+        Some(ModelError::duplicate_request())
+    );
+    // ... and is free once the placement is dropped.
+    drop(held);
+    let again = strict.infer_placed(&request("same-id")).expect("served");
+    assert_eq!(label(again.events), "a");
+}
+
+#[test]
+fn a_request_id_is_free_again_after_a_failed_or_finished_run() {
+    // A run that fails frees its id.
+    let failing = Arc::new(FlakyReplica::new("a", 1, ModelError::new("refused")));
+    let router = ReplicaRouter::new(
+        vec![failing as Arc<dyn ResumableInferenceBackend>],
+        ReplicaPolicy {
+            max_failover: 0,
+            resume: ResumeFailover::Never,
+        },
+    )
+    .expect("router");
+    assert!(router.infer_placed(&request("r")).is_err());
+    assert!(router.infer_placed(&request("r")).is_ok());
+    // A run that finishes frees its id.
+    let router = ReplicaRouter::new(
+        vec![Arc::new(Finishing) as Arc<dyn ResumableInferenceBackend>],
+        ReplicaPolicy {
+            max_failover: 0,
+            resume: ResumeFailover::Never,
+        },
+    )
+    .expect("router");
+    for _ in 0..3 {
+        assert!(router.infer_placed(&request("r")).is_ok());
     }
 }
