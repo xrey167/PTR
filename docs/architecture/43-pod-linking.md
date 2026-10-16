@@ -216,7 +216,9 @@ leaves nothing for the default, while an abstention (nothing dispatched yet) can
 A refused failover is `RuntimeError::FailoverRefused { miss, reason }` and names no pod; a default
 that fails when invoked (`DefaultFailed`) or whose answer is not promoted (`DefaultRejected`: the
 verifier contradicted it, or a taint or type check refused it) is refused the same way, with the
-original miss, and not with the default pod's own error, which could name it. The miss stays counted
+original miss, and not with the default pod's own error, which could name it. Only judgements of the
+answer are refused so; a failure of the runtime itself (a ledger error, a fenced runtime) while
+promoting or recording the taint is propagated unchanged and leaves the miss uncovered. The miss stays counted
 and uncovered. A failover is not a
 sampled decision, so it logs no `PodRouted` propensity.
 
@@ -251,7 +253,9 @@ flowchart LR
 
 **Experiment.** R015 measures two separate claims over the same harness, each with its own verdict
 and a guard against the vacuous pass: `reflex_failover_coverage` (mechanism: every miss of the
-learned router is caught by the default; INVALID when a seed has no miss) and `reflex_dispatch_hits`
+learned router is caught by the default; INVALID when a seed has no miss; a no-plan baseline arm and a
+stale-default sensitivity arm run over the same probes and must see the same misses and serve none) and
+`reflex_dispatch_hits`
 (benefit: the precision of the router's own dispatches beats description cosine; INVALID when it
 dispatches nothing). The faults a failover must be refused for are held by
 `crates/ptr-runtime/tests/reflex.rs`, not by the harness. R015 stays `planned`.

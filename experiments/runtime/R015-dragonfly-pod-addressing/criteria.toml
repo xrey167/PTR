@@ -70,10 +70,21 @@ falsifiers = [
 # failover for (revoked or superseded default, default outside the registry, effect beyond read, a
 # verifier contradiction) are held by `crates/ptr-runtime/tests/reflex.rs`, not by this harness.
 [claims.reflex_failover_coverage]
+# The two control arms run over the same probes and must behave as designed or the seed is INVALID
+# for this claim: the no-plan baseline sees the same misses and catches none of them, and the
+# stale-default sensitivity control (the plan names a live generation of the default that the
+# registry does not hold) sees the same misses, serves none and refuses each as a stale fallback.
 coverage = [
   "reflex.requests == probes",
   "reflex.misses >= 1",
   "reflex.inconsistent <= 0",
+  "reflex.baseline_requests == probes",
+  "reflex.baseline_misses == reflex.misses",
+  "reflex.baseline_failovers <= 0",
+  "reflex.stale_requests == probes",
+  "reflex.stale_misses == reflex.misses",
+  "reflex.stale_failovers <= 0",
+  "reflex.stale_refusals == reflex.stale_misses",
 ]
 falsifiers = [
   "reflex.failover_coverage_permille >= 1000",

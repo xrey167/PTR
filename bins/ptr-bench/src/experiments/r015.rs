@@ -50,8 +50,8 @@ use ptr_protocol::TypedPayload;
 use ptr_router::{
     route_checked, AdmittedRepresentation, CheckedRouter, DecisionNonce, DefaultPodPlan,
     EncoderRef, LearnedPodRouter, LearnedRouterConfig, NonceSequence, PodRepresentation,
-    PodRepresentationParts, PodRouter, RepresentationStore, RouteError, RouteFeatures,
-    RouteRequest, RoutedChoice, RoutedError, Router, SamplingKey,
+    PodRepresentationParts, PodRouter, ReflexCounters, RepresentationStore, RouteError,
+    RouteFeatures, RouteRequest, RoutedChoice, RoutedError, Router, SamplingKey, UncoveredReason,
 };
 use ptr_runtime::{
     pod_lifecycle_target, PodSampler, PtrRuntime, RouteQuery, RuntimeError, SetFallbackPlan,
@@ -771,40 +771,58 @@ fn accounted_dispatch(
 /// The default pod's attempt budget: the routed attempt and the default.
 const REFLEX_MAX_ATTEMPTS: u8 = 2;
 
+/// Which fallback an arm of the reflex pass runs with.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ReflexArm {
+    /// The treatment: the plan names the lexically smallest pod, whose revision the lifecycle
+    /// holds live and the registry holds exactly.
+    Treatment,
+    /// The baseline and ablation: no fallback plan, so every miss stays uncovered.
+    NoPlan,
+    /// The sensitivity control: the plan names the next generation of the default, which the
+    /// lifecycle holds live, while the registry still holds the generation it had, so every
+    /// failover must be refused as stale. The registry, and so every routing decision, is
+    /// unchanged: the arm sees the same misses.
+    StaleDefault,
+}
+
+/// What one arm of the reflex pass did over the probes.
+struct ArmReport {
+    counters: ReflexCounters,
+    dispatched: u64,
+    hits_correct: u64,
+    default_only_correct: u64,
+}
+
 /// Dispatches every probe as a Pod request through the real runtime, with the learned router in
-/// front and a fallback plan behind it, and reports what the reflex counters say. The default pod
-/// is the lexically smallest pod id, fixed before any run (`config.toml`).
-fn reflex_pass(
+/// front, under the fallback of `arm`.
+fn reflex_arm(
+    arm: ReflexArm,
     learned: LearnedPodRouter,
     registry: &PodRegistry,
     project: &ProjectId,
     probes: &[ReflexProbe],
     admitted: BTreeSet<AdmittedRepresentation>,
-    baseline: DispatchBaseline,
-) -> Result<Value, String> {
-    let default_pod = registry
-        .candidates(
-            project,
-            &CapabilityId::from("answer"),
-            &TypeId::from("Text"),
-        )
-        .into_iter()
-        .min()
-        .ok_or("the registry has no pod")?;
-    // The default is bound to the implementation the registry holds: its namespace and
-    // generation are the registry's, and the lifecycle holds exactly that generation live.
+    default_pod: &PodId,
+) -> Result<ArmReport, String> {
+    // The registry holds the default at this generation; the treatment checks exactly it.
     let namespace = registry
-        .namespace(project, &default_pod)
+        .namespace(project, default_pod)
         .cloned()
         .ok_or("the default pod is registered without a namespace")?;
     let generation = registry
-        .generation(project, &default_pod)
+        .generation(project, default_pod)
         .ok_or("the default pod is registered without a generation")?;
+    // The sensitivity control names, and makes live, a generation the registry does not hold.
+    let checked_generation = match arm {
+        ReflexArm::StaleDefault => ptr_types::Generation(generation.0.saturating_add(1)),
+        ReflexArm::Treatment | ReflexArm::NoPlan => generation,
+    };
     let revision = PodRevisionAddress {
         address: PodAddress::new(project.clone(), namespace, default_pod.clone())
             .map_err(|error| format!("default pod address: {error:?}"))?,
         semantic_revision: [1; 32],
-        generation,
+        generation: checked_generation,
     };
     let mut runtime = PtrRuntime::new(PtrConfig::default()).map_err(|e| format!("{e:?}"))?;
     runtime
@@ -814,15 +832,17 @@ fn reflex_pass(
             generation: revision.generation,
         })
         .map_err(|error| format!("default pod lifecycle: {error:?}"))?;
-    runtime
-        .set_fallback_plan(SetFallbackPlan {
-            project: project.clone(),
-            capability: CapabilityId::from("answer"),
-            plan: DefaultPodPlan::new(Some(default_pod.clone()), REFLEX_MAX_ATTEMPTS)
-                .map_err(|error| error.to_string())?,
-            default_revision: Some(revision),
-        })
-        .map_err(|error| format!("fallback plan: {error:?}"))?;
+    if arm != ReflexArm::NoPlan {
+        runtime
+            .set_fallback_plan(SetFallbackPlan {
+                project: project.clone(),
+                capability: CapabilityId::from("answer"),
+                plan: DefaultPodPlan::new(Some(default_pod.clone()), REFLEX_MAX_ATTEMPTS)
+                    .map_err(|error| error.to_string())?,
+                default_revision: Some(revision),
+            })
+            .map_err(|error| format!("fallback plan: {error:?}"))?;
+    }
     let sampler = HarnessSampler {
         router: CheckedRouter::new(
             learned,
@@ -861,7 +881,7 @@ fn reflex_pass(
         // Only an uncovered miss is tolerated; anything else is a harness failure.
         accounted_dispatch(&probe.request_id, &outcome, delta)?;
         dispatched += 1;
-        if probe.label.as_ref() == Some(&default_pod) {
+        if probe.label.as_ref() == Some(default_pod) {
             default_only_correct += 1;
         }
         // A hit is the learned router's own dispatch; it is correct when the probe names that pod.
@@ -877,10 +897,94 @@ fn reflex_pass(
             }
         }
     }
+    Ok(ArmReport {
+        counters: runtime.reflex_counters(),
+        dispatched,
+        hits_correct,
+        default_only_correct,
+    })
+}
 
-    let counters = runtime.reflex_counters();
-    let misses = counters.misses();
-    let failovers = counters.failovers();
+/// The reflex block of a world that cannot run the pass (no pod is registered): every metric is
+/// zero, so the coverage rules (`reflex.requests == probes`, the design counts) make the seed
+/// INVALID instead of the harness failing before the validity decision.
+fn unexercised_reflex() -> Value {
+    json!({
+        "exercised": false,
+        "default_pod": Value::Null,
+        "max_attempts": REFLEX_MAX_ATTEMPTS,
+        "requests": 0,
+        "dispatch_hits": 0,
+        "misses": 0,
+        "failovers": 0,
+        "rejected": 0,
+        "uncovered": 0,
+        "inconsistent": 0,
+        "miss_reasons": {},
+        "uncovered_reasons": {},
+        "failover_coverage_permille": 0,
+        "all_misses_covered": false,
+        "dispatch_hits_correct": 0,
+        "dispatch_precision_permille": 0,
+        "baseline_precision_permille": 0,
+        "dispatch_precision_gap_permille": 0,
+        "default_only_correct": 0,
+        "latency_samples": 0,
+        "latency_failed": 0,
+        "baseline_requests": 0,
+        "baseline_hits": 0,
+        "baseline_misses": 0,
+        "baseline_failovers": 0,
+        "baseline_failover_coverage_permille": 0,
+        "stale_requests": 0,
+        "stale_hits": 0,
+        "stale_misses": 0,
+        "stale_failovers": 0,
+        "stale_refusals": 0,
+        "stale_failover_coverage_permille": 0,
+    })
+}
+
+/// Runs the reflex pass: the treatment arm (the failover claim and the dispatch claim) and two
+/// control arms over the same probes, the no-plan baseline and the stale-default sensitivity
+/// control. The default pod is the lexically smallest pod id, fixed before any run
+/// (`config.toml`).
+fn reflex_pass(
+    learned: LearnedPodRouter,
+    registry: &PodRegistry,
+    project: &ProjectId,
+    probes: &[ReflexProbe],
+    admitted: BTreeSet<AdmittedRepresentation>,
+    baseline: DispatchBaseline,
+) -> Result<Value, String> {
+    let Some(default_pod) = registry
+        .candidates(
+            project,
+            &CapabilityId::from("answer"),
+            &TypeId::from("Text"),
+        )
+        .into_iter()
+        .min()
+    else {
+        return Ok(unexercised_reflex());
+    };
+    let run = |arm| {
+        reflex_arm(
+            arm,
+            learned.clone(),
+            registry,
+            project,
+            probes,
+            admitted.clone(),
+            &default_pod,
+        )
+    };
+    let treatment = run(ReflexArm::Treatment)?;
+    let no_plan = run(ReflexArm::NoPlan)?;
+    let stale = run(ReflexArm::StaleDefault)?;
+
+    let counters = &treatment.counters;
+    let (misses, failovers) = (counters.misses(), counters.failovers());
     let miss_reasons: BTreeMap<&str, u64> = counters
         .miss_reasons()
         .iter()
@@ -891,11 +995,18 @@ fn reflex_pass(
         .iter()
         .map(|(reason, count)| (reason.code(), *count))
         .collect();
+    let stale_refusals = stale
+        .counters
+        .uncovered_reasons()
+        .get(&UncoveredReason::StaleFallback)
+        .copied()
+        .unwrap_or(0);
     Ok(json!({
+        "exercised": true,
         "default_pod": default_pod.to_string(),
         "max_attempts": REFLEX_MAX_ATTEMPTS,
         // Requests whose outcome the counters accounted for, not the number of probes.
-        "requests": dispatched,
+        "requests": treatment.dispatched,
         "dispatch_hits": counters.hits(),
         "misses": misses,
         "failovers": failovers,
@@ -914,17 +1025,38 @@ fn reflex_pass(
         // cosine, which dispatches every probe. Signed permille of the difference, rounded down.
         // With no hit the precision is 0 and `dispatch_hits` fails the coverage rule: a router
         // that never dispatched is not a pass.
-        "dispatch_hits_correct": hits_correct,
-        "dispatch_precision_permille": Tally::permille(hits_correct, counters.hits()),
+        "dispatch_hits_correct": treatment.hits_correct,
+        "dispatch_precision_permille": Tally::permille(treatment.hits_correct, counters.hits()),
         "baseline_precision_permille": Tally::permille(baseline.correct, baseline.dispatches),
         "dispatch_precision_gap_permille": baseline.precision_gap_permille(
-            hits_correct,
+            treatment.hits_correct,
             counters.hits(),
         ),
         // Reported, not judged: what sending every labelled probe to the default would get right.
-        "default_only_correct": default_only_correct,
+        "default_only_correct": treatment.default_only_correct,
         "latency_samples": counters.latency().len(),
         "latency_failed": counters.latency().failed(),
+        // The baseline of the failover claim: the same probes with no fallback plan. It sees the
+        // same misses and must catch none of them.
+        "baseline_requests": no_plan.dispatched,
+        "baseline_hits": no_plan.counters.hits(),
+        "baseline_misses": no_plan.counters.misses(),
+        "baseline_failovers": no_plan.counters.failovers(),
+        "baseline_failover_coverage_permille": Tally::permille(
+            no_plan.counters.failovers(),
+            no_plan.counters.misses(),
+        ),
+        // The sensitivity control: the same plan naming a live generation of the default that the
+        // registry does not hold. Every miss must be refused as a stale fallback, none served.
+        "stale_requests": stale.dispatched,
+        "stale_hits": stale.counters.hits(),
+        "stale_misses": stale.counters.misses(),
+        "stale_failovers": stale.counters.failovers(),
+        "stale_refusals": stale_refusals,
+        "stale_failover_coverage_permille": Tally::permille(
+            stale.counters.failovers(),
+            stale.counters.misses(),
+        ),
     }))
 }
 
@@ -1301,6 +1433,70 @@ mod tests {
         assert_eq!(reflex["miss_reasons"]["no_representation"], 4);
     }
 
+    #[test]
+    fn the_control_arms_see_the_same_misses_and_serve_none() {
+        let scratch = Scratch::create(u64::MAX - 7).unwrap();
+        write_world(&scratch.0, true);
+        edit_world(&scratch.0, |world| {
+            world["probes"][3]["vector"] = json!([0.0, 0.0, 1.0]);
+        });
+        let result = evaluate_world(1, true, &scratch.0).unwrap();
+        let reflex = &result["reflex"];
+        // The treatment catches its one miss.
+        assert_eq!(reflex["misses"], 1);
+        assert_eq!(reflex["failovers"], 1);
+        // The no-plan baseline sees the same miss and catches none: coverage 0.
+        assert_eq!(reflex["baseline_requests"], 4);
+        assert_eq!(reflex["baseline_hits"], 3);
+        assert_eq!(reflex["baseline_misses"], 1);
+        assert_eq!(reflex["baseline_failovers"], 0);
+        assert_eq!(reflex["baseline_failover_coverage_permille"], 0);
+        // The stale-default control sees the same miss, serves none and refuses it as stale.
+        assert_eq!(reflex["stale_requests"], 4);
+        assert_eq!(reflex["stale_misses"], 1);
+        assert_eq!(reflex["stale_failovers"], 0);
+        assert_eq!(reflex["stale_refusals"], 1);
+        assert_eq!(reflex["stale_failover_coverage_permille"], 0);
+        // On this world the failover claim's coverage rules, controls included, hold.
+        assert!(rules_hold(&criteria_rules().failover_coverage, &result));
+    }
+
+    #[test]
+    fn a_control_arm_that_misbehaves_makes_the_failover_claim_invalid() {
+        let rules = criteria_rules().failover_coverage;
+        let sound = json!({"probes": 43, "reflex": {
+            "requests": 43, "misses": 5, "inconsistent": 0,
+            "baseline_requests": 43, "baseline_misses": 5, "baseline_failovers": 0,
+            "stale_requests": 43, "stale_misses": 5, "stale_failovers": 0, "stale_refusals": 5}});
+        assert!(rules_hold(&rules, &sound));
+        for (key, value) in [
+            ("baseline_failovers", 1),
+            ("baseline_misses", 4),
+            ("baseline_requests", 42),
+            ("stale_failovers", 1),
+            ("stale_misses", 4),
+            ("stale_refusals", 4),
+        ] {
+            let mut broken = sound.clone();
+            broken["reflex"][key] = json!(value);
+            assert!(!rules_hold(&rules, &broken), "{key} = {value} passes");
+        }
+    }
+
+    #[test]
+    fn a_world_with_no_pods_yields_json_and_the_coverage_rules_invalidate_it() {
+        let scratch = Scratch::create(u64::MAX - 8).unwrap();
+        write_world(&scratch.0, true);
+        edit_world(&scratch.0, |world| world["pods"] = json!([]));
+        let result = evaluate_world(1, true, &scratch.0).unwrap();
+        assert_eq!(result["pods"], 0);
+        assert_eq!(result["reflex"]["exercised"], false);
+        let rules = criteria_rules();
+        assert!(!rules_hold(&rules.routing_coverage, &result));
+        assert!(!rules_hold(&rules.failover_coverage, &result));
+        assert!(!rules_hold(&rules.dispatch_coverage, &result));
+    }
+
     fn delta(hits: u64, misses: u64, failovers: u64) -> CounterDelta {
         CounterDelta {
             hits,
@@ -1340,6 +1536,9 @@ mod tests {
                 reason: "routing features invalid",
             },
             RuntimeError::InvalidConfig("x".into()),
+            // Failures of the runtime itself, not declines: a fenced runtime or a ledger error.
+            RuntimeError::ExecutionFenced,
+            RuntimeError::Ledger("append failed".into()),
         ] {
             // Even when a miss was counted, an error that is no classified decline is a failure.
             let outcome = accounted_dispatch("probe-3", &Err(error), delta(0, 1, 0));
@@ -1453,7 +1652,10 @@ mod tests {
         let rules = criteria_rules();
         let reflex = |misses: i64, hits: i64| {
             json!({"probes": 43, "reflex": {
-                "requests": 43, "misses": misses, "dispatch_hits": hits, "inconsistent": 0}})
+                "requests": 43, "misses": misses, "dispatch_hits": hits, "inconsistent": 0,
+                "baseline_requests": 43, "baseline_misses": misses, "baseline_failovers": 0,
+                "stale_requests": 43, "stale_misses": misses, "stale_failovers": 0,
+                "stale_refusals": misses}})
         };
         assert!(rules_hold(&rules.failover_coverage, &reflex(5, 38)));
         assert!(!rules_hold(&rules.failover_coverage, &reflex(0, 43)));

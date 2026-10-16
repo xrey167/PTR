@@ -73,8 +73,13 @@ representations the router's store holds (the runtime fails closed for a sampler
 - `reflex_failover_coverage` (mechanism). Metric `reflex.failover_coverage_permille`: failovers over misses,
   integer permille rounded down. Claim: every miss of the learned router is caught by the default pod
   (1000 permille). It says the plumbing holds. It says nothing about the default answering correctly: a probe
-  that names no pod is "served" by the default as well. Baseline: no plan (coverage 0 by construction, every
-  miss fails the request). Failure criterion: below 1000 permille on any seed.
+  that names no pod is "served" by the default as well. Baseline: the same probes with no fallback plan,
+  executed as an arm of its own (`reflex.baseline_*`); it must see the same misses and catch none of them. Sensitivity
+  control: the same plan naming a live generation of the default that the registry does not hold, the registry and so
+  every routing decision unchanged (`reflex.stale_*`); it sees the same misses, serves none and refuses every one as
+  a stale fallback. Both controls are validity rules in
+  `criteria.toml` (a seed in which they misbehave is INVALID for this claim), their counters are reported. Failure
+  criterion: below 1000 permille on any seed.
 - `reflex_dispatch_hits` (benefit). Metric `reflex.dispatch_precision_gap_permille`: of the dispatches the
   learned router makes itself (the reflex hits), the share sent to the pod the probe names, minus the same
   share for description cosine, which dispatches all 43 probes; signed permille, rounded down. Claim: the gap
