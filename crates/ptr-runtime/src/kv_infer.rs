@@ -920,11 +920,77 @@ fn derive_chain(
 }
 
 /// See [`ReferenceKvReuseBackend::base_digest`].
-fn base_digest_of(chain: &KvChainId) -> [u8; 32] {
+///
+/// This is the identity a promotion binds to, and it is not the cache compatibility key. The
+/// chain covers what shapes the KV rows (embedding, every layer up to the final layer's K/V
+/// projections, RoPE settings, tokenizer, build) and stops there: the final layer's query,
+/// output and MLP weights, the final norm and the LM head change the model's answers without
+/// changing a cached row. What an adapter was evaluated on is the whole model, so this digest
+/// frames the chain, the full stack configuration, the generation limit that fixes the
+/// admission regime, and every weight of the stack.
+fn promotion_base_digest(
+    chain: &KvChainId,
+    stack: &Qwen2PagedStack,
+    max_new_tokens: usize,
+) -> [u8; 32] {
     use sha2::{Digest, Sha256};
+    fn floats(hasher: &mut Sha256, values: &[f32]) {
+        hasher.update((values.len() as u64).to_le_bytes());
+        for value in values {
+            hasher.update(value.to_bits().to_le_bytes());
+        }
+    }
+    fn linear(hasher: &mut Sha256, weights: &ptr_pods::Qwen2LinearWeights) {
+        hasher.update((weights.output_size as u64).to_le_bytes());
+        hasher.update((weights.input_size as u64).to_le_bytes());
+        floats(hasher, &weights.weight);
+        match &weights.bias {
+            Some(bias) => {
+                hasher.update([1u8]);
+                floats(hasher, bias);
+            }
+            None => hasher.update([0u8]),
+        }
+    }
+    fn optional(hasher: &mut Sha256, values: &Option<Vec<f32>>) {
+        match values {
+            Some(values) => {
+                hasher.update([1u8]);
+                floats(hasher, values);
+            }
+            None => hasher.update([0u8]),
+        }
+    }
+    let rendered = format!("{:?}", stack.config());
     let mut hasher = Sha256::new();
-    hasher.update(b"ptr.kv.base-model.v1\0");
+    hasher.update(b"ptr.kv.promotion-base.v2\0");
     hasher.update(chain.0);
+    hasher.update((rendered.len() as u64).to_le_bytes());
+    hasher.update(rendered.as_bytes());
+    hasher.update((max_new_tokens as u64).to_le_bytes());
+    let weights = stack.weights();
+    floats(&mut hasher, &weights.embedding);
+    hasher.update((weights.layers.len() as u64).to_le_bytes());
+    for layer in &weights.layers {
+        let decoder = &layer.decoder;
+        floats(&mut hasher, &decoder.input_layernorm);
+        for part in [
+            &decoder.query,
+            &decoder.key,
+            &decoder.value,
+            &decoder.output,
+            &decoder.gate,
+            &decoder.up,
+            &decoder.down,
+        ] {
+            linear(&mut hasher, part);
+        }
+        floats(&mut hasher, &decoder.post_attention_layernorm);
+        optional(&mut hasher, &layer.query_norm);
+        optional(&mut hasher, &layer.key_norm);
+    }
+    floats(&mut hasher, &weights.final_norm);
+    linear(&mut hasher, &weights.lm_head);
     hasher.finalize().into()
 }
 
@@ -1016,6 +1082,7 @@ impl ReferenceKvReuseBackend {
         let catalog = KvPrefixCatalog::new(authority, limits.catalog)
             .map_err(ReferenceKvError::Catalog)?
             .with_retirer(Arc::new(paged.clone()));
+        let base = promotion_base_digest(&chain, &stack, limits.max_new_tokens);
         Ok(Self {
             stack,
             tokenizer,
@@ -1036,7 +1103,7 @@ impl ReferenceKvReuseBackend {
             }),
             liveness: ReferenceKvLiveness {
                 inner: Arc::new(Mutex::new(RevokedInputs {
-                    base: Some(base_digest_of(&chain)),
+                    base: Some(base),
                     ..RevokedInputs::default()
                 })),
             },
@@ -1325,12 +1392,15 @@ impl ReferenceKvReuseBackend {
         )
     }
 
-    /// Identity of this backend's base model: the SHA-256 of a domain tag and the chain id,
-    /// which is derived from the actual stack weights, the configuration, the tokenizer and the
-    /// build identity. An `AdapterPromoted` must name exactly this digest as its `base` for the
+    /// Identity of this backend's base model for promotions: the SHA-256 of a domain tag, the
+    /// chain id (actual stack weights, tokenizer, build identity), the full stack configuration
+    /// and every weight of the stack, and the generation limit. It differs from the cache
+    /// compatibility chain, which stops at the final layer's K/V projections: backends that
+    /// differ only in the LM head, the final norm or the last layer's other weights share a
+    /// chain but not this digest. An `AdapterPromoted` must name exactly this digest as its `base` for the
     /// adapter to be live here; a promotion for another base never serves on this backend.
     pub fn base_digest(&self) -> [u8; 32] {
-        base_digest_of(&self.chain)
+        promotion_base_digest(&self.chain, &self.stack, self.limits.max_new_tokens)
     }
 
     /// The canonical bytes of `adapter` as an artifact of this stack, and the SHA-256 of them
@@ -1975,6 +2045,57 @@ mod tests {
             legacy_seed_chain(perturbed.config(), 1)
         );
         assert_ne!(chain_of(&a), chain_of(&perturbed));
+    }
+
+    #[test]
+    fn the_promotion_digest_covers_what_the_chain_does_not() {
+        let config = stack_config(&ReferenceKvLimits::default(), Qwen2RopeScaling::None);
+        let a = Qwen2PagedStack::reference(config.clone(), 1).unwrap();
+        let digest = |stack: &Qwen2PagedStack| {
+            promotion_base_digest(
+                &chain_of(stack),
+                stack,
+                ReferenceKvLimits::default().max_new_tokens,
+            )
+        };
+        assert_eq!(digest(&a), digest(&a.clone()));
+        let last = a.weights().layers.len() - 1;
+        type Perturb = fn(&mut ptr_pods::Qwen2StackWeights, usize);
+        let perturbations: [(&str, Perturb); 4] = [
+            ("lm_head", |w, _| w.lm_head.weight[0] += 1.0),
+            ("final_norm", |w, _| w.final_norm[0] += 1.0),
+            ("last layer query", |w, last| {
+                w.layers[last].decoder.query.weight[0] += 1.0
+            }),
+            ("last layer mlp", |w, last| {
+                w.layers[last].decoder.down.weight[0] += 1.0
+            }),
+        ];
+        for (name, perturb) in perturbations {
+            let mut weights = a.weights().clone();
+            perturb(&mut weights, last);
+            let other = Qwen2PagedStack::new(config.clone(), weights).unwrap();
+            assert_eq!(
+                chain_of(&a),
+                chain_of(&other),
+                "{name}: the chain cannot tell"
+            );
+            assert_ne!(
+                digest(&a),
+                digest(&other),
+                "{name}: the promotion digest can"
+            );
+        }
+        // The configuration is framed too.
+        let scaled_config = stack_config(
+            &ReferenceKvLimits::default(),
+            Qwen2RopeScaling::DynamicNtk {
+                factor: 4.0,
+                original_max_position_embeddings: 16,
+            },
+        );
+        let scaled = Qwen2PagedStack::reference(scaled_config, 1).unwrap();
+        assert_ne!(digest(&a), digest(&scaled));
     }
 
     #[test]

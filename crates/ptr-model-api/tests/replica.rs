@@ -4,8 +4,9 @@ mod common;
 
 use common::{request, resume_request, FlakyReplica};
 use ptr_model_api::{
-    InferenceBackend, ModelError, ModelErrorKind, ModelEvent, ReplicaError, ReplicaPolicy,
-    ReplicaRouter, ReplicaStats, ResumableInferenceBackend, ResumeFailover, MAX_REPLICAS,
+    InferenceBackend, ModelError, ModelErrorKind, ModelEvent, PlacementOptions, ReplicaError,
+    ReplicaPolicy, ReplicaRouter, ReplicaStats, ResumableInferenceBackend, ResumeFailover,
+    MAX_REPLICAS,
 };
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -324,8 +325,12 @@ fn a_placed_resume_without_failover_lands_on_the_replica_of_its_own_invocation_e
     )
     .expect("router");
     // Two live invocations, two placements (a and b). The rotation now points at c.
-    let first = strict.infer_placed(&request("id-a")).expect("served");
-    let second = strict.infer_placed(&request("id-b")).expect("served");
+    let first = strict
+        .infer_placed(&request("id-a"), &PlacementOptions::default())
+        .expect("served");
+    let second = strict
+        .infer_placed(&request("id-b"), &PlacementOptions::default())
+        .expect("served");
     assert_eq!(label(first.events), "a");
     assert_eq!(label(second.events), "b");
     // Three rounds in a row on each: every round returns the placement of the replica that
@@ -391,8 +396,12 @@ fn placements_are_bound_to_their_invocation_router_request_and_context() {
     };
     let router = new_router();
     // Two invocations on different replicas, told apart by their id and their context.
-    let first = router.infer_placed(&call(1)).expect("served");
-    let second = router.infer_placed(&call(2)).expect("served");
+    let first = router
+        .infer_placed(&call(1), &PlacementOptions::default())
+        .expect("served");
+    let second = router
+        .infer_placed(&call(2), &PlacementOptions::default())
+        .expect("served");
     assert_eq!(label(first.events), "a");
     assert_eq!(label(second.events), "b");
     // Swapping the placements is refused: each belongs to the context of its own invocation.
@@ -409,8 +418,12 @@ fn placements_are_bound_to_their_invocation_router_request_and_context() {
         Some(ModelError::scope_mismatch())
     );
     // A refused attempt spends the placement; fresh invocations route to their own replica.
-    let first = router.infer_placed(&call(1)).expect("served");
-    let second = router.infer_placed(&call(2)).expect("served");
+    let first = router
+        .infer_placed(&call(1), &PlacementOptions::default())
+        .expect("served");
+    let second = router
+        .infer_placed(&call(2), &PlacementOptions::default())
+        .expect("served");
     let on_first = router
         .resume_placed(first.placement.expect("waiting"), &resume(1))
         .expect("resumes");
@@ -425,14 +438,18 @@ fn placements_are_bound_to_their_invocation_router_request_and_context() {
     drop(on_second.placement);
     // Another router's placement is refused, and so is a different request id.
     let other = new_router();
-    let foreign = other.infer_placed(&call(1)).expect("served");
+    let foreign = other
+        .infer_placed(&call(1), &PlacementOptions::default())
+        .expect("served");
     assert_eq!(
         router
             .resume_placed(foreign.placement.expect("waiting"), &resume(1))
             .err(),
         Some(ModelError::scope_mismatch())
     );
-    let own = router.infer_placed(&call(1)).expect("served");
+    let own = router
+        .infer_placed(&call(1), &PlacementOptions::default())
+        .expect("served");
     assert_eq!(
         router
             .resume_placed(
@@ -446,7 +463,7 @@ fn placements_are_bound_to_their_invocation_router_request_and_context() {
 
 #[test]
 fn open_placements_are_bounded_and_dropping_one_releases_it() {
-    use ptr_model_api::MAX_OPEN_PLACEMENTS;
+    use ptr_model_api::{MAX_OPEN_PLACEMENTS, MAX_PLACEMENTS_PER_PRINCIPAL};
     let replicas = [healthy("a")];
     let router = ReplicaRouter::new(
         replicas
@@ -460,16 +477,22 @@ fn open_placements_are_bounded_and_dropping_one_releases_it() {
     )
     .expect("router");
     let mut held = Vec::new();
+    // Spread over principals so that none is at its own quota: only the router-wide bound is hit.
     for n in 0..MAX_OPEN_PLACEMENTS {
         held.push(
             router
-                .infer_placed(&request(&format!("r{n}")))
+                .infer_placed(
+                    &request(&format!("r{n}")),
+                    &principal(&format!("p{}", n / MAX_PLACEMENTS_PER_PRINCIPAL)),
+                )
                 .expect("served"),
         );
     }
     let calls = replicas[0].calls.load(Ordering::SeqCst);
     assert_eq!(
-        router.infer_placed(&request("one-too-many")).err(),
+        router
+            .infer_placed(&request("one-too-many"), &principal("late"))
+            .err(),
         Some(ModelError::overloaded())
     );
     assert_eq!(
@@ -478,7 +501,133 @@ fn open_placements_are_bounded_and_dropping_one_releases_it() {
         "refused before any replica ran"
     );
     drop(held);
-    assert!(router.infer_placed(&request("after")).is_ok());
+    assert!(router
+        .infer_placed(&request("after"), &principal("late"))
+        .is_ok());
+}
+
+fn principal(name: &str) -> PlacementOptions {
+    PlacementOptions {
+        principal: Some(name.into()),
+    }
+}
+
+fn single_router() -> ReplicaRouter {
+    ReplicaRouter::new(
+        vec![healthy("a") as Arc<dyn ResumableInferenceBackend>],
+        ReplicaPolicy {
+            max_failover: 0,
+            resume: ResumeFailover::Never,
+        },
+    )
+    .expect("router")
+}
+
+#[test]
+fn a_principal_at_its_quota_is_refused_and_another_principal_is_not() {
+    use ptr_model_api::MAX_PLACEMENTS_PER_PRINCIPAL as QUOTA;
+    let router = single_router();
+    let mut mine = Vec::new();
+    for n in 0..QUOTA {
+        mine.push(
+            router
+                .infer_placed(&request(&format!("mine-{n}")), &principal("alice"))
+                .expect("served"),
+        );
+    }
+    assert_eq!(
+        router
+            .infer_placed(&request("mine-over"), &principal("alice"))
+            .err(),
+        Some(ModelError::overloaded())
+    );
+    // Another principal, and the anonymous bucket, are unaffected and nothing of alice's is lost.
+    let bob = router
+        .infer_placed(&request("bob"), &principal("bob"))
+        .expect("served");
+    assert!(router
+        .infer_placed(&request("anon"), &PlacementOptions::default())
+        .is_ok());
+    // A resume keeps alice's charge through its successor ...
+    let first = mine.remove(0);
+    let resumed = router
+        .resume_placed(first.placement.expect("waiting"), &resume_request("mine-0"))
+        .expect("resumes");
+    assert_eq!(
+        router
+            .infer_placed(&request("mine-over"), &principal("alice"))
+            .err(),
+        Some(ModelError::overloaded())
+    );
+    // ... and dropping a placement gives the slot back.
+    drop(resumed);
+    assert!(router
+        .infer_placed(&request("mine-over"), &principal("alice"))
+        .is_ok());
+    drop(bob);
+}
+
+#[test]
+fn calls_without_a_principal_share_one_limited_bucket() {
+    use ptr_model_api::MAX_PLACEMENTS_PER_PRINCIPAL as QUOTA;
+    let router = single_router();
+    let mut held = Vec::new();
+    for n in 0..QUOTA {
+        held.push(
+            router
+                .infer_placed(&request(&format!("anon-{n}")), &PlacementOptions::default())
+                .expect("served"),
+        );
+    }
+    assert_eq!(
+        router
+            .infer_placed(&request("anon-over"), &PlacementOptions::default())
+            .err(),
+        Some(ModelError::overloaded())
+    );
+    assert!(router
+        .infer_placed(&request("named"), &principal("alice"))
+        .is_ok());
+}
+
+#[test]
+fn a_finished_run_and_a_refused_one_do_not_hold_a_principals_quota() {
+    use ptr_model_api::MAX_PLACEMENTS_PER_PRINCIPAL as QUOTA;
+    let router = ReplicaRouter::new(
+        vec![Arc::new(Finishing) as Arc<dyn ResumableInferenceBackend>],
+        ReplicaPolicy {
+            max_failover: 0,
+            resume: ResumeFailover::Never,
+        },
+    )
+    .expect("router");
+    for n in 0..QUOTA * 3 {
+        let answer = router
+            .infer_placed(&request(&format!("r{n}")), &principal("alice"))
+            .expect("served");
+        assert!(answer.placement.is_none());
+    }
+    let failing = Arc::new(FlakyReplica::new(
+        "a",
+        QUOTA * 3,
+        ModelError::new("refused"),
+    ));
+    let router = ReplicaRouter::new(
+        vec![failing as Arc<dyn ResumableInferenceBackend>],
+        ReplicaPolicy {
+            max_failover: 0,
+            resume: ResumeFailover::Never,
+        },
+    )
+    .expect("router");
+    for n in 0..QUOTA * 3 {
+        assert!(router
+            .infer_placed(&request(&format!("r{n}")), &principal("alice"))
+            .is_err());
+    }
+    assert!(router
+        .infer_placed(&request("ok"), &principal("alice"))
+        .is_ok());
 }
 
 /// A replica whose runs and resumes always finish.
@@ -515,7 +664,7 @@ fn a_finished_run_creates_no_placement_and_never_fills_the_table() {
     .expect("router");
     for n in 0..5000 {
         let answer = router
-            .infer_placed(&request(&format!("r{n}")))
+            .infer_placed(&request(&format!("r{n}")), &PlacementOptions::default())
             .expect("served");
         assert!(answer.placement.is_none());
     }
@@ -552,7 +701,9 @@ fn a_finished_run_creates_no_placement_and_never_fills_the_table() {
     .expect("router");
     for n in 0..5000 {
         let id = format!("r{n}");
-        let placed = router.infer_placed(&request(&id)).expect("served");
+        let placed = router
+            .infer_placed(&request(&id), &PlacementOptions::default())
+            .expect("served");
         let resumed = router
             .resume_placed(placed.placement.expect("waiting"), &resume_request(&id))
             .expect("resumes");
@@ -580,16 +731,22 @@ fn a_live_request_id_is_refused_before_any_replica_runs_and_freed_when_it_ends()
             .map(|r| r.calls.load(Ordering::SeqCst))
             .sum()
     };
-    let first = strict.infer_placed(&request("same-id")).expect("served");
+    let first = strict
+        .infer_placed(&request("same-id"), &PlacementOptions::default())
+        .expect("served");
     assert_eq!(label(first.events), "a");
     let before = calls();
     // The second invocation under the live id is refused, typed, and no replica ran.
-    let refused = strict.infer_placed(&request("same-id")).err();
+    let refused = strict
+        .infer_placed(&request("same-id"), &PlacementOptions::default())
+        .err();
     assert_eq!(refused, Some(ModelError::duplicate_request()));
     assert!(refused.is_some_and(|error| error.is_duplicate_request() && !error.allows_failover()));
     assert_eq!(calls(), before, "refused before any replica ran");
     // Another id is unaffected, and the resume of the first lands on its own replica.
-    let other = strict.infer_placed(&request("other-id")).expect("served");
+    let other = strict
+        .infer_placed(&request("other-id"), &PlacementOptions::default())
+        .expect("served");
     assert_eq!(label(other.events), "b");
     let resumed = strict
         .resume_placed(
@@ -601,12 +758,16 @@ fn a_live_request_id_is_refused_before_any_replica_runs_and_freed_when_it_ends()
     // The id stays live across the resume (its next placement holds it) ...
     let held = resumed.placement.expect("waiting");
     assert_eq!(
-        strict.infer_placed(&request("same-id")).err(),
+        strict
+            .infer_placed(&request("same-id"), &PlacementOptions::default())
+            .err(),
         Some(ModelError::duplicate_request())
     );
     // ... and is free once the placement is dropped.
     drop(held);
-    let again = strict.infer_placed(&request("same-id")).expect("served");
+    let again = strict
+        .infer_placed(&request("same-id"), &PlacementOptions::default())
+        .expect("served");
     assert_eq!(label(again.events), "a");
 }
 
@@ -622,8 +783,12 @@ fn a_request_id_is_free_again_after_a_failed_or_finished_run() {
         },
     )
     .expect("router");
-    assert!(router.infer_placed(&request("r")).is_err());
-    assert!(router.infer_placed(&request("r")).is_ok());
+    assert!(router
+        .infer_placed(&request("r"), &PlacementOptions::default())
+        .is_err());
+    assert!(router
+        .infer_placed(&request("r"), &PlacementOptions::default())
+        .is_ok());
     // A run that finishes frees its id.
     let router = ReplicaRouter::new(
         vec![Arc::new(Finishing) as Arc<dyn ResumableInferenceBackend>],
@@ -634,6 +799,8 @@ fn a_request_id_is_free_again_after_a_failed_or_finished_run() {
     )
     .expect("router");
     for _ in 0..3 {
-        assert!(router.infer_placed(&request("r")).is_ok());
+        assert!(router
+            .infer_placed(&request("r"), &PlacementOptions::default())
+            .is_ok());
     }
 }

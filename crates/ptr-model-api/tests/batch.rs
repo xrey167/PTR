@@ -1822,3 +1822,146 @@ fn cancelled_waiters_are_reclaimed_before_a_full_queue_refuses_a_live_request() 
     });
     assert_eq!(batcher.stats().cancelled, 2);
 }
+
+/// Runs wait for an observation; a resume blocks until the test lets it go.
+struct BlockingResume {
+    entered: AtomicBool,
+    latch: Latch,
+    resumes: std::sync::atomic::AtomicUsize,
+}
+
+impl BlockingResume {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            entered: AtomicBool::new(false),
+            latch: Latch::default(),
+            resumes: std::sync::atomic::AtomicUsize::new(0),
+        })
+    }
+}
+
+impl InferenceBackend for BlockingResume {
+    fn name(&self) -> &'static str {
+        "blocking-resume"
+    }
+
+    fn infer(&self, _request: &ModelRequest) -> Result<Vec<ModelEvent>, ModelError> {
+        Ok(vec![ModelEvent::Token("waiting".into())])
+    }
+}
+
+impl ptr_model_api::BatchInferenceBackend for BlockingResume {}
+
+impl ptr_model_api::ResumableInferenceBackend for BlockingResume {
+    fn resume(&self, _request: &ModelResumeRequest) -> Result<Vec<ModelEvent>, ModelError> {
+        self.resumes.fetch_add(1, Ordering::SeqCst);
+        self.entered.store(true, Ordering::SeqCst);
+        self.latch.wait();
+        Ok(vec![ModelEvent::Token("waiting".into())])
+    }
+}
+
+fn blocking_resume_batcher(
+    backend: &Arc<BlockingResume>,
+    clock: Arc<dyn BatchClock>,
+) -> AdaptiveBatcher<BlockingResume> {
+    AdaptiveBatcher::with_parts(
+        Arc::clone(backend),
+        policy(1, 0, 4),
+        clock,
+        Some(Arc::new(OpenGate) as Arc<dyn BatchGate>),
+    )
+    .expect("built")
+}
+
+#[test]
+fn a_resume_is_reserved_under_the_close_lock_and_none_is_reserved_after_close() {
+    let backend = BlockingResume::new();
+    let batcher = blocking_resume_batcher(&backend, Arc::new(BatchSystemClock));
+    let scope_a = principal_scope("a");
+    let first = open(&batcher, "first", &scope_a);
+    let second = open(&batcher, "second", &scope_a);
+    std::thread::scope(|scope| {
+        let batcher = &batcher;
+        let scope_a = &scope_a;
+        let _release = OpenOnDrop(&backend.latch);
+        let running =
+            scope.spawn(move || batcher.resume_continuation(first, scope_a, observation(1, b"x")));
+        assert!(eventually(PATIENT, || backend
+            .entered
+            .load(Ordering::SeqCst)));
+        // Reserved before the backend was reached, and counted as in flight.
+        assert_eq!(batcher.resuming(), 1);
+        batcher.close();
+        // The reservation made before close finishes; it is not cut off, and close did not
+        // wait for it.
+        assert_eq!(batcher.resuming(), 1);
+        // Nothing is reserved after close: refused, backend untouched, nothing dispatched.
+        let dispatched = batcher.stats().dispatched;
+        assert_eq!(
+            batcher
+                .resume_continuation(second, scope_a, observation(1, b"x"))
+                .err(),
+            Some(ModelError::closed())
+        );
+        assert_eq!(backend.resumes.load(Ordering::SeqCst), 1);
+        assert_eq!(batcher.stats().dispatched, dispatched);
+        assert_eq!(batcher.resuming(), 1);
+        backend.latch.open();
+        assert!(running.join().expect("thread").is_ok());
+        assert_eq!(batcher.resuming(), 0, "the reservation is released");
+    });
+}
+
+#[test]
+fn a_continuation_that_runs_out_during_its_resume_has_no_successor() {
+    for case in ["deadline", "cancel", "neither"] {
+        let clock = Arc::new(SetClock(std::sync::atomic::AtomicU64::new(0)));
+        let backend = BlockingResume::new();
+        let batcher = blocking_resume_batcher(&backend, Arc::clone(&clock) as Arc<dyn BatchClock>);
+        let scope_a = principal_scope("a");
+        let flag = CancelFlag::default();
+        let continuation = batcher
+            .infer_scoped(
+                &request_at("run", 7),
+                BatchAdmission {
+                    key: scope_a.clone(),
+                    deadline: Some(Timestamp(100)),
+                    cancel: Some(flag.clone()),
+                },
+            )
+            .expect("served")
+            .continuation
+            .expect("waiting");
+        let answer = std::thread::scope(|scope| {
+            let batcher = &batcher;
+            let scope_a = &scope_a;
+            let _release = OpenOnDrop(&backend.latch);
+            let running = scope.spawn(move || {
+                batcher.resume_continuation(continuation, scope_a, observation(1, b"x"))
+            });
+            assert!(eventually(PATIENT, || backend
+                .entered
+                .load(Ordering::SeqCst)));
+            // The entry runs out while the backend is busy.
+            match case {
+                "deadline" => clock.0.store(100, Ordering::SeqCst),
+                "cancel" => flag.cancel(),
+                _ => {}
+            }
+            backend.latch.open();
+            running
+                .join()
+                .expect("thread")
+                .expect("the resume itself ran")
+        });
+        assert_eq!(answer.next.is_none(), case != "neither", "case {case}");
+        // An ended continuation frees its id; a live one still holds it.
+        let again = batcher.infer_scoped(&request_at("run", 7), admission_under(&scope_a));
+        if case == "neither" {
+            assert_eq!(again.err(), Some(ModelError::duplicate_request()));
+        } else {
+            assert!(again.is_ok(), "case {case}");
+        }
+    }
+}

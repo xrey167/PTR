@@ -29,7 +29,7 @@ use crate::{
     ResumableInferenceBackend,
 };
 use ptr_types::{RequestId, SemanticContext};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fmt;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -43,10 +43,26 @@ pub const MAX_REPLICAS: usize = 64;
 /// placement is evicted.
 pub const MAX_OPEN_PLACEMENTS: usize = 4096;
 
+/// The most placements one principal may hold open at once, reservations of calls still running
+/// included. A principal at its quota is refused with [`ModelError::overloaded`] and nothing of
+/// anyone else is touched, so one caller cannot take the router-wide table from the others.
+/// Calls that name no principal share one anonymous bucket with the same quota; they are
+/// limited, not exempt.
+pub const MAX_PLACEMENTS_PER_PRINCIPAL: usize = 256;
+
+/// Who an [`ReplicaRouter::infer_placed`] call is made for. `ModelRequest` carries no principal,
+/// so the caller states it here.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct PlacementOptions {
+    /// The principal charged for the placement; `None` is the shared anonymous bucket.
+    pub principal: Option<String>,
+}
+
 /// What the router remembers about one open invocation.
 struct OpenPlacement {
     replica: usize,
     request_id: RequestId,
+    principal: Option<String>,
     context: [u8; 32],
     /// A resume is running on it: it keeps its slot for the successor and cannot be used twice.
     in_flight: bool,
@@ -60,7 +76,29 @@ struct Placements {
     /// Request ids of every live invocation: an open placement (a resume in flight included) or
     /// an `infer_placed` whose replica is still running. An id is free again once its run ends,
     /// fails or its placement is dropped.
-    live: HashSet<RequestId>,
+    live: HashMap<RequestId, Option<String>>,
+    /// Live invocations per principal (the anonymous bucket is `None`), reservations included.
+    held: HashMap<Option<String>, usize>,
+}
+
+impl Placements {
+    /// Charge `principal` for the live id.
+    fn claim(&mut self, id: RequestId, principal: Option<String>) {
+        *self.held.entry(principal.clone()).or_insert(0) += 1;
+        self.live.insert(id, principal);
+    }
+
+    /// The id is no longer live: give the principal's slot back.
+    fn release(&mut self, id: &RequestId) {
+        if let Some(principal) = self.live.remove(id) {
+            if let Some(count) = self.held.get_mut(&principal) {
+                *count = count.saturating_sub(1);
+                if *count == 0 {
+                    self.held.remove(&principal);
+                }
+            }
+        }
+    }
 }
 
 /// The replica that answered one invocation, handed back by [`ReplicaRouter::infer_placed`] and
@@ -85,7 +123,7 @@ impl Drop for Placement {
                 .is_some_and(|entry| !entry.in_flight)
             {
                 if let Some(entry) = table.entries.remove(&self.token) {
-                    table.live.remove(&entry.request_id);
+                    table.release(&entry.request_id);
                 }
             }
         }
@@ -353,7 +391,11 @@ impl ReplicaRouter {
     /// Like `infer`, and also returns the [`Placement`] of the replica that answered. The
     /// router remembers the replica, the request id and the context under an unguessable
     /// token in a table of at most [`MAX_OPEN_PLACEMENTS`]; a full table refuses the call
-    /// with [`ModelError::overloaded`] before any replica runs.
+    /// with [`ModelError::overloaded`] before any replica runs. Each principal
+    /// (`options.principal`; `None` is one shared anonymous bucket) may hold at most
+    /// [`MAX_PLACEMENTS_PER_PRINCIPAL`] live invocations, reservations of calls still running
+    /// included; a principal at its quota is refused the same way and nothing of another's is
+    /// taken.
     ///
     /// A request id is **live** from the call until its run finishes, fails or its placement is
     /// dropped (a resume in flight included). A second `infer_placed` under a live id is refused
@@ -364,20 +406,31 @@ impl ReplicaRouter {
     ///
     /// # Errors
     /// As `infer`, [`ModelError::duplicate_request`] for a live id and
-    /// [`ModelError::overloaded`] for a full table.
-    pub fn infer_placed(&self, request: &ModelRequest) -> Result<PlacedAnswer, ModelError> {
+    /// [`ModelError::overloaded`] for a full table or a principal at its quota.
+    pub fn infer_placed(
+        &self,
+        request: &ModelRequest,
+        options: &PlacementOptions,
+    ) -> Result<PlacedAnswer, ModelError> {
         {
             let mut table = self.table();
             // Before the capacity check and before any replica runs: a stateful backend cannot
             // tell two live invocations under one id apart, so the second is refused.
-            if table.live.contains(&request.request_id) {
+            if table.live.contains_key(&request.request_id) {
                 return Err(ModelError::duplicate_request());
+            }
+            // The principal's quota, before the router-wide bound: a principal at its limit is
+            // refused whatever the others hold, and nothing of theirs is taken.
+            if table.held.get(&options.principal).copied().unwrap_or(0)
+                >= MAX_PLACEMENTS_PER_PRINCIPAL
+            {
+                return Err(ModelError::overloaded());
             }
             if table.entries.len() + table.reserved >= MAX_OPEN_PLACEMENTS {
                 return Err(ModelError::overloaded());
             }
             table.reserved += 1;
-            table.live.insert(request.request_id.clone());
+            table.claim(request.request_id.clone(), options.principal.clone());
         }
         let routed = self.route(None, self.policy.max_failover, |backend| {
             backend.infer(request)
@@ -387,12 +440,12 @@ impl ReplicaRouter {
         let (events, replica) = match routed {
             Ok(answered) => answered,
             Err(error) => {
-                table.live.remove(&request.request_id);
+                table.release(&request.request_id);
                 return Err(error);
             }
         };
         if matches!(events.last(), Some(ModelEvent::Finished)) {
-            table.live.remove(&request.request_id);
+            table.release(&request.request_id);
             return Ok(PlacedAnswer {
                 events,
                 placement: None,
@@ -404,6 +457,7 @@ impl ReplicaRouter {
             OpenPlacement {
                 replica,
                 request_id: request.request_id.clone(),
+                principal: options.principal.clone(),
                 context: context_digest(&request.semantic_context),
                 in_flight: false,
             },
@@ -459,7 +513,7 @@ impl ReplicaRouter {
             return Err(ModelError::scope_mismatch());
         };
         // The id stays live only if the run goes on.
-        table.live.remove(&entry.request_id);
+        table.release(&entry.request_id);
         let (events, served) = routed?;
         // A run that finished has nothing left to resume: the entry goes and no placement is made.
         if matches!(events.last(), Some(ModelEvent::Finished)) {
@@ -472,7 +526,7 @@ impl ReplicaRouter {
         let token = self.issue_token();
         entry.replica = served;
         entry.in_flight = false;
-        table.live.insert(entry.request_id.clone());
+        table.claim(entry.request_id.clone(), entry.principal.clone());
         table.entries.insert(token, entry);
         drop(table);
         Ok(PlacedAnswer {

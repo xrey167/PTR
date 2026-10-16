@@ -369,3 +369,39 @@ fn an_adapter_promoted_for_one_base_is_refused_on_a_backend_with_another() {
         Err(ReferenceKvError::Binding(BindingError::NotLive { .. }))
     ));
 }
+
+#[test]
+fn a_promotion_for_an_unscaled_base_is_refused_on_a_base_that_differs_only_in_rope_scaling() {
+    use ptr_pods::Qwen2RopeScaling;
+    let unscaled = backend();
+    let scaled = ReferenceKvReuseBackend::with_rope_scaling(
+        ReferenceKvLimits::default(),
+        scope(),
+        ptr_runtime::REFERENCE_KV_WEIGHT_SEED,
+        Qwen2RopeScaling::DynamicNtk {
+            factor: 4.0,
+            original_max_position_embeddings: 16,
+        },
+    )
+    .unwrap();
+    // A promotion is bound to the whole behaviour of the base.
+    assert_ne!(unscaled.base_digest(), scaled.base_digest());
+    let weights = adapter(&unscaled, 2);
+    let event = promoted_with(
+        2,
+        unscaled.adapter_artifact_digest(&weights),
+        unscaled.base_digest(),
+    );
+    unscaled.apply_committed_event(&event).unwrap();
+    scaled.apply_committed_event(&event).unwrap();
+    let req = request(&unscaled);
+    assert!(unscaled
+        .infer_scoped_bound(&scope(), &req, None, &StackBinding::with_adapter(weights))
+        .is_ok());
+    let req = request(&scaled);
+    let weights = adapter(&scaled, 2);
+    assert!(matches!(
+        scaled.infer_scoped_bound(&scope(), &req, None, &StackBinding::with_adapter(weights)),
+        Err(ReferenceKvError::Binding(BindingError::NotLive { .. }))
+    ));
+}

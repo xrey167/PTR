@@ -620,6 +620,22 @@ impl fmt::Debug for Job {
 struct State {
     queue: BatchQueue<Job>,
     closed: bool,
+    /// Resumes that passed the closed check and have not returned from the backend. Reserved
+    /// under the same lock as `closed`, so a resume is either refused because the batcher is
+    /// closed or counted here before `close` can take effect; none slips in between.
+    resuming: usize,
+}
+
+/// A resume's reservation in [`State::resuming`], released when it returns or unwinds.
+struct ResumeSlot<'a, B> {
+    shared: &'a Shared<B>,
+}
+
+impl<B> Drop for ResumeSlot<'_, B> {
+    fn drop(&mut self) {
+        let mut state = self.shared.lock();
+        state.resuming = state.resuming.saturating_sub(1);
+    }
 }
 
 struct Shared<B> {
@@ -725,6 +741,7 @@ impl<B: BatchInferenceBackend + 'static> AdaptiveBatcher<B> {
             state: Mutex::new(State {
                 queue: BatchQueue::new(policy),
                 closed: false,
+                resuming: 0,
             }),
             table: Arc::new(Mutex::new(Continuations::default())),
             started: std::time::Instant::now(),
@@ -958,8 +975,18 @@ impl<B: BatchInferenceBackend + 'static> AdaptiveBatcher<B> {
             context.cancel.as_ref(),
         )?;
         // A run that finished, or a round counter with no room, has no successor.
+        // The entry's own deadline and cancel flag are looked at again now that the backend has
+        // returned: a continuation that ran out meanwhile has no successor, as in `infer_scoped`.
+        let ran_out = context
+            .cancel
+            .as_ref()
+            .is_some_and(CancelFlag::is_cancelled)
+            || context
+                .deadline
+                .is_some_and(|deadline| deadline <= self.shared.clock.now().0);
         let continues = !matches!(events.last(), Some(ModelEvent::Finished))
-            && context.round.checked_add(1).is_some();
+            && context.round.checked_add(1).is_some()
+            && !ran_out;
         let successor = continues.then(|| self.shared.issue_token());
         let kept = self
             .shared
@@ -1019,12 +1046,23 @@ impl<B: BatchInferenceBackend + 'static> AdaptiveBatcher<B> {
         if let Some(error) = self.resume_expired(deadline, cancel) {
             return Err(error);
         }
-        if self.shared.lock().closed {
-            return Err(ModelError::closed());
-        }
-        // The same containment as a batch: a backend that panics fails this call only. The call
-        // is counted as dispatched immediately before the backend sees it.
-        bump(&self.shared.counters.dispatched, 1);
+        // The last look at `closed` and the reservation of the dispatch are one step under the
+        // lock `close` takes: a resume is either refused here or counted as in flight before
+        // `close` can take effect, and a later `close` leaves it to finish like a batch already
+        // in the backend.
+        let _slot = {
+            let mut state = self.shared.lock();
+            if state.closed {
+                return Err(ModelError::closed());
+            }
+            state.resuming += 1;
+            // Counted as dispatched in the same step, immediately before the backend sees it.
+            bump(&self.shared.counters.dispatched, 1);
+            ResumeSlot {
+                shared: &self.shared,
+            }
+        };
+        // The same containment as a batch: a backend that panics fails this call only.
         match catch_unwind(AssertUnwindSafe(|| self.shared.backend.resume(request))) {
             Ok(result) => {
                 if result.is_err() {
@@ -1054,6 +1092,12 @@ impl<B: BatchInferenceBackend + 'static> AdaptiveBatcher<B> {
             largest_batch: load(&counters.largest_batch),
             backend_errors: load(&counters.backend_errors),
         }
+    }
+
+    /// Resumes that are inside the backend now, or reserved to go there. A resume that is
+    /// counted here when [`AdaptiveBatcher::close`] is called finishes; none is reserved after.
+    pub fn resuming(&self) -> usize {
+        self.shared.lock().resuming
     }
 
     /// Requests waiting in the queue now.
