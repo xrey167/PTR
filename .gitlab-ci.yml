@@ -264,6 +264,35 @@ storage-tiers:
     - make ci-storage-tiers
   rules: *rules-heavy
 
+fabric-shm:
+  <<: *rust
+  stage: backends
+  script:
+    - make ci-fabric-shm
+  rules: *rules-heavy
+
+fabric-cuda-check:
+  <<: *rust
+  stage: backends
+  script:
+    - make ci-fabric-cuda-check
+  rules: *rules-heavy
+
+# The docker executor gives a job neither a delegated cgroup nor namespaces, so the root-only
+# tests of the supervisor skip there (PTR_WORKER_UNPRIVILEGED_CI=1 says that is expected) and
+# the unprivileged path (seccomp, tensors by Bytes) is what runs. GitHub runs the full set as
+# root.
+pod-worker:
+  <<: *rust
+  stage: backends
+  variables:
+    RUST_CACHE_TOOLCHAINS: stable-1.99.0
+    PTR_WORKER_UNPRIVILEGED_CI: "1"
+  script:
+    - apt-get install -y -qq --no-install-recommends python3
+    - make ci-pod-worker
+  rules: *rules-heavy
+
 feature-gates:
   <<: *rust
   stage: backends

@@ -469,7 +469,7 @@ impl CancelFlag {
 pub struct BatchAdmission {
     pub key: BatchKey,
     /// When the answer stops being useful, on the batcher's [`BatchClock`] (Unix milliseconds
-    /// for [`SystemClock`]). A request past it is refused before the model.
+    /// for [`BatchSystemClock`]). A request past it is refused before the model.
     pub deadline: Option<Timestamp>,
     pub cancel: Option<CancelFlag>,
 }
@@ -492,9 +492,9 @@ pub trait BatchClock: Send + Sync {
 /// Unix milliseconds. If the system clock cannot be read it answers `u64::MAX`, so every
 /// deadline looks passed and nothing with a deadline is served on a time nobody knows.
 #[derive(Clone, Copy, Debug, Default)]
-pub struct SystemClock;
+pub struct BatchSystemClock;
 
-impl BatchClock for SystemClock {
+impl BatchClock for BatchSystemClock {
     fn now(&self) -> Timestamp {
         match SystemTime::now().duration_since(UNIX_EPOCH) {
             Ok(elapsed) => Timestamp(u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)),
@@ -668,7 +668,7 @@ impl<B: BatchInferenceBackend + 'static> AdaptiveBatcher<B> {
     /// # Errors
     /// As [`AdaptiveBatcher::with_parts`].
     pub fn new(backend: Arc<B>, policy: BatchPolicy) -> Result<Self, BatchError> {
-        Self::with_parts(backend, policy, Arc::new(SystemClock), None)
+        Self::with_parts(backend, policy, Arc::new(BatchSystemClock), None)
     }
 
     /// # Errors

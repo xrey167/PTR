@@ -98,5 +98,67 @@ class SecurityWorkspaceTests(unittest.TestCase):
                          {('colored', '=3.1.1')})
         self.assertTrue(all(e['allow'] == ['MPL-2.0'] for e in policy['licenses']['exceptions']))
 
+    def test_audit_exceptions_are_scoped_to_the_frozen_a0_lockfile(self):
+        self.assertEqual(set(security.AUDIT_EXCEPTIONS), {'model/burn-a0/Cargo.toml'})
+        for exception in security.AUDIT_EXCEPTIONS.values():
+            self.assertTrue(exception['reason'])
+            self.assertTrue(all(a.startswith('RUSTSEC-') for a in exception['advisories']))
+        root = security.scanner_command('audit', ROOT / 'Cargo.toml', ROOT)
+        self.assertNotIn('--ignore', root)
+        a0 = security.scanner_command('audit', ROOT / 'model/burn-a0/Cargo.toml', ROOT)
+        ignored = [a0[i + 1] for i, arg in enumerate(a0) if arg == '--ignore']
+        self.assertEqual(tuple(ignored),
+                         security.AUDIT_EXCEPTIONS['model/burn-a0/Cargo.toml']['advisories'])
+        deny = security.scanner_command('deny', ROOT / 'model/burn-a0/Cargo.toml', ROOT)
+        self.assertNotIn('--ignore', deny)
+
+    def test_audit_exception_is_live_for_the_committed_lockfile(self):
+        self.assertEqual(security.stale_audit_exceptions(ROOT), [])
+
+    def test_audit_exception_goes_stale_when_the_package_is_no_longer_locked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'model/burn-a0').mkdir(parents=True)
+            (root / 'model/burn-a0/Cargo.lock').write_text(
+                'version = 4\n\n[[package]]\nname = "rustls"\nversion = "0.23.46"\n')
+            stale = security.stale_audit_exceptions(root)
+            self.assertEqual(len(stale), 1)
+            self.assertIn('rustls 0.23.45 is no longer locked', stale[0])
+
+    def test_audit_exception_goes_stale_when_a_second_version_is_locked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'model/burn-a0').mkdir(parents=True)
+            (root / 'model/burn-a0/Cargo.lock').write_text(
+                'version = 4\n\n[[package]]\nname = "rustls"\nversion = "0.23.45"\n'
+                '\n[[package]]\nname = "rustls"\nversion = "0.23.40"\n')
+            stale = security.stale_audit_exceptions(root)
+            self.assertEqual(len(stale), 1)
+            self.assertIn('also locked at', stale[0])
+
+    def test_audit_exception_fails_when_the_package_becomes_reachable(self):
+        from types import SimpleNamespace
+        calls = []
+        def unreachable(command, **kwargs):
+            calls.append(command)
+            return SimpleNamespace(returncode=0, stdout='', stderr='warning: nothing to print.')
+        self.assertEqual(security.reachable_audit_exceptions(ROOT, run=unreachable), [])
+        self.assertIn('--all-features', calls[0])
+        self.assertEqual(calls[0][calls[0].index('--target') + 1], 'all')
+        self.assertEqual(calls[0][-1], 'rustls@0.23.45')
+        def reachable(command, **kwargs):
+            return SimpleNamespace(returncode=0, stdout='rustls v0.23.45\n└── some-dep\n', stderr='')
+        self.assertEqual(len(security.reachable_audit_exceptions(ROOT, run=reachable)), 1)
+        def failed(command, **kwargs):
+            return SimpleNamespace(returncode=101, stdout='', stderr='error')
+        self.assertEqual(len(security.reachable_audit_exceptions(ROOT, run=failed)), 1)
+        # Newer Cargo reports a locked package outside the resolved graph as an
+        # unmatched package ID instead of printing nothing; that is unreachable.
+        def unmatched(command, **kwargs):
+            return SimpleNamespace(
+                returncode=101, stdout='',
+                stderr="error: package ID specification `rustls@0.23.45` did not match any packages")
+        self.assertEqual(security.reachable_audit_exceptions(ROOT, run=unmatched), [])
+
 if __name__ == '__main__':
     unittest.main()

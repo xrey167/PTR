@@ -377,6 +377,22 @@ pub fn projection_entries(committed: &CommittedEvent) -> Vec<(String, String)> {
             },
             egress_refusal_entry(index, *reason, *count, *saturated, target),
         )],
+        // The head of a stable pod identity in one project: `pod-head:<project>/<identity>` holds
+        // the canonical revision address of the current head. The ledger codec already refused a malformed address, so
+        // the fallback to an empty value is unreachable for a committed event.
+        LedgerEvent::PodHeadAdvanced {
+            project,
+            identity,
+            new,
+            ..
+        } => vec![(
+            pod_head_key(&project.0, &identity.0),
+            // An address that does not render is projected as a value no reader parses, so a
+            // restore of this state refuses it (`PodHeadError::MalformedEntry`) instead of
+            // holding an empty or invented head.
+            new.canonical_uri()
+                .unwrap_or_else(|_| POD_HEAD_UNRENDERABLE.to_owned()),
+        )],
         // The promoted generation and the digest of its weights, per project and adapter; the
         // serving decision itself is the runtime's, from the same committed events.
         LedgerEvent::AdapterPromoted {
@@ -443,6 +459,20 @@ pub fn egress_refusal_entry(
 ) -> String {
     let more = if saturated { "+" } else { "" };
     format!("{index}:{}:{count}{more}:{target}", reason.name())
+}
+
+/// The projected value of a head whose address cannot be rendered. The ledger codec refuses such
+/// an address, so a committed event never produces it.
+pub const POD_HEAD_UNRENDERABLE: &str = "unrenderable";
+
+/// The prefix of every pod head key ([`pod_head_key`]).
+pub const POD_HEAD_PREFIX: &str = "pod-head:";
+
+/// The materialized key of one pod identity's head in one project:
+/// `pod-head:<project>/<identity>`. Its value is the canonical `ptr://` revision address of the
+/// head. A project id holds no `/` (the ledger codec refuses one), so the key parses back.
+pub fn pod_head_key(project: &str, identity: &str) -> String {
+    format!("{POD_HEAD_PREFIX}{project}/{identity}")
 }
 
 /// The prefix of every approximate-KV taint key: `kv-taint:<kind>:<hex digest>`.

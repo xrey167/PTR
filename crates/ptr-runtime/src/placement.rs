@@ -1,4 +1,4 @@
-use ptr_types::{ArtifactId, DeviceId, Generation, NodeId, PodId, StateId, Timestamp};
+use ptr_types::{ArtifactId, DeviceId, Generation, NodeId, PodId, ProjectId, StateId, Timestamp};
 use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
@@ -48,8 +48,43 @@ pub struct Placement {
     pub epoch: PlacementEpoch,
 }
 
+/// The namespace a placement, a lease and a freeze live in.
+///
+/// Nodes and devices are host resources and stay global; what is placed on them belongs to a
+/// project. `Legacy` is the single-project namespace of the original API (`assign`,
+/// `placement`, `issue_lease`, ...): it is a namespace of its own, never equal to any
+/// `ProjectId`, so a project can neither read nor disturb what the legacy API placed.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) enum PlacementScope {
+    Legacy,
+    Project(ProjectId),
+}
+
+impl PlacementScope {
+    pub(crate) fn project(&self) -> Option<&ProjectId> {
+        match self {
+            Self::Legacy => None,
+            Self::Project(project) => Some(project),
+        }
+    }
+}
+
+/// A project-scoped placement request for [`PodPlacementController::assign_in`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProjectPlacementRequest {
+    /// The project the placement belongs to (authority-derived by the caller).
+    pub project: ProjectId,
+    pub pod_id: PodId,
+    pub artifact_id: ArtifactId,
+    pub generation: Generation,
+    pub node_id: NodeId,
+    pub device_id: DeviceId,
+    pub required_vram: u64,
+}
+
 #[derive(Debug, Eq, PartialEq)]
 pub struct FencedStateLease {
+    pub(crate) scope: PlacementScope,
     pub(crate) pod_id: PodId,
     pub(crate) state_id: StateId,
     pub(crate) node_id: NodeId,
@@ -60,6 +95,11 @@ pub struct FencedStateLease {
 }
 
 impl FencedStateLease {
+    /// The project the lease was issued in (`None`: issued through the legacy single-project
+    /// API).
+    pub fn project(&self) -> Option<&ProjectId> {
+        self.scope.project()
+    }
     pub fn pod_id(&self) -> &PodId {
         &self.pod_id
     }
@@ -102,18 +142,23 @@ pub enum PlacementError {
 
 /// The most revoked placements kept to name a failure in `issue_lease`. Past it the oldest
 /// (lowest epoch) is dropped, after which `issue_lease` for that Pod answers `NoPlacement`.
+///
+/// The bound is shared by every project: a flood of revoked placements in one project can push
+/// another project's tombstone out, so that project's `issue_lease_in` answers `NoPlacement`
+/// instead of naming the failed node or device. There is no safety impact (both are refusals).
 const MAX_REVOKED_PLACEMENTS: usize = 1024;
 
 pub struct PodPlacementController {
     nodes: BTreeMap<NodeId, NodeRecord>,
-    placements: BTreeMap<PodId, Placement>,
+    /// Keyed by (scope, pod): the same `PodId` may be placed in two projects.
+    placements: BTreeMap<(PlacementScope, PodId), Placement>,
     /// Placements revoked by a topology event, kept only so that `issue_lease` can still name
     /// the node or device that failed. They are never served by `placement` and never revived.
-    /// At most one entry per pod and at most `MAX_REVOKED_PLACEMENTS` entries (the oldest is
+    /// At most one entry per (scope, pod) and at most `MAX_REVOKED_PLACEMENTS` entries (the oldest is
     /// dropped first); `assign` and the first `issue_lease` that finds the failure gone prune it.
-    revoked: BTreeMap<PodId, Placement>,
-    leases: BTreeMap<StateId, FencedStateLease>,
-    frozen: BTreeMap<StateId, PlacementEpoch>,
+    revoked: BTreeMap<(PlacementScope, PodId), Placement>,
+    leases: BTreeMap<(PlacementScope, StateId), FencedStateLease>,
+    frozen: BTreeMap<(PlacementScope, StateId), PlacementEpoch>,
     epoch: PlacementEpoch,
     next_token: u128,
 }
@@ -207,8 +252,53 @@ impl PodPlacementController {
         self.bump_epoch()
     }
 
+    /// Place a Pod in the **legacy single-project namespace** (the API before placements were
+    /// project-scoped). It is kept unchanged for single-project callers and for completed
+    /// experiments; new code that serves a project uses [`Self::assign_in`], because this
+    /// namespace is shared by every caller of the legacy API.
     pub fn assign(
         &mut self,
+        pod_id: PodId,
+        artifact_id: ArtifactId,
+        generation: Generation,
+        node_id: NodeId,
+        device_id: DeviceId,
+        required_vram: u64,
+    ) -> Result<Placement, PlacementError> {
+        self.assign_scoped(
+            PlacementScope::Legacy,
+            pod_id,
+            artifact_id,
+            generation,
+            node_id,
+            device_id,
+            required_vram,
+        )
+    }
+
+    /// Place a Pod for `request.project`. The placement, its leases and its freezes live in
+    /// that project's namespace: the same `PodId` placed for another project is a different
+    /// placement, and neither disturbs the other. The controller epoch is still global (one
+    /// monotonic fence), and nodes and devices are shared host resources.
+    pub fn assign_in(
+        &mut self,
+        request: ProjectPlacementRequest,
+    ) -> Result<Placement, PlacementError> {
+        self.assign_scoped(
+            PlacementScope::Project(request.project),
+            request.pod_id,
+            request.artifact_id,
+            request.generation,
+            request.node_id,
+            request.device_id,
+            request.required_vram,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn assign_scoped(
+        &mut self,
+        scope: PlacementScope,
         pod_id: PodId,
         artifact_id: ArtifactId,
         generation: Generation,
@@ -235,9 +325,9 @@ impl PodPlacementController {
             return Err(PlacementError::InsufficientVram);
         }
         self.bump_epoch()?;
-        self.revoke_for_pod(&pod_id);
+        self.revoke_for_pod(&scope, &pod_id);
         // Hygiene only (issue_lease reads `placements` first): keeps the tombstone bound tight.
-        self.revoked.remove(&pod_id);
+        self.revoked.remove(&(scope.clone(), pod_id.clone()));
         let placement = Placement {
             pod_id: pod_id.clone(),
             artifact_id,
@@ -246,25 +336,66 @@ impl PodPlacementController {
             device_id,
             epoch: self.epoch,
         };
-        self.placements.insert(pod_id, placement.clone());
+        self.placements.insert((scope, pod_id), placement.clone());
         Ok(placement)
     }
 
+    /// The placement of `pod_id` in the legacy single-project namespace (see [`Self::assign`]).
     pub fn placement(&self, pod_id: &PodId) -> Result<&Placement, PlacementError> {
+        self.placement_scoped(&PlacementScope::Legacy, pod_id)
+    }
+
+    /// The placement of `pod_id` in `project`; a placement of another project, or one made
+    /// through the legacy API, is `NoPlacement`.
+    pub fn placement_in(
+        &self,
+        project: &ProjectId,
+        pod_id: &PodId,
+    ) -> Result<&Placement, PlacementError> {
+        self.placement_scoped(&PlacementScope::Project(project.clone()), pod_id)
+    }
+
+    fn placement_scoped(
+        &self,
+        scope: &PlacementScope,
+        pod_id: &PodId,
+    ) -> Result<&Placement, PlacementError> {
         self.placements
-            .get(pod_id)
+            .get(&(scope.clone(), pod_id.clone()))
             .ok_or(PlacementError::NoPlacement)
     }
 
+    /// Issue a lease in the legacy single-project namespace (see [`Self::assign`]).
     pub fn issue_lease(
         &mut self,
         state_id: StateId,
         pod_id: &PodId,
     ) -> Result<FencedStateLease, PlacementError> {
-        let Some(placement) = self.placements.get(pod_id).cloned() else {
+        self.issue_lease_scoped(PlacementScope::Legacy, state_id, pod_id)
+    }
+
+    /// Issue a lease for the placement of `pod_id` in `project`. The state id is scoped to the
+    /// project too: the same `StateId` leased in two projects is two leases.
+    pub fn issue_lease_in(
+        &mut self,
+        project: &ProjectId,
+        state_id: StateId,
+        pod_id: &PodId,
+    ) -> Result<FencedStateLease, PlacementError> {
+        self.issue_lease_scoped(PlacementScope::Project(project.clone()), state_id, pod_id)
+    }
+
+    fn issue_lease_scoped(
+        &mut self,
+        scope: PlacementScope,
+        state_id: StateId,
+        pod_id: &PodId,
+    ) -> Result<FencedStateLease, PlacementError> {
+        let pod_key = (scope.clone(), pod_id.clone());
+        let Some(placement) = self.placements.get(&pod_key).cloned() else {
             // A revoked placement still names the failure that ended it; a revoked placement
             // whose node and device are usable again is gone, not resurrected.
-            let Some(old) = self.revoked.get(pod_id) else {
+            let Some(old) = self.revoked.get(&pod_key) else {
                 return Err(PlacementError::NoPlacement);
             };
             return match self.ensure_usable(&old.node_id, &old.device_id) {
@@ -272,7 +403,7 @@ impl PodPlacementController {
                 Ok(()) => {
                     // The failure is gone: drop the tombstone so the map cleans itself and a
                     // later failure of the same device is not blamed on this old placement.
-                    self.revoked.remove(pod_id);
+                    self.revoked.remove(&pod_key);
                     Err(PlacementError::NoPlacement)
                 }
             };
@@ -280,11 +411,12 @@ impl PodPlacementController {
         // The node and device the placement names are checked again before a lease is
         // issued.
         self.ensure_usable(&placement.node_id, &placement.device_id)?;
-        if let Some(frozen_epoch) = self.frozen.get(&state_id).copied() {
+        let state_key = (scope.clone(), state_id.clone());
+        if let Some(frozen_epoch) = self.frozen.get(&state_key).copied() {
             if frozen_epoch == placement.epoch {
                 return Err(PlacementError::StateFrozen);
             }
-            self.frozen.remove(&state_id);
+            self.frozen.remove(&state_key);
         }
         let token = FencingToken(self.next_token);
         self.next_token = self
@@ -292,6 +424,7 @@ impl PodPlacementController {
             .checked_add(1)
             .ok_or(PlacementError::CounterExhausted)?;
         let lease = FencedStateLease {
+            scope,
             pod_id: placement.pod_id.clone(),
             state_id: state_id.clone(),
             node_id: placement.node_id,
@@ -301,8 +434,9 @@ impl PodPlacementController {
             generation: placement.generation,
         };
         self.leases.insert(
-            state_id,
+            state_key,
             FencedStateLease {
+                scope: lease.scope.clone(),
                 pod_id: lease.pod_id.clone(),
                 state_id: lease.state_id.clone(),
                 node_id: lease.node_id.clone(),
@@ -318,7 +452,7 @@ impl PodPlacementController {
     pub fn validate_lease(&self, lease: &FencedStateLease) -> Result<(), PlacementError> {
         let current = self
             .leases
-            .get(&lease.state_id)
+            .get(&(lease.scope.clone(), lease.state_id.clone()))
             .ok_or(PlacementError::StaleLease)?;
         if current != lease {
             return Err(PlacementError::StaleLease);
@@ -326,23 +460,61 @@ impl PodPlacementController {
         Ok(())
     }
 
+    /// Revoke the lease of `state_id` in the legacy single-project namespace.
     pub fn revoke_lease(&mut self, state_id: &StateId) -> Result<(), PlacementError> {
+        self.revoke_lease_scoped(&PlacementScope::Legacy, state_id)
+    }
+
+    /// Revoke `lease` in the namespace it was issued in (its project, or the legacy namespace),
+    /// whatever namespace holds a lease with the same state id.
+    pub fn revoke_lease_for(&mut self, lease: &FencedStateLease) -> Result<(), PlacementError> {
+        self.revoke_lease_scoped(&lease.scope, lease.state_id())
+    }
+
+    /// Revoke the lease of `state_id` in `project`; another project's lease is untouched.
+    pub fn revoke_lease_in(
+        &mut self,
+        project: &ProjectId,
+        state_id: &StateId,
+    ) -> Result<(), PlacementError> {
+        self.revoke_lease_scoped(&PlacementScope::Project(project.clone()), state_id)
+    }
+
+    fn revoke_lease_scoped(
+        &mut self,
+        scope: &PlacementScope,
+        state_id: &StateId,
+    ) -> Result<(), PlacementError> {
         self.leases
-            .remove(state_id)
+            .remove(&(scope.clone(), state_id.clone()))
             .map(|_| ())
             .ok_or(PlacementError::StaleLease)
     }
 
+    /// Freeze the state a valid lease covers, in the namespace the lease was issued in.
     pub fn freeze_state(&mut self, lease: &FencedStateLease) -> Result<(), PlacementError> {
         self.validate_lease(lease)?;
-        self.revoke_lease(lease.state_id())?;
-        self.frozen
-            .insert(lease.state_id().clone(), lease.placement_epoch());
+        self.revoke_lease_scoped(&lease.scope, lease.state_id())?;
+        self.frozen.insert(
+            (lease.scope.clone(), lease.state_id().clone()),
+            lease.placement_epoch(),
+        );
         Ok(())
     }
 
+    /// Lift a freeze in the legacy single-project namespace.
     pub fn unfreeze_state(&mut self, state_id: &StateId) {
-        self.frozen.remove(state_id);
+        self.unfreeze_state_scoped(&PlacementScope::Legacy, state_id);
+    }
+
+    pub(crate) fn unfreeze_state_scoped(&mut self, scope: &PlacementScope, state_id: &StateId) {
+        self.frozen.remove(&(scope.clone(), state_id.clone()));
+    }
+
+    /// Lift a freeze in `project`.
+    pub fn unfreeze_state_in(&mut self, project: &ProjectId, state_id: &StateId) {
+        self.frozen
+            .remove(&(PlacementScope::Project(project.clone()), state_id.clone()));
     }
 
     fn bump_epoch(&mut self) -> Result<(), PlacementError> {
@@ -396,15 +568,15 @@ impl PodPlacementController {
     /// whether any was removed. The caller bumps the epoch once for the event.
     fn revoke_unavailable_placements(&mut self, node_id: &NodeId) -> bool {
         let usable = self.usable_devices(node_id);
-        let gone: Vec<PodId> = self
+        let gone: Vec<(PlacementScope, PodId)> = self
             .placements
             .iter()
             .filter(|(_, p)| p.node_id == *node_id && !usable.contains(&p.device_id))
-            .map(|(pod_id, _)| pod_id.clone())
+            .map(|(key, _)| key.clone())
             .collect();
-        for pod_id in &gone {
-            if let Some(placement) = self.placements.remove(pod_id) {
-                self.tombstone(placement);
+        for key in &gone {
+            if let Some(placement) = self.placements.remove(key) {
+                self.tombstone(key.clone(), placement);
             }
         }
         !gone.is_empty()
@@ -412,31 +584,31 @@ impl PodPlacementController {
 
     /// Revoke every placement on `node_id`, usable device or not, keeping a tombstone each.
     fn revoke_placements_on_node(&mut self, node_id: &NodeId) {
-        let gone: Vec<PodId> = self
+        let gone: Vec<(PlacementScope, PodId)> = self
             .placements
             .iter()
             .filter(|(_, p)| p.node_id == *node_id)
-            .map(|(pod_id, _)| pod_id.clone())
+            .map(|(key, _)| key.clone())
             .collect();
-        for pod_id in &gone {
-            if let Some(placement) = self.placements.remove(pod_id) {
-                self.tombstone(placement);
+        for key in &gone {
+            if let Some(placement) = self.placements.remove(key) {
+                self.tombstone(key.clone(), placement);
             }
         }
     }
 
     /// Keep a revoked placement to name its failure, dropping the oldest past the bound.
-    fn tombstone(&mut self, placement: Placement) {
-        self.revoked.insert(placement.pod_id.clone(), placement);
+    fn tombstone(&mut self, key: (PlacementScope, PodId), placement: Placement) {
+        self.revoked.insert(key, placement);
         while self.revoked.len() > MAX_REVOKED_PLACEMENTS {
             let oldest = self
                 .revoked
                 .iter()
                 .min_by_key(|(_, placement)| placement.epoch)
-                .map(|(pod_id, _)| pod_id.clone());
+                .map(|(key, _)| key.clone());
             match oldest {
-                Some(pod_id) => {
-                    self.revoked.remove(&pod_id);
+                Some(key) => {
+                    self.revoked.remove(&key);
                 }
                 None => break,
             }
@@ -448,8 +620,9 @@ impl PodPlacementController {
         self.revoked.len()
     }
 
-    fn revoke_for_pod(&mut self, pod_id: &PodId) {
-        self.leases.retain(|_, lease| lease.pod_id != *pod_id);
+    fn revoke_for_pod(&mut self, scope: &PlacementScope, pod_id: &PodId) {
+        self.leases
+            .retain(|_, lease| lease.scope != *scope || lease.pod_id != *pod_id);
     }
 
     fn revoke_for_node(&mut self, node_id: &NodeId) {

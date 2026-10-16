@@ -87,7 +87,7 @@ id = "routing-execution"
 owner = "ptr-router"
 status = "scaffold"
 purpose = "Describe how reasoning/search/model/Pod operators are selected and composed."
-implemented = ["RouteScore", "RouteDecision", "RoutingPolicy"]
+implemented = ["RouteScore", "RouteDecision", "RoutingPolicy", "LearnedPodRouter", "PodRepresentation"]
 open = ["OperatorId", "BackendCapability", "CapabilityGraph", "ExecutionRecipe", "ExecutionStep", "Budget", "FallbackPolicy", "DegradationPlan", "RouteReason"]
 invariants = ["routing is replayable", "fallback never silently weakens safety requirements"]
 

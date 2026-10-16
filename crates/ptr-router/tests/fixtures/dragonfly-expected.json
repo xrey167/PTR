@@ -1,0 +1,325 @@
+{
+  "dims": 32,
+  "encoder": {
+    "id": "hashed-bow-32",
+    "revision": "1"
+  },
+  "identity_vectors": [
+    {
+      "cluster_key": "76d375c4bcf6a22fdca10c5c74d5b04302685d5995760fbc2fb1f3e793cb59ec",
+      "descriptor": {
+        "aliases": [
+          "Mueller GmbH",
+          "Muller Werke"
+        ],
+        "domain": "supply",
+        "kind": "Retrieval",
+        "predicate": "lead_time",
+        "schema_version": 1,
+        "semantic_role": "supplier-mueller"
+      },
+      "identity": "pod:e62f215b1f72a8e1d1ccd61c159239caa8b66397376e60f4e6401d1b708160c1"
+    },
+    {
+      "cluster_key": "f5454cf58bbefbf5b74cb5fa3ec5d552e0e1b35d11d669abf3dfd2885f0e31ba",
+      "descriptor": {
+        "aliases": [
+          "Schmidt AG",
+          "Schmitt Logistik"
+        ],
+        "domain": "supply",
+        "kind": "Retrieval",
+        "predicate": "lead_time",
+        "schema_version": 1,
+        "semantic_role": "supplier-schmidt"
+      },
+      "identity": "pod:b4d83d4da45bab1b666c5d4b319f00a121288cb82459c207c3b7224a8d88a58e"
+    },
+    {
+      "cluster_key": "a5b65d4b74eb60b11b4e3d967e7b299f548460b7ef95a16e4d38fa209cf7b122",
+      "descriptor": {
+        "aliases": [],
+        "domain": "d",
+        "kind": "K",
+        "predicate": null,
+        "schema_version": 1,
+        "semantic_role": "r"
+      },
+      "identity": "pod:2a7110981a6427a3976ced64e444971d79b435258974568ff14102c4627fa807"
+    },
+    {
+      "cluster_key": "e6db181ba2bfa4c945c6d725ffdb4dc9a7ee54b718213cc56afd2441536393a3",
+      "descriptor": {
+        "aliases": [
+          "alias",
+          "\u00c4pfel",
+          "\u00df"
+        ],
+        "domain": "Stra\u00dfe",
+        "kind": "Memory",
+        "predicate": "gr\u00f6\u00dfe",
+        "schema_version": 1,
+        "semantic_role": "r\u00f4le"
+      },
+      "identity": "pod:1df38349b6525a707afcabc404b43f0b2d5f64bec9730a7becea701ef36a9b0a"
+    }
+  ],
+  "pods": [
+    {
+      "cluster_key": "76d375c4bcf6a22fdca10c5c74d5b04302685d5995760fbc2fb1f3e793cb59ec",
+      "generation": 3,
+      "manifest": "dragonfly-demo__supply__pod-e62f215b1f72a8e1d1ccd61c159239caa8b66397376e60f4e6401d1b708160c1.json",
+      "namespace": "supply",
+      "pod_id": "supplier-mueller",
+      "pod_identity": "pod:e62f215b1f72a8e1d1ccd61c159239caa8b66397376e60f4e6401d1b708160c1",
+      "project": "demo",
+      "status": "activated",
+      "weights": "dragonfly-demo__supply__pod-e62f215b1f72a8e1d1ccd61c159239caa8b66397376e60f4e6401d1b708160c1.bin"
+    },
+    {
+      "cluster_key": "f5454cf58bbefbf5b74cb5fa3ec5d552e0e1b35d11d669abf3dfd2885f0e31ba",
+      "generation": 3,
+      "manifest": "dragonfly-demo__supply__pod-b4d83d4da45bab1b666c5d4b319f00a121288cb82459c207c3b7224a8d88a58e.json",
+      "namespace": "supply",
+      "pod_id": "supplier-schmidt",
+      "pod_identity": "pod:b4d83d4da45bab1b666c5d4b319f00a121288cb82459c207c3b7224a8d88a58e",
+      "project": "demo",
+      "status": "activated",
+      "weights": "dragonfly-demo__supply__pod-b4d83d4da45bab1b666c5d4b319f00a121288cb82459c207c3b7224a8d88a58e.bin"
+    },
+    {
+      "cluster_key": "a0b2d2b88f74b1768cb37184a1805f72b9fd82ea848c2d0bffb5c1e4476d024d",
+      "generation": 3,
+      "manifest": "dragonfly-demo__supply__pod-cc07a7dd199cd2741ff53af9f61f8383213b610218ef41ca65c380bf2c43ca3d.json",
+      "namespace": "supply",
+      "pod_id": "supplier-kowalski",
+      "pod_identity": "pod:cc07a7dd199cd2741ff53af9f61f8383213b610218ef41ca65c380bf2c43ca3d",
+      "project": "demo",
+      "status": "not-activated",
+      "weights": "dragonfly-demo__supply__pod-cc07a7dd199cd2741ff53af9f61f8383213b610218ef41ca65c380bf2c43ca3d.bin"
+    },
+    {
+      "cluster_key": "76d375c4bcf6a22fdca10c5c74d5b04302685d5995760fbc2fb1f3e793cb59ec",
+      "generation": 3,
+      "manifest": "dragonfly-other__supply__pod-e62f215b1f72a8e1d1ccd61c159239caa8b66397376e60f4e6401d1b708160c1.json",
+      "namespace": "supply",
+      "pod_id": "supplier-mueller",
+      "pod_identity": "pod:e62f215b1f72a8e1d1ccd61c159239caa8b66397376e60f4e6401d1b708160c1",
+      "project": "other",
+      "status": "activated",
+      "weights": "dragonfly-other__supply__pod-e62f215b1f72a8e1d1ccd61c159239caa8b66397376e60f4e6401d1b708160c1.bin"
+    }
+  ],
+  "probes": [
+    {
+      "scores": {
+        "supplier-kowalski": 0.9969235080626817,
+        "supplier-mueller": 0.8863177559742165,
+        "supplier-schmidt": 0.1984141361145408
+      },
+      "text": "How long does Mueller GmbH need to deliver?",
+      "vector": [
+        0.0,
+        -0.1601281464099884,
+        -0.1601281464099884,
+        -0.1601281464099884,
+        0.1601281464099884,
+        0.0,
+        0.0,
+        -0.3202562928199768,
+        -0.1601281464099884,
+        0.0,
+        0.0,
+        0.0,
+        -0.1601281464099884,
+        0.1601281464099884,
+        0.0,
+        0.3202562928199768,
+        -0.1601281464099884,
+        0.0,
+        0.3202562928199768,
+        -0.1601281464099884,
+        -0.1601281464099884,
+        -0.1601281464099884,
+        0.3202562928199768,
+        -0.1601281464099884,
+        0.0,
+        -0.1601281464099884,
+        -0.3202562928199768,
+        0.3202562928199768,
+        -0.1601281464099884,
+        0.0,
+        -0.1601281464099884,
+        0.0
+      ]
+    },
+    {
+      "scores": {
+        "supplier-kowalski": 0.9997288073844668,
+        "supplier-mueller": 0.01648184800639936,
+        "supplier-schmidt": 0.9573316177887232
+      },
+      "text": "Is Schmidt AG late with the shipment?",
+      "vector": [
+        0.0,
+        -0.20000000298023224,
+        0.0,
+        0.0,
+        0.20000000298023224,
+        0.0,
+        0.0,
+        -0.20000000298023224,
+        0.0,
+        -0.4000000059604645,
+        0.20000000298023224,
+        -0.20000000298023224,
+        0.0,
+        0.20000000298023224,
+        0.20000000298023224,
+        0.0,
+        -0.20000000298023224,
+        0.20000000298023224,
+        -0.4000000059604645,
+        0.0,
+        -0.20000000298023224,
+        -0.20000000298023224,
+        -0.20000000298023224,
+        0.20000000298023224,
+        0.20000000298023224,
+        0.0,
+        -0.20000000298023224,
+        0.20000000298023224,
+        0.0,
+        -0.20000000298023224,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "scores": {
+        "supplier-kowalski": 0.9999620588172298,
+        "supplier-mueller": 0.0406695702420802,
+        "supplier-schmidt": 0.3581292643875366
+      },
+      "text": "Lead time at Kowalski Sp for the X12 part",
+      "vector": [
+        0.0,
+        0.0,
+        -0.15811388194561005,
+        0.3162277638912201,
+        0.0,
+        0.0,
+        -0.3162277638912201,
+        0.3162277638912201,
+        -0.15811388194561005,
+        -0.15811388194561005,
+        0.3162277638912201,
+        0.0,
+        0.0,
+        0.15811388194561005,
+        0.0,
+        -0.15811388194561005,
+        -0.15811388194561005,
+        0.15811388194561005,
+        0.0,
+        0.0,
+        -0.15811388194561005,
+        -0.15811388194561005,
+        -0.15811388194561005,
+        0.0,
+        0.0,
+        0.15811388194561005,
+        -0.15811388194561005,
+        0.15811388194561005,
+        0.47434166073799133,
+        0.15811388194561005,
+        0.15811388194561005,
+        0.0
+      ]
+    },
+    {
+      "scores": {
+        "supplier-kowalski": 0.9996496045486423,
+        "supplier-mueller": 0.9258475192863047,
+        "supplier-schmidt": 0.16723823481194589
+      },
+      "text": "Which delivery date did Muller Werke confirm?",
+      "vector": [
+        0.2747211158275604,
+        -0.1373605579137802,
+        0.0,
+        0.2747211158275604,
+        -0.41208168864250183,
+        0.0,
+        -0.1373605579137802,
+        0.0,
+        0.1373605579137802,
+        0.0,
+        -0.1373605579137802,
+        -0.1373605579137802,
+        0.0,
+        0.1373605579137802,
+        0.2747211158275604,
+        0.1373605579137802,
+        -0.1373605579137802,
+        -0.1373605579137802,
+        0.0,
+        0.0,
+        0.0,
+        -0.41208168864250183,
+        0.0,
+        -0.1373605579137802,
+        -0.1373605579137802,
+        0.0,
+        -0.41208168864250183,
+        0.0,
+        0.1373605579137802,
+        -0.1373605579137802,
+        0.0,
+        -0.1373605579137802
+      ]
+    },
+    {
+      "scores": {
+        "supplier-kowalski": 0.9708694937404393,
+        "supplier-mueller": 0.8660320861439632,
+        "supplier-schmidt": 0.6467249185625864
+      },
+      "text": "Weather forecast for tomorrow",
+      "vector": [
+        0.0,
+        0.0,
+        0.0,
+        0.15811388194561005,
+        0.0,
+        -0.3162277638912201,
+        0.15811388194561005,
+        -0.15811388194561005,
+        0.0,
+        0.3162277638912201,
+        0.0,
+        0.15811388194561005,
+        0.15811388194561005,
+        0.0,
+        0.0,
+        0.3162277638912201,
+        0.0,
+        0.0,
+        0.47434166073799133,
+        0.0,
+        0.0,
+        0.0,
+        0.3162277638912201,
+        -0.15811388194561005,
+        0.0,
+        0.15811388194561005,
+        -0.15811388194561005,
+        0.0,
+        0.15811388194561005,
+        0.3162277638912201,
+        0.15811388194561005,
+        -0.15811388194561005
+      ]
+    }
+  ]
+}

@@ -5,8 +5,8 @@ mod common;
 use common::{eventually, request, Latch, RecordingBackend};
 use ptr_model_api::{
     AdaptiveBatcher, BatchAdmission, BatchClock, BatchError, BatchGate, BatchKey, BatchPolicy,
-    CancelFlag, Continuation, InferenceBackend, ModelError, ModelEvent, ModelObservation,
-    ModelRequest, ModelResumeRequest, SystemClock,
+    BatchSystemClock, CancelFlag, Continuation, InferenceBackend, ModelError, ModelEvent,
+    ModelObservation, ModelRequest, ModelResumeRequest,
 };
 use ptr_types::{Generation, Revision, SemanticContext, Timestamp, TypeId};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -31,7 +31,7 @@ fn gated<B: ptr_model_api::BatchInferenceBackend + 'static>(
     AdaptiveBatcher::with_parts(
         backend,
         policy,
-        Arc::new(SystemClock),
+        Arc::new(BatchSystemClock),
         Some(Arc::new(OpenGate) as Arc<dyn BatchGate>),
     )
 }
@@ -197,7 +197,7 @@ fn a_deadline_that_passes_in_the_queue_drops_the_request_unserved() {
         let batcher = &batcher;
         let held = scope.spawn(move || batcher.infer_with(&request("held"), admission("a")));
         assert!(eventually(PATIENT, || batcher.stats().dispatched == 1));
-        let soon = Timestamp(SystemClock.now().0 + 50);
+        let soon = Timestamp(BatchSystemClock.now().0 + 50);
         let waiting = scope.spawn(move || {
             batcher.infer_with(
                 &request("doomed"),
@@ -271,7 +271,7 @@ fn a_generation_revoked_while_a_request_waited_is_refused_at_dispatch() {
     let batcher = AdaptiveBatcher::with_parts(
         Arc::clone(&backend),
         policy(1, 0, 4),
-        Arc::new(SystemClock),
+        Arc::new(BatchSystemClock),
         Some(Arc::clone(&gate) as Arc<dyn BatchGate>),
     )
     .expect("built");
@@ -385,7 +385,7 @@ fn one_projects_revoked_adapter_does_not_ride_with_another_projects_live_one() {
     let batcher = AdaptiveBatcher::with_parts(
         Arc::clone(&backend),
         policy(8, 100, 16),
-        Arc::new(SystemClock),
+        Arc::new(BatchSystemClock),
         Some(gate as Arc<dyn BatchGate>),
     )
     .expect("built");
@@ -446,7 +446,7 @@ fn echo_batcher(gate: Arc<dyn BatchGate>) -> AdaptiveBatcher<Waiting> {
     AdaptiveBatcher::with_parts(
         Arc::new(Waiting),
         policy(1, 0, 4),
-        Arc::new(SystemClock),
+        Arc::new(BatchSystemClock),
         Some(gate),
     )
     .expect("built")
@@ -476,13 +476,13 @@ fn a_deadline_that_passes_while_the_gate_decides_keeps_the_request_from_the_back
     let batcher = AdaptiveBatcher::with_parts(
         Arc::clone(&backend),
         policy(1, 0, 4),
-        Arc::new(SystemClock),
+        Arc::new(BatchSystemClock),
         Some(Arc::clone(&gate) as Arc<dyn BatchGate>),
     )
     .expect("built");
     std::thread::scope(|scope| {
         let batcher = &batcher;
-        let soon = Timestamp(SystemClock.now().0 + 100);
+        let soon = Timestamp(BatchSystemClock.now().0 + 100);
         let waiting = scope.spawn(move || {
             batcher.infer_with(
                 &request("late"),
@@ -515,7 +515,7 @@ fn a_cancellation_that_lands_while_the_gate_decides_keeps_the_request_from_the_b
     let batcher = AdaptiveBatcher::with_parts(
         Arc::clone(&backend),
         policy(1, 0, 4),
-        Arc::new(SystemClock),
+        Arc::new(BatchSystemClock),
         Some(Arc::clone(&gate) as Arc<dyn BatchGate>),
     )
     .expect("built");
@@ -672,7 +672,7 @@ fn a_resume_runs_on_the_stored_context_and_round_and_never_on_the_callers() {
     let batcher = AdaptiveBatcher::with_parts(
         Arc::clone(&backend),
         policy(1, 0, 4),
-        Arc::new(SystemClock),
+        Arc::new(BatchSystemClock),
         Some(Arc::new(OpenGate) as Arc<dyn BatchGate>),
     )
     .expect("built");
@@ -914,7 +914,7 @@ fn a_backend_panic_in_resume_fails_that_call_and_the_batcher_keeps_serving() {
     let batcher = AdaptiveBatcher::with_parts(
         Arc::new(PanickingResume),
         policy(1, 0, 4),
-        Arc::new(SystemClock),
+        Arc::new(BatchSystemClock),
         Some(Arc::new(OpenGate) as Arc<dyn BatchGate>),
     )
     .expect("built");
@@ -1143,7 +1143,7 @@ fn a_run_that_finished_opens_no_continuation() {
     let batcher = AdaptiveBatcher::with_parts(
         Arc::new(ptr_model_api::ReferenceEchoBackend),
         policy(1, 0, 4),
-        Arc::new(SystemClock),
+        Arc::new(BatchSystemClock),
         Some(Arc::new(OpenGate) as Arc<dyn BatchGate>),
     )
     .expect("built");
@@ -1190,7 +1190,7 @@ fn a_running_resume_keeps_its_slot_for_the_successor() {
     let batcher = AdaptiveBatcher::with_parts(
         Arc::clone(&backend),
         policy(1, 0, 4),
-        Arc::new(SystemClock),
+        Arc::new(BatchSystemClock),
         Some(Arc::new(OpenGate) as Arc<dyn BatchGate>),
     )
     .expect("built");
@@ -1274,7 +1274,7 @@ fn gated_batcher(backend: &Arc<Gated>) -> AdaptiveBatcher<Gated> {
     AdaptiveBatcher::with_parts(
         Arc::clone(backend),
         policy(1, 0, 4),
-        Arc::new(SystemClock),
+        Arc::new(BatchSystemClock),
         Some(Arc::new(OpenGate) as Arc<dyn BatchGate>),
     )
     .expect("built")
@@ -1409,7 +1409,7 @@ fn a_resume_is_counted_as_dispatched_before_the_backend_sees_it() {
     let failing = AdaptiveBatcher::with_parts(
         Arc::new(PanickingResume),
         policy(1, 0, 4),
-        Arc::new(SystemClock),
+        Arc::new(BatchSystemClock),
         Some(Arc::new(OpenGate) as Arc<dyn BatchGate>),
     )
     .expect("built");
@@ -1430,7 +1430,7 @@ fn one_principals_slow_calls_cannot_take_the_capacity_of_another() {
     let batcher = AdaptiveBatcher::with_parts(
         Arc::clone(&backend),
         policy(1, 0, 600),
-        Arc::new(SystemClock),
+        Arc::new(BatchSystemClock),
         Some(Arc::new(OpenGate) as Arc<dyn BatchGate>),
     )
     .expect("built");
@@ -1573,7 +1573,7 @@ fn a_batcher_closed_while_the_gate_decides_a_batch_never_calls_the_backend() {
     let batcher = AdaptiveBatcher::with_parts(
         Arc::clone(&backend),
         policy(1, 0, 4),
-        Arc::new(SystemClock),
+        Arc::new(BatchSystemClock),
         Some(Arc::clone(&gate) as Arc<dyn BatchGate>),
     )
     .expect("built");

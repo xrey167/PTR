@@ -160,3 +160,8 @@ status = "open"
 id = "analytics-mirror"
 path = "components/analytics-mirror/candidates.toml"
 status = "open"
+
+[[component]]
+id = "pod-routing"
+path = "components/pod-routing/candidates.toml"
+status = "open"

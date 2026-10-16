@@ -699,6 +699,7 @@ impl RevokedInputs {
             | LedgerEvent::KvTaintCommitted { .. }
             | LedgerEvent::ExpertAuthorityChanged { .. }
             | LedgerEvent::EgressRefused { .. }
+            | LedgerEvent::PodHeadAdvanced { .. }
             | LedgerEvent::ImprovementCycleRecorded { .. } => {}
         }
     }

@@ -1,9 +1,12 @@
+use crate::tier_grant::{
+    validate_grant_shape, SystemTierClock, TierClock, TierGrant, TierGrantLimits, TombstoneTable,
+};
 use ptr_ledger::LedgerEvent;
 use ptr_storage::{
     PreparedTierObject, StorageTier, TierBackend, TierBackendId, TierCapabilities, TierError,
     TierHealth, TierObjectManifest,
 };
-use ptr_types::{Digest, Generation, Revision};
+use ptr_types::{Digest, Generation, ProjectId, Revision, SessionId};
 use sha2::{Digest as ShaDigest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
@@ -556,6 +559,44 @@ pub enum TierRuntimeError {
     TransferBackpressure,
     TransferCancelled,
     Storage(TierError),
+    /// The write authorization held when the transfer started no longer matched the object's
+    /// active write binding just before the destination replica would have become available.
+    /// The destination replica was left unpublished and its chunks were removed.
+    AuthorizationRevoked,
+    /// The object belongs to a project, so only a grant of that project can move it.
+    GrantRequired,
+    /// The grant's project is not the project of the object (or the object has no project).
+    ProjectMismatch,
+    /// Malformed grant (empty ids, zero nonce or deadline, source equal to destination) or
+    /// malformed grant limits.
+    GrantInvalid,
+    /// The grant is bound to another receiver session than the presenter.
+    ReceiverSessionMismatch,
+    /// The grant's deadline passed before it was presented or before the destination replica
+    /// would have been published.
+    GrantExpired,
+    /// The grant's nonce was already consumed by a publish and its tombstone is still live.
+    GrantReplayed,
+    /// The tombstone table of the receiver (or the number of receivers) is at its bound.
+    TombstoneSaturated,
+    /// The transfer was refused for the contained reason and removing the unpublished
+    /// destination chunks failed as well.
+    CleanupFailed(Box<TierRuntimeError>),
+}
+
+impl TierRuntimeError {
+    /// Refusals decided at the publish step: the copy itself succeeded, the replica is not
+    /// published and its chunks are removed.
+    fn refuses_publication(&self) -> bool {
+        matches!(
+            self,
+            Self::AuthorizationRevoked
+                | Self::GrantExpired
+                | Self::GrantReplayed
+                | Self::TombstoneSaturated
+                | Self::ProjectMismatch
+        )
+    }
 }
 
 impl From<TierError> for TierRuntimeError {
@@ -568,6 +609,13 @@ struct BackendEntry {
     backend: Arc<dyn TierBackend>,
     capabilities: TierCapabilities,
     state: BackendLifecycleState,
+}
+
+/// What a transfer must still hold at the moment its destination replica is published.
+#[derive(Clone, Debug)]
+struct PublishCheck {
+    authorization: Option<TierTransferAuthorization>,
+    grant: Option<TierGrant>,
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -639,6 +687,10 @@ struct ControllerState {
     chunk_reservations: BTreeMap<(TierBackendId, Digest), u64>,
     chunk_deletions: BTreeSet<(TierBackendId, Digest)>,
     pins: BTreeMap<u64, (Digest, TierBackendId)>,
+    object_projects: BTreeMap<Digest, ProjectId>,
+    tombstones: TombstoneTable,
+    /// Grants (receiver, nonce) a transfer call holds right now, until it is satisfied.
+    inflight_grants: BTreeSet<(SessionId, u128)>,
     inflight: BTreeMap<TransferKey, Arc<TransferGate>>,
     inflight_bytes: u64,
     next_pin: u64,
@@ -650,6 +702,8 @@ pub struct TierResidencyController {
     state: Arc<Mutex<ControllerState>>,
     max_inflight_transfers: usize,
     max_inflight_bytes: u64,
+    clock: Arc<dyn TierClock>,
+    grant_limits: TierGrantLimits,
 }
 
 struct TransferLeaderGuard<'a> {
@@ -660,7 +714,22 @@ struct TransferLeaderGuard<'a> {
     manifest: TierObjectManifest,
     reserved_digests: Vec<(Digest, u64)>,
     gate: Arc<TransferGate>,
+    publish: PublishCheck,
     active: bool,
+}
+
+/// Holds a grant's (receiver, nonce) as in flight; released when the call ends or is dropped.
+struct GrantReservation<'a> {
+    controller: &'a TierResidencyController,
+    key: (SessionId, u128),
+}
+
+impl Drop for GrantReservation<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut state) = self.controller.state.lock() {
+            state.inflight_grants.remove(&self.key);
+        }
+    }
 }
 
 struct RegistrationReservationGuard<'a> {
@@ -720,6 +789,7 @@ impl TransferLeaderGuard<'_> {
             &self.destination,
             &self.manifest,
             &self.reserved_digests,
+            &self.publish,
             result,
         );
         self.gate.complete(result.clone());
@@ -748,6 +818,9 @@ impl Default for TierResidencyController {
                 chunk_reservations: BTreeMap::new(),
                 chunk_deletions: BTreeSet::new(),
                 pins: BTreeMap::new(),
+                object_projects: BTreeMap::new(),
+                tombstones: TombstoneTable::default(),
+                inflight_grants: BTreeSet::new(),
                 inflight: BTreeMap::new(),
                 inflight_bytes: 0,
                 next_pin: 1,
@@ -755,6 +828,8 @@ impl Default for TierResidencyController {
             })),
             max_inflight_transfers: 64,
             max_inflight_bytes: u64::MAX,
+            clock: Arc::new(SystemTierClock),
+            grant_limits: TierGrantLimits::default(),
         }
     }
 }
@@ -772,6 +847,41 @@ impl TierResidencyController {
             max_inflight_bytes,
             ..Self::default()
         })
+    }
+
+    /// Replaces the clock and the bounds used for grants. Refuses zero bounds.
+    pub fn with_grants(
+        mut self,
+        clock: Arc<dyn TierClock>,
+        limits: TierGrantLimits,
+    ) -> Result<Self, TierRuntimeError> {
+        limits.validate()?;
+        self.clock = clock;
+        self.grant_limits = limits;
+        Ok(self)
+    }
+
+    /// The project an object was registered under, or `None` for an unscoped object.
+    pub fn object_project(&self, object: &Digest) -> Result<Option<ProjectId>, TierRuntimeError> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| TierRuntimeError::LockPoisoned)?;
+        if !state.records.contains_key(object) {
+            return Err(TierRuntimeError::UnknownObject);
+        }
+        Ok(state.object_projects.get(object).cloned())
+    }
+
+    /// Live (not yet expired) grant tombstones of one receiver session.
+    pub fn live_grant_tombstones(&self, receiver: &SessionId) -> Result<usize, TierRuntimeError> {
+        let now = self.clock.now_millis();
+        Ok(self
+            .state
+            .lock()
+            .map_err(|_| TierRuntimeError::LockPoisoned)?
+            .tombstones
+            .live(receiver, now))
     }
 
     pub async fn attach_backend(
@@ -843,6 +953,31 @@ impl TierResidencyController {
         object: TierObjectManifest,
         backend: TierBackendId,
     ) -> Result<(), TierRuntimeError> {
+        self.register_object_scoped(object, backend, None).await
+    }
+
+    /// Registers an object in the namespace of `project`. Only a grant of that project can
+    /// move it; registering the same object under another project (or unscoped) is
+    /// `ProjectMismatch`.
+    pub async fn register_project_object(
+        &self,
+        project: ProjectId,
+        object: TierObjectManifest,
+        backend: TierBackendId,
+    ) -> Result<(), TierRuntimeError> {
+        if project.0.trim().is_empty() {
+            return Err(TierRuntimeError::GrantInvalid);
+        }
+        self.register_object_scoped(object, backend, Some(project))
+            .await
+    }
+
+    async fn register_object_scoped(
+        &self,
+        object: TierObjectManifest,
+        backend: TierBackendId,
+        project: Option<ProjectId>,
+    ) -> Result<(), TierRuntimeError> {
         object.validate()?;
         let mut reservation_counts = BTreeMap::<Digest, u64>::new();
         for chunk in &object.chunks {
@@ -868,6 +1003,9 @@ impl TierResidencyController {
             if let Some(existing) = state.records.get(&object.root_digest) {
                 if existing.object != object {
                     return Err(TierRuntimeError::ObjectConflict);
+                }
+                if state.object_projects.get(&object.root_digest) != project.as_ref() {
+                    return Err(TierRuntimeError::ProjectMismatch);
                 }
                 if let Some(replica) = existing
                     .replicas
@@ -927,6 +1065,9 @@ impl TierResidencyController {
         if let Some(existing) = state.records.get(&object.root_digest) {
             if existing.object != object {
                 return Err(TierRuntimeError::ObjectConflict);
+            }
+            if state.object_projects.get(&object.root_digest) != project.as_ref() {
+                return Err(TierRuntimeError::ProjectMismatch);
             }
             if let Some(replica) = existing
                 .replicas
@@ -1010,6 +1151,9 @@ impl TierResidencyController {
             .ok_or(TierRuntimeError::UnknownBackend)?
             .capabilities
             .tier;
+        if let Some(project) = project {
+            state.object_projects.insert(object.root_digest, project);
+        }
         state.records.insert(
             object.root_digest,
             ResidencyRecord {
@@ -1196,6 +1340,13 @@ impl TierResidencyController {
         pin.lease.release()
     }
 
+    /// Moves an unscoped object. An object registered under a project is refused with
+    /// `GrantRequired`; use `transfer_with_grant` for it.
+    ///
+    /// The authorization is checked when the transfer starts and again, in the critical
+    /// section that publishes the destination replica; if it no longer matches the object's
+    /// active write binding then, the replica stays unpublished (state `Revoked`), its chunks
+    /// are removed and the transfer is refused with `AuthorizationRevoked`.
     pub async fn transfer(
         &self,
         object: Digest,
@@ -1203,16 +1354,106 @@ impl TierResidencyController {
         destination: &TierBackendId,
         authorization: Option<TierTransferAuthorization>,
     ) -> Result<TierTransferReceipt, TierRuntimeError> {
+        self.transfer_checked(
+            object,
+            source,
+            destination,
+            PublishCheck {
+                authorization,
+                grant: None,
+            },
+            None,
+        )
+        .await
+    }
+
+    /// Moves the object, source and destination the grant names, for the session `presenter`.
+    ///
+    /// Refused unless the object is registered under the grant's project, the grant is bound
+    /// to `presenter`, is within its deadline and its nonce is unspent. Everything is checked
+    /// again in the critical section that publishes the destination replica, and the nonce is
+    /// spent there: a refusal (or any failure) before that point leaves the grant unspent, a
+    /// successful publish spends it. Presenting the same grant again is `GrantReplayed`.
+    ///
+    /// A call that joins an in-flight transfer of the same (object, source, destination), or
+    /// finds the destination replica already available, is satisfied by that replica and spends
+    /// its own grant at that moment, after the same recheck; a revoked or expired grant gets the
+    /// refusal, not the other call's result. A grant that another call holds in flight is
+    /// `GrantReplayed`. The presenter session must come from an authenticated session (it is
+    /// unauthenticated in-process today), and `ProjectMismatch` reveals that the digest exists
+    /// under another project.
+    pub async fn transfer_with_grant(
+        &self,
+        grant: &TierGrant,
+        presenter: &SessionId,
+    ) -> Result<TierTransferReceipt, TierRuntimeError> {
+        self.transfer_checked(
+            grant.object,
+            &grant.source,
+            &grant.destination,
+            PublishCheck {
+                authorization: grant.write_authorization,
+                grant: Some(grant.clone()),
+            },
+            Some(presenter),
+        )
+        .await
+    }
+
+    fn validate_scope(
+        state: &ControllerState,
+        object: &Digest,
+        grant: Option<&TierGrant>,
+    ) -> Result<(), TierRuntimeError> {
+        match (state.object_projects.get(object), grant) {
+            (None, None) => Ok(()),
+            (Some(_), None) => Err(TierRuntimeError::GrantRequired),
+            (Some(project), Some(grant)) if *project == grant.project => Ok(()),
+            (Some(_), Some(_)) | (None, Some(_)) => Err(TierRuntimeError::ProjectMismatch),
+        }
+    }
+
+    async fn transfer_checked(
+        &self,
+        object: Digest,
+        source: &TierBackendId,
+        destination: &TierBackendId,
+        publish: PublishCheck,
+        presenter: Option<&SessionId>,
+    ) -> Result<TierTransferReceipt, TierRuntimeError> {
         let key = TransferKey {
             object,
             source: source.clone(),
             destination: destination.clone(),
         };
+        let now = self.clock.now_millis();
+        let authorization = publish.authorization;
+        let reservation_key = publish
+            .grant
+            .as_ref()
+            .map(|grant| (grant.receiver.clone(), grant.nonce));
+        let mut reserved = false;
         let (gate, leader, manifest, source_backend, destination_backend, reserved_digests) = {
             let mut state = self
                 .state
                 .lock()
                 .map_err(|_| TierRuntimeError::LockPoisoned)?;
+            if !state.records.contains_key(&object) {
+                return Err(TierRuntimeError::UnknownObject);
+            }
+            Self::validate_scope(&state, &object, publish.grant.as_ref())?;
+            if let (Some(grant), Some(presenter)) = (publish.grant.as_ref(), presenter) {
+                validate_grant_shape(grant, presenter, now, &self.grant_limits)?;
+                if state
+                    .inflight_grants
+                    .contains(&(grant.receiver.clone(), grant.nonce))
+                {
+                    return Err(TierRuntimeError::GrantReplayed);
+                }
+                state
+                    .tombstones
+                    .check(&grant.receiver, grant.nonce, now, &self.grant_limits)?;
+            }
             let record = state
                 .records
                 .get(&object)
@@ -1234,8 +1475,13 @@ impl TierResidencyController {
             if !source_readable {
                 return Err(TierRuntimeError::ReplicaUnavailable);
             }
-            if let Some(gate) = state.inflight.get(&key) {
-                (gate.clone(), false, None, None, None, None)
+            let joined = state.inflight.get(&key).cloned();
+            if let Some(gate) = joined {
+                if let Some(grant_key) = &reservation_key {
+                    state.inflight_grants.insert(grant_key.clone());
+                    reserved = true;
+                }
+                (gate, false, None, None, None, None)
             } else {
                 let transfer_bytes = record
                     .object
@@ -1293,26 +1539,44 @@ impl TierResidencyController {
                         .checked_add(*count)
                         .ok_or(TierRuntimeError::CounterExhausted)?;
                 }
+                let already_available = state.records.get(&object).is_some_and(|record| {
+                    record.replicas.iter().any(|replica| {
+                        &replica.backend == destination && replica.state == ReplicaState::Available
+                    })
+                });
+                if already_available {
+                    let manifest = state
+                        .records
+                        .get(&object)
+                        .map(|record| record.object.clone())
+                        .ok_or(TierRuntimeError::UnknownObject)?;
+                    // Nothing is copied or published by this call, but the grant is
+                    // satisfied by the existing replica, so it is rechecked and spent here.
+                    Self::recheck_and_spend(
+                        &mut state,
+                        &manifest,
+                        &publish,
+                        self.clock.now_millis(),
+                        &self.grant_limits,
+                    )?;
+                    return Ok(TierTransferReceipt {
+                        object,
+                        source: source.clone(),
+                        destination: destination.clone(),
+                        chunks: manifest.chunks.len(),
+                        bytes: manifest.chunks.iter().map(|chunk| chunk.length).sum(),
+                    });
+                }
                 let manifest = {
                     let record = state
                         .records
                         .get_mut(&object)
                         .expect("record resolved above");
-                    if let Some(existing) = record
+                    if !record
                         .replicas
                         .iter()
-                        .find(|replica| &replica.backend == destination)
+                        .any(|replica| &replica.backend == destination)
                     {
-                        if existing.state == ReplicaState::Available {
-                            return Ok(TierTransferReceipt {
-                                object,
-                                source: source.clone(),
-                                destination: destination.clone(),
-                                chunks: record.object.chunks.len(),
-                                bytes: record.object.chunks.iter().map(|chunk| chunk.length).sum(),
-                            });
-                        }
-                    } else {
                         record.replicas.push(TierReplica {
                             backend: destination.clone(),
                             tier: destination_tier,
@@ -1343,6 +1607,10 @@ impl TierResidencyController {
                 let gate = Arc::new(TransferGate::new());
                 state.inflight.insert(key.clone(), gate.clone());
                 state.inflight_bytes = state.inflight_bytes.saturating_add(transfer_bytes);
+                if let Some(grant_key) = &reservation_key {
+                    state.inflight_grants.insert(grant_key.clone());
+                    reserved = true;
+                }
                 (
                     gate,
                     true,
@@ -1354,12 +1622,37 @@ impl TierResidencyController {
             }
         };
 
+        let _reservation = match (reserved, reservation_key) {
+            (true, Some(key)) => Some(GrantReservation {
+                controller: self,
+                key,
+            }),
+            _ => None,
+        };
         if !leader {
-            return gate.wait().await;
+            let result = gate.wait().await?;
+            if publish.grant.is_none() {
+                return Ok(result);
+            }
+            // A follower's grant is rechecked and spent when it is satisfied, like the
+            // leader's: its own authorization, scope and deadline, and its own nonce.
+            let now = self.clock.now_millis();
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| TierRuntimeError::LockPoisoned)?;
+            let manifest = state
+                .records
+                .get(&object)
+                .map(|record| record.object.clone())
+                .ok_or(TierRuntimeError::UnknownObject)?;
+            Self::recheck_and_spend(&mut state, &manifest, &publish, now, &self.grant_limits)?;
+            return Ok(result);
         }
         let manifest = manifest.expect("leader has manifest");
         let source_backend = source_backend.expect("leader has source backend");
         let destination_backend = destination_backend.expect("leader has destination backend");
+        let cleanup_backend = destination_backend.clone();
         let reserved_digests = reserved_digests.expect("leader has chunk reservations");
         let mut leader_guard = TransferLeaderGuard {
             controller: self,
@@ -1369,6 +1662,7 @@ impl TierResidencyController {
             manifest: manifest.clone(),
             reserved_digests,
             gate: gate.clone(),
+            publish,
             active: true,
         };
         let result = self
@@ -1380,7 +1674,66 @@ impl TierResidencyController {
                 destination_backend,
             )
             .await;
-        leader_guard.complete(result)
+        match leader_guard.complete(result) {
+            Err(refusal) if refusal.refuses_publication() => {
+                match self
+                    .discard_unpublished(&manifest, destination, cleanup_backend.as_ref())
+                    .await
+                {
+                    Ok(()) => Err(refusal),
+                    Err(_) => Err(TierRuntimeError::CleanupFailed(Box::new(refusal))),
+                }
+            }
+            other => other,
+        }
+    }
+
+    /// Removes the chunks a refused transfer copied to `destination`, except those another
+    /// replica or an in-flight transfer on that backend still needs.
+    async fn discard_unpublished(
+        &self,
+        manifest: &TierObjectManifest,
+        destination: &TierBackendId,
+        backend: &dyn TierBackend,
+    ) -> Result<(), TierRuntimeError> {
+        let chunks = {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| TierRuntimeError::LockPoisoned)?;
+            let mut chunks = Vec::new();
+            let mut seen = BTreeSet::new();
+            for chunk in &manifest.chunks {
+                let key = (destination.clone(), chunk.digest);
+                let referenced = state.chunk_refs.get(&key).copied().unwrap_or(0) != 0;
+                let reserved = state.chunk_reservations.get(&key).copied().unwrap_or(0) != 0;
+                if !referenced
+                    && !reserved
+                    && !state.chunk_deletions.contains(&key)
+                    && seen.insert(chunk.digest)
+                {
+                    chunks.push(chunk.clone());
+                }
+            }
+            for chunk in &chunks {
+                state
+                    .chunk_deletions
+                    .insert((destination.clone(), chunk.digest));
+            }
+            chunks
+        };
+        let _deletion_guard = DeletionGuard {
+            controller: self,
+            backend: destination.clone(),
+            digests: chunks.iter().map(|chunk| chunk.digest).collect(),
+        };
+        for chunk in &chunks {
+            match backend.delete_chunk(chunk).await {
+                Ok(()) | Err(TierError::UnknownChunk) => {}
+                Err(error) => return Err(TierRuntimeError::Storage(error)),
+            }
+        }
+        Ok(())
     }
 
     pub async fn prefetch(
@@ -1394,6 +1747,18 @@ impl TierResidencyController {
             .transfer(object, source, destination, authorization)
             .await
         {
+            Ok(receipt) => PrefetchOutcome::Ready(receipt),
+            Err(error) => PrefetchOutcome::Skipped(error),
+        }
+    }
+
+    /// Like `prefetch`, for the object, source and destination a grant names.
+    pub async fn prefetch_with_grant(
+        &self,
+        grant: &TierGrant,
+        presenter: &SessionId,
+    ) -> PrefetchOutcome {
+        match self.transfer_with_grant(grant, presenter).await {
             Ok(receipt) => PrefetchOutcome::Ready(receipt),
             Err(error) => PrefetchOutcome::Skipped(error),
         }
@@ -1619,6 +1984,38 @@ impl TierResidencyController {
         })
     }
 
+    /// The publish-time checks of a transfer; spends the grant when all of them pass, so a
+    /// refusal never spends it. The caller holds the controller lock.
+    fn recheck_and_spend(
+        state: &mut ControllerState,
+        manifest: &TierObjectManifest,
+        publish: &PublishCheck,
+        now_millis: u64,
+        limits: &TierGrantLimits,
+    ) -> Result<(), TierRuntimeError> {
+        let record = state
+            .records
+            .get(&manifest.root_digest)
+            .ok_or(TierRuntimeError::UnknownObject)?;
+        if Self::validate_authorization(record, publish.authorization).is_err() {
+            return Err(TierRuntimeError::AuthorizationRevoked);
+        }
+        Self::validate_scope(state, &manifest.root_digest, publish.grant.as_ref())?;
+        let Some(grant) = publish.grant.as_ref() else {
+            return Ok(());
+        };
+        if now_millis > grant.deadline_millis {
+            return Err(TierRuntimeError::GrantExpired);
+        }
+        state.tombstones.consume(
+            &grant.receiver,
+            grant.nonce,
+            grant.deadline_millis,
+            now_millis,
+            limits,
+        )
+    }
+
     fn finish_transfer(
         &self,
         key: &TransferKey,
@@ -1626,8 +2023,10 @@ impl TierResidencyController {
         destination: &TierBackendId,
         manifest: &TierObjectManifest,
         reserved_digests: &[(Digest, u64)],
+        publish: &PublishCheck,
         result: Result<TierTransferReceipt, TierRuntimeError>,
     ) -> Result<TierTransferReceipt, TierRuntimeError> {
+        let now = self.clock.now_millis();
         let Ok(mut state) = self.state.lock() else {
             return Err(TierRuntimeError::LockPoisoned);
         };
@@ -1637,6 +2036,12 @@ impl TierResidencyController {
             .is_some_and(|entry| entry.state == BackendLifecycleState::Available);
         let result = match result {
             Ok(_) if !destination_available => Err(TierRuntimeError::BackendDraining),
+            // Everything the transfer was authorized by is checked again here, under the same
+            // lock hold that publishes the replica, and the grant is spent in it.
+            Ok(receipt) => {
+                Self::recheck_and_spend(&mut state, manifest, publish, now, &self.grant_limits)
+                    .map(|()| receipt)
+            }
             other => other,
         };
         for (digest, reserved) in reserved_digests {
@@ -1672,6 +2077,9 @@ impl TierResidencyController {
                         destination_replica.state = ReplicaState::Available;
                         destination_replica.verified_digest = manifest.root_digest;
                         destination_replica.last_access = access;
+                    }
+                    Err(ref error) if error.refuses_publication() => {
+                        destination_replica.state = ReplicaState::Revoked;
                     }
                     Err(_) => destination_replica.state = ReplicaState::Corrupt,
                 }

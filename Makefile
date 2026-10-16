@@ -2,7 +2,7 @@
 	desktop-setup gpu-doctor smoke-gpu olmoe-sft-smoke release-package \
 	ci-local ci-quality ci-rust-stable ci-rust-msrv ci-python-training ci-repository-invariants \
 	ci-lifecycle-failpoints ci-ledger-raft-engine ci-ledger-raft-rs ci-state-turso ci-state-postgres \
-	ci-network-iroh ci-cluster-wire ci-execution-wire ci-pod-wire ci-storage-tiers ci-feature-gates
+	ci-network-iroh ci-cluster-wire ci-execution-wire ci-pod-wire ci-fabric-shm ci-fabric-cuda-check ci-pod-worker ci-storage-tiers ci-feature-gates
 
 # `model/burn-a0` is its own workspace, excluded from the root one, so every
 # `--workspace` target below reaches none of it. That is why `fmt` names it
@@ -182,7 +182,7 @@ tree:
 # burn-a0 workflow, which runs only when A0 or what it depends on changes.
 ci-local: ci-quality ci-rust-stable ci-rust-msrv ci-python-training ci-repository-invariants \
 	ci-lifecycle-failpoints ci-ledger-raft-engine ci-ledger-raft-rs ci-state-turso ci-state-postgres \
-	ci-network-iroh ci-cluster-wire ci-execution-wire ci-pod-wire ci-storage-tiers ci-feature-gates
+	ci-network-iroh ci-cluster-wire ci-execution-wire ci-pod-wire ci-fabric-shm ci-fabric-cuda-check ci-pod-worker ci-storage-tiers ci-feature-gates
 
 ci-quality:
 	cargo +stable fmt --all -- --check
@@ -297,10 +297,50 @@ ci-pod-wire:
 	rustup toolchain install 1.99.0 --profile minimal
 	cargo +1.99.0 test -p ptr-podwire --features podwire-backend --locked
 
+ci-fabric-shm:
+	cargo +stable test -p ptr-fabric --features shm-backend --locked
+	cargo +stable clippy -p ptr-fabric --features shm-backend --all-targets --locked -- -D warnings
+	cargo +stable test -p ptr-fabric --features worker-channel,worker-confine --locked
+	cargo +stable clippy -p ptr-fabric --features worker-channel,worker-confine --all-targets --locked -- -D warnings
+	rustup toolchain install 1.99.0 --profile minimal
+	cargo +1.99.0 test -p ptr-fabric --features shm-backend --locked
+	cargo +1.99.0 test -p ptr-fabric --features worker-channel,worker-confine --locked
+
+ci-fabric-cuda-check:
+	cargo +stable build -p ptr-fabric --features cuda-ipc --locked
+	cargo +stable clippy -p ptr-fabric --features cuda-ipc --all-targets --locked -- -D warnings
+	cargo +stable test -p ptr-fabric --features cuda-ipc --locked
+	cargo +stable clippy -p ptr-fabric --features cuda-ipc,worker-channel --all-targets --locked -- -D warnings
+	cargo +stable test -p ptr-fabric --features cuda-ipc,worker-channel --locked
+	cargo +stable clippy -p ptr-fabric --features cuda-ipc,worker-confine --all-targets --locked -- -D warnings
+	cargo +stable test -p ptr-fabric --features cuda-ipc,worker-confine --locked
+	cargo +stable clippy -p ptr-fabric --features cuda-ipc-core --all-targets --locked -- -D warnings
+	cargo +stable test -p ptr-fabric --features cuda-ipc-core --locked
+	cargo +stable clippy -p ptr-fabric --features cuda-ipc,worker-supervisor --all-targets --locked -- -D warnings
+	cargo +stable test -p ptr-fabric --features cuda-ipc,worker-supervisor --lib --test staging_pool --test staging_cuda --locked
+	cargo +stable clippy -p ptr-worker --features cuda-ipc --all-targets --locked -- -D warnings
+	PTR_WORKER_UNPRIVILEGED_CI=1 cargo +stable test -p ptr-worker --features cuda-ipc --lib --bins --test staging_guardian --locked
+	rustup toolchain install 1.99.0 --profile minimal
+	cargo +1.99.0 test -p ptr-fabric --features cuda-ipc --locked
+	cargo +1.99.0 test -p ptr-fabric --features cuda-ipc-core --locked
+	cargo +1.99.0 test -p ptr-fabric --features cuda-ipc,worker-confine --locked
+
+ci-pod-worker:
+	cargo +stable clippy -p ptr-fabric --features worker-supervisor --all-targets --locked -- -D warnings
+	cargo +stable clippy -p ptr-worker --features data-plane --all-targets --locked -- -D warnings
+	cargo +stable clippy -p ptr-worker --all-features --all-targets --locked -- -D warnings
+	cargo +stable test -p ptr-fabric --features worker-supervisor --lib --locked
+	cargo +stable test -p ptr-fabric --features worker-supervisor --test staging_pool --locked
+	cargo +stable test -p ptr-worker --all-features --lib --bins --test stdio_session --locked
+	$(PYTHON) scripts/run_pod_worker_tests.py --toolchain stable
+	rustup toolchain install 1.99.0 --profile minimal
+	$(PYTHON) scripts/run_pod_worker_tests.py --toolchain 1.99.0
+
 ci-storage-tiers:
 	cargo +stable test -p ptr-storage --features tier-opendal-fs --test opendal_tier --locked
 	cargo +stable check -p ptr-storage --features tier-opendal-fs,tier-opendal-s3 --locked
-	cargo +stable clippy -p ptr-storage --all-targets --features tier-opendal-fs,tier-opendal-s3 --locked -- -D warnings
+	cargo +stable test -p ptr-storage --features tier-pinned,tier-direct-io --locked
+	cargo +stable clippy -p ptr-storage --all-targets --features tier-opendal-fs,tier-opendal-s3,tier-pinned,tier-direct-io --locked -- -D warnings
 
 # Feature gates no other job compiles. `candle-cuda` (ptr-pods / ptr-runtime) is
 # deliberately excluded: it needs the CUDA toolkit, so nothing here compiles it.

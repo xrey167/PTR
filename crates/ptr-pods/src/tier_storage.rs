@@ -205,17 +205,7 @@ impl ModelWeightTierAdapter {
         binding: &ModelWeightTierBinding,
         chunk_size: usize,
     ) -> Result<PreparedTierObject, PodTierError> {
-        if binding.logical_id.trim().is_empty()
-            || binding.tensor_name.trim().is_empty()
-            || binding.dtype.trim().is_empty()
-            || binding.generation.0 == 0
-            || binding.execution_manifest == [0; 32]
-            || binding.artifact_digest == [0; 32]
-            || binding.shape.is_empty()
-            || binding.shape.contains(&0)
-        {
-            return Err(PodTierError::InvalidBinding);
-        }
+        validate_weight_binding(binding)?;
         PreparedTierObject::from_bytes(
             TierObjectDomain::ModelWeight,
             binding.logical_id.clone(),
@@ -227,6 +217,179 @@ impl ModelWeightTierAdapter {
         )
         .map_err(Into::into)
     }
+
+    /// Reassembles the weight bytes of an object that `prepare` produced for `binding`.
+    ///
+    /// Refuses with `InvalidBinding` unless the object has the weight domain, the binding's
+    /// logical id, generation, revision and schema digest, and is exactly what `prepare` builds
+    /// from the reassembled bytes at the object's own chunk size (same chunk boundaries, chunk
+    /// digests and root digest). A chunk whose bytes or length differ from the manifest is a
+    /// `Storage` refusal.
+    pub fn restore(
+        object: &PreparedTierObject,
+        binding: &ModelWeightTierBinding,
+    ) -> Result<Vec<u8>, PodTierError> {
+        validate_weight_binding(binding)?;
+        restore_weight_object(
+            object,
+            &binding.logical_id,
+            binding.generation,
+            binding.revision,
+            weight_schema_digest(binding),
+        )
+    }
+}
+
+/// The most experts one model artifact may be split into by `ExpertWeightTierAdapter`.
+pub const MAX_EXPERTS_PER_MODEL: usize = 4096;
+
+/// Identity of one expert's weights: the weight binding of the whole model artifact (its
+/// generation, revision, execution manifest, artifact digest, model, adapter, dtype) plus the
+/// expert id. The tensor name and shape in `base` describe this expert's tensor.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExpertWeightTierBinding {
+    pub base: ModelWeightTierBinding,
+    pub expert_id: u32,
+}
+
+impl ExpertWeightTierBinding {
+    /// The tier object logical id of this expert: the base logical id, the expert id.
+    pub fn logical_id(&self) -> String {
+        format!("{}/expert/{}", self.base.logical_id, self.expert_id)
+    }
+}
+
+/// One expert per tier object, so the residency controller can move experts independently.
+pub struct ExpertWeightTierAdapter;
+
+impl ExpertWeightTierAdapter {
+    pub fn prepare(
+        bytes: &[u8],
+        binding: &ExpertWeightTierBinding,
+        chunk_size: usize,
+    ) -> Result<PreparedTierObject, PodTierError> {
+        validate_expert_binding(binding)?;
+        PreparedTierObject::from_bytes(
+            TierObjectDomain::ModelWeight,
+            binding.logical_id(),
+            binding.base.generation,
+            binding.base.revision,
+            expert_schema_digest(binding),
+            bytes,
+            chunk_size,
+        )
+        .map_err(Into::into)
+    }
+
+    /// One object per expert, in the order given. `experts` pairs each expert's binding with
+    /// its bytes; an expert id of `MAX_EXPERTS_PER_MODEL` or more (also refused by `prepare`
+    /// and `restore`), more than that many experts, or a repeated
+    /// (artifact, generation, expert id), is `InvalidBinding`.
+    pub fn prepare_all(
+        experts: &[(ExpertWeightTierBinding, &[u8])],
+        chunk_size: usize,
+    ) -> Result<Vec<PreparedTierObject>, PodTierError> {
+        if experts.len() > MAX_EXPERTS_PER_MODEL {
+            return Err(PodTierError::InvalidBinding);
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        let mut objects = Vec::with_capacity(experts.len());
+        for (binding, bytes) in experts {
+            if !seen.insert((
+                binding.base.artifact_digest,
+                binding.base.generation,
+                binding.expert_id,
+            )) {
+                return Err(PodTierError::InvalidBinding);
+            }
+            objects.push(Self::prepare(bytes, binding, chunk_size)?);
+        }
+        Ok(objects)
+    }
+
+    /// Reassembles one expert's bytes; the same refusals as `ModelWeightTierAdapter::restore`,
+    /// and an object of another expert, artifact or generation is `InvalidBinding`.
+    pub fn restore(
+        object: &PreparedTierObject,
+        binding: &ExpertWeightTierBinding,
+    ) -> Result<Vec<u8>, PodTierError> {
+        validate_expert_binding(binding)?;
+        restore_weight_object(
+            object,
+            &binding.logical_id(),
+            binding.base.generation,
+            binding.base.revision,
+            expert_schema_digest(binding),
+        )
+    }
+}
+
+fn validate_expert_binding(binding: &ExpertWeightTierBinding) -> Result<(), PodTierError> {
+    if binding.expert_id as usize >= MAX_EXPERTS_PER_MODEL {
+        return Err(PodTierError::InvalidBinding);
+    }
+    validate_weight_binding(&binding.base)
+}
+
+fn validate_weight_binding(binding: &ModelWeightTierBinding) -> Result<(), PodTierError> {
+    if binding.logical_id.trim().is_empty()
+        || binding.tensor_name.trim().is_empty()
+        || binding.dtype.trim().is_empty()
+        || binding.generation.0 == 0
+        || binding.execution_manifest == [0; 32]
+        || binding.artifact_digest == [0; 32]
+        || binding.shape.is_empty()
+        || binding.shape.contains(&0)
+    {
+        return Err(PodTierError::InvalidBinding);
+    }
+    Ok(())
+}
+
+fn restore_weight_object(
+    object: &PreparedTierObject,
+    logical_id: &str,
+    generation: Generation,
+    revision: Revision,
+    schema_digest: Digest,
+) -> Result<Vec<u8>, PodTierError> {
+    object.verify()?;
+    let manifest = &object.manifest;
+    if manifest.domain != TierObjectDomain::ModelWeight
+        || manifest.logical_id != logical_id
+        || manifest.generation != generation
+        || manifest.revision != revision
+        || manifest.schema_digest != schema_digest
+    {
+        return Err(PodTierError::InvalidBinding);
+    }
+    let bytes = object.reassemble()?;
+    let chunk_size = manifest
+        .chunks
+        .first()
+        .and_then(|chunk| usize::try_from(chunk.length).ok())
+        .ok_or(PodTierError::InvalidBinding)?;
+    let rebuilt = PreparedTierObject::from_bytes(
+        TierObjectDomain::ModelWeight,
+        logical_id,
+        generation,
+        revision,
+        schema_digest,
+        &bytes,
+        chunk_size,
+    )?;
+    if rebuilt.manifest != *manifest {
+        return Err(PodTierError::InvalidBinding);
+    }
+    Ok(bytes)
+}
+
+fn expert_schema_digest(binding: &ExpertWeightTierBinding) -> Digest {
+    let mut bytes = b"ptr-expert-weight-tier-binding-v1\0".to_vec();
+    bytes.extend_from_slice(&weight_schema_digest(&binding.base));
+    put_u64(&mut bytes, binding.base.generation.0);
+    bytes.extend_from_slice(&binding.expert_id.to_le_bytes());
+    Sha256::digest(bytes).into()
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -11,7 +11,8 @@ use ptr_runtime::{
     AdmittedHandle, ChainFault, ConsumeRequest, ConsumedHandle, DeviceHealth, DeviceRecord,
     HandleAdmissionRequest, HandlePolicy, HandleRejection, HandleSource, HandleTable, NodeHealth,
     NodeRecord, OperationCheck, OperationFault, OperationLiveness, PodPlacementController,
-    PtrRuntime, ReclaimReason, RegistrationRefused, RuntimeStageLiveness, Teardown, WorkerSession,
+    ProjectPlacementRequest, PtrRuntime, ReclaimReason, RegistrationRefused, RuntimeStageLiveness,
+    Teardown, WorkerSession,
 };
 use ptr_types::{
     ArtifactId, CapsuleId, DeviceId, Generation, NodeId, PodId, ProjectId, Timestamp, TypeId,
@@ -167,15 +168,21 @@ fn node(name: &str) -> NodeRecord {
 }
 
 fn place(placement: &mut PodPlacementController, node: &str) {
+    place_for(placement, &project(), node);
+}
+
+/// Place the stage for `project`: handle admission reads the placement of the call's project.
+fn place_for(placement: &mut PodPlacementController, project: &ProjectId, node: &str) {
     placement
-        .assign(
-            PodId::from("stage"),
-            ArtifactId::from("artifact"),
-            Generation(1),
-            NodeId::from(node),
-            DeviceId::from("cpu"),
-            1,
-        )
+        .assign_in(ProjectPlacementRequest {
+            project: project.clone(),
+            pod_id: PodId::from("stage"),
+            artifact_id: ArtifactId::from("artifact"),
+            generation: Generation(1),
+            node_id: NodeId::from(node),
+            device_id: DeviceId::from("cpu"),
+            required_vram: 1,
+        })
         .expect("the stage is placed");
 }
 
@@ -209,7 +216,7 @@ fn live(world: &World) -> RuntimeStageLiveness<'_> {
 fn epoch(world: &World) -> u64 {
     world
         .placement
-        .placement(&PodId::from("stage"))
+        .placement_in(&project(), &PodId::from("stage"))
         .expect("the stage is placed")
         .epoch
         .0
@@ -1110,4 +1117,89 @@ fn admission_consume_and_output_revalidation_ask_the_authority_with_the_same_cap
         operations.asked.borrow().as_slice(),
         &[expected.clone(), expected.clone(), expected]
     );
+}
+
+/// A world where a second project, `other`, also has a same-named stage placed.
+fn world_with_second_project() -> (World, ProjectId, u64) {
+    let mut world = world();
+    let other = ProjectId::from("other");
+    place_for(&mut world.placement, &other, "n1");
+    let other_epoch = world
+        .placement
+        .placement_in(&other, &PodId::from("stage"))
+        .expect("placed for the other project")
+        .epoch
+        .0;
+    (world, other, other_epoch)
+}
+
+/// Admit `sent` as a call of `project` (the authority is faked as all-live: only the chain and
+/// placement check is under test).
+fn admit_as(
+    table: &mut HandleTable,
+    world: &World,
+    project: &ProjectId,
+    sent: &TensorHandle,
+) -> Result<AdmittedHandle, HandleRejection> {
+    let encoded = sent.encode().expect("the test handle encodes");
+    table.admit(HandleAdmissionRequest {
+        now_ms: 10,
+        principal: PRINCIPAL,
+        expected_operation: OPERATION,
+        project,
+        consumer_session: CONSUMER_SESSION,
+        operations: &AllLive,
+        handle: HandleSource::Encoded(&encoded),
+        footprint_bytes: sent.byte_len,
+        live: &live(world),
+    })
+}
+
+#[test]
+fn a_handle_of_one_project_is_refused_against_the_same_named_stage_of_another() {
+    let (world, other, other_epoch) = world_with_second_project();
+    let mut table = table();
+    // Project `p` produced the handle at its own epoch; the call is project `other`'s, whose
+    // same-named stage holds another epoch.
+    let sent = handle(&world, 1, 500);
+    assert_ne!(sent.placement_epoch, other_epoch);
+    assert_eq!(
+        admit_as(&mut table, &world, &other, &sent).unwrap_err(),
+        HandleRejection::Chain(ChainFault::StalePlacement {
+            recorded: sent.placement_epoch,
+            current: Some(other_epoch)
+        })
+    );
+    assert_eq!(table.slots_held(PRINCIPAL), Some(0));
+    // A project without any placement of the stage is refused too.
+    assert_eq!(
+        admit_as(&mut table, &world, &ProjectId::from("third"), &sent).unwrap_err(),
+        HandleRejection::Chain(ChainFault::StalePlacement {
+            recorded: sent.placement_epoch,
+            current: None
+        })
+    );
+    // Against its own project's placement the same handle is admitted.
+    assert!(admit_as(&mut table, &world, &project(), &sent).is_ok());
+}
+
+#[test]
+fn a_handle_is_revalidated_at_consume_against_the_project_it_was_admitted_for() {
+    let (mut world, other, _) = world_with_second_project();
+    let mut table = table();
+    let sent = handle(&world, 1, 500);
+    let admitted = admit(&mut table, &world, 10, &sent).expect("admitted for p");
+    assert_eq!(admitted.project(), &project());
+    // The other project's stage is re-placed: project p's handle is unaffected.
+    place_for(&mut world.placement, &other, "n2");
+    let consumed = consume(&mut table, &world, 20, admitted).expect("p's placement did not move");
+    assert_eq!(consumed.project(), &project());
+    // Project p's own re-placement does stale a handle admitted for p.
+    let second = handle(&world, 2, 500);
+    let admitted = admit(&mut table, &world, 30, &second).expect("admitted for p");
+    place_for(&mut world.placement, &project(), "n2");
+    assert!(matches!(
+        consume(&mut table, &world, 40, admitted).unwrap_err(),
+        HandleRejection::Chain(ChainFault::StalePlacement { .. })
+    ));
 }

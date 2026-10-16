@@ -16,7 +16,7 @@ through the ledger, the verifier and the hard effect boundary.
 
 ## 2. Crate layering
 
-The workspace is 33 library crates plus `ptrd`, `ptrctl`, `ptr-bench` and `ptr-worker`, placed in
+The workspace is 34 library crates plus `ptrd`, `ptrctl`, `ptr-bench` and `ptr-worker`, placed in
 eight ranked layers by [`research/catalogs/crate-layers.toml`](../research/catalogs/crate-layers.toml).
 `scripts/check_crate_layering.py` (CI) refuses an upward dependency and a backend crate outside
 its owner; the only tolerated exception is `ptr-bench` → `tokio-postgres`
@@ -25,13 +25,13 @@ its owner; the only tolerated exception is `ptr-bench` → `tokio-postgres`
 | Rank | Layer | Role | Crates |
 |---:|---|---|---|
 | 0 | kernel | shared vocabulary | `ptr-types` |
-| 1 | foundation | one concern each, depend on the kernel only | `ptr-semdb`, `ptr-ledger`, `ptr-model-api`, `ptr-security`, `ptr-protocol`, `ptr-storage`, `ptr-memory`, `ptr-lineage`, `ptr-core`, `ptr-exec`, `ptr-events`, `ptr-config`, `ptr-analytics`, `ptr-ingress`, `ptr-inspect`, `ptr-observe` |
+| 1 | foundation | one concern each, depend on the kernel only | `ptr-semdb`, `ptr-ledger`, `ptr-model-api`, `ptr-security`, `ptr-protocol`, `ptr-storage`, `ptr-fabric`, `ptr-memory`, `ptr-lineage`, `ptr-core`, `ptr-exec`, `ptr-events`, `ptr-config`, `ptr-analytics`, `ptr-ingress`, `ptr-inspect`, `ptr-observe` |
 | 2 | domain | built on foundation crates | `ptr-verifier`, `ptr-search`, `ptr-net`, `ptr-labeling` |
 | 3 | composition | combine domain crates | `ptr-pods`, `ptr-branch`, `ptr-feedback`, `ptr-fastmem`, `ptr-cluster` |
-| 4 | projection | routing and materialization | `ptr-router`, `ptr-state`, `ptr-worker` |
+| 4 | projection | routing and materialization | `ptr-router`, `ptr-state` |
 | 5 | orchestration | the runtime and the PostgreSQL substrate | `ptr-runtime`, `ptr-pg` |
 | 6 | surface | HTTP API and the runtime-level wires | `ptr-server`, `ptr-execwire`, `ptr-podwire` |
-| 7 | binary | composition only | `ptrd`, `ptrctl`, `ptr-bench` |
+| 7 | binary | composition only | `ptrd`, `ptrctl`, `ptr-bench`, `ptr-worker` |
 
 Backend ownership: `iroh`, `wireguard-uapi`, `wintun` → `ptr-net`; `raft`, `raft-engine` →
 `ptr-ledger`; `turso` → `ptr-state`; `tokio-postgres`, `deadpool-postgres` → `ptr-pg`; `opendal` →
@@ -44,7 +44,7 @@ The plane model of [00](architecture/00-system.md) is the target. What each plan
 
 | Plane | In code | Planned |
 |---|---|---|
-| Ingress | `PtrRuntime::ingest_text` commits the raw request text as a `Request`-origin semantic delta | typed interpretation and raw↔typed cross-check (`ptr-ingress` is a scaffold no crate uses) |
+| Ingress | `PtrRuntime::ingest_text` commits the raw request text as a `Request`-origin semantic delta | typed interpretation and raw↔typed cross-check (`ptr-ingress` has a std-only prototype pipeline; `ptr-server` runs it only as opt-in advisory diagnostics and `ptrctl ingest` exposes it, while the runtime still commits only the raw text) |
 | Semantic | `ptr-semdb`: revisioned store, dependency invalidation, immutable snapshots, canonical delta codec | memoized derived queries |
 | Cognitive | `ptr-core` data structures; `model/burn-a0` trainable toy | a model on the request path (ADR-0022, S8: not until an A0 study passes) |
 | Routing | `ptr-router`: project-scoped Pod selection with keyed sampling and logged propensities; finding router; OPE; policy book | reasoning/search/symbolic operator routing |

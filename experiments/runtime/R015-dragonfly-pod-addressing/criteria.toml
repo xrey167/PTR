@@ -1,0 +1,54 @@
+# R015 decision criteria. Frozen with the preregistration (config.toml names this file; its SHA-256 is
+# pinned at the freeze); no rule changes after a run. The rules read the single JSON object that
+# `ptr-bench dragonfly-addressing <seed>` prints.
+#
+# Rule grammar (one string per rule, exactly three tokens separated by single spaces):
+#     <left> <op> <right>
+# <op> is one of  >=  <=  == .  A token is an integer literal iff it matches -?[0-9]+; any other token is
+# a reference, a path of object keys from the root of the JSON object separated by '.'
+# ("arms.learned.routing_accuracy_permille"). A reference that is missing, null or not a JSON integer
+# makes the seed INVALID, not failed. Comparisons are exact; every rate is an integer permille rounded
+# down, and the two gaps are signed, rounded towards minus infinity.
+#
+# The aggregator that reads these rules is not written yet; it is part of the freeze (see README.md,
+# Status). Until then the file is the specification, and the harness prints every reference below.
+#
+# What each group means:
+# - coverage: prerequisites. A seed that misses one is INVALID (vacuous), not a pass and not a failure.
+#   The oracle and constant-score rules are the validity controls: the oracle is the ceiling and must
+#   reach it, the constant-score router is the floor and must not beat description cosine, and every
+#   representation must have passed its activation gate and been learned for the project, namespace,
+#   pod and generation of the world entry that names it (otherwise the learned arm abstains on partial
+#   coverage and the comparison is not the one preregistered). Every probe label must name a registered
+#   pod (`unregistered_labels`), or the oracle would count a route to an unknown label as correct.
+# - falsifiers: the primary criterion, from the plan. On every confirmatory seed the learned router has
+#   a routing accuracy at least that of the cosine-only baseline (margin 0) and a false-route rate
+#   strictly below it. The strictness is `false_route_gap_permille >= 1`: the gap is the cosine-only
+#   false routes minus the learned ones, over all probes, so a gap of 0 permille fails.
+# - reported, not judged: the ablations (arms.learned_no_abstain, arms.learned_no_bias), the sensitivity
+#   sweep (`sweep`, each entry with its metrics), and the oracle's and constant-score's own rates. They
+#   explain the primary result; none of them can rescue or sink it.
+#
+# A learned router that routes to a pod outside registry.candidates, or loads a representation past an
+# unmet activation gate, fails outright: ptr-router's own tests (tests/learned.rs) hold that, and the
+# harness would exit 2 on it.
+
+version = 1
+experiment = "R015"
+seed_aggregation = "every_seed_must_pass"
+
+coverage = [
+  "probes >= 43",
+  "labelled_probes >= 36",
+  "pods >= 6",
+  "representations_refused <= 0",
+  "unregistered_labels <= 0",
+  "arms.oracle.routing_accuracy_permille >= 1000",
+  "arms.oracle.false_route_permille <= 0",
+  "arms.constant_score.routing_accuracy_permille <= arms.cosine_only.routing_accuracy_permille",
+]
+
+falsifiers = [
+  "accuracy_gap_permille >= 0",
+  "false_route_gap_permille >= 1",
+]

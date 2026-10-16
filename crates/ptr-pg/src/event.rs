@@ -118,6 +118,8 @@ pub fn lifecycle_change(committed: &CommittedEvent) -> LifecycleChange {
         | LedgerEvent::KvTaintCommitted { .. }
         // A refusal changes no lifecycle row; the projection keeps the latest per Pod.
         | LedgerEvent::EgressRefused { .. }
+        // A pod head is a `pod-head:` projection entry, not a lifecycle row.
+        | LedgerEvent::PodHeadAdvanced { .. }
         // The cycle count is derived from the ledger, not kept as a row.
         | LedgerEvent::ImprovementCycleRecorded { .. } => LifecycleChange::None,
         LedgerEvent::AdapterPromoted {
@@ -177,6 +179,7 @@ pub fn event_topic(event: &LedgerEvent) -> &'static str {
         LedgerEvent::InputInvalidated { .. } => "expert.input_invalidated",
         LedgerEvent::ExpertAuthorityChanged { .. } => "expert.authority_changed",
         LedgerEvent::EgressRefused { .. } => "egress.refused",
+        LedgerEvent::PodHeadAdvanced { .. } => "pod.head_advanced",
         LedgerEvent::AdapterPromoted { .. } => "adapter.promoted",
         LedgerEvent::AdapterRevoked { .. } => "adapter.revoked",
         LedgerEvent::ImprovementCycleRecorded { .. } => "improvement.cycle_recorded",
@@ -278,6 +281,9 @@ pub fn event_subject(committed: &CommittedEvent) -> String {
             source: ptr_ledger::EgressRefusalSource::Overflow,
             ..
         } => "egress-overflow".to_owned(),
+        LedgerEvent::PodHeadAdvanced {
+            project, identity, ..
+        } => format!("pod-head:{project}/{identity}"),
         LedgerEvent::AdapterPromoted {
             project, adapter, ..
         }
@@ -360,6 +366,37 @@ mod tests {
         assert_eq!(payload["expert"]["op_kind"], 5);
         assert_eq!(payload["expert"]["proposal_id"], "01".repeat(32));
         assert_eq!(payload["expert"]["evidence_digest"], "03".repeat(32));
+    }
+
+    #[test]
+    fn pod_head_events_have_a_topic_subject_and_project_the_head_entry() {
+        use ptr_types::{Generation, NamespaceId, PodAddress, PodId, PodIdentity};
+        let new = ptr_types::PodRevisionAddress {
+            address: PodAddress::new(
+                ProjectId::from("p"),
+                NamespaceId::from("ns"),
+                PodId::from("reader"),
+            )
+            .unwrap(),
+            semantic_revision: [5; 32],
+            generation: Generation(1),
+        };
+        let event = committed(
+            4,
+            LedgerEvent::PodHeadAdvanced {
+                project: ProjectId::from("p"),
+                identity: PodIdentity::from("pod:stable"),
+                old: None,
+                new: new.clone(),
+            },
+        );
+        assert_eq!(event_topic(&event.event), "pod.head_advanced");
+        assert_eq!(event_subject(&event), "pod-head:p/pod:stable");
+        assert_eq!(lifecycle_change(&event), LifecycleChange::None);
+        assert_eq!(
+            event_payload(&event)["entries"],
+            serde_json::json!({ "pod-head:p/pod:stable": new.canonical_uri().unwrap() })
+        );
     }
 
     #[test]

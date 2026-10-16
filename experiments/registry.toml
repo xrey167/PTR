@@ -554,3 +554,8 @@ status = "planned"
 id = "E014"
 path = "system/E014-adaptive-batching"
 status = "planned"
+
+[[experiment]]
+id = "R015"
+path = "runtime/R015-dragonfly-pod-addressing"
+status = "planned"

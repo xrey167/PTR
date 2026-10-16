@@ -12,7 +12,7 @@
 //!    stage identity bound to that principal, the handle is addressed to this table's consumer
 //!    stage and to the operation of the call, the nonce was not used, the signed deadline is
 //!    not reached and not too far ahead, the table has room, and the chain and the placement
-//!    epoch are live now ([`revalidate_chain`]). The same checks as `ptr-podwire`'s chunk
+//!    epoch are live now ([`revalidate_chain_in`]). The same checks as `ptr-podwire`'s chunk
 //!    assembler, in the same order, with nothing table-wide read before the signature verifies.
 //!    The handle carries no input lineage (codec v1 has none); the lineage is derived from the
 //!    authority instead: [`OperationLiveness`] answers, for the signed operation, whether every
@@ -108,12 +108,13 @@ use ed25519_dalek::{Signature, VerifyingKey};
 use ptr_protocol::activation::{BoundaryDtype, UpstreamChain};
 use ptr_protocol::{
     handle_digest, handle_signing_bytes, verify_content, Carrier, CarrierLocator, HandleError,
-    TensorHandle,
+    InProcessHandle, TensorHandle,
 };
 
 use ptr_types::{ProjectId, TypeId};
 
-use crate::split_stage::{revalidate_chain, ChainFault, StageLiveness};
+use crate::host_quota::{QuotaCharge, QuotaRefusal, SharedHostQuota};
+use crate::split_stage::{revalidate_chain_in, ChainFault, StageLiveness};
 
 /// Identifies a table, so a ticket of one table is no ticket of another.
 static NEXT_TABLE_ID: AtomicU64 = AtomicU64::new(1);
@@ -331,6 +332,9 @@ pub enum HandleRejection {
         in_flight: u64,
         requested: u64,
     },
+    /// The host-wide byte quota ([`SharedHostQuota`]) refused the footprint: the producer
+    /// session, the consumer session or the host would exceed its cap.
+    HostQuota(QuotaRefusal),
     /// The mapped bytes do not match the handle's content commitment.
     Content(HandleError),
     /// The chain or the placement epoch is not live now.
@@ -387,11 +391,19 @@ pub struct ReclaimNotice {
     pub reason: ReclaimReason,
 }
 
-/// The handle of a request, still encoded or already decoded.
+/// The handle of a request, still encoded, already decoded, or locator-free in this process.
 #[derive(Clone, Copy)]
 pub enum HandleSource<'a> {
     Encoded(&'a [u8]),
+    /// A wire handle. A [`Carrier::InProcess`] handle is refused here
+    /// ([`HandleError::InProcessNotEncodable`]): it enters only as [`Self::InProcess`].
     Decoded(&'a TensorHandle),
+    /// The locator-free handle of a tensor that moves inside this process with unique
+    /// ownership (doc 42 section 2). Admitted by every check of a wire handle (signature,
+    /// stage, audience, operation, nonce, deadline, bounds, chain and placement epoch); the
+    /// tensor object itself is bound to the consumed handle separately
+    /// ([`crate::MovedTensor::receive`]).
+    InProcess(&'a InProcessHandle),
 }
 
 impl fmt::Debug for HandleSource<'_> {
@@ -400,6 +412,11 @@ impl fmt::Debug for HandleSource<'_> {
         match self {
             Self::Encoded(bytes) => write!(formatter, "Encoded({} bytes)", bytes.len()),
             Self::Decoded(handle) => write!(formatter, "Decoded(nonce {})", handle.handle_nonce),
+            Self::InProcess(handle) => write!(
+                formatter,
+                "InProcess(nonce {})",
+                handle.as_tensor_handle().handle_nonce
+            ),
         }
     }
 }
@@ -484,6 +501,12 @@ impl fmt::Debug for AdmittedHandle {
 impl AdmittedHandle {
     pub fn principal(&self) -> &str {
         &self.principal
+    }
+
+    /// The authority-derived project the handle was admitted for; the placement epoch is
+    /// revalidated for it ([`revalidate_chain_in`]).
+    pub fn project(&self) -> &ProjectId {
+        &self.project
     }
 
     pub fn handle_nonce(&self) -> u64 {
@@ -581,6 +604,12 @@ impl ConsumedHandle {
     pub fn principal(&self) -> &str {
         &self.principal
     }
+
+    /// The authority-derived project captured at admission: pass it to [`revalidate_chain_in`]
+    /// when the output is admitted.
+    pub fn project(&self) -> &ProjectId {
+        &self.project
+    }
 }
 
 /// Revalidate the operation of a consumed handle against the authority, for the runtime to call
@@ -598,7 +627,7 @@ impl ConsumedHandle {
 /// live, it is Exact, the handle's chain equals the expected chain and the payload type is
 /// accepted, and the project and both worker sessions captured at admission are still current. It
 /// does not check chain liveness or the placement epoch: the caller must also call
-/// [`revalidate_chain`] (with a [`StageLiveness`]) on the handle's chain and placement epoch, as a
+/// [`revalidate_chain_in`] (with a [`StageLiveness`]) on the handle's chain and placement epoch, as a
 /// separate call, when it admits the computed output (doc 42 rule 4).
 pub fn revalidate_operation(
     consumed: &ConsumedHandle,
@@ -643,6 +672,9 @@ struct Claim {
     byte_len: u64,
     /// The allocated footprint charged to the budget (at least `byte_len`).
     charged_bytes: u64,
+    /// The charge held in the host-wide ledger, if the table has one; handed back exactly once,
+    /// when this claim is taken (with the notice that frees the buffer, or at teardown).
+    host: Option<QuotaCharge>,
 }
 
 struct Slot {
@@ -680,6 +712,8 @@ pub struct HandleTable {
     /// table-wide state by scanning.
     open_total: usize,
     producers: BTreeMap<String, Producer>,
+    /// The host-wide byte ledger shared with the other tables of the host, if any.
+    quota: Option<SharedHostQuota>,
 }
 
 impl HandleTable {
@@ -697,7 +731,28 @@ impl HandleTable {
             next_ticket: 1,
             open_total: 0,
             producers: BTreeMap::new(),
+            quota: None,
         })
+    }
+
+    /// Like [`Self::new`], and every handle this table admits is also charged to the host-wide
+    /// ledger `quota` (doc 42 rule 3b), which the tables of the host share: against its producer
+    /// session, its consumer session and the host, with the footprint rounded up to the ledger's
+    /// granularity. The charge is taken last in [`Self::admit`], so a refusal
+    /// ([`HandleRejection::HostQuota`]) records nothing, and it is handed back with the notice
+    /// that frees the buffer (a carrier that is not shared) or in
+    /// [`Self::release_after_teardown`] (a shared carrier), once. Dropping a table does not
+    /// release its charges: the host's teardown path owns them
+    /// ([`SharedHostQuota::release_pair`] with a [`crate::VerifiedTeardown`];
+    /// [`SharedHostQuota::tracked_pairs`] finds them).
+    pub fn with_host_quota(
+        policy: HandlePolicy,
+        consumer: &str,
+        quota: SharedHostQuota,
+    ) -> Result<Self, HandlePolicyViolation> {
+        let mut table = Self::new(policy, consumer)?;
+        table.quota = Some(quota);
+        Ok(table)
     }
 
     pub fn policy(&self) -> &HandlePolicy {
@@ -778,7 +833,12 @@ impl HandleTable {
         producer.key = key;
         producer.stage_identity = stage_identity.to_owned();
         producer.session = session;
-        let (released, closed) = abandon_open(producer, principal, ReclaimReason::ProducerReplaced);
+        let (released, closed) = abandon_open(
+            producer,
+            principal,
+            ReclaimReason::ProducerReplaced,
+            self.quota.as_ref(),
+        );
         self.open_total = self.open_total.saturating_sub(closed);
         Ok(released)
     }
@@ -795,9 +855,30 @@ impl HandleTable {
             return Vec::new();
         };
         producer.active = false;
-        let (released, closed) = abandon_open(producer, principal, ReclaimReason::ProducerRemoved);
+        let (released, closed) = abandon_open(
+            producer,
+            principal,
+            ReclaimReason::ProducerRemoved,
+            self.quota.as_ref(),
+        );
         self.open_total = self.open_total.saturating_sub(closed);
         released
+    }
+
+    /// Like [`Self::unregister_producer`], but only if the producer is registered under exactly
+    /// `session`. A supervisor that fences a lost worker uses this one: if the principal was
+    /// respawned under a newer session in the meantime, fencing the old session must not
+    /// deactivate the new one. Returns no notices and changes nothing for another session.
+    #[must_use = "the returned notices name buffers the producer may reclaim"]
+    pub fn unregister_producer_session(
+        &mut self,
+        principal: &str,
+        session: WorkerSession,
+    ) -> Vec<ReclaimNotice> {
+        match self.producers.get(principal) {
+            Some(producer) if producer.session == session => self.unregister_producer(principal),
+            _ => Vec::new(),
+        }
     }
 
     /// Admit one handle at `request.now_ms`. The checks run in this order and the first
@@ -811,6 +892,12 @@ impl HandleTable {
     /// ahead, the table has room (open handles table-wide and per producer, slots, and the
     /// claimed bytes plus `footprint_bytes`, which must be at least `byte_len`), and the chain
     /// and placement epoch are live now.
+    ///
+    /// The placement epoch is read for `request.project` through
+    /// [`StageLiveness::placement_epoch_in`]. This is a fail-closed hard cut, not an additive
+    /// change: a `StageLiveness` that only implements the legacy `placement_epoch`, or a stage
+    /// placed with the legacy `assign` instead of `assign_in`, refuses every handle
+    /// ([`ChainFault::StalePlacement`]). No caller outside tests uses handle admission yet.
     pub fn admit(
         &mut self,
         request: HandleAdmissionRequest<'_>,
@@ -830,6 +917,8 @@ impl HandleTable {
                 handle.validate().map_err(HandleRejection::Malformed)?;
                 Cow::Borrowed(handle)
             }
+            // Validated when the `InProcessHandle` was built and immutable since.
+            HandleSource::InProcess(handle) => Cow::Borrowed(handle.as_tensor_handle()),
         };
         let signature = Signature::from_bytes(&handle.signature);
         if producer
@@ -915,8 +1004,25 @@ impl HandleTable {
                 requested: footprint,
             });
         }
-        revalidate_chain(&handle.upstream_chain, handle.placement_epoch, request.live)
-            .map_err(HandleRejection::Chain)?;
+        // The placement is read for the project of the call, never by stage name alone.
+        revalidate_chain_in(
+            request.project,
+            &handle.upstream_chain,
+            handle.placement_epoch,
+            request.live,
+        )
+        .map_err(HandleRejection::Chain)?;
+        let slot_digest = handle_digest(&handle);
+        // The last fallible step: a refusal above or here records nothing, and nothing but the
+        // slot insert follows it.
+        let host = match &self.quota {
+            Some(quota) => Some(
+                quota
+                    .try_charge(producer.session, request.consumer_session, footprint)
+                    .map_err(HandleRejection::HostQuota)?,
+            ),
+            None => None,
+        };
         let ticket = self.next_ticket;
         self.next_ticket += 1;
         self.open_total += 1;
@@ -925,12 +1031,13 @@ impl HandleTable {
             Slot {
                 state: SlotState::Open { ticket },
                 deadline_ms,
-                digest: handle_digest(&handle),
+                digest: slot_digest,
                 claim: Some(Claim {
                     carrier: handle.carrier,
                     locator: reclaim_locator(&handle.locator),
                     byte_len: handle.byte_len,
                     charged_bytes: footprint,
+                    host,
                 }),
                 producer_session: producer.session,
                 consumer_session: request.consumer_session,
@@ -986,7 +1093,8 @@ impl HandleTable {
         if slot.deadline_ms <= now_ms {
             return Err(HandleRejection::Expired);
         }
-        let still_live = revalidate_chain(
+        let still_live = revalidate_chain_in(
+            &admitted.project,
             &admitted.handle.upstream_chain,
             admitted.handle.placement_epoch,
             request.live,
@@ -1064,15 +1172,13 @@ impl HandleTable {
         {
             return Ok(None);
         }
-        Ok(slot.claim.take().map(|claim| {
-            notice(
-                &consumed.principal,
-                nonce,
-                slot.digest,
-                claim,
-                ReclaimReason::Consumed,
-            )
-        }))
+        Ok(take_notice(
+            self.quota.as_ref(),
+            &consumed.principal,
+            nonce,
+            slot,
+            ReclaimReason::Consumed,
+        ))
     }
 
     /// The consumer gives an admitted handle up unused. The nonce is tombstoned; the claim and
@@ -1094,6 +1200,7 @@ impl HandleTable {
     pub fn expire(&mut self, now_ms: u64) -> Vec<ReclaimNotice> {
         let now_ms = self.advance(now_ms);
         let policy = self.policy;
+        let quota = self.quota.as_ref();
         let mut notices = Vec::new();
         let mut closed_open = 0usize;
         for (principal, producer) in &mut self.producers {
@@ -1119,7 +1226,7 @@ impl HandleTable {
                         continue;
                     }
                 }
-                let Some(slot) = producer.slots.remove(&nonce) else {
+                let Some(mut slot) = producer.slots.remove(&nonce) else {
                     continue;
                 };
                 let reason = match slot.state {
@@ -1130,10 +1237,7 @@ impl HandleTable {
                     SlotState::Abandoned => ReclaimReason::Abandoned,
                     SlotState::Consumed { .. } => ReclaimReason::Consumed,
                 };
-                notices.extend(
-                    slot.claim
-                        .map(|claim| notice(principal, nonce, slot.digest, claim, reason)),
-                );
+                notices.extend(take_notice(quota, principal, nonce, &mut slot, reason));
             }
         }
         self.open_total = self.open_total.saturating_sub(closed_open);
@@ -1158,6 +1262,7 @@ impl HandleTable {
         let Some(producer) = self.producers.get_mut(principal) else {
             return Vec::new();
         };
+        let quota = self.quota.as_ref();
         let mut notices = Vec::new();
         let mut closed = 0usize;
         for (nonce, slot) in &mut producer.slots {
@@ -1174,15 +1279,13 @@ impl HandleTable {
                 slot.state = SlotState::Abandoned;
                 closed += 1;
             }
-            notices.extend(slot.claim.take().map(|claim| {
-                notice(
-                    principal,
-                    *nonce,
-                    slot.digest,
-                    claim,
-                    ReclaimReason::TornDown,
-                )
-            }));
+            notices.extend(take_notice(
+                quota,
+                principal,
+                *nonce,
+                slot,
+                ReclaimReason::TornDown,
+            ));
         }
         self.open_total = self.open_total.saturating_sub(closed);
         notices
@@ -1196,6 +1299,7 @@ fn abandon_open(
     producer: &mut Producer,
     principal: &str,
     reason: ReclaimReason,
+    quota: Option<&SharedHostQuota>,
 ) -> (Vec<ReclaimNotice>, usize) {
     let mut notices = Vec::new();
     let mut closed = 0usize;
@@ -1208,11 +1312,7 @@ fn abandon_open(
                 .as_ref()
                 .is_some_and(|claim| !is_shared(claim.carrier))
             {
-                notices.extend(
-                    slot.claim
-                        .take()
-                        .map(|claim| notice(principal, *nonce, slot.digest, claim, reason)),
-                );
+                notices.extend(take_notice(quota, principal, *nonce, slot, reason));
             }
         }
     }
@@ -1255,13 +1355,33 @@ fn is_expired(deadline_ms: u64, policy: &HandlePolicy, now_ms: u64) -> bool {
 fn reclaim_locator(locator: &CarrierLocator) -> CarrierLocator {
     match locator {
         CarrierLocator::Bytes { .. } => CarrierLocator::Bytes { inline: Vec::new() },
-        other @ (CarrierLocator::HostShm { .. }
+        other @ (CarrierLocator::InProcess
+        | CarrierLocator::HostShm { .. }
         | CarrierLocator::CudaIpc { .. }
         | CarrierLocator::DevicePeer { .. }
         | CarrierLocator::PinnedHost { .. }
         | CarrierLocator::NvmeFile { .. }
         | CarrierLocator::Remote { .. }) => other.clone(),
     }
+}
+
+/// Take the claim of `slot`, hand its host charge back and report the buffer. Every path that
+/// frees a claim goes through here, so a charge is released exactly once (the claim is gone
+/// afterwards) and never without the notice that frees the buffer. A release the ledger refuses
+/// is counted there ([`crate::HostQuotaUsage::release_faults`]) and changes nothing.
+fn take_notice(
+    quota: Option<&SharedHostQuota>,
+    principal: &str,
+    nonce: u64,
+    slot: &mut Slot,
+    reason: ReclaimReason,
+) -> Option<ReclaimNotice> {
+    let mut claim = slot.claim.take()?;
+    if let (Some(quota), Some(charge)) = (quota, claim.host.take()) {
+        // A refused release is already counted in the ledger; there is nothing to undo here.
+        let _ = quota.release(charge);
+    }
+    Some(notice(principal, nonce, slot.digest, claim, reason))
 }
 
 fn notice(
@@ -1338,6 +1458,14 @@ mod tests {
 
         fn placement_epoch(&self, stage: &str) -> Option<u64> {
             self.placement.borrow().get(stage).copied()
+        }
+
+        /// The fake places stages for the test project only, so a project mix-up is refused.
+        fn placement_epoch_in(&self, project: &ProjectId, stage: &str) -> Option<u64> {
+            if *project != self::project() {
+                return None;
+            }
+            self.placement_epoch(stage)
         }
 
         fn fence_epoch(&self, _expert: &str) -> Option<u64> {

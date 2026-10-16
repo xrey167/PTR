@@ -1,6 +1,6 @@
 use ptr_pods::{DynPod, PodManifest, PodRegistrationError, PodRegistry};
 use ptr_protocol::TypedPayload;
-use ptr_types::{CapabilityId, Effect, PodId, ProjectId, TypeId};
+use ptr_types::{CapabilityId, Effect, Generation, NamespaceId, PodId, ProjectId, TypeId};
 use std::sync::Arc;
 
 struct EchoPod {
@@ -252,4 +252,112 @@ fn replace_if_current_rejects_a_project_or_id_mismatch() {
         &dynpod(&first)
     ));
     assert_eq!(registry.len(), 1);
+}
+
+/// An entry names the lifecycle namespace of its implementation only while that implementation is
+/// registered: a plain re-registration or a compare-and-replace takeover is another
+/// implementation and names none; other entries keep theirs.
+#[test]
+fn the_namespace_of_an_entry_belongs_to_the_implementation_registered_with_it() {
+    let (project, alpha, beta) = (
+        ProjectId::from("p"),
+        PodId::from("alpha"),
+        PodId::from("beta"),
+    );
+    let mut registry = PodRegistry::default();
+    assert_eq!(registry.namespace(&project, &alpha), None);
+
+    registry.register_in_namespace(NamespaceId::from("ns-a"), echo("p", "alpha"));
+    registry.register_in_namespace(NamespaceId::from("ns-a"), echo("p", "beta"));
+    assert_eq!(
+        registry.namespace(&project, &alpha),
+        Some(&NamespaceId::from("ns-a"))
+    );
+    // Another project's pod of the same id has its own entry and no namespace.
+    registry.register(echo("q", "alpha"));
+    assert_eq!(registry.namespace(&ProjectId::from("q"), &alpha), None);
+
+    // Re-registering for another namespace replaces the label with the implementation.
+    registry.register_in_namespace(NamespaceId::from("ns-b"), echo("p", "alpha"));
+    assert_eq!(
+        registry.namespace(&project, &alpha),
+        Some(&NamespaceId::from("ns-b"))
+    );
+
+    // A plain registration is an implementation of no named namespace.
+    registry.register(echo("p", "alpha"));
+    assert_eq!(registry.namespace(&project, &alpha), None);
+
+    // A takeover replaces the implementation and drops the label; beta keeps its own.
+    registry.register_in_namespace(NamespaceId::from("ns-a"), echo("p", "alpha"));
+    let current: Arc<dyn DynPod> = registry.get(&project, &alpha).unwrap();
+    registry
+        .replace_if_current(&current, echo("p", "alpha"))
+        .unwrap();
+    assert_eq!(registry.namespace(&project, &alpha), None);
+    assert_eq!(
+        registry.namespace(&project, &beta),
+        Some(&NamespaceId::from("ns-a"))
+    );
+}
+
+/// A binding resolves only while the entry names the namespace it was bound with: re-registering
+/// the same manifest for another namespace, or without one, is another implementation.
+#[test]
+fn a_binding_does_not_resolve_after_the_entry_moved_to_another_namespace() {
+    let project = ProjectId::from("p");
+    let alpha = PodId::from("alpha");
+    let mut registry = PodRegistry::default();
+    registry.register_in_namespace(NamespaceId::from("ns-a"), echo("p", "alpha"));
+    let binding = registry.bind_registered(&project, &alpha).unwrap();
+    assert_eq!(binding.namespace(), Some(&NamespaceId::from("ns-a")));
+    assert!(registry.resolve_bound(&binding).is_some());
+
+    registry.register_in_namespace(NamespaceId::from("ns-b"), echo("p", "alpha"));
+    assert!(registry.resolve_bound(&binding).is_none());
+    registry.register(echo("p", "alpha"));
+    assert!(registry.resolve_bound(&binding).is_none());
+    registry.register_in_namespace(NamespaceId::from("ns-a"), echo("p", "alpha"));
+    assert!(registry.resolve_bound(&binding).is_some());
+}
+
+/// `register_at` names namespace and generation of the implementation; any later registration
+/// without a generation, or a takeover, is another implementation and names none.
+#[test]
+fn the_generation_of_an_entry_belongs_to_the_implementation_registered_with_it() {
+    let (project, alpha) = (ProjectId::from("p"), PodId::from("alpha"));
+    let mut registry = PodRegistry::default();
+    assert_eq!(registry.generation(&project, &alpha), None);
+    registry.register_at(NamespaceId::from("ns"), Generation(2), echo("p", "alpha"));
+    assert_eq!(registry.generation(&project, &alpha), Some(Generation(2)));
+    assert_eq!(
+        registry.namespace(&project, &alpha),
+        Some(&NamespaceId::from("ns"))
+    );
+    registry.register_in_namespace(NamespaceId::from("ns"), echo("p", "alpha"));
+    assert_eq!(registry.generation(&project, &alpha), None);
+    registry.register_at(NamespaceId::from("ns"), Generation(3), echo("p", "alpha"));
+    registry.register(echo("p", "alpha"));
+    assert_eq!(registry.generation(&project, &alpha), None);
+    registry.register_at(NamespaceId::from("ns"), Generation(3), echo("p", "alpha"));
+    let current: Arc<dyn DynPod> = registry.get(&project, &alpha).unwrap();
+    registry
+        .replace_if_current(&current, echo("p", "alpha"))
+        .unwrap();
+    assert_eq!(registry.generation(&project, &alpha), None);
+}
+
+/// A binding also resolves only while the entry names the generation it was bound with.
+#[test]
+fn a_binding_does_not_resolve_after_the_entry_moved_to_another_generation() {
+    let (project, alpha) = (ProjectId::from("p"), PodId::from("alpha"));
+    let mut registry = PodRegistry::default();
+    registry.register_at(NamespaceId::from("ns"), Generation(1), echo("p", "alpha"));
+    let binding = registry.bind_registered(&project, &alpha).unwrap();
+    assert_eq!(binding.generation(), Some(Generation(1)));
+    assert!(registry.resolve_bound(&binding).is_some());
+    registry.register_at(NamespaceId::from("ns"), Generation(2), echo("p", "alpha"));
+    assert!(registry.resolve_bound(&binding).is_none());
+    registry.register_in_namespace(NamespaceId::from("ns"), echo("p", "alpha"));
+    assert!(registry.resolve_bound(&binding).is_none());
 }

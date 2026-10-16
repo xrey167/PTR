@@ -1,11 +1,13 @@
 pub mod adapter;
 pub mod admission;
+mod carrier_select;
 pub mod compacted;
 pub mod directory;
 pub mod egress;
 pub mod execution;
 pub mod expert;
 mod handle_admission;
+mod host_quota;
 pub mod identity;
 pub mod kv;
 mod kv_derivation;
@@ -19,9 +21,12 @@ pub mod manifest;
 pub mod memory;
 pub mod merge;
 pub mod migration;
+mod moved_tensor;
 pub mod neural;
 pub mod persistence;
 pub mod placement;
+pub mod pod_head;
+pub mod pod_representation;
 pub mod policy;
 pub mod protected_state;
 pub mod routing;
@@ -32,16 +37,28 @@ pub mod split_stage;
 pub mod stepped;
 pub mod tensor_kv;
 pub mod tier;
+pub mod tier_grant;
+pub mod tier_prefetch;
 pub mod vcw;
 pub mod vcw_host;
 
 pub use admission::{AdmissionError, AdmissionGrant, IdentityAdmissionController};
-pub use directory::{InMemoryPodDirectory, PodDirectory};
+pub use carrier_select::{
+    select_carrier, Calibration, CarrierRefusal, CarrierSelection, CarrierTable, CarrierTableError,
+    EndpointCapabilities, EndpointConfinement, HostProcess, PayloadOwnership, PeerProbe,
+    SelectionReason, TensorLocation, MAX_DEVICES_PER_NODE,
+};
+pub use directory::{InMemoryPodDirectory, PodDirectory, PodHeadSource};
 pub use handle_admission::{
     revalidate_operation, AdmittedHandle, ConsumeRequest, ConsumedHandle, HandleAdmissionRequest,
     HandlePolicy, HandlePolicyViolation, HandleRejection, HandleSource, HandleTable,
     OperationCheck, OperationFault, OperationLiveness, ReclaimNotice, ReclaimReason,
     RegistrationRefused, Teardown, WorkerSession,
+};
+pub use host_quota::{
+    HostQuotaLedger, HostQuotaPolicy, HostQuotaPolicyViolation, HostQuotaUsage, QuotaCharge,
+    QuotaRefusal, ReleaseFault, SharedHostQuota, TrackedPair, VerifiedTeardown,
+    DEFAULT_CHARGE_GRANULARITY_BYTES,
 };
 #[cfg(feature = "oidc-http")]
 pub use identity::ReqwestJwksRefresher;
@@ -91,9 +108,15 @@ pub use merge::{
     SemanticChange, SemanticGrant, SemanticGrantInfo, SemanticRefusal, SemanticVerdict,
 };
 pub use migration::{KvMigrationController, MigrationError, MigrationRecord, MigrationState};
+pub use moved_tensor::{MovedTensor, TensorMoveRefused};
 pub use placement::{
     DeviceHealth, DeviceRecord, FencedStateLease, FencingToken, NodeHealth, NodeRecord, Placement,
-    PlacementEpoch, PlacementError, PodPlacementController,
+    PlacementEpoch, PlacementError, PodPlacementController, ProjectPlacementRequest,
+};
+pub use pod_head::{pod_lifecycle_target, AdvancePodHead, PodHeadError, PodHeadStatus};
+pub use pod_representation::{
+    AdmittedRepresentations, BindPodRepresentation, PodRepresentationError, RepresentationDenial,
+    RepresentationRefusal,
 };
 #[cfg(feature = "oidc-http")]
 pub use policy::ReqwestPolicyBundleLoader;
@@ -103,7 +126,7 @@ pub use policy::{
     SignedPolicyBundle,
 };
 pub use protected_state::ProtectedStateCoordinator;
-pub use routing::PodSampler;
+pub use routing::{EmbeddingSampler, EmbeddingSamplerError, PodSampler, QueryEmbedder, RouteQuery};
 pub use sandbox::{
     ExternalSandboxExecutor, NativeSandboxExecutor, NetworkMode, SandboxBackend, SandboxError,
     SandboxExecutor, SandboxLease, SandboxProfile, SandboxRequest, SandboxResponse,
@@ -113,8 +136,9 @@ pub use scopes::{
     ScopeRegistry, ScopeState, MAX_SCOPES,
 };
 pub use split_stage::{
-    admit_frame, prefix_key, revalidate_chain, AdmittedFrame, ChainFault, RuntimeStageLiveness,
-    SplitStageCache, StageLiveness, StoreError, UseFault, UseTicket, OPEN_USES_PER_ENTRY,
+    admit_frame, admit_frame_in, prefix_key, revalidate_chain, revalidate_chain_in, AdmittedFrame,
+    ChainFault, RuntimeStageLiveness, SplitStageCache, StageLiveness, StoreError, UseFault,
+    UseTicket, OPEN_USES_PER_ENTRY,
 };
 pub use stepped::{CancelPolicy, CancelledRun, RunStep, StepResources, SteppedRun};
 pub use tensor_kv::{
@@ -128,6 +152,15 @@ pub use tier::{
     ResidencyRecord, TierJournalProjection, TierPin, TierPlacementPolicy, TierPlan,
     TierPlanningContext, TierPolicyError, TierProjectionError, TierReplica,
     TierResidencyController, TierRuntimeError, TierTransferAuthorization, TierTransferReceipt,
+};
+pub use tier_grant::{
+    ManualTierClock, SystemTierClock, TierClock, TierGrant, TierGrantLimits, TOMBSTONE_ENTRY_BYTES,
+};
+pub use tier_prefetch::{
+    plan_prefetch, EligibleTargets, PlannedPrefetch, PodEligibilityGate, PrefetchDrop,
+    PrefetchDropReason, PrefetchEligibility, PrefetchIndexError, PrefetchObjectIndex, PrefetchPlan,
+    PrefetchPlanError, PrefetchPlanRequest, PrefetchSignal, PrefetchSignalError,
+    PrefetchSignalSource, PrefetchTarget, MAX_PREFETCH_INDEX_ENTRIES, MAX_PREFETCH_TARGETS,
 };
 
 /// A complete, runtime-bound request to admit one typed output produced by a
@@ -502,6 +535,10 @@ pub enum RuntimeError {
     },
     /// The taint registry refused a change, a replayed record or a restored state (fail closed).
     KvTaint(kv_taint::KvTaintError),
+    /// A pod head move or a stored head was refused (see [`pod_head::PodHeadError`]).
+    PodHead(Box<pod_head::PodHeadError>),
+    /// A learned pod representation could not be bound to its pod.
+    PodRepresentation(pod_representation::PodRepresentationError),
     PodUnavailable {
         capability: String,
         input_type: String,
@@ -667,6 +704,18 @@ pub enum RuntimeError {
         current: String,
         requested: String,
     },
+    /// A `pod:<project>/<namespace>/<pod>` capsule was committed under another project than the one
+    /// it names.
+    PodCapsuleProjectMismatch {
+        capsule: String,
+        embedded: String,
+        project: String,
+    },
+    /// A `pod:<project>/<namespace>/<pod>` capsule was committed at generation 0, which no pod
+    /// revision has (`PodSemanticManifest::validate` refuses it), so it can never become live.
+    PodCapsuleGenerationZero {
+        capsule: String,
+    },
     ReservedTargetNamespace {
         target: String,
     },
@@ -830,6 +879,9 @@ pub struct PtrRuntime {
     /// Live approximate-KV taint subjects, projected from the committed `KvTaintCommitted`
     /// records; actions in it are refused by `authorize_action`.
     taint: kv_taint::TaintRegistry,
+    /// Head of each stable pod identity, projected from the committed `PodHeadAdvanced`
+    /// records.
+    pod_heads: pod_head::PodHeads,
 }
 
 impl PtrRuntime {
@@ -922,6 +974,7 @@ impl PtrRuntime {
             kv_catalog: None,
             semantic_edits: kv_prefix::SemanticEdits::default(),
             taint: kv_taint::TaintRegistry::default(),
+            pod_heads: pod_head::PodHeads::default(),
         })
     }
 
@@ -2958,6 +3011,20 @@ impl PtrRuntime {
                 if target.starts_with("constraint:") || target.starts_with("procedure:") {
                     return Err(RuntimeError::ReservedTargetNamespace { target });
                 }
+                // A pod lifecycle target names its project; only that project may commit it, or
+                // one project could make another project's pod head or representation live.
+                if let Some(embedded) = pod_head::pod_capsule_project(&target) {
+                    if embedded != project.to_string() {
+                        return Err(RuntimeError::PodCapsuleProjectMismatch {
+                            capsule: target.clone(),
+                            embedded: embedded.to_owned(),
+                            project: project.to_string(),
+                        });
+                    }
+                    if generation.0 == 0 {
+                        return Err(RuntimeError::PodCapsuleGenerationZero { capsule: target });
+                    }
+                }
                 if let Some(current) = self.capsule_projects.get(&target) {
                     if current != &project.to_string() {
                         return Err(RuntimeError::CapsuleProjectMismatch {
@@ -3323,6 +3390,13 @@ impl PtrRuntime {
             // A refusal confers nothing and loads nothing; its shape is the codec's to hold.
             LedgerEvent::EgressRefused { .. } => ptr_ledger::check_encodable(event)
                 .map_err(|error| RuntimeError::Ledger(error.to_string())),
+            // A compare-and-swap on the head of one pod identity, checked again on replay.
+            LedgerEvent::PodHeadAdvanced {
+                project,
+                identity,
+                old,
+                new,
+            } => self.validate_pod_head_advance(project, identity, old.as_ref(), new),
             // Replay repeats the generation rules against the lifecycle as of this point; the
             // weights digest cannot be recomputed without the weights, so replay holds the
             // record to its shape and to the generation order (see the `adapter` module).
@@ -3615,6 +3689,15 @@ impl PtrRuntime {
                     })?;
             }
             LedgerEvent::ProtectedStateCommitted { .. } => {}
+            LedgerEvent::PodHeadAdvanced {
+                project,
+                identity,
+                new,
+                ..
+            } => {
+                self.pod_heads
+                    .set(project.clone(), identity.clone(), new.clone());
+            }
             LedgerEvent::AdapterPromoted { .. }
             | LedgerEvent::AdapterRevoked { .. }
             | LedgerEvent::ImprovementCycleRecorded { .. } => {
