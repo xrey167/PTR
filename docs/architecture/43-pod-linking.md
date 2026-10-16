@@ -144,8 +144,8 @@ it: an address in another namespace does not bind (`NamespaceMismatch`), and a b
 target of the same pod id in another namespace is refused on admission, so revoking a
 representation's own target cannot be bypassed through a sibling namespace.
 A sampled Pod request without an eligible registry candidate answers `PodUnavailable` before the
-query encoder runs, and with no representation admitted the encoder is not run either (the request
-is a `NoRepresentation` route failure).
+query encoder runs, and with no representation admitted for the request's project the encoder is
+not run either (the request is a `NoRepresentation` route failure).
 
 The registry names the lifecycle namespace of each registered implementation
 (`PodRegistry::register_in_namespace`, read with `PodRegistry::namespace`), and the learned router
@@ -160,7 +160,9 @@ pod, so the generations of one pod id in two namespaces are never ordered agains
 Per-request admission is bounded: the sampler refuses an admission cache larger than one store
 (`MAX_REPRESENTATIONS`), reads each payload in place, and refuses state that names no
 representation digest before parsing it. Generation 0 is refused for pod lifecycle targets, pod
-heads and learned representations, since no pod revision has it.
+heads and learned representations, since no pod revision has it; a compacted snapshot that holds
+a pod target live at generation 0, or committed by another project than the one it names, is
+refused on restore (`CompactedError::InvalidPodTarget`), as replaying its commit would be.
 
 The store itself holds no binding, so admission is repeated for every request instead of once at
 load time. `EmbeddingSampler::new(router, embedder, admission_cache)` keeps the bound states, and
@@ -171,7 +173,9 @@ each). A representation outside that set does not take part in scoring, so a rev
 pod generation that was committed after the store was built stops it with the very next request
 (the pod is uncovered: partial coverage, or no representation). The set can only narrow what is
 scored; eligibility stays with the registry. Without the runtime (`PodSampler::features`) the set
-is empty: fail closed.
+is empty: fail closed. The runtime enforces the same for any sampler: features returned without an
+admission set are routed with an empty one, so a custom sampler that supplies only a query vector
+scores no representation.
 
 ## Reflex and failover (`ptr-router`, `ptr-runtime`, `ptr-events`)
 

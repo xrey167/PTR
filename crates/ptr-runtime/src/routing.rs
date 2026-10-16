@@ -84,6 +84,10 @@ pub trait PodSampler: Send + Sync {
     /// over learned representations re-admits them here (see [`EmbeddingSampler`]), so a
     /// revocation committed after a representation was loaded stops it from being used at once.
     /// The default is [`PodSampler::features`].
+    ///
+    /// Features without an admission set are not unrestricted: the runtime routes them with an
+    /// empty one, so a learned router scores no representation (fail closed). A sampler that
+    /// supplies a query vector must also supply the representations admitted for this request.
     fn features_at(
         &self,
         _runtime: &PtrRuntime,
@@ -185,15 +189,19 @@ impl<R: Router + Send + Sync> PodSampler for EmbeddingSampler<R> {
 
     /// The query vector and the representations of the admission cache that are admitted by the
     /// runtime's committed facts right now: revoked, superseded, mis-bound or foreign-project
-    /// states are left out on every request. With nothing admitted the embedder is not run: no
-    /// representation could use the vector, and an encoder failure must not hide that outcome.
+    /// states are left out on every request. With nothing admitted for the request's project the
+    /// embedder is not run: no representation could use the vector, and an encoder failure must
+    /// not hide that outcome.
     fn features_at(
         &self,
         runtime: &PtrRuntime,
         query: &RouteQuery<'_>,
     ) -> Result<RouteFeatures, RouteError> {
         let admitted = runtime.admitted_representation_set(&self.admission);
-        if admitted.is_empty() {
+        if !admitted
+            .iter()
+            .any(|representation| representation.project == *query.project)
+        {
             return Ok(RouteFeatures::new().with_admitted_representations(admitted));
         }
         Ok(RouteFeatures::new()
@@ -360,6 +368,14 @@ impl PtrRuntime {
                         },
                     )
                     .map_err(|error| Unselected::route(&error, route_error_reason(&error)))?;
+                // A sampler that names no admitted representations admits none: without the
+                // runtime's per-request admission a cached representation of a revoked or
+                // superseded generation must not score.
+                let features = if features.admitted_representations().is_none() {
+                    features.with_admitted_representations(BTreeSet::new())
+                } else {
+                    features
+                };
                 let route_request = RouteRequest {
                     registry: pods,
                     project,
