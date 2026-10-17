@@ -6,23 +6,7 @@
 use ptr_protocol::{Carrier, CarrierLocator, CudaExport, TensorHandle, MAX_HANDLE_BYTES};
 
 use super::CudaError;
-
-/// What the supervisor recorded when it minted one VMM export. The importer checks the record
-/// against the handle it was given; the record, not the handle and not the driver, names the
-/// size of the allocation.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ExportRecord {
-    /// The session that produced the tensor.
-    pub producer_session: u64,
-    /// The one session that may import the export.
-    pub consumer_session: u64,
-    /// The operation the export is for (the handle's `parent_operation_id`).
-    pub operation: u64,
-    /// The ordinal of the device that holds the allocation.
-    pub device: u32,
-    /// The size of the allocation: the footprint, a multiple of the allocation granularity.
-    pub size: u64,
-}
+pub use crate::export_record::ExportRecord;
 
 /// What an importer expects of an export, taken from an admitted handle and from its own
 /// identity.

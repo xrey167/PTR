@@ -75,7 +75,7 @@ id = "ptr-router"
 ports = ["Router", "CapabilityGraph", "FallbackPlanner"]
 type_families = ["cognitive-semantic", "routing-execution", "model-interface", "search-retrieval", "pod-contract"]
 backend_slots = ["routing-policy"]
-open_decisions = ["ExecutionRecipe", "operator taxonomy", "budget model", "fallback/degradation semantics"]
+open_decisions = ["ExecutionRecipe", "operator taxonomy", "budget model", "fallback/degradation semantics (recipe degradation is src/degradation.rs; work package 2 adds, for a miss of the primary path, one explicit default pod per project and capability, doc 43)"]
 
 [[component]]
 id = "ptr-verifier"

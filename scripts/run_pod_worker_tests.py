@@ -13,7 +13,7 @@ Each binary runs up to twice:
    missing fails under `CI=true`, unless `PTR_WORKER_UNPRIVILEGED_CI=1` is set, because the
    runner is supposed to provide root;
 2. as the invoking user with `PTR_WORKER_UNPRIVILEGED_CI=1`, when that user is not root: the
-   unprivileged path (seccomp only, tensors by `Bytes`) must work as well.
+   unprivileged path (seccomp only, tensors by `Bytes`, no `CudaIpc`) must work as well.
 
 A runner that cannot give root (a container without namespaces, for example the GitLab docker
 executor) sets `PTR_WORKER_UNPRIVILEGED_CI=1` itself; the privileged tests then skip with a
@@ -36,6 +36,9 @@ import tempfile
 TARGETS = (
     ("ptr-fabric", "worker-supervisor", "worker_supervisor"),
     ("ptr-worker", "data-plane,fault-injection", "pod_data_plane"),
+    # fault-injection: the guardian-loss tests kill the guardian and fail worker reaps on purpose.
+    ("ptr-worker", "data-plane,fault-injection", "staging_guardian"),
+    ("ptr-worker", "data-plane,fault-injection", "cuda_ipc_flow"),
 )
 
 

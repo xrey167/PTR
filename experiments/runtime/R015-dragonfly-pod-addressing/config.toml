@@ -1,0 +1,61 @@
+version = 1
+kind = "workspace-area"
+name = "R015-dragonfly-pod-addressing"
+path = "experiments/runtime/R015-dragonfly-pod-addressing"
+tests_dir = "tests"
+
+# Chronology: on 2026-10-13, before this criterion was fixed, the harness was run once on the seeds
+# 17, 29, 43, 71 and 101 to see that it works. Those seeds are therefore burned: their numbers were
+# seen and are not used, and they are listed below as `explorative_seeds`, never as confirmatory
+# ones. The confirmatory seeds are fresh (>= 2001) and have never been run in any form. Tuning and
+# pilots run on the pilot seeds (>= 1001) only, and each confirmatory seed runs once, after the
+# freeze.
+# Frozen before R015 leaves `planned` (experiments/preregistration.toml,
+# scripts/check_research_gates.py). A `must-be-pinned-…` value is still to be chosen.
+# The activation and abstention values restate crates/ptr-router/src/learned.rs.
+[preregistration]
+# The confirmatory seeds, as experiment.toml declares them. Never run before.
+seeds = [2017, 2029, 2043, 2071, 2101]
+# Burned by the 2026-10-13 run above: explorative only, excluded from every confirmatory claim.
+explorative_seeds = [17, 29, 43, 71, 101]
+# Disjoint from both lists: for the smoke runs and for anything chosen from data.
+pilot_seeds = [1001, 1002]
+harness = "ptr-bench dragonfly-addressing"
+# The frozen sentence encoder of the confirmatory run. The synthetic smoke world uses the
+# deterministic stand-in encoder `hashed-bow-64` revision `1`, which is no evidence about a model.
+encoder_model = "must-be-pinned-before-prepared"
+encoder_revision = "must-be-pinned-before-prepared"
+# Every trusted alias must score at least this, and at least this share of the negatives must be
+# rejected, or the representation is not activated.
+activation_alias_threshold_permille = 800
+activation_negative_reject_permille = 900
+# The router abstains below this best score, or when the runner-up is closer than the margin.
+abstain_below_permille = 500
+abstain_margin_permille = 150
+# The sensitivity sweep: pairs (sweep_abstain_below_permille[i], sweep_min_margin_permille[i]),
+# fixed before any confirmatory run. The sweep is reported, never used to pick a threshold.
+sweep_abstain_below_permille = [400, 500, 600, 500]
+sweep_min_margin_permille = [100, 150, 200, 300]
+# The reflex claims (PREREGISTRATION.md 4a): the learned router runs behind the runtime's failover path,
+# with the lexically smallest pod id as the default pod and at most this many dispatch attempts per
+# request (the routed attempt and the default). Fixed before any run.
+reflex_default_pod_rule = "lexically-smallest-pod-id"
+reflex_max_attempts = 2
+# How far below the cosine baseline's routing_accuracy the learned router may fall and still count.
+# Derived from the plan, not from data: no margin. The criterion is routing_accuracy >= cosine_only
+# and false_route_rate < cosine_only on every confirmatory seed.
+accuracy_margin_permille = 0
+# The preregistered text and the decision criteria (criteria.toml) are frozen with this table. Their
+# digests are pinned at the freeze, together with the encoder, when R015 leaves `planned`.
+# The exact interpreter of a confirmatory run (`uv run --python`); the training step exits 2 when
+# `sys.version_info` is not exactly this. A smoke run only records the version it ran on.
+python_version = "3.13.16"
+# The locked Python environment of the training step: a run goes through
+# `uv run --locked --project training --extra dragonfly`, and the training step exits 2 when the
+# installed sentence-transformers, torch, transformers or numpy differ from this lock.
+training_lock = "training/uv.lock"
+training_lock_sha256 = "must-be-pinned-at-freeze"
+preregistration_text = "experiments/runtime/R015-dragonfly-pod-addressing/PREREGISTRATION.md"
+preregistration_text_sha256 = "must-be-pinned-at-freeze"
+criteria = "experiments/runtime/R015-dragonfly-pod-addressing/criteria.toml"
+criteria_sha256 = "must-be-pinned-at-freeze"

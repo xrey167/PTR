@@ -9,8 +9,14 @@
 //!   0x01 produce : u32 BE template length | template handle (encoded, unsigned) | tensor bytes
 //!   0x02 consume : flags u8 (bit 0: keep the mapping) | the admitted handle (encoded)
 //!   0x03 probe   : nothing
+//!   0x04 produce staged : the template (encoded, unsigned, its locator already the CudaIpc one
+//!                         the host expects); descriptors: [staging buffer, sealed memfd with the
+//!                         tensor]
+//!   0x05 consume staged : the export record (36 bytes, see `WireExportRecord`) | the admitted
+//!                         handle (encoded); descriptor: [staging buffer]
 //! reply (type "worker.data.reply.v1"): status u8 (0 ok, 1 error) | body
 //!   produce ok : the signed handle (encoded); the region, if any, is the frame's descriptor
+//!                (a staged produce has none: the tensor is in the staging buffer)
 //!   consume ok : content digest (32 bytes) | mapped length u64 BE
 //!   probe ok   : u8 count | per entry: u8 name length | name | i32 BE errno
 //!   error      : a short code
@@ -24,6 +30,8 @@
 //! challenge : "PTR-CHAL1" | nonce (32 bytes)
 //! response  : "PTR-SIG1" | Ed25519 signature (64 bytes) over
 //!             KEY_DOMAIN | session u64 BE | u16 BE stage length | stage | nonce
+//!   or, from a worker that cannot start (a GPU profile without a driver):
+//!             "PTR-ERR1" | a short startup code (UTF-8, at most 64 bytes)
 //! ```
 
 use ptr_protocol::TypedPayload;
@@ -34,6 +42,9 @@ pub const DATA_REPLY_TYPE: &str = "worker.data.reply.v1";
 pub const KEY_FRAME_MAGIC: &[u8] = b"PTR-KEY1";
 pub const CHALLENGE_MAGIC: &[u8] = b"PTR-CHAL1";
 pub const RESPONSE_MAGIC: &[u8] = b"PTR-SIG1";
+pub const STARTUP_REFUSAL_MAGIC: &[u8] = b"PTR-ERR1";
+/// Longest startup code a refusal carries.
+pub const MAX_STARTUP_CODE_BYTES: usize = 64;
 /// The domain the challenge signature is bound to.
 pub const KEY_DOMAIN: &[u8] = b"ptr-worker.key-challenge.v1\0";
 pub const NONCE_BYTES: usize = 32;
@@ -44,6 +55,8 @@ pub const MAX_PROBE_ENTRIES: usize = 32;
 const OP_PRODUCE: u8 = 1;
 const OP_CONSUME: u8 = 2;
 const OP_PROBE: u8 = 3;
+const OP_PRODUCE_STAGED: u8 = 4;
+const OP_CONSUME_STAGED: u8 = 5;
 const STATUS_OK: u8 = 0;
 const STATUS_ERROR: u8 = 1;
 const FLAG_RETAIN: u8 = 1;
@@ -69,6 +82,51 @@ impl std::fmt::Display for DataWireError {
 
 impl std::error::Error for DataWireError {}
 
+/// Bytes of an encoded [`WireExportRecord`].
+const WIRE_RECORD_BYTES: usize = 8 + 8 + 8 + 4 + 8;
+
+/// The supervisor's export record, as the consumer of a staged handle receives it (the CUDA
+/// import checks it against the handle; the fake import checks the same fields). It comes from
+/// the host, which minted it; the worker never chooses it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WireExportRecord {
+    pub producer_session: u64,
+    pub consumer_session: u64,
+    pub operation: u64,
+    pub device: u32,
+    pub size: u64,
+}
+
+impl WireExportRecord {
+    fn encode_into(&self, bytes: &mut Vec<u8>) {
+        bytes.extend_from_slice(&self.producer_session.to_be_bytes());
+        bytes.extend_from_slice(&self.consumer_session.to_be_bytes());
+        bytes.extend_from_slice(&self.operation.to_be_bytes());
+        bytes.extend_from_slice(&self.device.to_be_bytes());
+        bytes.extend_from_slice(&self.size.to_be_bytes());
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self, DataWireError> {
+        let field = |range: std::ops::Range<usize>| -> Result<[u8; 8], DataWireError> {
+            bytes
+                .get(range)
+                .and_then(|slice| slice.try_into().ok())
+                .ok_or(DataWireError::Truncated)
+        };
+        let device: [u8; 4] = bytes
+            .get(24..28)
+            .and_then(|slice| slice.try_into().ok())
+            .ok_or(DataWireError::Truncated)?;
+        Ok(Self {
+            producer_session: u64::from_be_bytes(field(0..8)?),
+            consumer_session: u64::from_be_bytes(field(8..16)?),
+            operation: u64::from_be_bytes(field(16..24)?),
+            device: u32::from_be_bytes(device),
+            size: u64::from_be_bytes(field(28..36)?),
+        })
+    }
+}
+
 /// A data-plane request.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DataRequest {
@@ -79,6 +137,16 @@ pub enum DataRequest {
     Consume { handle: Vec<u8>, retain: bool },
     /// Report what the worker's filter refuses.
     Probe,
+    /// Write the tensor through the staging buffer descriptor and sign the handle (`CudaIpc`,
+    /// doc 42 rule 3a). The tensor itself is the second descriptor of the call, a sealed
+    /// `memfd` of exactly `byte_len` bytes, so a tensor is not bounded by the frame size.
+    ProduceStaged { template: Vec<u8> },
+    /// Import the staging buffer descriptor under the export record, copy the tensor into
+    /// memory of the worker's own and verify the digest on that copy.
+    ConsumeStaged {
+        handle: Vec<u8>,
+        record: WireExportRecord,
+    },
 }
 
 impl DataRequest {
@@ -97,6 +165,15 @@ impl DataRequest {
                 bytes.extend_from_slice(handle);
             }
             Self::Probe => bytes.push(OP_PROBE),
+            Self::ProduceStaged { template } => {
+                bytes.push(OP_PRODUCE_STAGED);
+                bytes.extend_from_slice(template);
+            }
+            Self::ConsumeStaged { handle, record } => {
+                bytes.push(OP_CONSUME_STAGED);
+                record.encode_into(&mut bytes);
+                bytes.extend_from_slice(handle);
+            }
         }
         TypedPayload {
             type_id: TypeId::from(DATA_TYPE),
@@ -134,6 +211,16 @@ impl DataRequest {
                 })
             }
             OP_PROBE => Ok(Self::Probe),
+            OP_PRODUCE_STAGED => Ok(Self::ProduceStaged {
+                template: rest.to_vec(),
+            }),
+            OP_CONSUME_STAGED => {
+                let record = WireExportRecord::decode(rest)?;
+                Ok(Self::ConsumeStaged {
+                    handle: rest.get(WIRE_RECORD_BYTES..).unwrap_or_default().to_vec(),
+                    record,
+                })
+            }
             other => Err(DataWireError::UnknownOperation(other)),
         }
     }
@@ -365,6 +452,38 @@ pub fn encode_response(signature: &[u8; 64]) -> Vec<u8> {
     bytes
 }
 
+/// What a worker answers to the challenge: the signature, or the code of why it cannot serve.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Handshake {
+    Signed([u8; 64]),
+    /// The worker refused to start (for example `gpu-no-driver`).
+    Refused(String),
+}
+
+/// A refusal frame instead of a signature. The code is cut to [`MAX_STARTUP_CODE_BYTES`].
+pub fn encode_startup_refusal(code: &str) -> Vec<u8> {
+    let mut end = code.len().min(MAX_STARTUP_CODE_BYTES);
+    while !code.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut bytes = STARTUP_REFUSAL_MAGIC.to_vec();
+    bytes.extend_from_slice(&code.as_bytes()[..end]);
+    bytes
+}
+
+/// Decode the worker's answer to the challenge: a signature or a startup refusal.
+pub fn decode_handshake(bytes: &[u8]) -> Result<Handshake, DataWireError> {
+    if let Some(code) = bytes.strip_prefix(STARTUP_REFUSAL_MAGIC) {
+        if code.len() > MAX_STARTUP_CODE_BYTES {
+            return Err(DataWireError::Truncated);
+        }
+        return Ok(Handshake::Refused(
+            String::from_utf8_lossy(code).into_owned(),
+        ));
+    }
+    decode_response(bytes).map(Handshake::Signed)
+}
+
 pub fn decode_response(bytes: &[u8]) -> Result<[u8; 64], DataWireError> {
     let rest = bytes
         .strip_prefix(RESPONSE_MAGIC)
@@ -400,6 +519,19 @@ mod tests {
                 retain: true,
             },
             DataRequest::Probe,
+            DataRequest::ProduceStaged {
+                template: vec![8; 11],
+            },
+            DataRequest::ConsumeStaged {
+                handle: vec![6; 5],
+                record: WireExportRecord {
+                    producer_session: 1,
+                    consumer_session: 2,
+                    operation: 3,
+                    device: 4,
+                    size: 8192,
+                },
+            },
         ] {
             assert_eq!(
                 DataRequest::from_payload(&request.to_payload()),
@@ -447,6 +579,16 @@ mod tests {
             DataRequest::from_payload(&payload),
             Err(DataWireError::Truncated)
         );
+        // A staged consume shorter than its record is refused at every length.
+        for length in 0..WIRE_RECORD_BYTES {
+            payload.bytes = vec![OP_CONSUME_STAGED];
+            payload.bytes.extend(std::iter::repeat_n(1u8, length));
+            assert_eq!(
+                DataRequest::from_payload(&payload),
+                Err(DataWireError::Truncated),
+                "length {length}"
+            );
+        }
         let mut reply = DataReply::Probed { calls: Vec::new() }.to_payload();
         reply.bytes = vec![STATUS_OK, OP_CONSUME, 1, 2];
         assert_eq!(
@@ -488,6 +630,20 @@ mod tests {
         );
         assert_eq!(decode_response(&encode_response(&[5; 64])), Ok([5; 64]));
         assert_eq!(decode_response(b"x"), Err(DataWireError::BadMagic));
+        assert_eq!(
+            decode_handshake(&encode_response(&[5; 64])),
+            Ok(Handshake::Signed([5; 64]))
+        );
+        assert_eq!(
+            decode_handshake(&encode_startup_refusal("gpu-no-driver")),
+            Ok(Handshake::Refused("gpu-no-driver".to_owned()))
+        );
+        let long = encode_startup_refusal(&"x".repeat(500));
+        assert_eq!(
+            long.len(),
+            STARTUP_REFUSAL_MAGIC.len() + MAX_STARTUP_CODE_BYTES
+        );
+        assert_eq!(decode_handshake(b"junk"), Err(DataWireError::BadMagic));
         assert!(challenge_message(1, "s", &nonce).starts_with(KEY_DOMAIN));
         // The stage is part of what is signed.
         assert_ne!(

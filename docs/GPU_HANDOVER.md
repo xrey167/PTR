@@ -883,7 +883,7 @@ each PC alone: the same-card `CudaIpc` row between two processes, and the host-t
 `tests/cuda_ipc_process.rs` (`required-features = ["cuda-ipc", "worker-channel"]`) holds
 `an_export_crosses_a_process_boundary_and_verifies` and
 `a_forwarded_record_is_refused_in_the_other_process`. None of them has run on a GPU: CI and the
-development host have no card. The legacy `cuIpc*` form is not built (only the VMM export over a
+development host have no card. Three more `#[ignore]` GPU tests cover the staging lifecycle (pool, guardian): `tests/staging_cuda.rs` of ptr-fabric (`the_pool_lifecycle_runs_on_a_gpu`, `the_device_cap_is_a_typed_refusal_on_a_gpu`; needs `cuda-ipc-core`, which `cuda-ipc` includes, so the `--ignored` command below runs them too) and `the_guardian_holds_vmm_allocations_on_a_gpu` in `bins/ptr-worker/tests/staging_guardian.rs` (`cargo +1.99.0 test -p ptr-worker --features cuda-ipc --test staging_guardian --locked -- --ignored --nocapture`); the count of eight below does not include them. Two more `#[ignore]` tests cover the GPU worker profile (a worker that initialises CUDA, installs the weaker GPU seccomp filter and then imports a VMM export): `a_gpu_filtered_worker_imports_and_copies_a_vmm_export` and `a_gpu_filtered_worker_refuses_a_device_it_did_not_prepare` in `tests/gpu_worker.rs` (`required-features = ["cuda-ipc-core", "worker-confine"]`; command in 12.2); they are not part of the eight either. The legacy `cuIpc*` form is not built (only the VMM export over a
 POSIX descriptor). The LAN test (12.4) is not built: E011 (carrier calibration) and E013 (two-host
 split) are `planned` and have no harness; record it as `not built`, never as a failed check.
 
@@ -911,6 +911,19 @@ nvcc --version                 | tee ~/ptr-carrier/rtx3090/nvcc.txt       # if t
 export CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0
 cargo +1.99.0 test -p ptr-fabric --features cuda-ipc,worker-channel --locked -- --ignored --nocapture \
   2>&1 | tee ~/ptr-carrier/rtx3090/ptr-fabric-ignored.txt
+
+# 3. The two ignored tests of the GPU worker profile (CUDA first, then the weaker GPU seccomp
+#    filter; doc 42 "GPU worker profile"). `worker-confine` adds the target `gpu_worker`.
+cargo +1.99.0 test -p ptr-fabric --features cuda-ipc,worker-confine --test gpu_worker --locked \
+  -- --ignored --nocapture 2>&1 | tee ~/ptr-carrier/rtx3090/ptr-fabric-gpu-worker.txt
+
+# 4. A real GPU-profile worker under the PodHost (bins/ptr-worker): `--gpu-profile 0` prepares CUDA,
+#    installs the GPU filter, and the host classifies it from its probe (Gpu, with the weakening
+#    on record). Needs root (own uid, cgroup, netns) for the full confinement.
+sudo -E env "PATH=$PATH" cargo +1.99.0 test -p ptr-worker --features cuda-ipc,fault-injection \
+  --test cuda_ipc_flow --locked -- --ignored --nocapture \
+  a_gpu_profile_worker_runs_its_filter_and_is_classified_gpu_on_a_gpu \
+  2>&1 | tee ~/ptr-carrier/rtx3090/ptr-worker-gpu-profile.txt
 ```
 
 Write down, from the output of the eight ignored tests (pass or fail per test name, and what they
@@ -927,6 +940,18 @@ Expected outputs, to be checked against what actually prints: the `nvidia-smi` t
 tests either pass or fail with a CUDA error code that goes into the record verbatim. An output that
 differs (another card name, two cards, a different memory size) means this is not the machine the
 profile describes: stop and report; do not edit `hardware/rtx3090.toml`.
+
+For the two `gpu_worker` tests record pass or fail per name, and the same for
+`a_gpu_profile_worker_runs_its_filter_and_is_classified_gpu_on_a_gpu` (step 4; a failure there with a
+`HostError::WorkerStartup` code such as `gpu-prepare-failed` or `gpu-filter-failed` is the worker
+saying why it could not start; `ProfileMismatch` or `ProfileUnproven` means its probe did not show
+the GPU filter). They are the first run of the GPU
+seccomp profile against a real driver and are **unverified**. If one fails inside the child
+(`CHILD FAIL:` on stderr, usually `prepare_gpu_worker`, `install_gpu_filter` or `import`), re-run
+that test under `strace -f -o ~/ptr-carrier/rtx3090/gpu-worker.strace` and write down the system
+call that returned `EPERM`: it is the driver call the profile must (or must not) allow, and adding
+it is a reviewed change of `GPU_ALLOWLIST_CHANGES` in `crates/ptr-fabric/src/confine.rs`, not an
+environment switch. Do not loosen the profile on the PC.
 
 ### 12.3 RTX 4090 PC (`hardware/rtx4090.toml`)
 

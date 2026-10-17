@@ -10,6 +10,7 @@ ptr-analytics = { workspace = true }
 ptr-types = { workspace = true }
 ptr-pods = { workspace = true }
 ptr-verifier = { workspace = true }
+serde_json = { workspace = true }
 sha2 = { workspace = true }
 
 [dev-dependencies]

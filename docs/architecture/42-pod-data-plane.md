@@ -429,6 +429,25 @@ that reads the same tensors. Today every Pod of the reference path runs inside `
   unmaps before sending `Consumed`.
 - `CudaIpc` carrier for a single GPU shared by two processes (the worker holds the model, the
   authority process holds the verifier and admission; or two expert workers on one card).
+  *Implemented on a CPU double* (`bins/ptr-worker`, `PodHost::start_produce_staged`,
+  `admit_staged`, `consume_staged`; the guardian's `--backend fake`, workers with
+  `--staging fake`; nothing has run on a GPU): the host chooses `CudaIpc` only with a usable staging
+  host, both workers on one placed device, the same import and full confinement, and falls back to
+  `HostShm`, then `Bytes`, otherwise. The producer receives a descriptor of the leased buffer and
+  the tensor in a sealed `memfd`, so this path has neither the control frame limit nor the
+  guardian's fill limit; the signed locator must equal the host's template; admission claims the
+  export record (producer session, consumer session, `parent_operation_id`, device, allocation
+  size) **before** the table sees the handle; the consumer gets a fresh descriptor and the record
+  and copies the tensor into its own memory before the digest is checked. Charging: the host-wide
+  ledger charges session pairs, once per admitted handle, with the record's footprint, and
+  releases at the pair's verified teardown; the pool's per-session book is separate; a buffer
+  reused for a new consumer is therefore counted by the ledger again until the producer is reaped
+  (an over-count of admitted bytes). The ledger bounds only admitted bytes: leases that are never
+  admitted are bounded by the pool's limits alone, which must be at or below the ledger's caps.
+  A CUDA import is not chosen yet (its producer cannot write), and the host classifies each
+  worker's seccomp profile from its probe, requires it to be the requested one and decides
+  carriers on the confinement together with the profile (a self-report of the started image). The producer side of the *CUDA* backend (writing through an imported VMM
+  descriptor) is not built; only the guardian's fill exists there.
 - The **authority rule of doc 40 section 2.3** becomes code: a worker holds no ledger handle and
   no admission grant; every output it produces is admitted by the authority process.
 
@@ -449,6 +468,63 @@ addressed, admitted consumer.
 A descriptor can therefore not leave the domain except through the supervisor. Where this
 confinement is not available (another OS, or a kernel without seccomp or cgroup v2), the shared
 carriers are disabled for that worker and its data goes by `Bytes`, a copy.
+
+**GPU worker profile (weaker, explicit, unverified on a GPU).** A worker that must call the CUDA
+driver cannot run under that allowlist: the driver reaches the kernel through `ioctl` on
+`/dev/nvidiactl`, `/dev/nvidia<N>` and `/dev/nvidia-uvm`, and the CPU allowlist permits three
+requests (`FIONBIO`, `FIOCLEX`, `FIONCLEX`). `ptr-fabric` therefore has a second allowlist, the
+`Gpu` value of `SeccompProfile`. It is the CPU allowlist with **one** change: `ioctl` accepts any
+request except thirteen that no driver uses: terminal control (`TIOCSTI`, `TIOCLINUX`,
+`TIOCCONS`, `TIOCSETD`, `TIOCSPGRP`, `TIOCSCTTY`, `TIOCNOTTY`, `TIOCVHANGUP`), two that open a new
+descriptor (`TIOCGPTPEER`, `SIOCUNIXFILE`, the latter being the `open` that `openat` refuses) and
+three that route signals (`FIOASYNC`, `FIOSETOWN`, `SIOCSPGRP`, which would reopen the signal
+routing that `F_SETOWN` refuses). The other `SIOC*` and `FS_IOC_*` families are **still reachable**
+on any descriptor the worker holds (the control socket, received memfds); the ones that change
+anything need `CAP_NET_ADMIN` or `CAP_SYS_ADMIN`, so the profile depends on the worker holding no
+capability. `Supervisor::spawn` provides that (bounding set dropped and ambient set cleared, then
+`capset` to empty, then `no_new_privs`, in the forked child before `exec`: `supervisor.rs`, steps
+4 and 6 of its module docs); the seccomp installer itself drops nothing. `mmap`, `munmap`, `mprotect`, `mremap` and `madvise` are already allowed in the base
+list without a descriptor or protection restriction, so the driver's mappings need nothing more.
+Everything that opens a new resource stays refused: `open`, `openat`, `socket`, `socketpair`,
+`connect`, `bind`, `accept`, `pidfd_getfd`, `pidfd_open`, `ptrace`, `process_vm_*`, `io_uring_*`,
+`fork`, `execve`, `unshare`, `setns`; `clone` stays threads-only. Because `open` is refused, the
+worker initialises CUDA **before** it installs the filter (`prepare_gpu_worker`: driver, `cuInit`,
+the primary context of one device, and a warm-up of the VMM import and the pinned registration
+paths), and afterwards uses only that device. What stays out of reach after the filter: the first
+context of another device, `dlopen` of further libraries (PTX JIT, `libcudart`, `libcublas`),
+and `/proc` or `/sys` queries the warm-up did not make once.
+
+*What is weaker, and why.* The CPU worker's descriptor confinement leans on a tiny kernel
+surface: a hostile worker can reach almost no kernel code through descriptors it holds. The GPU
+profile adds the whole `ioctl` interface of the NVIDIA kernel modules on three descriptors the
+worker already owns. That interface cannot be narrowed here: the request numbers are the
+driver's, differ between `nvidiactl` (`_IOWR('F', ..)` codes) and `nvidia-uvm` (plain numbers),
+and change with driver versions; a list cannot be written without the card to trace. *Residual
+risk:* a bug in those modules reachable through an ioctl can be triggered by a compromised GPU
+worker, which can then act as the kernel (leave its cgroup, user id and network namespace, read
+other processes' memory). Rule 3b's guarantee that a descriptor cannot leave the domain except
+through the supervisor holds for the userspace calls the filter refuses, not against a kernel
+exploit. It is accepted only for the CUDA carriers and is not applied to a worker that does not
+need the driver.
+
+*How the host sees it.* The profile is a typed value, not an inference. `WorkerConfinement`
+pairs the observed `Confinement` with a `SeccompProfile`; the profile is supplied by the caller and
+must be the **observed** one, not the one requested. `carrier_permitted_for` permits `HostShm`,
+`CudaIpc`, `DevicePeer` and `PinnedHost` only when every mechanism (own user id, cgroup v2, network
+namespace, and the seccomp filter of that profile, with `no_new_privs`) is observed, for either
+profile, and `Bytes` and `Remote` always; nothing else. The kernel shows only that *a* filter is
+installed (`Seccomp: 2`), so the worker's own probe (`probe_profile_calls`) adds one call,
+`ioctl(-1, FIONREAD)`, to the forbidden-call report: `EPERM` under the CPU filter, `EBADF` (the
+kernel answering) under the GPU filter. `observed_profile` classifies the report as `Cpu`, `Gpu` or
+`Unproven`; a report without that entry, or with any forbidden call not refused, is `Unproven`.
+`ptr-fabric` provides these pieces; the host **requires** that the observed profile equal the one
+it asked for, and that wiring (`probe_profile_calls` in every confined worker, the comparison in
+`bins/ptr-worker`'s spawn check) is part of this wave's integration in `bins/ptr-worker` and is not
+in `ptr-fabric`. Like the forbidden-call check this is a self-report of a binary the supervisor
+started, not a kernel proof. The refusals under the GPU filter are tested without a GPU
+(`tests/worker_confine.rs`); the two ignored tests of `tests/gpu_worker.rs`
+(docs/GPU_HANDOVER.md section 12) are the only check with a card, and have not run, so everything
+about the driver's behaviour under this filter is unverified.
 
 ### S2 — one host, several processes, several GPUs
 

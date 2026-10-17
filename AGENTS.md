@@ -94,3 +94,20 @@ Summary only; the authoritative procedure is `docs/FREEZE_PROCEDURE.md`.
 2. Findings, including negative results and product findings.
 3. Limits: what the evidence does not show.
 4. Own errors: misdiagnoses and corrections made along the way.
+
+## 8. Owner instructions
+
+Set by the owner; binding for every role and every report.
+
+**Goal.** This repository should become the best environment for agents to work in. Whenever an agent hits friction (a stale doc, a missing check, an unclear command, a slow loop), it fixes it within these rules, or records it as an open point in its report.
+
+**Reporting.** When reporting information to the owner, be extremely concise and sacrifice grammar for the sake of concision. This also applies to the report formats in section 7: keep their points, but write them tersely.
+
+**Deepening a task.** When the owner asks for a deeper version of a task (a deeper one, not a bigger one), answer these four questions before rewriting the task:
+
+1. What would a top professional in this field do here that the owner is not asking for?
+2. What is the rawest material they would start from, instead of what has already been digested?
+3. Which specific methods and tools would they use?
+4. Apart from the agent or the owner, what would show that the result is right?
+
+Then rewrite the owner's prompt so that it asks for exactly that.

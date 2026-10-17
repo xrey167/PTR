@@ -289,6 +289,18 @@ fields its layout has.
   before sending anything (nothing is uncertain), and otherwise waits for the lesser of the
   remaining time and its configured timeout. A wait that ends at the deadline marks the
   request uncertain, because the host may have run it, and reports `DeadlineExceeded`.
+- **The namespace is part of the address.** An addressed binding (`bind_v2_addressed` and
+  everything built on it) needs a registry entry that names its lifecycle namespace
+  (`PodRegistry::register_in_namespace`); an entry without one is not addressable
+  (`V2BindingUnavailable`). `accepts` requires the request's destination namespace to be the
+  bound entry's, so the same pod id, manifest and generation registered for `ns-a` never answers
+  a request addressed to `ns-b`, and `PodRegistry::resolve_bound` stops resolving a binding once
+  the entry names another namespace. The entry must also be registered at the bound
+  generation (`PodRegistry::register_at`); a binding for generation 2 over an entry registered
+  as generation 1, or without a generation, is refused, and `resolve_bound` stops resolving once
+  the entry names another generation. The answer path resolves exactly that captured binding,
+  never a fresh lookup by pod id and manifest, and an addressed binding at generation 0 is
+  refused (no pod revision has it).
 - **`PodCall.deadline_ms`** (proto field 7, optional) carries the same value in the protobuf
   adapter; zero is refused, absence means none. `RouteConstraints.deadline` replaces the
   `Timestamp(0)` placeholder in `PodRoute`.

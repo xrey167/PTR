@@ -10,3 +10,10 @@ Bye with exit code 0; plus exit codes for end of stream without Bye, a truncated
 oversize length prefix and an illegal first frame, and the usage/`pods` output. A watchdog
 thread kills the child after 30 s so a hang fails the test instead of blocking it. No network,
 no wall-clock sleeps.
+
+`pod_data_plane.rs`, `staging_guardian.rs` and `cuda_ipc_flow.rs` need the `data-plane` feature
+(and `fault-injection` for the first and third and for the guardian-loss tests of the second),
+start real supervisors, guardians and workers, and are run by `scripts/run_pod_worker_tests.py`
+(as root, and unprivileged where the runner is not root). `cuda_ipc_flow.rs` moves `CudaIpc`
+handles between two workers over the CPU double of the staging backend; its transfers need root
+and skip with a printed reason otherwise, its fallback tests run everywhere.

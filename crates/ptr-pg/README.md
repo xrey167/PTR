@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-13  
-**Code footprint:** 17 Rust source files · 6816 nonblank source lines · 3 integration-test files · 170 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 17 Rust source files · 6852 nonblank source lines · 3 integration-test files · 171 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -62,6 +62,7 @@
 - ExpertFenceCommitted maps to no lifecycle change, topic expert.fence_committed, subject project:<project> and the entry the shared ptr-state projection yields (expert:<project>/<pod> = <generation>:fenced|serving|frozen:<epoch>); the projection still holds no expert catalog
 - KvTaintCommitted maps to no lifecycle change, topic kv.taint_committed, subject kv-taint:<kind>:<hex> of its first subject and the kv-taint entries of the shared ptr-state projection; there is no taint table
 - InputInvalidated (ledger tag 30, R011 WP3) has the topic expert.input_invalidated and the subject expert-input:<identity>; a Revoked kind is a lifecycle Tombstone for (input, generation), like a Revoked record, and a Superseded kind changes no lifecycle row (the supersession floor and the fenced experts are the runtime's dependency index, which this projection does not hold); the payload entries are exactly ptr-state's projection of the event
+- Event metadata for PodHeadAdvanced: topic `pod.head_advanced`, subject `pod-head:<project>/<identity>`, projection payload entry from ptr-state, no lifecycle row change
 
 ### Missing for the target architecture
 
@@ -131,6 +132,7 @@
 - workspace fmt/check/test/clippy
 - an_input_invalidation_has_a_topic_a_subject_and_only_a_revocation_tombstones
 - ExpertAuthorityChanged (ledger tag 31, R011 WP4) has the topic expert.authority_changed, the subject expert-authority:<kind name>, no lifecycle change and the expert-authority entry of the shared ptr-state projection (an_authority_change_has_a_topic_a_subject_an_entry_and_no_lifecycle_row); the experts it fences are the runtime's, as for tag 30
+- src/event.rs unit test pod_head_events_have_a_topic_subject_and_project_the_head_entry (the mapping only; no PostgreSQL server involved)
 
 <!-- PTR:STATUS:END -->
 

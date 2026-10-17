@@ -312,14 +312,25 @@ ci-fabric-cuda-check:
 	cargo +stable test -p ptr-fabric --features cuda-ipc --locked
 	cargo +stable clippy -p ptr-fabric --features cuda-ipc,worker-channel --all-targets --locked -- -D warnings
 	cargo +stable test -p ptr-fabric --features cuda-ipc,worker-channel --locked
+	cargo +stable clippy -p ptr-fabric --features cuda-ipc,worker-confine --all-targets --locked -- -D warnings
+	cargo +stable test -p ptr-fabric --features cuda-ipc,worker-confine --locked
+	cargo +stable clippy -p ptr-fabric --features cuda-ipc-core --all-targets --locked -- -D warnings
+	cargo +stable test -p ptr-fabric --features cuda-ipc-core --locked
+	cargo +stable clippy -p ptr-fabric --features cuda-ipc,worker-supervisor --all-targets --locked -- -D warnings
+	cargo +stable test -p ptr-fabric --features cuda-ipc,worker-supervisor --lib --test staging_pool --test staging_cuda --locked
+	cargo +stable clippy -p ptr-worker --features cuda-ipc --all-targets --locked -- -D warnings
+	PTR_WORKER_UNPRIVILEGED_CI=1 cargo +stable test -p ptr-worker --features cuda-ipc --lib --bins --test staging_guardian --locked
 	rustup toolchain install 1.99.0 --profile minimal
 	cargo +1.99.0 test -p ptr-fabric --features cuda-ipc --locked
+	cargo +1.99.0 test -p ptr-fabric --features cuda-ipc-core --locked
+	cargo +1.99.0 test -p ptr-fabric --features cuda-ipc,worker-confine --locked
 
 ci-pod-worker:
 	cargo +stable clippy -p ptr-fabric --features worker-supervisor --all-targets --locked -- -D warnings
 	cargo +stable clippy -p ptr-worker --features data-plane --all-targets --locked -- -D warnings
 	cargo +stable clippy -p ptr-worker --all-features --all-targets --locked -- -D warnings
 	cargo +stable test -p ptr-fabric --features worker-supervisor --lib --locked
+	cargo +stable test -p ptr-fabric --features worker-supervisor --test staging_pool --locked
 	cargo +stable test -p ptr-worker --all-features --lib --bins --test stdio_session --locked
 	$(PYTHON) scripts/run_pod_worker_tests.py --toolchain stable
 	rustup toolchain install 1.99.0 --profile minimal

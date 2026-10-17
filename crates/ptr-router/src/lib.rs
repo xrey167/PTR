@@ -2,7 +2,9 @@ mod attention_schema;
 mod candidate;
 mod constraints;
 mod degradation;
+mod fallback;
 mod findings;
+mod learned;
 mod learning;
 mod ope;
 #[cfg(test)]
@@ -30,6 +32,11 @@ pub use degradation::{
     Alternative, AvailabilityView, BackendState, DegradationEscalation, DegradationLevel,
     FallbackPlan, FallbackPlanner, Resolution, StageChain, StaticAvailability,
 };
+pub use fallback::{
+    DefaultPodPlan, DefaultPodPlanError, FailoverCoverage, LatencySample, LatencyWindow,
+    MissReason, ReflexCounters, ReflexOutcome, UncoveredReason, LATENCY_WINDOW,
+    MAX_FALLBACK_ATTEMPTS,
+};
 pub use findings::{
     classify, Accepted, AdmissibleScorer, CodeRoute, EligibilitySnapshot, EscalationReason,
     Exploration, ExplorationError, FallbackAction, FallbackPolicy, FallbackReason, FindingCode,
@@ -38,6 +45,12 @@ pub use findings::{
     RegistryGeneration, RegistryUpdate, ReportClass, RouteClass, RouteOutcome, RouterBuildError,
     RouterConfig, RouterLimits, ScoringContext, UniformScorer, MAX_REGISTRY_CODES,
     MAX_REGISTRY_PODS_PER_ROLE,
+};
+pub use learned::{
+    ActivationPolicy, EncodedWith, EncoderRef, GateReport, LearnedPodRouter, LearnedRouterConfig,
+    PodRepresentation, PodRepresentationParts, RepresentationError, RepresentationStore,
+    ScoreWeights, ACTIVATION_ALIAS_PERMILLE, ACTIVATION_NEGATIVE_REJECT_PERMILLE,
+    MAX_MANIFEST_BYTES, MAX_REPRESENTATIONS, MAX_REPRESENTATION_DIMS, REPRESENTATION_SCHEMA,
 };
 pub use learning::{
     ArmCounts, LearnedPolicy, LearnerConfig, LearningError, LoggedDecision, RewardModel,
@@ -65,8 +78,9 @@ pub use recipe::{
     MAX_BACKEND_ID_BYTES, MAX_STAGES,
 };
 pub use router::{
-    route_checked, CheckedRouter, DistributionError, PolicyFailure, RouteDistribution, RouteError,
-    RouteFeatures, RouteRequest, RoutedChoice, RoutedError, Router,
+    route_checked, AbstentionReason, AdmittedRepresentation, CheckedRouter, DistributionError,
+    PolicyFailure, RouteDistribution, RouteError, RouteFeatures, RouteRequest, RoutedChoice,
+    RoutedError, Router,
 };
 pub use sampling::{DecisionNonce, NonceExhausted, NonceSequence, SamplingKey};
 pub use self_model::{
