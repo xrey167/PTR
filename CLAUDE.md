@@ -2,6 +2,12 @@
 
 Working method for all agents: AGENTS.md (binding).
 
+## Owner instructions (short form; full text in AGENTS.md section 8)
+
+- When reporting information to the owner, be extremely concise and sacrifice grammar for the sake of concision.
+- Asked for a deeper version of a task (not a bigger one): before rewriting it, (1) say what a top professional in this field would do here that the owner is not asking for; (2) name the rawest material they would start from instead of what has already been digested; (3) name the specific methods and tools they would use; (4) say what, other than you or the owner, would show the result is right. Then rewrite the prompt to ask for exactly that.
+- Goal: this repository should become the best environment for agents to work in. Fix friction you hit, within the AGENTS.md rules, or report it.
+
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## What this repository is
