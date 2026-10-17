@@ -39,6 +39,7 @@ pub mod r010;
 pub mod r011;
 pub mod r012;
 pub mod r013;
+pub mod r015;
 pub mod rag_bridge;
 #[cfg_attr(not(feature = "postgres-experiments"), allow(dead_code))]
 mod rng;

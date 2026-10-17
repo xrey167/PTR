@@ -66,6 +66,8 @@ ptr-pods = { workspace = true }
 # receiving assembler and the request frame codec of ptr-podwire (no network feature).
 ptr-podwire = { workspace = true }
 ptr-protocol = { workspace = true }
+# R015 reads the world file and the exported pod addresses the training step wrote.
+serde_json = { workspace = true }
 # F002 drives the weak-supervision label model and the statistics kernel it scores with.
 ptr-labeling = { workspace = true }
 # The two verifiers of S003's grant judge a runtime's semantic changes; F001 drives the real

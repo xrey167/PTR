@@ -113,6 +113,7 @@ document states exists in code with tests; limits the document names still apply
 | [38 Consciousness indicators](38-consciousness-indicators.md) | design | Functional indicators only; C001 NOT_SHOWN, C004 COMPLETED, C007 and C008 FALSIFIED (CPU toys). Welfare rules: [MODEL_WELFARE](../MODEL_WELFARE.md). |
 | [39 VCW-MoE](39-vcw-moe.md) | design, loop implemented | `VcwLoop`, finding router, workspace, server path and `make vcw-demo` run with simulated (or `qwen-cpu`) experts; F007 COMPLETED as a mechanism check; no model-backed experiment yet. |
 | [41 Crate layering](41-crate-layering.md) | implemented | `scripts/check_crate_layering.py` in CI. |
+| [43 Pod linking](43-pod-linking.md) | partially implemented | Value-free pod identity and cluster key, ledger-committed head (tag 38), advisory activation-gated learned addresses with abstention, revocation per pod; R015 has a harness and no frozen result; Symlink-LoRA is design only (ADR-0023). |
 
 ### Pod placement and data plane
 

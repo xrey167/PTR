@@ -704,6 +704,7 @@ dependencies = [
  "ptr-pods",
  "ptr-types",
  "ptr-verifier",
+ "serde_json",
  "sha2",
 ]
 

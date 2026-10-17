@@ -1,9 +1,12 @@
 version = 1
 id = "ptr-podwire"
 maturity = "prototype"
-last_reviewed = "2026-10-13"
+last_reviewed = "2026-10-15"
 
 implemented = [
+  "The bound answer path resolves the captured RegisteredPodBinding (PodRegistry::resolve_bound: same manifest, namespace and generation) instead of a fresh lookup, so an entry re-registered after the binding was taken is not invoked; an addressed binding at generation 0 is refused",
+  "An addressed binding needs the registered implementation to be the bound generation: bind_v2_addressed refuses an entry registered at another generation or without one (V2BindingUnavailable), so a request addressed to a successor never runs the superseded implementation",
+  "Addressed PodWire bindings carry the lifecycle namespace: bind_v2_addressed (and every addressed variant) refuses a registry entry that names no namespace (V2BindingUnavailable), and accepts requires the request destination namespace to equal the bound entry namespace, so the same pod id, manifest and generation in another namespace is never invoked",
   "Both receive paths ask the request deadline again with a fresh clock after the manifest and validity checks, right before the Pod runs; a replayed session answer is refused past its request deadline (DeadlineExceeded { sent: false })",
   "A binding taken from the runtime (with_runtime_execution_manifest, bind_v2_runtime_admitted) carries its ManifestValidity and asks it on every request it serves, whether or not the host has a manifest registry attached",
   "PodAddressBinding::forward_to puts the sending Pod on the visited trail and refuses a hop to any visited Pod, so A to B and back to A, or A to B to C to A, is refused",
@@ -85,6 +88,9 @@ decisions = [
 ]
 
 checks = [
+  "src/access.rs unit test a_re_registration_after_binding_is_not_invoked (podwire-backend); tests/wire.rs an_addressed_binding_needs_the_registered_generation also covers generation 0",
+  "tests/wire.rs: an_addressed_binding_needs_the_registered_generation (podwire-backend)",
+  "tests/wire.rs: v2_rejects_a_request_addressed_to_another_namespace_before_invoking_the_pod, an_entry_without_a_namespace_cannot_be_bound_for_addressed_requests (podwire-backend)",
   "tests/wire.rs: a_deadline_that_passes_during_the_checks_is_asked_again_before_the_pod_runs, a_cached_session_answer_is_not_replayed_past_the_requests_deadline",
   "tests/wire.rs: a_runtime_backed_binding_asks_its_validity_on_every_request_without_a_host_registry",
   "tests/frame_v4.rs: a_hop_back_to_the_pod_that_sent_the_request_is_refused",

@@ -67,11 +67,12 @@
 
 use crate::{
     DecisionNonce, NonceExhausted, NonceSequence, PodRoute, PodRouter, Propensity, PropensityError,
-    SamplingKey,
+    RepresentationError, SamplingKey,
 };
 use ptr_pods::PodRegistry;
 use ptr_types::{CapabilityId, Digest, PodId, Probability, ProjectId, RequestId, TypeId};
 use std::borrow::Cow;
+use std::collections::BTreeSet;
 use std::fmt;
 
 /// A pod sampled by the trusted routing path together with the probability of sampling it and
@@ -126,6 +127,16 @@ impl RoutedChoice {
     }
 }
 
+/// One learned representation a host admitted for this request: the pod it addresses and the
+/// digest of the exact representation. A learned router scores a representation only when it is
+/// named here (see [`RouteFeatures::with_admitted_representations`]).
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct AdmittedRepresentation {
+    pub project: ProjectId,
+    pub pod: PodId,
+    pub digest: [u8; 32],
+}
+
 /// Per-request inputs a router may condition on. It defines no semantics beyond that: a router
 /// decides whether and how to use each field. Absent values mean "not available".
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -133,6 +144,7 @@ pub struct RouteFeatures {
     uncertainty: Option<Probability>,
     token_budget: Option<u32>,
     vector: Vec<f32>,
+    admitted: Option<BTreeSet<AdmittedRepresentation>>,
 }
 
 impl RouteFeatures {
@@ -162,6 +174,24 @@ impl RouteFeatures {
         }
         self.vector = vector;
         Ok(self)
+    }
+
+    /// Restricts a learned router to the representations the host admitted for this request. The
+    /// set can only narrow what is scored, never add a candidate: eligibility stays with the
+    /// registry. A representation that is not in the set does not take part in scoring, so its
+    /// pod counts as uncovered (partial coverage, or no representation at all). `Some(empty)`
+    /// admits nothing. A router that does not use representations ignores it.
+    pub fn with_admitted_representations(
+        mut self,
+        admitted: BTreeSet<AdmittedRepresentation>,
+    ) -> Self {
+        self.admitted = Some(admitted);
+        self
+    }
+
+    /// The admitted representations, or `None` when the host set no restriction.
+    pub fn admitted_representations(&self) -> Option<&BTreeSet<AdmittedRepresentation>> {
+        self.admitted.as_ref()
     }
 
     pub fn uncertainty(&self) -> Option<Probability> {
@@ -218,6 +248,28 @@ impl fmt::Display for PolicyFailure {
     }
 }
 
+/// Why a learned router abstained.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum AbstentionReason {
+    /// The best candidate scored below the abstention threshold.
+    LowScore,
+    /// The best candidate did not lead the runner-up by the minimum margin.
+    SmallMargin,
+    /// Some eligible candidates have no learned representation, so the ranking would compare only
+    /// part of the field: choosing among the covered ones could hide the better, uncovered one.
+    PartialCoverage,
+}
+
+impl fmt::Display for AbstentionReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::LowScore => "low score",
+            Self::SmallMargin => "small margin",
+            Self::PartialCoverage => "partial coverage",
+        })
+    }
+}
+
 /// A router failure while candidates may exist. Distinct from `Ok(None)` (no candidate).
 #[derive(Debug)]
 #[non_exhaustive]
@@ -243,6 +295,33 @@ pub enum RouteError {
     MissingChoice { candidates: usize },
     /// The [`NonceSequence`] of a [`CheckedRouter`] cannot hand out another fresh nonce.
     NonceExhausted(NonceExhausted),
+    /// A learned router declined to choose: its best candidate scored below the abstention
+    /// threshold, or the margin to the runner-up was too small. Abstention is a valid outcome,
+    /// not a failure of the policy; a caller falls back to a non-learned router or fails the
+    /// request, and counts it apart from errors.
+    Abstained {
+        /// The highest-scoring candidate.
+        best: PodId,
+        /// The second-highest candidate, when there was one.
+        runner_up: Option<PodId>,
+        /// The sigmoid score of `best`.
+        best_score: f64,
+        /// `best_score` minus the runner-up's score; `best_score` when there was no runner-up.
+        margin: f64,
+        /// Why the router declined.
+        reason: AbstentionReason,
+    },
+    /// None of the eligible candidates has a learned representation, so a learned router has
+    /// nothing to score. Distinct from [`RouteError::Abstained`]: no pod was scored at all.
+    NoRepresentation { candidates: usize },
+    /// A learned representation was offered although it is not activated (its activation gate was
+    /// not passed, or it says so). Such a representation is never loaded.
+    InactiveRepresentation { pod: PodId },
+    /// A learned representation failed validation and was not loaded.
+    InvalidRepresentation {
+        pod: PodId,
+        error: RepresentationError,
+    },
 }
 
 impl RouteError {
@@ -276,6 +355,26 @@ impl fmt::Display for RouteError {
                 "router returned an empty distribution although {candidates} eligible candidates exist"
             ),
             Self::NonceExhausted(error) => write!(f, "{error}"),
+            Self::Abstained {
+                best,
+                runner_up,
+                best_score,
+                margin,
+                reason,
+            } => write!(
+                f,
+                "router abstained ({reason}): best {best:?} scored {best_score:.4}, runner-up {runner_up:?}, margin {margin:.4}"
+            ),
+            Self::NoRepresentation { candidates } => write!(
+                f,
+                "none of {candidates} eligible candidates has a learned representation"
+            ),
+            Self::InactiveRepresentation { pod } => {
+                write!(f, "representation of pod {pod:?} is not activated")
+            }
+            Self::InvalidRepresentation { pod, error } => {
+                write!(f, "representation of pod {pod:?} is invalid: {error}")
+            }
         }
     }
 }
@@ -287,9 +386,13 @@ impl std::error::Error for RouteError {
             Self::InvalidPropensity(error) => Some(error),
             Self::InvalidDistribution(error) => Some(error),
             Self::NonceExhausted(error) => Some(error),
+            Self::InvalidRepresentation { error, .. } => Some(error),
             Self::InvalidFeatures { .. }
             | Self::IneligibleChoice { .. }
-            | Self::MissingChoice { .. } => None,
+            | Self::MissingChoice { .. }
+            | Self::Abstained { .. }
+            | Self::NoRepresentation { .. }
+            | Self::InactiveRepresentation { .. } => None,
         }
     }
 }
@@ -316,7 +419,7 @@ impl From<DistributionError> for RouteError {
 pub struct RoutedError {
     request_id: RequestId,
     request_digest: Digest,
-    error: RouteError,
+    error: Box<RouteError>,
 }
 
 impl RoutedError {
@@ -324,7 +427,7 @@ impl RoutedError {
         Self {
             request_id: request.request_id.clone(),
             request_digest: request.request_digest,
-            error,
+            error: Box::new(error),
         }
     }
 
@@ -341,7 +444,7 @@ impl RoutedError {
     }
 
     pub fn into_error(self) -> RouteError {
-        self.error
+        *self.error
     }
 }
 
@@ -357,7 +460,7 @@ impl fmt::Display for RoutedError {
 
 impl std::error::Error for RoutedError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&self.error)
+        Some(&*self.error)
     }
 }
 
@@ -715,6 +818,11 @@ pub struct CheckedRouter<R> {
 impl<R: Router> CheckedRouter<R> {
     pub fn new(inner: R, key: SamplingKey, nonces: NonceSequence) -> Self {
         Self { inner, key, nonces }
+    }
+
+    /// The wrapped router, read-only. The key and the nonce sequence stay private.
+    pub fn inner(&self) -> &R {
+        &self.inner
     }
 
     /// [`route_checked`] on the wrapped router with the owned key and the next fresh nonce. The

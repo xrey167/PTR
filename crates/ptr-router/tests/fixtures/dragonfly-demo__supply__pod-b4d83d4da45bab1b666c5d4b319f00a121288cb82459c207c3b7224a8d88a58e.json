@@ -1,0 +1,31 @@
+{
+  "cluster_key": "f5454cf58bbefbf5b74cb5fa3ec5d552e0e1b35d11d669abf3dfd2885f0e31ba",
+  "digest": "c161a12c3c5c671b90c21ccc41e0ed60fd98d220b245c482d7e17195cf526c0a",
+  "dims": 32,
+  "encoder": {
+    "id": "hashed-bow-32",
+    "revision": "1"
+  },
+  "gate": {
+    "alias_count": 2,
+    "alias_min_permille": 998,
+    "alias_threshold_permille": 800,
+    "negative_count": 14,
+    "negative_reject_permille": 1000,
+    "negative_threshold_permille": 900,
+    "status": "activated"
+  },
+  "generation": 3,
+  "kind": "dragonfly-pod-address",
+  "namespace": "supply",
+  "pod_id": "supplier-schmidt",
+  "pod_identity": "pod:b4d83d4da45bab1b666c5d4b319f00a121288cb82459c207c3b7224a8d88a58e",
+  "project": "demo",
+  "schema": 2,
+  "scoring": {
+    "cosine_weight": 12.0,
+    "metadata_weight": 3.0
+  },
+  "weights_file": "dragonfly-demo__supply__pod-b4d83d4da45bab1b666c5d4b319f00a121288cb82459c207c3b7224a8d88a58e.bin",
+  "weights_sha256": "f49454e64ff2b989d13b3d15b76edd8da3db721ed3f58cadb8daa82c0ad75cc5"
+}

@@ -4480,6 +4480,7 @@ dependencies = [
  "ptr-state",
  "ptr-types",
  "ptr-verifier",
+ "serde_json",
  "tokio",
  "tokio-postgres",
  "toml",
@@ -4742,6 +4743,7 @@ dependencies = [
  "ptr-protocol",
  "ptr-types",
  "ptr-verifier",
+ "serde_json",
  "sha2 0.11.0",
 ]
 

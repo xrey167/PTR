@@ -10,10 +10,11 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-14  
-**Code footprint:** 5 Rust source files · 2716 nonblank source lines · 5 integration-test files · 77 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 5 Rust source files · 2733 nonblank source lines · 5 integration-test files · 77 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
+- RuntimeEvent::{ReflexHit { pod }, ReflexMiss { reason }, ReflexFailover { to }} (work package 2): telemetry of the reflex counters, emitted by ptr-runtime. ReflexMiss carries a stable pod-free code (ptr_router::MissReason::code) and precedes the PodInvoked of a failover pod; ReflexFailover is emitted only after the default pod output was promoted by the same verifier path, so a refused failover has no such event. In memory, not ledger records, no authority; the counters (PtrRuntime::reflex_counters), not this bounded log, are the count
 - RuntimeEvent taxonomy for request/snapshot/candidate/Pod/verifier/commit lifecycle
 - EventEnvelope with sequence number
 - RuntimeEvent::PodRouted { pod, propensity: f64, nonce: [u8; 16], draw: u64, key_id: [u8; 8] } records a Pod chosen by the trusted checked routing path (ptr-router route_checked) with its propensity, decision nonce, keyed draw and the non-secret sampling key id; the runtime emits it before PodInvoked, and the key itself is never an event field
@@ -67,6 +68,7 @@
 
 ### Current automated checks
 
+- ptr-runtime tests/reflex.rs asserts the order ReflexMiss, PodInvoked, ReflexFailover, that a refused or failed failover emits no ReflexFailover, and that a hit emits ReflexHit
 - ptr-runtime tests/routed_pods.rs emits and asserts RuntimeEvent::PodRouted (key id, incrementing nonce, replayed draw)
 - workspace fmt/check/test/clippy
 - tests/bus.rs redelivery until commit, backpressure instead of loss, monotone bounded commits
