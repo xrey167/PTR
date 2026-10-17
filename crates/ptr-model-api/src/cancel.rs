@@ -221,6 +221,11 @@ pub enum GenerationError {
     InvalidLimits(&'static str),
     /// `next_event` was called after the stream already ended.
     StreamClosed,
+    /// The source emitted more than `limit` non-text [`crate::ModelEvent`]s through one
+    /// stream (see [`crate::MAX_STREAM_MODEL_EVENTS`]); the stream ended with this error.
+    ModelEventLimit {
+        limit: usize,
+    },
     Tokenize(TokenizeError),
     Backend(ModelError),
 }
@@ -238,6 +243,9 @@ impl fmt::Display for GenerationError {
             } => write!(f, "backend {backend} does not support {capability}"),
             Self::InvalidLimits(why) => write!(f, "invalid stream limits: {why}"),
             Self::StreamClosed => write!(f, "stream already ended"),
+            Self::ModelEventLimit { limit } => {
+                write!(f, "stream emitted more than {limit} non-text model events")
+            }
             Self::Tokenize(error) => write!(f, "tokenizer failure: {error}"),
             Self::Backend(error) => write!(f, "backend failure: {}", error.0),
         }

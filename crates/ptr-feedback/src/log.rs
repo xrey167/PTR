@@ -22,13 +22,16 @@ use crate::record::{RecordError, TrajectoryRecord, MAX_LINE_BYTES};
 
 /// Smallest accepted rotation size.
 pub const MIN_ROTATION_BYTES: u64 = 512;
+/// Largest accepted rotation size (1 GiB). A larger limit would never trigger rotation in
+/// practice, so the log would grow without a retained bound; [`TrajectoryLog::open`] refuses it.
+pub const MAX_ROTATION_BYTES: u64 = 1 << 30;
 /// Most rotated files kept.
 pub const MAX_KEEP: u32 = 64;
 
 /// Why a log operation failed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LogError {
-    /// `max_bytes` is below [`MIN_ROTATION_BYTES`] or `keep` is zero or above [`MAX_KEEP`].
+    /// `max_bytes` is outside [`MIN_ROTATION_BYTES`]..=[`MAX_ROTATION_BYTES`] or `keep` is zero or above [`MAX_KEEP`].
     InvalidConfig,
     /// The path has no file name.
     InvalidPath,
@@ -70,7 +73,8 @@ impl From<io::Error> for LogError {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LogConfig {
     pub path: PathBuf,
-    /// Rotate before a line would take a non-empty file past this size.
+    /// Rotate before a line would take a non-empty file past this size; from
+    /// [`MIN_ROTATION_BYTES`] to [`MAX_ROTATION_BYTES`].
     pub max_bytes: u64,
     /// How many rotated files (`.1` to `.keep`) are kept.
     pub keep: u32,
@@ -125,7 +129,10 @@ impl TrajectoryLog {
     /// # Errors
     /// [`LogError::InvalidConfig`] or [`LogError::InvalidPath`].
     pub fn open(config: LogConfig) -> Result<Self, LogError> {
-        if config.max_bytes < MIN_ROTATION_BYTES || config.keep == 0 || config.keep > MAX_KEEP {
+        if !(MIN_ROTATION_BYTES..=MAX_ROTATION_BYTES).contains(&config.max_bytes)
+            || config.keep == 0
+            || config.keep > MAX_KEEP
+        {
             return Err(LogError::InvalidConfig);
         }
         if config.path.file_name().is_none() {
@@ -506,6 +513,18 @@ mod tests {
             max_bytes,
             keep,
         }
+    }
+
+    #[test]
+    fn rotation_size_has_a_hard_maximum() {
+        let dir = TempDir::new();
+        for max_bytes in [u64::MAX, MAX_ROTATION_BYTES + 1] {
+            assert_eq!(
+                TrajectoryLog::open(config(&dir, max_bytes, 1)).unwrap_err(),
+                LogError::InvalidConfig
+            );
+        }
+        assert!(TrajectoryLog::open(config(&dir, MAX_ROTATION_BYTES, 1)).is_ok());
     }
 
     #[test]

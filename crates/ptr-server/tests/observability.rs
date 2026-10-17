@@ -376,6 +376,33 @@ fn unusable_tracing_options_are_typed_errors() {
         ..ServerOptions::default()
     });
     assert!(matches!(zero, Err(ServerOptionsError::ZeroTraceExportCap)));
+    for max_export_bytes in [u64::MAX, ptr_server::MAX_TRACE_EXPORT_BYTES + 1] {
+        let path = temp_file("huge");
+        let too_large = ServerState::new(runtime()).with_options(ServerOptions {
+            request_tracing: Some(RequestTracingOptions {
+                export_path: path.clone(),
+                max_export_bytes,
+            }),
+            ..ServerOptions::default()
+        });
+        assert!(matches!(
+            too_large,
+            Err(ServerOptionsError::TraceExportCapTooLarge { max })
+                if max == ptr_server::MAX_TRACE_EXPORT_BYTES
+        ));
+        let _ = std::fs::remove_file(path);
+    }
+    let at_max = temp_file("at-max");
+    assert!(ServerState::new(runtime())
+        .with_options(ServerOptions {
+            request_tracing: Some(RequestTracingOptions {
+                export_path: at_max.clone(),
+                max_export_bytes: ptr_server::MAX_TRACE_EXPORT_BYTES,
+            }),
+            ..ServerOptions::default()
+        })
+        .is_ok());
+    let _ = std::fs::remove_file(at_max);
     let missing = ServerState::new(runtime()).with_options(ServerOptions {
         request_tracing: Some(RequestTracingOptions::new(
             std::env::temp_dir().join("ptr-server-no-such-dir-xyz/trace.jsonl"),

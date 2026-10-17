@@ -113,7 +113,8 @@ pub enum PolicyViolation {
     RecordLimitTooLarge,
     /// A record, byte or backlog limit above its documented hard maximum
     /// ([`MAX_RETENTION_RECORDS`], [`MAX_RETENTION_BYTES`],
-    /// [`MAX_FILE_LOG_UNACKED_RECORDS`](crate::MAX_FILE_LOG_UNACKED_RECORDS)): such a limit is
+    /// [`MAX_FILE_LOG_UNACKED_RECORDS`](crate::MAX_FILE_LOG_UNACKED_RECORDS),
+    /// [`MAX_SEGMENT_BYTES`](crate::MAX_SEGMENT_BYTES)): such a limit is
     /// nominally bounded but not in practice.
     LimitTooLarge,
 }

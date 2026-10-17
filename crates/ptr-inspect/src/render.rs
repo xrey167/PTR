@@ -9,6 +9,12 @@ pub const JSON_MAX_DEPTH: usize = 128;
 /// larger caller-supplied depth (for example `usize::MAX`) is clamped to this before traversal.
 pub const MAX_RENDER_DEPTH: usize = 64;
 
+/// Largest [`RenderOptions::max_text_width`] honoured; larger values are clamped.
+pub const MAX_TEXT_WIDTH: usize = 65_536;
+
+/// Largest [`RenderOptions::max_items`] honoured; larger values are clamped.
+pub const MAX_RENDER_ITEMS: usize = 65_536;
+
 /// Largest per-level indentation honoured by [`render_tree`]; larger `indent` values are clamped.
 pub const MAX_INDENT: usize = 32;
 
@@ -17,12 +23,13 @@ pub const MAX_INDENT: usize = 32;
 pub struct RenderOptions {
     /// Spaces per nesting level in the tree renderer, clamped to [`MAX_INDENT`].
     pub indent: usize,
-    /// Longest text shown, in characters; longer text ends in an ellipsis.
+    /// Longest text shown, in characters, clamped to [`MAX_TEXT_WIDTH`]; longer text ends in an
+    /// ellipsis.
     pub max_text_width: usize,
     /// Containers nested deeper than this show `…` instead of their children; clamped to
     /// [`MAX_RENDER_DEPTH`].
     pub max_depth: usize,
-    /// Children shown per container before `… N more`.
+    /// Children shown per container before `… N more`, clamped to [`MAX_RENDER_ITEMS`].
     pub max_items: usize,
 }
 
@@ -143,7 +150,7 @@ fn scalar_text(node: &InspectNode, options: &RenderOptions) -> Option<String> {
         InspectNode::Number(value) => number_text(*value),
         InspectNode::Int(value) => value.to_string(),
         InspectNode::UInt(value) => value.to_string(),
-        InspectNode::Text(value) => quote(value, options.max_text_width),
+        InspectNode::Text(value) => quote(value, options.max_text_width.min(MAX_TEXT_WIDTH)),
         InspectNode::Bytes(bytes) => bytes_text(bytes),
         InspectNode::Redacted => "<redacted>".to_owned(),
         InspectNode::RedactedWith(hint) => hint_text(hint),
@@ -191,7 +198,7 @@ fn tree_node(
         lines.push(format!("{child_pad}…"));
         return;
     }
-    let shown = child_count.min(options.max_items);
+    let shown = child_count.min(options.max_items.min(MAX_RENDER_ITEMS));
     match node {
         InspectNode::Struct { fields, .. } | InspectNode::Enum { fields, .. } => {
             for (name, value) in fields.iter().take(shown) {
@@ -296,7 +303,7 @@ fn compact_seq(
         out.push('…');
         return;
     }
-    let shown = len.min(options.max_items);
+    let shown = len.min(options.max_items.min(MAX_RENDER_ITEMS));
     for index in 0..shown {
         if index > 0 {
             out.push(',');
@@ -492,6 +499,23 @@ mod tests {
         };
         assert_eq!(render_compact(&many, &options), "[0,1,…3 more]");
         assert!(render_tree(&many, &options).ends_with("… 3 more"));
+    }
+
+    #[test]
+    fn huge_width_and_item_limits_are_clamped() {
+        let long = InspectNode::text("x".repeat(MAX_TEXT_WIDTH + 10));
+        let options = RenderOptions {
+            max_text_width: usize::MAX,
+            max_items: usize::MAX,
+            ..RenderOptions::default()
+        };
+        let out = render_compact(&long, &options);
+        assert_eq!(out.chars().count(), MAX_TEXT_WIDTH + 3);
+        let list = InspectNode::List(vec![InspectNode::Null; MAX_RENDER_ITEMS + 5]);
+        assert_eq!(
+            render_compact(&list, &options).matches("null").count(),
+            MAX_RENDER_ITEMS
+        );
     }
 
     #[test]

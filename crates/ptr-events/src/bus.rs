@@ -15,6 +15,16 @@ pub const MAX_CONSUMERS: usize = 256;
 pub const MAX_BUS_RECORD_CAPACITY: usize = 1 << 20;
 /// Default bound on one record's payload.
 pub const DEFAULT_MAX_RECORD_BYTES: usize = 1 << 20;
+/// Hard maximum of [`BusConfig::max_record_bytes`] (1 GiB, or `usize::MAX` where that is
+/// smaller) and of [`BusConfig::capacity_bytes`] ([`MAX_RETENTION_BYTES`]).
+pub const MAX_BUS_RECORD_BYTES: usize = {
+    let gib = 1u64 << 30;
+    if gib < usize::MAX as u64 {
+        gib as usize
+    } else {
+        usize::MAX
+    }
+};
 
 /// Position of a record in the bus. The first record is at offset `1`.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -375,9 +385,12 @@ pub(crate) fn validate_consumer(
 pub struct BusConfig {
     /// Bound on unacknowledged records (clamped to `1..=`[`MAX_BUS_RECORD_CAPACITY`]).
     pub capacity_records: usize,
-    /// Optional bound on unacknowledged bytes (topic + key + payload).
+    /// Optional bound on unacknowledged bytes (topic + key + payload); at most
+    /// [`MAX_RETENTION_BYTES`] (clamped by [`InMemoryBus::with_config`], refused by
+    /// [`InMemoryBus::try_with_config`]).
     pub capacity_bytes: Option<usize>,
-    /// Bound on one record's payload.
+    /// Bound on one record's payload; at most [`MAX_BUS_RECORD_BYTES`] (clamped by
+    /// [`InMemoryBus::with_config`], refused by [`InMemoryBus::try_with_config`]).
     pub max_record_bytes: usize,
     pub policies: ClassPolicies,
     pub retention: RetentionPolicy,
@@ -436,6 +449,8 @@ impl InMemoryBus {
             config.retention = RetentionPolicy::acked_only();
         }
         config.capacity_records = config.capacity_records.clamp(1, MAX_BUS_RECORD_CAPACITY);
+        config.capacity_bytes = config.capacity_bytes.map(|m| m.min(MAX_RETENTION_BYTES));
+        config.max_record_bytes = config.max_record_bytes.min(MAX_BUS_RECORD_BYTES);
         config.retention.max_records = config
             .retention
             .max_records
@@ -461,9 +476,19 @@ impl InMemoryBus {
     ///
     /// # Errors
     /// `InvalidPolicy` with [`PolicyViolation::UnboundedRetention`] if the retention policy
-    /// has no limit in any dimension.
+    /// has no limit in any dimension, or with [`PolicyViolation::LimitTooLarge`] if the byte
+    /// bounds exceed [`MAX_BUS_RECORD_BYTES`] / [`MAX_RETENTION_BYTES`].
     pub fn try_with_config(config: BusConfig) -> Result<Self, BusError> {
         config.retention.validate()?;
+        if config.max_record_bytes > MAX_BUS_RECORD_BYTES
+            || config
+                .capacity_bytes
+                .is_some_and(|m| m > MAX_RETENTION_BYTES)
+        {
+            return Err(BusError::InvalidPolicy {
+                violation: PolicyViolation::LimitTooLarge,
+            });
+        }
         Ok(Self::with_config(config))
     }
 
@@ -903,6 +928,25 @@ mod tests {
             bus.publish(rec(EventClass::Projection, "d")),
             Err(BusError::Full { .. })
         ));
+    }
+
+    #[test]
+    fn unbounded_byte_limits_are_refused_or_clamped() {
+        let mut config = BusConfig::new(4);
+        config.max_record_bytes = usize::MAX;
+        config.capacity_bytes = Some(usize::MAX);
+        let too_large = Some(BusError::InvalidPolicy {
+            violation: PolicyViolation::LimitTooLarge,
+        });
+        assert_eq!(InMemoryBus::try_with_config(config).err(), too_large);
+        config.max_record_bytes = MAX_BUS_RECORD_BYTES;
+        assert_eq!(InMemoryBus::try_with_config(config).err(), too_large);
+        let bus = InMemoryBus::with_config(config);
+        assert_eq!(bus.config.capacity_bytes, Some(MAX_RETENTION_BYTES));
+        let mut config = BusConfig::new(4);
+        config.max_record_bytes = usize::MAX;
+        let bus = InMemoryBus::with_config(config);
+        assert_eq!(bus.config.max_record_bytes, MAX_BUS_RECORD_BYTES);
     }
 
     #[test]

@@ -34,6 +34,7 @@ fn sync_failure_is_invisible_and_a_retry_applies_exactly_once() {
     store.journal.inject_fault(FaultInjection {
         fail_sync: true,
         fail_truncate: false,
+        ..FaultInjection::default()
     });
     assert!(matches!(
         store.insert(new_record("b")),
@@ -58,6 +59,7 @@ fn failed_rollback_poisons_and_stops_appends() {
     store.journal.inject_fault(FaultInjection {
         fail_sync: true,
         fail_truncate: true,
+        ..FaultInjection::default()
     });
     assert!(store.insert(new_record("b")).is_err());
     assert!(store.get(&MemoryRecordId::from("b")).is_none());

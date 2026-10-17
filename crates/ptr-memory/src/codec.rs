@@ -20,6 +20,18 @@ pub enum CodecError {
     TrailingBytes,
 }
 
+/// Largest number of elements reserved up front while decoding. A validated count can still be
+/// large (a 64 MiB frame of tiny elements), so vectors grow on demand beyond this.
+pub(crate) const MAX_PREALLOCATED_ELEMENTS: usize = 1024;
+
+/// Capacity to reserve for `count` decoded elements.
+pub(crate) fn bounded_capacity(count: usize) -> usize {
+    count.min(MAX_PREALLOCATED_ELEMENTS)
+}
+
+/// Minimum encoded size of a length-prefixed string or byte blob (the `u32` length alone).
+pub(crate) const MIN_STRING_BYTES: usize = 4;
+
 #[derive(Default)]
 pub(crate) struct Writer {
     buf: Vec<u8>,
@@ -143,10 +155,18 @@ impl<'a> Reader<'a> {
         Ok(raw)
     }
 
-    /// Reads an element count and checks that at least one byte per element remains.
+    /// Reads a byte length (strings, byte blobs): at least that many bytes must remain.
     pub(crate) fn count(&mut self) -> Result<usize, CodecError> {
+        self.count_of(1)
+    }
+
+    /// Reads an element count and checks that the bytes that remain can hold that many elements
+    /// of at least `min_element_bytes` encoded bytes each, so a CRC-valid frame with an inflated
+    /// count is rejected before anything is reserved for it.
+    pub(crate) fn count_of(&mut self, min_element_bytes: usize) -> Result<usize, CodecError> {
         let count = usize::try_from(self.u32()?).map_err(|_| CodecError::LengthTooLarge)?;
-        if count > self.buf.len() - self.pos {
+        let remaining = self.buf.len() - self.pos;
+        if count > remaining / min_element_bytes.max(1) {
             return Err(CodecError::LengthTooLarge);
         }
         Ok(count)
@@ -198,6 +218,28 @@ mod tests {
         assert_eq!(r.opt_string(), Ok(None));
         assert_eq!(r.opt_string(), Ok(Some("x".to_owned())));
         assert_eq!(r.finish(), Ok(()));
+    }
+
+    #[test]
+    fn min_string_size_is_the_encoding_of_the_empty_string() {
+        let mut w = Writer::new();
+        w.str("");
+        assert_eq!(w.finish().len(), MIN_STRING_BYTES);
+    }
+
+    #[test]
+    fn count_of_rejects_counts_the_remaining_bytes_cannot_hold() {
+        let mut w = Writer::new();
+        w.u32(3);
+        w.raw(&[0; 24]);
+        let bytes = w.finish();
+        assert_eq!(Reader::new(&bytes).count_of(8), Ok(3));
+        assert_eq!(
+            Reader::new(&bytes).count_of(9),
+            Err(CodecError::LengthTooLarge)
+        );
+        assert_eq!(bounded_capacity(usize::MAX), MAX_PREALLOCATED_ELEMENTS);
+        assert_eq!(bounded_capacity(3), 3);
     }
 
     #[test]

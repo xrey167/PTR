@@ -291,14 +291,27 @@ impl Matrix {
                 });
             }
         }
-        let n = self.cols as f32;
+        // Statistics are accumulated in f64: squared f32 deviations cannot overflow there, so
+        // finite rows with large magnitudes normalise correctly instead of collapsing to `beta`.
+        let n = self.cols as f64;
+        let eps = f64::from(eps);
         let mut out = self.clone();
         for row in out.data.chunks_exact_mut(self.cols) {
-            let mean = row.iter().sum::<f32>() / n;
-            let var = row.iter().map(|x| (x - mean) * (x - mean)).sum::<f32>() / n;
+            let mean = row.iter().map(|x| f64::from(*x)).sum::<f64>() / n;
+            let var = row
+                .iter()
+                .map(|x| (f64::from(*x) - mean) * (f64::from(*x) - mean))
+                .sum::<f64>()
+                / n;
             let inv = 1.0 / (var + eps).sqrt();
+            if !inv.is_finite() {
+                // Unrepresentable statistics (non-finite input): poison the row with NaN so the
+                // callers' finiteness checks reject it instead of seeing a plausible vector.
+                row.iter_mut().for_each(|x| *x = f32::NAN);
+                continue;
+            }
             for ((x, g), b) in row.iter_mut().zip(&gamma.data).zip(&beta.data) {
-                *x = (*x - mean) * inv * g + b;
+                *x = ((f64::from(*x) - mean) * inv * f64::from(*g) + f64::from(*b)) as f32;
             }
         }
         Ok(out)
@@ -361,13 +374,18 @@ impl Matrix {
     }
 }
 
-/// In-place softmax with max-subtraction; all-`-inf` input becomes all zeros.
+/// In-place softmax with max-subtraction; an all-`-inf` row becomes all zeros. Any `+inf` or
+/// `NaN` logit propagates as non-finite output so callers' finiteness checks reject it.
 pub fn softmax_in_place(row: &mut [f32]) {
-    let max = row.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-    if !max.is_finite() {
+    if row.iter().all(|x| *x == f32::NEG_INFINITY) {
         row.iter_mut().for_each(|x| *x = 0.0);
         return;
     }
+    if row.iter().any(|x| x.is_nan()) {
+        row.iter_mut().for_each(|x| *x = f32::NAN);
+        return;
+    }
+    let max = row.iter().copied().fold(f32::NEG_INFINITY, f32::max);
     let mut sum = 0.0_f32;
     for x in row.iter_mut() {
         *x = (*x - max).exp();
@@ -480,6 +498,42 @@ mod tests {
 
     fn m(rows: usize, cols: usize, d: &[f32]) -> Matrix {
         Matrix::new(rows, cols, d.to_vec()).unwrap()
+    }
+
+    #[test]
+    fn layer_norm_survives_large_opposing_values() {
+        let x = m(1, 2, &[1.0e20, -1.0e20]);
+        let g = m(1, 2, &[1.0, 1.0]);
+        let b = m(1, 2, &[0.0, 0.0]);
+        let y = x.layer_norm(&g, &b, 1e-5).unwrap();
+        assert!((y.as_slice()[0] - 1.0).abs() < 1e-3, "{:?}", y.as_slice());
+        assert!((y.as_slice()[1] + 1.0).abs() < 1e-3, "{:?}", y.as_slice());
+        let big = m(1, 2, &[3.0e38, 3.0e38]);
+        let y = big.layer_norm(&g, &b, 1e-5).unwrap();
+        assert!(y.as_slice().iter().all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn layer_norm_non_finite_input_stays_non_finite() {
+        let g = m(1, 2, &[1.0, 1.0]);
+        let b = m(1, 2, &[0.0, 0.0]);
+        let y = m(1, 2, &[f32::INFINITY, 1.0])
+            .layer_norm(&g, &b, 1e-5)
+            .unwrap();
+        assert!(y.as_slice().iter().all(|v| !v.is_finite()));
+    }
+
+    #[test]
+    fn softmax_only_all_neg_inf_rows_become_zero() {
+        assert_eq!(softmax(&[f32::NEG_INFINITY; 3]), vec![0.0; 3]);
+        let p = softmax(&[f32::INFINITY, 0.0]);
+        assert!(p.iter().any(|v| !v.is_finite()), "{p:?}");
+        let p = softmax(&[f32::NAN, f32::NEG_INFINITY]);
+        assert!(p.iter().any(|v| !v.is_finite()), "{p:?}");
+        let p = softmax(&[f32::NAN, 1.0]);
+        assert!(p.iter().all(|v| v.is_nan()), "{p:?}");
+        let p = softmax(&[f32::NEG_INFINITY, 0.0]);
+        assert_eq!(p, vec![0.0, 1.0]);
     }
 
     #[test]

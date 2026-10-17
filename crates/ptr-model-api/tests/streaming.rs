@@ -1,8 +1,9 @@
 use ptr_model_api::{
-    collect_stream, CancellationToken, Deadline, FinishReason, GenerationError, InferenceBackend,
-    InferenceStreamAdapter, ManualClock, ModelError, ModelEvent, ModelRequest,
-    ReferenceByteStreamingBackend, ReferenceEchoBackend, ScenarioBackend, StreamEvent,
-    StreamLimits, StreamOptions, StreamingBackend, TokenId, Tokenizer,
+    collect_stream, BoundedStream, CancellationToken, Deadline, EventStream, FinishReason,
+    GenerationError, InferenceBackend, InferenceStreamAdapter, ManualClock, ModelError, ModelEvent,
+    ModelRequest, ReferenceByteStreamingBackend, ReferenceEchoBackend, ScenarioBackend,
+    StreamEvent, StreamItem, StreamLimits, StreamOptions, StreamSource, StreamingBackend, TokenId,
+    Tokenizer, MAX_STREAM_CHUNK_CHARS, MAX_STREAM_MODEL_EVENTS,
 };
 use ptr_types::{RequestId, Revision, SemanticContext};
 use std::sync::Arc;
@@ -243,4 +244,38 @@ fn collect_stream_returns_first_error() {
         collect_stream(stream.as_mut()),
         Err(GenerationError::Cancelled { at_token: 0 })
     );
+}
+
+/// A source that never ends and never emits text.
+struct EndlessModelEvents;
+
+impl StreamSource for EndlessModelEvents {
+    fn next_item(&mut self) -> Result<Option<StreamItem>, GenerationError> {
+        Ok(Some(StreamItem::Model(ModelEvent::Token("x".to_owned()))))
+    }
+}
+
+#[test]
+fn endless_non_text_events_hit_the_model_event_limit_even_with_max_tokens_one() {
+    let mut stream = BoundedStream::new(EndlessModelEvents, options(1, 2));
+    let error = collect_stream(&mut stream).unwrap_err();
+    assert_eq!(
+        error,
+        GenerationError::ModelEventLimit {
+            limit: MAX_STREAM_MODEL_EVENTS
+        }
+    );
+    assert_eq!(
+        stream.next_event(),
+        StreamEvent::Error(GenerationError::StreamClosed)
+    );
+}
+
+#[test]
+fn oversize_chunk_chars_is_refused() {
+    assert!(matches!(
+        InferenceStreamAdapter::new(ReferenceEchoBackend, MAX_STREAM_CHUNK_CHARS + 1),
+        Err(GenerationError::InvalidLimits(_))
+    ));
+    assert!(InferenceStreamAdapter::new(ReferenceEchoBackend, MAX_STREAM_CHUNK_CHARS).is_ok());
 }

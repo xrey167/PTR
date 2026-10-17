@@ -16,6 +16,12 @@ use std::collections::VecDeque;
 pub const MAX_STREAM_BUFFER: usize = 4096;
 /// Upper bound accepted for [`StreamLimits::max_tokens`].
 pub const MAX_STREAM_TOKENS: usize = 1 << 20;
+/// Hard cap on the non-text [`StreamItem::Model`] events one stream may deliver in total.
+/// They do not count toward `max_tokens`, so this separate bound keeps `collect_stream` (and
+/// any consumer) from growing without limit on a source that never emits text.
+pub const MAX_STREAM_MODEL_EVENTS: usize = 1 << 16;
+/// Upper bound accepted for the `chunk_chars` of [`InferenceStreamAdapter::new`].
+pub const MAX_STREAM_CHUNK_CHARS: usize = 1 << 20;
 
 /// Why a stream ended normally.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -136,6 +142,8 @@ pub struct BoundedStream<S: StreamSource> {
     token_limit: usize,
     source_done: bool,
     delivered: usize,
+    /// Non-text events delivered so far, bounded by [`MAX_STREAM_MODEL_EVENTS`].
+    model_delivered: usize,
     ended: bool,
 }
 
@@ -151,6 +159,7 @@ impl<S: StreamSource> BoundedStream<S> {
             token_limit,
             source_done: false,
             delivered: 0,
+            model_delivered: 0,
             ended: false,
         }
     }
@@ -202,6 +211,14 @@ impl<S: StreamSource> BoundedStream<S> {
                 });
             }
             self.delivered += 1;
+        } else {
+            if self.model_delivered >= MAX_STREAM_MODEL_EVENTS {
+                self.buffer.clear();
+                return Err(GenerationError::ModelEventLimit {
+                    limit: MAX_STREAM_MODEL_EVENTS,
+                });
+            }
+            self.model_delivered += 1;
         }
         Ok(item.into_event())
     }
@@ -268,6 +285,9 @@ impl<B: InferenceBackend> InferenceStreamAdapter<B> {
             return Err(GenerationError::InvalidLimits(
                 "chunk_chars must be positive",
             ));
+        }
+        if chunk_chars > MAX_STREAM_CHUNK_CHARS {
+            return Err(GenerationError::InvalidLimits("chunk_chars out of range"));
         }
         Ok(Self {
             backend,

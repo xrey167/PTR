@@ -1,6 +1,6 @@
 //! Typed memory records keyed by [`MemoryClass`] and their lifecycle state machine.
 
-use crate::codec::{CodecError, Reader, Writer};
+use crate::codec::{bounded_capacity, CodecError, Reader, Writer, MIN_STRING_BYTES};
 use crate::MemoryClass;
 use ptr_types::Revision;
 use std::fmt;
@@ -253,6 +253,12 @@ pub(crate) fn write_record(w: &mut Writer, record: &MemoryRecord) {
     w.u64(record.updated_at);
 }
 
+/// Minimum encoded size of a [`Support`] (empty source string plus the kind tag).
+pub(crate) const MIN_SUPPORT_BYTES: usize = MIN_STRING_BYTES + 1;
+
+/// Minimum encoded size of a [`MemoryRecord`] (all strings empty, all lists empty).
+pub(crate) const MIN_RECORD_BYTES: usize = 40;
+
 pub(crate) fn read_record(r: &mut Reader<'_>) -> Result<MemoryRecord, CodecError> {
     let id = MemoryRecordId(r.string()?);
     let class = class_from_tag(r.u8()?)?;
@@ -260,8 +266,8 @@ pub(crate) fn read_record(r: &mut Reader<'_>) -> Result<MemoryRecord, CodecError
     let sensitive = r.bool()?;
     let pinned = r.bool()?;
     let state = RecordState::from_tag(r.u8()?)?;
-    let support_count = r.count()?;
-    let mut supports = Vec::with_capacity(support_count);
+    let support_count = r.count_of(MIN_SUPPORT_BYTES)?;
+    let mut supports = Vec::with_capacity(bounded_capacity(support_count));
     for _ in 0..support_count {
         let source = r.string()?;
         let kind = match r.u8()? {
@@ -279,13 +285,13 @@ pub(crate) fn read_record(r: &mut Reader<'_>) -> Result<MemoryRecord, CodecError
         };
         supports.push(Support { source, kind });
     }
-    let derived_count = r.count()?;
-    let mut derived_from = Vec::with_capacity(derived_count);
+    let derived_count = r.count_of(MIN_STRING_BYTES)?;
+    let mut derived_from = Vec::with_capacity(bounded_capacity(derived_count));
     for _ in 0..derived_count {
         derived_from.push(MemoryRecordId(r.string()?));
     }
-    let ancestor_count = r.count()?;
-    let mut revoked_ancestors = Vec::with_capacity(ancestor_count);
+    let ancestor_count = r.count_of(MIN_STRING_BYTES)?;
+    let mut revoked_ancestors = Vec::with_capacity(bounded_capacity(ancestor_count));
     for _ in 0..ancestor_count {
         revoked_ancestors.push(MemoryRecordId(r.string()?));
     }
@@ -315,6 +321,62 @@ mod tests {
         RecordState::Retired,
         RecordState::Revoked,
     ];
+
+    fn encoded(record: &MemoryRecord) -> usize {
+        let mut w = Writer::new();
+        write_record(&mut w, record);
+        w.finish().len()
+    }
+
+    fn smallest_record() -> MemoryRecord {
+        MemoryRecord {
+            id: "".into(),
+            class: MemoryClass::Semantic,
+            body: String::new(),
+            sensitive: false,
+            pinned: false,
+            state: RecordState::Provisional,
+            supports: Vec::new(),
+            derived_from: Vec::new(),
+            revoked_ancestors: Vec::new(),
+            created_at: 0,
+            updated_at: 0,
+        }
+    }
+
+    #[test]
+    fn min_sizes_equal_the_encoding_of_the_smallest_elements() {
+        assert_eq!(encoded(&smallest_record()), MIN_RECORD_BYTES);
+        let mut with_supports = smallest_record();
+        for kind in [SupportKind::Derived, SupportKind::SearchHit] {
+            with_supports.supports = vec![Support {
+                source: String::new(),
+                kind,
+            }];
+            assert_eq!(
+                encoded(&with_supports) - MIN_RECORD_BYTES,
+                MIN_SUPPORT_BYTES
+            );
+        }
+        let mut with_ids = smallest_record();
+        with_ids.derived_from = vec!["".into()];
+        assert_eq!(encoded(&with_ids) - MIN_RECORD_BYTES, MIN_STRING_BYTES);
+    }
+
+    #[test]
+    fn an_inflated_element_count_is_rejected_before_reserving() {
+        // supports count = every remaining byte, but each support needs at least 5.
+        let mut w = Writer::new();
+        write_record(&mut w, &smallest_record());
+        let mut bytes = w.finish();
+        let supports_at = 4 + 1 + 4 + 3; // after id, class, body, flags/state
+        let remaining = u32::try_from(bytes.len() - supports_at - 4).unwrap();
+        bytes[supports_at..supports_at + 4].copy_from_slice(&remaining.to_le_bytes());
+        assert_eq!(
+            read_record(&mut Reader::new(&bytes)).unwrap_err(),
+            CodecError::LengthTooLarge
+        );
+    }
 
     #[test]
     fn revoked_is_terminal_and_self_transitions_are_refused() {

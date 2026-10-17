@@ -35,10 +35,16 @@ use crate::{Span, SpanEvent, SpanStatus, TraceError, TraceEvent, TraceSink, Trac
 
 pub const REDACTED: &str = "[REDACTED]";
 
+/// Hard maximum of [`RedactionPolicy::min_secret_len`]: a larger threshold would let the value
+/// heuristics miss every realistic secret, so [`Redactor`] clamps it to this length.
+pub const MAX_MIN_SECRET_LEN: usize = 256;
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct RedactionPolicy {
     deny_keys: Vec<String>,
     allow_keys: Vec<String>,
+    /// Shortest token the value heuristics treat as a secret; clamped to
+    /// [`MAX_MIN_SECRET_LEN`] when applied.
     pub min_secret_len: usize,
     pub entropy_bits_per_char: f64,
 }
@@ -209,7 +215,7 @@ impl Redactor {
     }
 
     fn is_high_entropy(&self, token: &str) -> bool {
-        if token.len() < self.policy.min_secret_len {
+        if token.len() < self.policy.min_secret_len.min(MAX_MIN_SECRET_LEN) {
             return false;
         }
         if token.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -351,6 +357,29 @@ impl<S: TraceSink> TraceSink for RedactingSink<S> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_unbounded_secret_length_threshold_is_clamped() {
+        let policy = RedactionPolicy {
+            min_secret_len: usize::MAX,
+            ..RedactionPolicy::default()
+        };
+        let redactor = Redactor::new(policy);
+        // Built at runtime from a non-repeating pseudo-random sequence so no secret-like literal is
+        // committed (push protection would flag a high-entropy string constant).
+        let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+        let mut state = 0x2545_f491_u32;
+        let secret: String = (0..MAX_MIN_SECRET_LEN + 64)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                char::from(alphabet[state as usize % alphabet.len()])
+            })
+            .collect();
+        assert!(secret.len() > MAX_MIN_SECRET_LEN);
+        assert!(redactor.looks_like_secret(&secret));
+    }
+
     use super::*;
 
     const RANDOM_B64: &str = "q8Zr3xK9LmP2vB7nT5yW1cD6hJ4sA0eFgUiOpXzRtYu";

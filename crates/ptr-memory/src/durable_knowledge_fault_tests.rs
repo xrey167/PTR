@@ -30,6 +30,7 @@ fn sync_failure_is_invisible_and_a_retry_applies_exactly_once() {
     durable.journal.inject_fault(FaultInjection {
         fail_sync: true,
         fail_truncate: false,
+        ..FaultInjection::default()
     });
     assert!(matches!(
         durable.append_raw(event("b")),
@@ -55,6 +56,7 @@ fn failed_rollback_poisons_the_wrapper_and_stops_appends() {
     durable.journal.inject_fault(FaultInjection {
         fail_sync: true,
         fail_truncate: true,
+        ..FaultInjection::default()
     });
     assert!(durable.append_raw(event("b")).is_err());
     durable.journal.inject_fault(FaultInjection::default());

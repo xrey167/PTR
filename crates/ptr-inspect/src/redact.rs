@@ -302,7 +302,8 @@ mod tests {
     #[test]
     fn private_marks_type_and_size_class_but_not_content() {
         let private = Private::with_length_class(String::from("alice@example.com"));
-        let InspectNode::RedactedWith(hint) = private.inspect() else {
+        let node = private.inspect();
+        let InspectNode::RedactedWith(hint) = &node else {
             panic!("expected hint");
         };
         assert!(hint.type_name().contains("String"));
@@ -329,7 +330,7 @@ mod tests {
         let evidence =
             RawEvidence::with_policy("hello world", PreviewPolicy::Allow { max_bytes: 5 });
         let node = evidence.inspect();
-        let InspectNode::Struct { fields, .. } = node else {
+        let InspectNode::Struct { fields, .. } = &node else {
             panic!("expected struct");
         };
         assert!(fields.contains(&("preview".to_owned(), InspectNode::text("hello"))));
@@ -345,7 +346,8 @@ mod tests {
                 max_bytes: usize::MAX,
             },
         );
-        let InspectNode::Struct { fields, .. } = evidence.inspect() else {
+        let node = evidence.inspect();
+        let InspectNode::Struct { fields, .. } = &node else {
             panic!("expected struct");
         };
         let preview = fields.iter().find(|(n, _)| n == "preview").map(|(_, v)| v);

@@ -420,7 +420,37 @@ fn unencodable_cancel_close_and_reply_do_not_mutate_session_state() {
         Err(SessionError::Encode(_))
     ));
     assert_eq!(e.queued_calls(), 0);
-    assert_eq!(e.completed_keys(), 0);
+    // The effect already happened: the key is tombstoned, not forgotten.
+    assert_eq!(e.completed_keys(), 1);
+}
+
+#[test]
+fn retry_after_an_unencodable_reply_does_not_execute_the_handler_again() {
+    let ((mut a, mut ta), (mut b, mut tb)) = handshake();
+    let call = a.call(key("effect"), payload(b"go")).unwrap();
+    ta.send(&call).unwrap();
+    b.pump(&mut tb).unwrap();
+    let mut effects = 0u32;
+    let mut handler = |_: &TypedPayload| {
+        effects += 1;
+        TypedPayload {
+            type_id: TypeId::from("Text"),
+            bytes: vec![0u8; ptr_protocol::control::MAX_FRAME_BYTES + 1],
+        }
+    };
+    assert!(matches!(
+        b.serve_next(&mut handler),
+        Err(SessionError::Encode(_))
+    ));
+    // The peer never got a reply and retries the same call (same seq, same key).
+    ta.send(&a.retry(1).unwrap()).unwrap();
+    assert!(matches!(
+        b.pump(&mut tb),
+        Err(DriveError::Session(SessionError::ReplyUnencodable { .. }))
+    ));
+    assert_eq!(b.queued_calls(), 0, "the retry must not be queued");
+    assert!(b.serve_next(&mut handler).unwrap().is_none());
+    assert_eq!(effects, 1, "the effect must run exactly once");
 }
 
 fn bad_configs() -> Vec<(&'static str, SessionConfig)> {

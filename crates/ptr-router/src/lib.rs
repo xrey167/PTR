@@ -43,7 +43,8 @@ pub use findings::{
     FindingRegistry, FindingRouteError, FindingRouteErrorKind, FindingRouteRecord,
     FindingRouteRequest, FindingRouter, PodEligibility, RegistryChange, RegistryError,
     RegistryGeneration, RegistryUpdate, ReportClass, RouteClass, RouteOutcome, RouterBuildError,
-    RouterConfig, RouterLimits, ScoringContext, UniformScorer,
+    RouterConfig, RouterLimits, ScoringContext, UniformScorer, MAX_REGISTRY_CODES,
+    MAX_REGISTRY_PODS_PER_ROLE,
 };
 pub use learned::{
     ActivationPolicy, EncodedWith, EncoderRef, GateReport, LearnedPodRouter, LearnedRouterConfig,
@@ -91,7 +92,7 @@ pub use self_model::{
 };
 pub use telemetry::{
     JsonLinesSink, MemorySink, RoutingRecord, RoutingTelemetry, TelemetryError, MAX_FIELD_BYTES,
-    MAX_MEMORY_SINK_RECORDS,
+    MAX_JSON_LINES_BYTES, MAX_MEMORY_SINK_RECORDS,
 };
 pub use verifier_roles::{finding_codes_for_role, RepairRoleAssignments};
 

@@ -35,7 +35,8 @@ pub use fact::{fact_key, BoundReport, FactClaim, FactVerifier};
 pub use json_schema::JsonSchemaVerifier;
 pub use process::{
     CommandRequest, ProcessCommandVerifier, ProcessConfig, ProcessConfigError, ProcessExit,
-    ProcessLimits, ProcessRejection, ProcessRun, MAX_STUCK_CAPTURE_THREADS,
+    ProcessLimits, ProcessRejection, ProcessRun, MAX_ARGS_LIMIT, MAX_ARG_BYTES_LIMIT,
+    MAX_STUCK_CAPTURE_THREADS,
 };
 pub use promotion::{
     Evidence, EvidenceOrigin, PromotionClaim, PromotionPolicy, PromotionPolicyError,
@@ -180,6 +181,9 @@ pub enum PayloadEncoding {
     Opaque,
 }
 
+/// Hard maximum of [`ActionContract::max_payload_bytes`] (16 MiB).
+pub const MAX_ACTION_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
+
 /// The exact contract an action must meet, field by field.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ActionContract {
@@ -188,6 +192,8 @@ pub struct ActionContract {
     pub capability: CapabilityId,
     pub input_type: TypeId,
     pub effect: Effect,
+    /// At most [`MAX_ACTION_PAYLOAD_BYTES`]; [`ActionContractVerifier::new`] clamps a larger
+    /// value to it.
     pub max_payload_bytes: usize,
     pub payload_encoding: PayloadEncoding,
 }
@@ -207,7 +213,8 @@ pub struct ActionContractVerifier {
 }
 
 impl ActionContractVerifier {
-    pub fn new(contract: ActionContract) -> Self {
+    pub fn new(mut contract: ActionContract) -> Self {
+        contract.max_payload_bytes = contract.max_payload_bytes.min(MAX_ACTION_PAYLOAD_BYTES);
         Self { contract }
     }
 
@@ -316,6 +323,18 @@ fn level_rank(level: VerificationLevel) -> u8 {
 mod tests {
     use super::*;
     use ptr_types::{Generation, Revision};
+
+    #[test]
+    fn an_unbounded_payload_bound_is_clamped() {
+        let verifier = ActionContractVerifier::new(ActionContract {
+            max_payload_bytes: usize::MAX,
+            ..contract()
+        });
+        assert_eq!(
+            verifier.contract().max_payload_bytes,
+            MAX_ACTION_PAYLOAD_BYTES
+        );
+    }
 
     fn contract() -> ActionContract {
         ActionContract {

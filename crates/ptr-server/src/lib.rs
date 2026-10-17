@@ -40,7 +40,7 @@ pub use options::{
     IngressDiagnosticsLimits, IngressDiagnosticsMode, RequestTracingOptions, ServerOptions,
     ServerOptionsError, DEFAULT_MAX_CONCURRENT_INGRESS_DIAGNOSTICS,
     DEFAULT_MAX_INGRESS_ANALYZED_BYTES, DEFAULT_MAX_TRACE_EXPORT_BYTES,
-    MAX_INGRESS_DIAGNOSTICS_BUDGET_BYTES,
+    MAX_INGRESS_DIAGNOSTICS_BUDGET_BYTES, MAX_TRACE_EXPORT_BYTES,
 };
 
 pub use vcw::{
@@ -85,6 +85,12 @@ pub const MAX_REQUEST_TEXT_BYTES: usize = 1024 * 1024;
 pub const MAX_REQUEST_BODY_BYTES: usize = 2 * 1024 * 1024;
 /// Largest typed Pod output the default verifier accepts, in bytes.
 pub const MAX_POD_OUTPUT_BYTES: usize = 64 * 1024;
+/// Hard maximum of [`PayloadBounds::max_bytes`] (16 MiB); [`PayloadBoundsVerifier::new`] clamps
+/// a larger value to it.
+pub const MAX_POD_PAYLOAD_BOUND_BYTES: usize = 16 * 1024 * 1024;
+/// Hard maximum of the admission capacity (requests in flight at once); a larger runtime
+/// `mailbox_capacity` is clamped to it by [`ServerState`] and refused by [`RequestAdmission::new`].
+pub const MAX_REQUEST_ADMISSION_CAPACITY: usize = 1 << 20;
 /// Response header of the KV path: prompt tokens the backend served from its KV cache.
 pub const KV_HIT_TOKENS_HEADER: &str = "x-ptr-kv-hit-tokens";
 
@@ -353,8 +359,14 @@ impl ServerState {
     ) -> Self {
         // Read before the runtime moves into its mutex.
         let admission = Arc::new(
-            RequestAdmission::new(runtime.config.runtime.mailbox_capacity)
-                .expect("runtime.mailbox_capacity is validated non-zero by ptr-config"),
+            RequestAdmission::new(
+                runtime
+                    .config
+                    .runtime
+                    .mailbox_capacity
+                    .min(MAX_REQUEST_ADMISSION_CAPACITY),
+            )
+            .expect("runtime.mailbox_capacity is validated non-zero by ptr-config"),
         );
         Self {
             runtime: Arc::new(Mutex::new(runtime)),
@@ -373,7 +385,8 @@ impl ServerState {
     /// diagnostics). `ServerOptions::default()` changes nothing.
     ///
     /// # Errors
-    /// [`ServerOptionsError`] when the trace export cap is zero or its file is unusable.
+    /// [`ServerOptionsError`] when the trace export cap is zero or above
+    /// [`MAX_TRACE_EXPORT_BYTES`], or its file is unusable.
     pub fn with_options(mut self, options: ServerOptions) -> Result<Self, ServerOptionsError> {
         self.options = options::ActiveOptions::build(options, self.options.ingress_limits)?;
         Ok(self)
@@ -825,7 +838,8 @@ pub struct PayloadBoundsVerifier {
 }
 
 impl PayloadBoundsVerifier {
-    pub fn new(bounds: PayloadBounds) -> Self {
+    pub fn new(mut bounds: PayloadBounds) -> Self {
+        bounds.max_bytes = bounds.max_bytes.min(MAX_POD_PAYLOAD_BOUND_BYTES);
         Self { bounds }
     }
 }
@@ -900,10 +914,14 @@ pub struct RequestAdmission {
 
 impl RequestAdmission {
     /// Fails with [`AdmissionError::ZeroCapacity`] for a capacity of zero,
-    /// which would refuse every request.
+    /// which would refuse every request, and with [`AdmissionError::CapacityTooLarge`] above
+    /// [`MAX_REQUEST_ADMISSION_CAPACITY`].
     pub fn new(capacity: usize) -> Result<Self, AdmissionError> {
         if capacity == 0 {
             return Err(AdmissionError::ZeroCapacity);
+        }
+        if capacity > MAX_REQUEST_ADMISSION_CAPACITY {
+            return Err(AdmissionError::CapacityTooLarge);
         }
         Ok(Self {
             in_flight: AtomicUsize::new(0),
@@ -944,6 +962,8 @@ impl RequestAdmission {
 pub enum AdmissionError {
     /// Capacity must be at least one.
     ZeroCapacity,
+    /// Capacity above [`MAX_REQUEST_ADMISSION_CAPACITY`].
+    CapacityTooLarge,
 }
 
 /// A taken admission slot, released on drop.
@@ -1180,6 +1200,20 @@ mod tests {
         drop(a);
         assert_eq!(admission.in_flight(), 1);
         assert!(admission.try_enter().is_some());
+    }
+
+    #[test]
+    fn unbounded_admission_capacity_and_payload_bound_are_capped() {
+        assert_eq!(
+            RequestAdmission::new(usize::MAX).unwrap_err(),
+            AdmissionError::CapacityTooLarge
+        );
+        assert!(RequestAdmission::new(MAX_REQUEST_ADMISSION_CAPACITY).is_ok());
+        let verifier = PayloadBoundsVerifier::new(PayloadBounds {
+            max_bytes: usize::MAX,
+            ..PayloadBounds::default()
+        });
+        assert_eq!(verifier.bounds.max_bytes, MAX_POD_PAYLOAD_BOUND_BYTES);
     }
 
     #[test]

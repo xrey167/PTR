@@ -20,9 +20,15 @@ use crate::sniff::{kind_for_extension, sniff, SniffReport};
 /// Default input bound: 4 MiB.
 const DEFAULT_MAX_INPUT_BYTES: usize = 4 * 1024 * 1024;
 
+/// Hard maximum of [`IngressConfig::max_input_bytes`] (64 MiB). [`IngressPipeline::new`] and
+/// [`IngressPipeline::try_new`] clamp a larger budget to it, so inline input stays bounded
+/// whatever a host passes (`usize::MAX` included).
+pub const MAX_INGRESS_INPUT_BYTES: usize = 64 * 1024 * 1024;
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct IngressConfig {
-    /// Inputs longer than this are rejected with [`IngressError::InputTooLarge`].
+    /// Inputs longer than this are rejected with [`IngressError::InputTooLarge`]. Clamped to
+    /// [`MAX_INGRESS_INPUT_BYTES`] by the pipeline constructors.
     pub max_input_bytes: usize,
     pub normalize: NormalizeOptions,
     pub parse: ParseOptions,
@@ -149,6 +155,7 @@ impl IngressPipeline {
     /// [`IngressPipeline::try_new`] to reject such a configuration instead.
     pub fn new(mut config: IngressConfig) -> Self {
         config.policy = config.policy.fail_closed();
+        config.max_input_bytes = config.max_input_bytes.min(MAX_INGRESS_INPUT_BYTES);
         Self {
             config,
             primary: Box::new(RuleClassifier),
@@ -157,8 +164,11 @@ impl IngressPipeline {
     }
 
     /// Like [`IngressPipeline::new`], but refuses an invalid policy configuration.
-    pub fn try_new(config: IngressConfig) -> Result<Self, PolicyConfigError> {
+    ///
+    /// An oversized `max_input_bytes` is clamped to [`MAX_INGRESS_INPUT_BYTES`], not refused.
+    pub fn try_new(mut config: IngressConfig) -> Result<Self, PolicyConfigError> {
         config.policy.validate()?;
+        config.max_input_bytes = config.max_input_bytes.min(MAX_INGRESS_INPUT_BYTES);
         Ok(Self {
             config,
             primary: Box::new(RuleClassifier),
@@ -335,6 +345,30 @@ mod tests {
                 actual: 5
             })
         );
+    }
+
+    #[test]
+    fn unbounded_input_budget_is_clamped_by_both_constructors() {
+        let config = IngressConfig {
+            max_input_bytes: usize::MAX,
+            ..Default::default()
+        };
+        assert_eq!(
+            IngressPipeline::new(config).config().max_input_bytes,
+            MAX_INGRESS_INPUT_BYTES
+        );
+        assert_eq!(
+            IngressPipeline::try_new(config)
+                .expect("valid")
+                .config()
+                .max_input_bytes,
+            MAX_INGRESS_INPUT_BYTES
+        );
+        let small = IngressConfig {
+            max_input_bytes: 10,
+            ..Default::default()
+        };
+        assert_eq!(IngressPipeline::new(small).config().max_input_bytes, 10);
     }
 
     #[test]

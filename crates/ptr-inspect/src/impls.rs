@@ -162,18 +162,17 @@ impl<T: Inspectable> Inspectable for BTreeSet<T> {
 }
 
 /// Elements are ordered by their rendered form so the output is deterministic; equal bounded
-/// labels (for example long strings sharing a prefix) are ordered by their full JSON rendering,
-/// as in [`InspectNode::map_sorted`].
+/// labels (for example long strings sharing a prefix) are ordered by an untruncated iterative
+/// structural comparison, as in [`InspectNode::map_sorted`].
 impl<T: Inspectable> Inspectable for HashSet<T> {
     fn inspect(&self) -> InspectNode {
         let mut items: Vec<InspectNode> = self.iter().map(Inspectable::inspect).collect();
-        items.sort_by_cached_key(|item| {
-            (
-                crate::render::key_label(item),
-                crate::render::render_json(item),
-            )
-        });
-        InspectNode::List(items)
+        let mut keyed: Vec<(String, InspectNode)> = items
+            .drain(..)
+            .map(|item| (crate::render::key_label(&item), item))
+            .collect();
+        keyed.sort_by(|(la, a), (lb, b)| la.cmp(lb).then_with(|| crate::node::cmp_nodes(a, b)));
+        InspectNode::List(keyed.into_iter().map(|(_, item)| item).collect())
     }
 }
 
@@ -460,7 +459,8 @@ mod tests {
             .enumerate()
             .map(|(i, k)| ((*k).to_owned(), i as u8))
             .collect();
-        let InspectNode::Map(entries) = map.inspect() else {
+        let node = map.inspect();
+        let InspectNode::Map(entries) = &node else {
             panic!("expected map");
         };
         let keys: Vec<_> = entries.iter().map(|(k, _)| k.clone()).collect();

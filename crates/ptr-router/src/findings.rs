@@ -148,17 +148,23 @@ impl Default for FindingRegistry {
     }
 }
 
+/// Hard maximum of the code bound of [`FindingRegistry::with_capacity`].
+pub const MAX_REGISTRY_CODES: usize = 1 << 16;
+/// Hard maximum of the per-code Pod bound of [`FindingRegistry::with_capacity`].
+pub const MAX_REGISTRY_PODS_PER_ROLE: usize = 1 << 12;
+
 impl FindingRegistry {
     pub fn new() -> Self {
         Self::default()
     }
 
     /// A registry holding at most `max_codes` codes and `max_pods_per_role` Pods per code (and
-    /// as many proposers).
+    /// as many proposers). The two bounds are clamped to [`MAX_REGISTRY_CODES`] and
+    /// [`MAX_REGISTRY_PODS_PER_ROLE`].
     pub fn with_capacity(max_codes: usize, max_pods_per_role: usize) -> Self {
         Self {
-            max_codes,
-            max_pods_per_role,
+            max_codes: max_codes.min(MAX_REGISTRY_CODES),
+            max_pods_per_role: max_pods_per_role.min(MAX_REGISTRY_PODS_PER_ROLE),
             generation: 0,
             repair: BTreeMap::new(),
             proposers: BTreeSet::new(),
@@ -321,6 +327,29 @@ pub struct RouterLimits {
     pub max_code_len: usize,
     /// Distinct codes with their own unroutable counter; later codes share the overflow bucket.
     pub max_tracked_unroutable_codes: usize,
+}
+
+impl RouterLimits {
+    /// Hard maximum of [`RouterLimits::max_codes_per_report`].
+    pub const HARD_MAX_CODES_PER_REPORT: usize = 1 << 10;
+    /// Hard maximum of [`RouterLimits::max_code_len`].
+    pub const HARD_MAX_CODE_LEN: usize = 4096;
+    /// Hard maximum of [`RouterLimits::max_tracked_unroutable_codes`].
+    pub const HARD_MAX_TRACKED_UNROUTABLE_CODES: usize = 1 << 16;
+
+    /// The limits with every field cut to its `HARD_MAX_*`; [`FindingRouter::new`] applies it.
+    #[must_use]
+    pub fn clamped(self) -> Self {
+        Self {
+            max_codes_per_report: self
+                .max_codes_per_report
+                .min(Self::HARD_MAX_CODES_PER_REPORT),
+            max_code_len: self.max_code_len.min(Self::HARD_MAX_CODE_LEN),
+            max_tracked_unroutable_codes: self
+                .max_tracked_unroutable_codes
+                .min(Self::HARD_MAX_TRACKED_UNROUTABLE_CODES),
+        }
+    }
 }
 
 impl Default for RouterLimits {
@@ -879,7 +908,7 @@ impl<S: AdmissibleScorer> FindingRouter<S> {
     /// under none.
     pub fn new(
         registry: FindingRegistry,
-        config: RouterConfig,
+        mut config: RouterConfig,
         scorer: S,
         key: SamplingKey,
         nonces: NonceSequence,
@@ -892,6 +921,7 @@ impl<S: AdmissibleScorer> FindingRouter<S> {
                 });
             }
         }
+        config.limits = config.limits.clamped();
         Ok(Self {
             registry,
             config,
@@ -1133,6 +1163,15 @@ fn filter_eligible(registered: &[PodId], view: &dyn PodEligibility) -> (Vec<PodI
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn registry_capacity_is_clamped_to_hard_maxima() {
+        let registry = FindingRegistry::with_capacity(usize::MAX, usize::MAX);
+        assert_eq!(registry.max_codes, MAX_REGISTRY_CODES);
+        assert_eq!(registry.max_pods_per_role, MAX_REGISTRY_PODS_PER_ROLE);
+        let small = FindingRegistry::with_capacity(3, 2);
+        assert_eq!((small.max_codes, small.max_pods_per_role), (3, 2));
+    }
 
     #[test]
     fn exhausted_generation_is_refused_and_changes_nothing() {

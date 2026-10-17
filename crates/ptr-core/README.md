@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-14  
-**Code footprint:** 20 Rust source files · 3959 nonblank source lines · 4 integration-test files · 85 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 20 Rust source files · 4024 nonblank source lines · 4 integration-test files · 89 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -34,6 +34,7 @@
 - PTR-Diff reference step: discrete masked denoising on a small vocabulary with a deterministic ceil(masked/steps_remaining) unmasking schedule, top-k most-confident unmasking, tested for monotone unmasking, no rewrite of known tokens and termination; there is no training objective
 - Checkpoint save/load: ptr-types CheckpointHeader (format 3, codebook, slot encoding, architecture binding) plus a little-endian parameter manifest (name, shape, in-crate CRC-32 per tensor and for the payload); load rejects wrong magic, model name, codebook, architecture, manifest, shape, checksum and non-finite values with typed errors; forward after save then load is bit-identical, and a tiny-config golden test pins outputs (CRC-32 detects corruption, it is not authentication)
 - External model/burn-a0 research package implements trainable raw↔typed cross-attention, epistemic/validity/provenance metadata, typed attention bias, latent refinement and router gradients
+- Numerically honest layer_norm and softmax (src/tensor.rs): layer_norm accumulates mean and variance in f64 so large opposing values no longer overflow the variance, and fills an unrepresentable row with NaN for the callers' finiteness checks; softmax zeroes only an all -inf (masked) row, any +inf or NaN logit propagates NaN so router_probabilities and route report NonFinite (tests: tensor::tests layer_norm_survives_large_opposing_values, softmax_only_all_neg_inf_rows_become_zero; operator_router::tests overflowing_router_logits_are_rejected_not_zeroed)
 
 ### Missing for the target architecture
 

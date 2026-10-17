@@ -30,7 +30,7 @@ pub use ingestion::{
 };
 pub use journal::{
     crc32, CorruptionReason, JournalError, JournalKind, JournalOptions, JournalRecovery,
-    MemoryJournal,
+    MemoryJournal, MAX_JOURNAL_FILE_BYTES, MAX_JOURNAL_RECORD_BYTES,
 };
 pub use knowledge::{KnowledgeStore, KnowledgeStoreError, LifecycleRecord};
 pub use kv::{
@@ -39,6 +39,8 @@ pub use kv::{
 pub use memory_store::{
     AppliedRetention, DurableMemoryStore, MemoryClassName, MemoryLimits, MemoryStoreError,
     MemoryStoreOptions, NewMemoryRecord, RecordViolation, RevocationReport, TraversalLimit,
+    MAX_BODY_BYTES, MAX_ID_BYTES, MAX_LINKS_PER_RECORD, MAX_RECORDS_PER_CLASS,
+    MAX_REVOCATION_DEPTH, MAX_REVOCATION_VISITED,
 };
 pub use mirror::{render_knowledge_mirror, render_memory_mirror, REDACTED};
 pub use record::{MemoryRecord, MemoryRecordId, RecordState, Support, SupportKind};

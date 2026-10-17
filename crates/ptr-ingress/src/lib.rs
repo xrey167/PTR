@@ -27,9 +27,12 @@ pub use normalize::{
 };
 pub use parse::{
     parse, validate_json, CodeLanguage, DocumentFormat, JsonError, JsonErrorKind, ParseIssue,
-    ParseOptions, ParsedDocument, Segment, SegmentKind,
+    ParseOptions, ParsedDocument, Segment, SegmentKind, MAX_PARSE_JSON_DEPTH, MAX_PARSE_SEGMENTS,
 };
-pub use pipeline::{IngestHints, IngressConfig, IngressError, IngressPipeline, IngressRecord};
+pub use pipeline::{
+    IngestHints, IngressConfig, IngressError, IngressPipeline, IngressRecord,
+    MAX_INGRESS_INPUT_BYTES,
+};
 pub use policy::{
     cross_check, evaluate_policy, CrossCheckStatus, DisagreementReason, PolicyConfig,
     PolicyConfigError, PolicyInput, PolicyThreshold, VerificationDecision, HIGH_RISK_EFFECT_LABELS,

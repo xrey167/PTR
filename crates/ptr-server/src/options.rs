@@ -8,6 +8,9 @@ use std::sync::Arc;
 
 /// Default cap on the size of the trace export file, in bytes.
 pub const DEFAULT_MAX_TRACE_EXPORT_BYTES: u64 = 8 * 1024 * 1024;
+/// Hard maximum of [`RequestTracingOptions::max_export_bytes`] (1 GiB): a larger cap would let
+/// the export file grow without a practical bound.
+pub const MAX_TRACE_EXPORT_BYTES: u64 = 1 << 30;
 
 /// Whether `POST /v1/requests` reports advisory ingress diagnostics.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -60,7 +63,8 @@ pub struct RequestTracingOptions {
     /// File the finished spans are appended to (created if missing).
     pub export_path: PathBuf,
     /// The export file never grows beyond this many bytes; a span batch that would exceed it
-    /// is dropped and counted (see `ServerState::dropped_trace_exports`). Must be non-zero.
+    /// is dropped and counted (see `ServerState::dropped_trace_exports`). Must be non-zero and at
+    /// most [`MAX_TRACE_EXPORT_BYTES`].
     pub max_export_bytes: u64,
 }
 
@@ -85,6 +89,8 @@ pub struct ServerOptions {
 pub enum ServerOptionsError {
     /// `max_export_bytes` was zero, so no span could ever be exported.
     ZeroTraceExportCap,
+    /// `max_export_bytes` was above [`MAX_TRACE_EXPORT_BYTES`].
+    TraceExportCapTooLarge { max: u64 },
     /// `IngressDiagnosticsLimits::max_concurrent` was zero.
     ZeroIngressConcurrency,
     /// `IngressDiagnosticsLimits::max_analyzed_bytes` was zero.
@@ -103,6 +109,9 @@ impl fmt::Display for ServerOptionsError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ZeroTraceExportCap => f.write_str("max_export_bytes must be non-zero"),
+            Self::TraceExportCapTooLarge { max } => {
+                write!(f, "max_export_bytes must not exceed {max}")
+            }
             Self::ZeroIngressConcurrency => f.write_str("max_concurrent must be non-zero"),
             Self::ZeroIngressAnalysisCap => f.write_str("max_analyzed_bytes must be non-zero"),
             Self::IngressDiagnosticsBudgetExceeded { budget } => write!(

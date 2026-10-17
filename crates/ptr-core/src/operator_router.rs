@@ -134,6 +134,21 @@ mod tests {
     }
 
     #[test]
+    fn overflowing_router_logits_are_rejected_not_zeroed() {
+        let mut m = model();
+        let (r, c) = m.router.w.shape();
+        m.router.w = crate::tensor::Matrix::new(r, c, vec![3.0e38; r * c]).unwrap();
+        let pooled = [3.0e38_f32; 8];
+        let logits = m.router_logits(&pooled).unwrap();
+        assert!(logits.contains(&f32::INFINITY));
+        assert!(matches!(
+            m.router_probabilities(&pooled),
+            Err(CoreError::NonFinite { .. })
+        ));
+        assert!(matches!(m.route(&pooled), Err(CoreError::NonFinite { .. })));
+    }
+
+    #[test]
     fn top_is_the_highest_weight() {
         let m = model();
         let mut m2 = m.clone();

@@ -10,10 +10,11 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-14  
-**Code footprint:** 10 Rust source files · 2660 nonblank source lines · 8 integration-test files · 82 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 10 Rust source files · 2688 nonblank source lines · 8 integration-test files · 84 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
+- src/streaming.rs: BoundedStream also counts non-text StreamItem::Model events, which do not count toward max_tokens, and ends the stream with GenerationError::ModelEventLimit once MAX_STREAM_MODEL_EVENTS (65536) were delivered, so collect_stream cannot grow without bound; InferenceStreamAdapter::new refuses chunk_chars above MAX_STREAM_CHUNK_CHARS
 - Backend-neutral ModelRequest with request/revision/raw text
 - ModelEvent enum for slot, hypothesis, confidence, typed ReasoningOperator request, typed Pod request, candidate, action, token and completion events
 - InferenceBackend trait and ModelError

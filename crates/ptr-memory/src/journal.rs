@@ -35,6 +35,17 @@ const VERSION: u8 = 1;
 const HEADER_LEN: usize = 8;
 const FRAME_HEADER_LEN: usize = 8;
 
+/// Hard ceiling for [`JournalOptions::max_record_bytes`]: 64 MiB. A payload is held in memory
+/// several times over (frame buffer, decoded copy, decoded value), so a frame this large is
+/// already far beyond any memory delta or knowledge operation; it is also well under the `u32`
+/// frame length field.
+pub const MAX_JOURNAL_RECORD_BYTES: usize = 64 * 1024 * 1024;
+
+/// Hard ceiling for [`JournalOptions::max_file_bytes`]: 1 GiB. Opening reads the whole journal
+/// into memory and decodes every record (roughly twice the file size resident), so this keeps
+/// recovery bounded to a few GiB; compaction keeps real journals far below it.
+pub const MAX_JOURNAL_FILE_BYTES: u64 = 1024 * 1024 * 1024;
+
 /// Identifies which store owns a journal file so one cannot be opened as the other.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum JournalKind {
@@ -62,9 +73,10 @@ impl JournalKind {
 /// Bounds and durability options of a journal (Invariant 8: nothing is unbounded).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct JournalOptions {
-    /// Largest accepted frame payload.
+    /// Largest accepted frame payload (at most [`MAX_JOURNAL_RECORD_BYTES`]).
     pub max_record_bytes: usize,
-    /// Largest journal file that will be loaded on open.
+    /// Largest journal file that will be loaded on open (at least the 8-byte header, at most
+    /// [`MAX_JOURNAL_FILE_BYTES`]).
     pub max_file_bytes: u64,
     /// Call `sync_data` after every append.
     pub sync_on_append: bool,
@@ -215,6 +227,8 @@ pub struct MemoryJournal {
 pub(crate) struct FaultInjection {
     pub(crate) fail_sync: bool,
     pub(crate) fail_truncate: bool,
+    /// Makes the directory sync after a compaction rename fail.
+    pub(crate) fail_sync_parent: bool,
 }
 
 impl MemoryJournal {
@@ -232,6 +246,20 @@ impl MemoryJournal {
             return Err(JournalError::FileTooLarge {
                 len: header_len,
                 max: options.max_file_bytes,
+            });
+        }
+        // Hard ceilings: `open` reads the whole file into memory, so an unbounded cap would let
+        // a caller (or a growing file) exhaust it.
+        if options.max_file_bytes > MAX_JOURNAL_FILE_BYTES {
+            return Err(JournalError::FileTooLarge {
+                len: options.max_file_bytes,
+                max: MAX_JOURNAL_FILE_BYTES,
+            });
+        }
+        if options.max_record_bytes > MAX_JOURNAL_RECORD_BYTES {
+            return Err(JournalError::RecordTooLarge {
+                len: options.max_record_bytes,
+                max: MAX_JOURNAL_RECORD_BYTES,
             });
         }
         let tmp = temp_path(&path);
@@ -254,9 +282,9 @@ impl MemoryJournal {
                 max: options.max_file_bytes,
             });
         }
-        let mut bytes = Vec::with_capacity(usize::try_from(len).unwrap_or(0));
-        file.read_to_end(&mut bytes)
-            .map_err(|e| io_error("read", &e))?;
+        // Another writer may append after the metadata check: never read past the cap, and
+        // refuse a file that grew beyond it instead of allocating for the growth.
+        let bytes = read_bounded(&mut file, len, options.max_file_bytes)?;
 
         let expected = header(kind);
         if bytes.len() < HEADER_LEN {
@@ -364,6 +392,14 @@ impl MemoryJournal {
         file.sync_all()
     }
 
+    fn persist_rename(&self) -> io::Result<()> {
+        #[cfg(test)]
+        if self.fault.fail_sync_parent {
+            return Err(io::Error::other("injected directory sync failure"));
+        }
+        sync_parent(&self.path)
+    }
+
     /// Path of the journal file.
     pub fn path(&self) -> &Path {
         &self.path
@@ -377,7 +413,8 @@ impl MemoryJournal {
     /// Reads the intact payloads currently on disk without modifying the file (a torn tail is
     /// ignored, not truncated). Used to rebuild in-memory state after a failed append.
     pub(crate) fn read_records(&self) -> Result<Vec<Vec<u8>>, JournalError> {
-        let bytes = fs::read(&self.path).map_err(|e| io_error("read", &e))?;
+        let mut file = File::open(&self.path).map_err(|e| io_error("open", &e))?;
+        let bytes = read_bounded(&mut file, self.len, self.options.max_file_bytes)?;
         if bytes.len() < HEADER_LEN || bytes[..HEADER_LEN] != header(self.kind) {
             return Err(JournalError::BadHeader);
         }
@@ -453,7 +490,13 @@ impl MemoryJournal {
             let _ = fs::remove_file(&tmp);
             return Err(io_error("rewrite", &error));
         }
-        sync_parent(&self.path);
+        if let Err(error) = self.persist_rename() {
+            // The rename may not be durable: a crash could bring the pre-compaction journal
+            // back, and anything acknowledged against the replacement would be lost with it.
+            // The handle also still points at the replaced inode. Refuse further writes.
+            self.poisoned = true;
+            return Err(io_error("sync journal directory", &error));
+        }
         match OpenOptions::new().append(true).open(&self.path) {
             Ok(file) => {
                 self.file = file;
@@ -469,6 +512,28 @@ impl MemoryJournal {
     }
 }
 
+/// Reads at most `max + 1` bytes: a file that grew past `max` after its length was checked is
+/// refused as [`JournalError::FileTooLarge`] instead of being read (and allocated) in full.
+/// `expected_len` only sizes the initial reservation.
+fn read_bounded(
+    source: &mut impl Read,
+    expected_len: u64,
+    max: u64,
+) -> Result<Vec<u8>, JournalError> {
+    let mut bytes = Vec::with_capacity(usize::try_from(expected_len.min(max)).unwrap_or(0));
+    source
+        .take(max.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|e| io_error("read", &e))?;
+    if bytes.len() as u64 > max {
+        return Err(JournalError::FileTooLarge {
+            len: bytes.len() as u64,
+            max,
+        });
+    }
+    Ok(bytes)
+}
+
 fn temp_path(path: &Path) -> PathBuf {
     let mut name = path.as_os_str().to_owned();
     name.push(".compact.tmp");
@@ -482,13 +547,21 @@ fn write_new(path: &Path, header: &[u8]) -> Result<(), JournalError> {
     file.sync_all().map_err(|e| io_error("sync", &e))
 }
 
-/// Best effort: persist the rename itself. Unsupported on some platforms, so errors are ignored.
-fn sync_parent(path: &Path) {
-    if let Some(parent) = path.parent() {
-        if let Ok(dir) = File::open(parent) {
-            let _ = dir.sync_all();
-        }
-    }
+/// Persists the rename itself by syncing the parent directory; errors are returned.
+#[cfg(unix)]
+fn sync_parent(path: &Path) -> io::Result<()> {
+    let parent = match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
+    File::open(parent)?.sync_all()
+}
+
+/// Windows (and other non-Unix targets): std cannot open a directory as a `File`, and NTFS
+/// persists the rename through the file-system journal, so there is nothing to sync here.
+#[cfg(not(unix))]
+fn sync_parent(_path: &Path) -> io::Result<()> {
+    Ok(())
 }
 
 /// Parses the frames after the header. Returns the payloads and the length of the valid prefix.
@@ -679,7 +752,7 @@ mod tests {
         let before = fs::read(&path.0).unwrap();
         journal.inject_fault(FaultInjection {
             fail_sync: true,
-            fail_truncate: false,
+            ..FaultInjection::default()
         });
         assert!(matches!(
             journal.append(b"two"),
@@ -704,6 +777,7 @@ mod tests {
         journal.inject_fault(FaultInjection {
             fail_sync: true,
             fail_truncate: true,
+            ..FaultInjection::default()
         });
         assert!(journal.append(b"x").is_err());
         assert!(journal.is_poisoned());
@@ -717,5 +791,112 @@ mod tests {
         fs::write(temp_path(&path.0), b"half written").unwrap();
         let (_, _) = open(&path.0);
         assert!(!temp_path(&path.0).exists());
+    }
+
+    #[test]
+    fn directory_sync_failure_after_rename_is_reported_and_poisons() {
+        let path = TempPath::new("dirsync");
+        let (mut journal, _) = open(&path.0);
+        journal.append(b"before").unwrap();
+        journal.inject_fault(FaultInjection {
+            fail_sync_parent: true,
+            ..FaultInjection::default()
+        });
+        assert!(matches!(
+            journal.rewrite(&[b"snap".to_vec()]),
+            Err(JournalError::Io {
+                operation: "sync journal directory",
+                ..
+            })
+        ));
+        assert!(journal.is_poisoned());
+        journal.inject_fault(FaultInjection::default());
+        // No acknowledged append can land on a replacement whose rename may not be durable.
+        assert_eq!(journal.append(b"after"), Err(JournalError::Poisoned));
+        assert_eq!(journal.rewrite(&[]), Err(JournalError::Poisoned));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sync_parent_reports_a_missing_directory_and_accepts_a_bare_file_name() {
+        let missing = std::env::temp_dir().join("ptr-memory-no-such-dir-xyz/file");
+        assert!(sync_parent(&missing).is_err());
+        assert!(sync_parent(Path::new("journal-in-cwd")).is_ok());
+        assert!(sync_parent(&std::env::temp_dir().join("anything")).is_ok());
+    }
+
+    #[test]
+    fn open_rejects_limits_above_the_hard_ceilings_before_touching_the_file() {
+        let path = TempPath::new("ceilings");
+        let file_options = JournalOptions {
+            max_file_bytes: u64::MAX,
+            max_record_bytes: usize::MAX,
+            ..JournalOptions::default()
+        };
+        assert_eq!(
+            MemoryJournal::open(&path.0, JournalKind::Memory, file_options).unwrap_err(),
+            JournalError::FileTooLarge {
+                len: u64::MAX,
+                max: MAX_JOURNAL_FILE_BYTES
+            }
+        );
+        let record_options = JournalOptions {
+            max_record_bytes: MAX_JOURNAL_RECORD_BYTES + 1,
+            ..JournalOptions::default()
+        };
+        assert_eq!(
+            MemoryJournal::open(&path.0, JournalKind::Memory, record_options).unwrap_err(),
+            JournalError::RecordTooLarge {
+                len: MAX_JOURNAL_RECORD_BYTES + 1,
+                max: MAX_JOURNAL_RECORD_BYTES
+            }
+        );
+        assert!(!path.0.exists());
+        let at_ceiling = JournalOptions {
+            max_file_bytes: MAX_JOURNAL_FILE_BYTES,
+            max_record_bytes: MAX_JOURNAL_RECORD_BYTES,
+            sync_on_append: false,
+        };
+        MemoryJournal::open(&path.0, JournalKind::Memory, at_ceiling).unwrap();
+    }
+
+    #[test]
+    fn default_options_are_within_the_ceilings() {
+        let defaults = JournalOptions::default();
+        assert!(defaults.max_record_bytes <= MAX_JOURNAL_RECORD_BYTES);
+        assert!(defaults.max_file_bytes <= MAX_JOURNAL_FILE_BYTES);
+    }
+
+    #[test]
+    fn bounded_read_refuses_growth_past_the_cap_without_reading_it_all() {
+        // The source is far longer than the cap, as if another writer kept appending after the
+        // metadata check; only `max + 1` bytes may be consumed.
+        let mut source = io::repeat(7).take(10_000_000);
+        assert_eq!(
+            read_bounded(&mut source, 16, 32),
+            Err(JournalError::FileTooLarge { len: 33, max: 32 })
+        );
+        assert_eq!(source.limit(), 10_000_000 - 33);
+        let mut exact = io::Cursor::new(vec![1_u8; 32]);
+        assert_eq!(read_bounded(&mut exact, 32, 32).unwrap().len(), 32);
+    }
+
+    #[test]
+    fn read_records_refuses_a_file_that_grew_past_the_cap_since_open() {
+        let path = TempPath::new("grown");
+        let options = JournalOptions {
+            max_file_bytes: 8 + 8 + 4,
+            max_record_bytes: 64,
+            ..JournalOptions::default()
+        };
+        let (mut journal, _) = MemoryJournal::open(&path.0, JournalKind::Memory, options).unwrap();
+        journal.append(b"1234").unwrap();
+        // A second writer appends beyond the cap behind the journal's back.
+        let mut other = OpenOptions::new().append(true).open(&path.0).unwrap();
+        other.write_all(&[0_u8; 4096]).unwrap();
+        assert!(matches!(
+            journal.read_records(),
+            Err(JournalError::FileTooLarge { max, .. }) if max == options.max_file_bytes
+        ));
     }
 }

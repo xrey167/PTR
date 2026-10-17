@@ -190,6 +190,38 @@ pub struct SelfModelLimits {
     pub max_log: usize,
 }
 
+impl SelfModelLimits {
+    /// Hard maximum of [`SelfModelLimits::max_contexts`].
+    pub const HARD_MAX_CONTEXTS: usize = 1 << 14;
+    /// Hard maximum of `max_codes_per_context` and `max_pods_per_context`.
+    pub const HARD_MAX_PER_CONTEXT: usize = 1 << 10;
+    /// Hard maximum of [`SelfModelLimits::max_repair_pairs`].
+    pub const HARD_MAX_REPAIR_PAIRS: usize = 1 << 16;
+    /// Hard maximum of [`SelfModelLimits::max_repair_codes`].
+    pub const HARD_MAX_REPAIR_CODES: usize = 1 << 14;
+    /// Hard maximum of [`SelfModelLimits::max_context_codes`].
+    pub const HARD_MAX_CONTEXT_CODES: usize = 64;
+    /// Hard maximum of [`SelfModelLimits::max_code_len`].
+    pub const HARD_MAX_CODE_LEN: usize = 1024;
+    /// Hard maximum of [`SelfModelLimits::max_log`].
+    pub const HARD_MAX_LOG: usize = 1 << 20;
+
+    /// The limits with every field cut to its `HARD_MAX_*`; [`SelfModel`] constructors apply it.
+    #[must_use]
+    pub fn clamped(self) -> Self {
+        Self {
+            max_contexts: self.max_contexts.min(Self::HARD_MAX_CONTEXTS),
+            max_codes_per_context: self.max_codes_per_context.min(Self::HARD_MAX_PER_CONTEXT),
+            max_pods_per_context: self.max_pods_per_context.min(Self::HARD_MAX_PER_CONTEXT),
+            max_repair_pairs: self.max_repair_pairs.min(Self::HARD_MAX_REPAIR_PAIRS),
+            max_repair_codes: self.max_repair_codes.min(Self::HARD_MAX_REPAIR_CODES),
+            max_context_codes: self.max_context_codes.min(Self::HARD_MAX_CONTEXT_CODES),
+            max_code_len: self.max_code_len.min(Self::HARD_MAX_CODE_LEN),
+            max_log: self.max_log.min(Self::HARD_MAX_LOG),
+        }
+    }
+}
+
 impl Default for SelfModelLimits {
     fn default() -> Self {
         Self {
@@ -1332,7 +1364,7 @@ impl SelfModel {
     /// A model that ignores the features switched off in `mask` (the C002 feature ablation).
     pub fn with_features(limits: SelfModelLimits, mask: FeatureMask) -> Self {
         Self {
-            limits,
+            limits: limits.clamped(),
             mask,
             version: 0,
             seq: 0,
