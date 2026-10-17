@@ -112,6 +112,8 @@ pub(crate) struct BatchQueue<J> {
     policy: BatchPolicy,
     next_seq: u64,
     len: usize,
+    /// Queued requests per principal (`None` is the anonymous bucket).
+    per_principal: HashMap<Option<String>, usize>,
     ids: HashMap<BatchKey, u32>,
     groups: HashMap<u32, Group<J>>,
     next_gid: u32,
@@ -133,6 +135,7 @@ impl<J> BatchQueue<J> {
             policy,
             next_seq: 0,
             len: 0,
+            per_principal: HashMap::new(),
             ids: HashMap::new(),
             groups: HashMap::new(),
             next_gid: 0,
@@ -211,9 +214,12 @@ impl<J> BatchQueue<J> {
         self.ops += 1;
     }
 
-    /// Whether the next [`BatchQueue::push`] would be refused.
-    pub(crate) fn is_full(&self) -> bool {
+    /// Whether a [`BatchQueue::push`] under `key` would be refused: the queue is full, or the
+    /// key's principal is at its own limit.
+    pub(crate) fn is_full_for(&self, key: &BatchKey) -> bool {
         self.len >= self.policy.queue_capacity
+            || self.per_principal.get(&key.principal).copied().unwrap_or(0)
+                >= self.policy.max_queued_per_principal
     }
 
     /// Remove every request whose cancel flag is set and return it, oldest first, so the caller
@@ -261,9 +267,10 @@ impl<J> BatchQueue<J> {
         now: impl Into<Now>,
     ) -> Result<(), QueueFull> {
         let now = now.into();
-        if self.len >= self.policy.queue_capacity {
+        if self.is_full_for(&key) {
             return Err(QueueFull);
         }
+        *self.per_principal.entry(key.principal.clone()).or_insert(0) += 1;
         let seq = self.next_seq;
         self.next_seq = self.next_seq.saturating_add(1);
         let gid = match self.ids.get(&key) {
@@ -318,6 +325,7 @@ impl<J> BatchQueue<J> {
             .flat_map(|(_, group)| group.entries.into_values())
             .collect();
         all.sort_by_key(|entry| entry.seq);
+        self.per_principal.clear();
         self.ids.clear();
         self.wait_due.clear();
         self.deadline_due.clear();
@@ -342,6 +350,12 @@ impl<J> BatchQueue<J> {
             self.ops += 1;
         }
         self.len -= 1;
+        if let Some(count) = self.per_principal.get_mut(&entry.key.principal) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                self.per_principal.remove(&entry.key.principal);
+            }
+        }
         self.ops += 1;
         Some(entry)
     }
@@ -455,6 +469,7 @@ mod tests {
 
     fn policy(max_batch: usize, max_wait: u64, capacity: usize) -> BatchPolicy {
         BatchPolicy {
+            max_queued_per_principal: capacity,
             max_batch,
             max_wait_millis: max_wait,
             queue_capacity: capacity,
@@ -539,6 +554,61 @@ mod tests {
         assert!(queue.push(key("a"), None, None, 2, 0).is_ok());
         assert_eq!(queue.push(key("a"), None, None, 3, 0), Err(QueueFull));
         assert_eq!(queue.len(), 2);
+    }
+
+    fn keyed(principal: Option<&str>) -> BatchKey {
+        BatchKey {
+            principal: principal.map(str::to_owned),
+            ..key("a")
+        }
+    }
+
+    #[test]
+    fn a_principal_over_its_limit_is_refused_and_the_others_are_not() {
+        let mut queue = BatchQueue::new(BatchPolicy {
+            max_queued_per_principal: 2,
+            ..policy(8, 10, 6)
+        });
+        assert!(queue.push(keyed(Some("a")), None, None, 1u32, 0).is_ok());
+        assert!(queue.push(keyed(Some("a")), None, None, 2, 0).is_ok());
+        assert_eq!(
+            queue.push(keyed(Some("a")), None, None, 3, 0),
+            Err(QueueFull)
+        );
+        assert!(queue.push(keyed(Some("b")), None, None, 4, 0).is_ok());
+        // The anonymous bucket is limited too, and separate from the named ones.
+        assert!(queue.push(keyed(None), None, None, 5, 0).is_ok());
+        assert!(queue.push(keyed(None), None, None, 6, 0).is_ok());
+        assert_eq!(queue.push(keyed(None), None, None, 7, 0), Err(QueueFull));
+        assert_eq!(queue.len(), 5);
+    }
+
+    #[test]
+    fn dequeueing_cancelling_and_draining_free_a_principals_quota() {
+        let mut queue = BatchQueue::new(BatchPolicy {
+            max_queued_per_principal: 2,
+            ..policy(1, 0, 8)
+        });
+        let flag = CancelFlag::default();
+        assert!(queue
+            .push(keyed(Some("a")), None, Some(flag.clone()), 1u32, 0)
+            .is_ok());
+        assert!(queue.push(keyed(Some("a")), None, None, 2, 0).is_ok());
+        assert!(queue.is_full_for(&keyed(Some("a"))));
+        // A cancelled entry is reclaimed and its quota is free again.
+        flag.cancel();
+        assert_eq!(queue.reclaim_cancelled().len(), 1);
+        assert!(!queue.is_full_for(&keyed(Some("a"))));
+        // A dispatched entry frees its quota as well.
+        assert!(queue.push(keyed(Some("a")), None, None, 3, 0).is_ok());
+        assert!(queue.is_full_for(&keyed(Some("a"))));
+        assert!(queue.take_ready(0).batch.is_some());
+        assert!(!queue.is_full_for(&keyed(Some("a"))));
+        // And a drain empties every count.
+        assert!(queue.push(keyed(Some("a")), None, None, 4, 0).is_ok());
+        assert!(queue.is_full_for(&keyed(Some("a"))));
+        assert_eq!(queue.drain().len(), 2);
+        assert!(!queue.is_full_for(&keyed(Some("a"))));
     }
 
     #[test]

@@ -82,6 +82,11 @@ pub struct BatchPolicy {
     pub max_wait_millis: u64,
     /// The most requests queued at once.
     pub queue_capacity: usize,
+    /// The most requests one principal may have queued at once (requests without a principal
+    /// share one anonymous bucket with the same limit). A principal over it is refused with
+    /// [`ModelError::overloaded`] while others are still served, so one caller cannot fill the
+    /// whole queue. Between 1 and `queue_capacity`.
+    pub max_queued_per_principal: usize,
     /// A group is dispatched once its tightest deadline is this close.
     pub deadline_margin_millis: u64,
 }
@@ -96,6 +101,13 @@ impl BatchPolicy {
         }
         if self.queue_capacity == 0 || self.queue_capacity > MAX_QUEUE_CAPACITY {
             return invalid("queue_capacity", "must be between 1 and MAX_QUEUE_CAPACITY");
+        }
+        if self.max_queued_per_principal == 0 || self.max_queued_per_principal > self.queue_capacity
+        {
+            return invalid(
+                "max_queued_per_principal",
+                "must be between 1 and queue_capacity",
+            );
         }
         if self.max_wait_millis > MAX_WAIT_LIMIT_MILLIS {
             return invalid("max_wait_millis", "must not exceed MAX_WAIT_LIMIT_MILLIS");
@@ -347,6 +359,16 @@ impl Continuations {
         {
             return Err(Refusal::Full);
         }
+        // The successor must be committable, or the model must not run: the principal's open
+        // entries and its reservations, this call included, may exceed its quota only by
+        // entries that no resume is running on, because those are what a commit evicts. If
+        // they cannot make room the call is refused now and no backend work is thrown away.
+        let held = self.queues.get(principal).map_or(0, |queue| queue.len());
+        let reserved = self.reserved_by.get(principal).copied().unwrap_or(0);
+        let over = (held + reserved + 1).saturating_sub(MAX_CONTINUATIONS_PER_PRINCIPAL);
+        if over > self.evictable(principal) {
+            return Err(Refusal::Full);
+        }
         if self.entries.len() + self.reserved >= MAX_OPEN_CONTINUATIONS {
             self.sweep(now);
         }
@@ -357,6 +379,16 @@ impl Continuations {
         *self.reserved_by.entry(principal.clone()).or_insert(0) += 1;
         self.live.insert(request_id.clone());
         Ok(())
+    }
+
+    /// The principal's entries that no resume is running on: the ones a commit may evict.
+    fn evictable(&self, principal: &PrincipalKey) -> usize {
+        self.queues.get(principal).map_or(0, |queue| {
+            queue
+                .iter()
+                .filter(|id| self.entries.get(id).is_some_and(|entry| !entry.in_flight))
+                .count()
+        })
     }
 
     fn unreserve(&mut self, principal: &PrincipalKey) {
@@ -893,7 +925,7 @@ impl<B: BatchInferenceBackend + 'static> AdaptiveBatcher<B> {
             }
             // Cancelled requests still waiting for their group hold slots: give them back (and
             // answer them) before a live request is refused for want of room.
-            if state.queue.is_full() {
+            if state.queue.is_full_for(&admission.key) {
                 for entry in state.queue.reclaim_cancelled() {
                     bump(&counters.cancelled, 1);
                     answer(entry, Err(ModelError::cancelled()));

@@ -172,7 +172,7 @@ simulator training happens in PTR until `predictive` has been true on a real gen
 `AdaptiveBatcher<B>` implements `InferenceBackend` (and `ResumableInferenceBackend` when `B` does) over a
 `BatchInferenceBackend`, whose provided `infer_batch` runs requests one by one: a backend gains only if it overrides it.
 
-- **Bounded (invariant 8).** The queue holds at most `queue_capacity` requests (65536 at most). A full queue answers
+- **Bounded (invariant 8).** The queue holds at most `queue_capacity` requests (65536 at most), and one principal at most `max_queued_per_principal` of them (between 1 and `queue_capacity`; requests without a principal share one anonymous bucket): a principal over it is refused with `overloaded` while others are still served, and its cancelled waiters are reclaimed first. A full queue answers
   `ModelError::overloaded()` before anything grows, but only after the requests whose cancel flag is set have been removed from the queue and answered with `cancelled` (they would otherwise hold their slots until their group is served, and live requests would be refused meanwhile; the scan is linear in the queue and runs only when it is full).
 - **Keys.** Requests are grouped by `BatchKey { project, adapter, principal, generation }`; different keys never share a model
   call. The plain `infer` uses the unscoped key; `infer_with` takes a `BatchAdmission` with the key, an optional
@@ -199,7 +199,7 @@ simulator training happens in PTR until `predictive` has been true on a real gen
   concurrent calls are never both promised the last slot; a reservation is charged to the opening principal, whose in-flight
   reservations may not exceed its own quota of 256, so one principal's slow calls cannot take the capacity of others) and applies the principal's quota only when a continuation is committed:
   an error, a cancellation, an expired deadline, a gate refusal or a `Finished` run releases the reservation and evicts nothing. A
-  principal at its quota then evicts its own oldest. When the table is full, entries whose deadline has passed or whose
+  principal at its quota then evicts its own oldest. `infer_scoped` checks before it dispatches that the successor can be committed (the principal's entries and reservations, this call included, exceed the quota only by entries no resume is running on, which a commit evicts); if not it is refused with `overloaded` before the backend runs, so a finished model call is not thrown away (a resume starting on an evictable entry in the meantime can still make the commit fail). When the table is full, entries whose deadline has passed or whose
   cancel flag is set are swept first; if it is still full the new `infer_scoped` is refused with `overloaded` before the model
   runs, and nothing of anyone else is evicted. The trade-off is stated: existing continuations are never lost to another
   principal's load (a crowd of principals cannot push a victim out), at the price that opens can be refused while the table

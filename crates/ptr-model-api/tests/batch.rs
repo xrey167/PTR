@@ -41,6 +41,7 @@ fn policy(max_batch: usize, max_wait_millis: u64, queue_capacity: usize) -> Batc
         max_batch,
         max_wait_millis,
         queue_capacity,
+        max_queued_per_principal: queue_capacity,
         deadline_margin_millis: 5,
     }
 }
@@ -334,6 +335,20 @@ fn a_policy_outside_its_ranges_is_refused_by_field() {
             "deadline_margin_millis",
         ),
         (policy(1025, 1, 1), "max_batch"),
+        (
+            BatchPolicy {
+                max_queued_per_principal: 0,
+                ..policy(1, 1, 4)
+            },
+            "max_queued_per_principal",
+        ),
+        (
+            BatchPolicy {
+                max_queued_per_principal: 5,
+                ..policy(1, 1, 4)
+            },
+            "max_queued_per_principal",
+        ),
         (policy(1, 1, 65_537), "queue_capacity"),
     ];
     for (bad, field) in cases {
@@ -1828,6 +1843,7 @@ struct BlockingResume {
     entered: AtomicBool,
     latch: Latch,
     resumes: std::sync::atomic::AtomicUsize,
+    infers: std::sync::atomic::AtomicUsize,
 }
 
 impl BlockingResume {
@@ -1836,6 +1852,7 @@ impl BlockingResume {
             entered: AtomicBool::new(false),
             latch: Latch::default(),
             resumes: std::sync::atomic::AtomicUsize::new(0),
+            infers: std::sync::atomic::AtomicUsize::new(0),
         })
     }
 }
@@ -1846,6 +1863,7 @@ impl InferenceBackend for BlockingResume {
     }
 
     fn infer(&self, _request: &ModelRequest) -> Result<Vec<ModelEvent>, ModelError> {
+        self.infers.fetch_add(1, Ordering::SeqCst);
         Ok(vec![ModelEvent::Token("waiting".into())])
     }
 }
@@ -1964,4 +1982,129 @@ fn a_continuation_that_runs_out_during_its_resume_has_no_successor() {
             assert!(again.is_ok(), "case {case}");
         }
     }
+}
+
+#[test]
+fn a_principal_whose_entries_are_all_running_resumes_is_refused_before_the_model() {
+    use ptr_model_api::MAX_CONTINUATIONS_PER_PRINCIPAL as QUOTA;
+    let backend = BlockingResume::new();
+    let batcher = blocking_resume_batcher(&backend, Arc::new(BatchSystemClock));
+    let scope_a = principal_scope("a");
+    let continuations: Vec<_> = (0..QUOTA)
+        .map(|n| open(&batcher, &format!("run-{n}"), &scope_a))
+        .collect();
+    std::thread::scope(|scope| {
+        let batcher = &batcher;
+        let scope_a = &scope_a;
+        let _release = OpenOnDrop(&backend.latch);
+        // Every entry of the principal is a resume that is running: none can be evicted.
+        for continuation in continuations {
+            scope.spawn(move || {
+                let _ = batcher.resume_continuation(continuation, scope_a, observation(1, b"x"));
+            });
+        }
+        assert!(eventually(PATIENT, || backend
+            .resumes
+            .load(Ordering::SeqCst)
+            == QUOTA));
+        let infers = backend.infers.load(Ordering::SeqCst);
+        assert_eq!(
+            batcher
+                .infer_scoped(&request_at("new", 7), admission_under(scope_a))
+                .err(),
+            Some(ModelError::overloaded())
+        );
+        assert_eq!(
+            backend.infers.load(Ordering::SeqCst),
+            infers,
+            "refused before the backend ran; its answer is not thrown away"
+        );
+        // Another principal is unaffected.
+        assert!(batcher
+            .infer_scoped(
+                &request_at("other", 7),
+                admission_under(&principal_scope("b"))
+            )
+            .is_ok());
+        backend.latch.open();
+    });
+    // Once the resumes are done their successors are evictable, and the principal is served.
+    assert!(batcher
+        .infer_scoped(&request_at("new", 7), admission_under(&scope_a))
+        .is_ok());
+}
+
+#[test]
+fn one_principal_cannot_fill_the_queue_and_its_cancelled_waiters_free_its_quota() {
+    let latch = Arc::new(Latch::default());
+    let backend = Arc::new(RecordingBackend::blocking(Arc::clone(&latch)));
+    let batcher = gated(
+        Arc::clone(&backend),
+        BatchPolicy {
+            max_queued_per_principal: 2,
+            ..policy(1, 0, 4)
+        },
+    )
+    .expect("built");
+    let flags = [CancelFlag::default(), CancelFlag::default()];
+    let admit = |name: &str, cancel: Option<CancelFlag>| BatchAdmission {
+        key: principal_scope(name),
+        deadline: None,
+        cancel,
+    };
+    std::thread::scope(|scope| {
+        let batcher = &batcher;
+        let admit = &admit;
+        let _release = OpenOnDrop(&latch);
+        // The worker is inside the backend for another principal's request.
+        let held = scope.spawn(move || batcher.infer_with(&request("held"), admit("z", None)));
+        assert!(eventually(PATIENT, || batcher.stats().dispatched == 1));
+        // A fills its quota of two.
+        let (waiter_answers, waited) = std::sync::mpsc::channel();
+        for (n, flag) in flags.iter().enumerate() {
+            let cancel = flag.clone();
+            let answers = waiter_answers.clone();
+            scope.spawn(move || {
+                let _ = answers.send(
+                    batcher.infer_with(&request(&format!("a-{n}")), admit("a", Some(cancel))),
+                );
+            });
+        }
+        drop(waiter_answers);
+        assert!(eventually(PATIENT, || batcher.queued() == 2));
+        // A is over its quota and is refused; the queue itself still has room.
+        let (over_answers, over_answered) = std::sync::mpsc::channel();
+        scope.spawn(move || {
+            let _ = over_answers.send(batcher.infer_with(&request("a-over"), admit("a", None)));
+        });
+        assert_eq!(
+            over_answered.recv_timeout(Duration::from_secs(5)),
+            Ok(Err(ModelError::overloaded()))
+        );
+        // B is still taken (it waits for the worker, so on its own thread).
+        let (b_answers, b_answered) = std::sync::mpsc::channel();
+        scope.spawn(move || {
+            let _ = b_answers.send(batcher.infer_with(&request("b"), admit("b", None)));
+        });
+        assert!(eventually(PATIENT, || batcher.queued() == 3));
+        // A's waiters withdraw: A is taken again and the waiters are answered cancelled.
+        for flag in &flags {
+            flag.cancel();
+        }
+        let (a_answers, a_answered) = std::sync::mpsc::channel();
+        scope.spawn(move || {
+            let _ = a_answers.send(batcher.infer_with(&request("a-again"), admit("a", None)));
+        });
+        for _ in 0..2 {
+            assert_eq!(
+                waited.recv_timeout(Duration::from_secs(5)),
+                Ok(Err(ModelError::cancelled()))
+            );
+        }
+        assert!(eventually(PATIENT, || batcher.queued() == 2));
+        latch.open();
+        held.join().expect("thread").expect("held served");
+        assert!(b_answered.recv_timeout(PATIENT).expect("answered").is_ok());
+        assert!(a_answered.recv_timeout(PATIENT).expect("answered").is_ok());
+    });
 }

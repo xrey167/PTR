@@ -157,6 +157,7 @@ fn a_router_composes_over_an_adaptive_batcher() {
             max_batch: 2,
             max_wait_millis: 5,
             queue_capacity: 8,
+            max_queued_per_principal: 8,
             deadline_margin_millis: 1,
         },
     )
