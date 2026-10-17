@@ -281,3 +281,90 @@ fn branch_merge_keys_are_length_delimited() {
         .collect();
     assert_eq!(merged, ["branch-merge:2:b1", "branch-merge:3:b1:"]);
 }
+
+#[test]
+fn adapter_events_project_scoped_rows_and_cycles_project_none() {
+    use ptr_ledger::ImprovementCycleOutcome;
+    use ptr_types::ProjectId;
+
+    let committed = |event| CommittedEvent {
+        index: CommitIndex(1),
+        event,
+    };
+    let promoted = projection_entries(&committed(LedgerEvent::AdapterPromoted {
+        project: ProjectId::from("alpha"),
+        adapter: "coder".into(),
+        generation: Generation(2),
+        base: [1; 32],
+        artifact_sha256: [0xab; 32],
+        gate_report_digest: [3; 32],
+    }));
+    assert_eq!(
+        promoted,
+        vec![
+            (
+                "ptr-adapter:alpha/coder:generation".to_owned(),
+                "2".to_owned()
+            ),
+            (
+                "ptr-adapter:alpha/coder:artifact_sha256".to_owned(),
+                "ab".repeat(32)
+            ),
+        ]
+    );
+    let revoked = projection_entries(&committed(LedgerEvent::AdapterRevoked {
+        project: ProjectId::from("alpha"),
+        adapter: "coder".into(),
+        generation: Generation(2),
+        reason: "input revoked".into(),
+    }));
+    assert_eq!(
+        revoked,
+        vec![(
+            "revoked:ptr-adapter:alpha/coder:2".to_owned(),
+            "2".to_owned()
+        )]
+    );
+    assert!(
+        projection_entries(&committed(LedgerEvent::ImprovementCycleRecorded {
+            project: ProjectId::from("alpha"),
+            day: 1,
+            outcome: ImprovementCycleOutcome::Completed,
+            policy_digest: [4; 32],
+        }))
+        .is_empty()
+    );
+}
+
+#[test]
+fn revoking_a_later_adapter_generation_first_keeps_it_revoked_when_an_earlier_one_follows() {
+    use ptr_types::ProjectId;
+
+    let revoke = |index: u64, generation: u64| CommittedEvent {
+        index: CommitIndex(index),
+        event: LedgerEvent::AdapterRevoked {
+            project: ProjectId::from("alpha"),
+            adapter: "coder".into(),
+            generation: Generation(generation),
+            reason: "input revoked".into(),
+        },
+    };
+    let mut state = MaterializedState::default();
+    assert_eq!(state.try_apply(&revoke(1, 3)), ApplyOutcome::Applied);
+    assert_eq!(state.try_apply(&revoke(2, 2)), ApplyOutcome::Applied);
+    assert_eq!(
+        state
+            .values
+            .get("revoked:ptr-adapter:alpha/coder:3")
+            .map(String::as_str),
+        Some("3"),
+        "generation 3 is still revoked after generation 2 was revoked"
+    );
+    assert_eq!(
+        state
+            .values
+            .get("revoked:ptr-adapter:alpha/coder:2")
+            .map(String::as_str),
+        Some("2")
+    );
+}

@@ -1,3 +1,4 @@
+pub mod adapter;
 pub mod admission;
 mod carrier_select;
 pub mod compacted;
@@ -483,6 +484,7 @@ pub enum RuntimeError {
     Compacted(compacted::CompactedError),
     Neural(neural::NeuralError),
     Expert(expert::ExpertAdmissionError),
+    Adapter(adapter::AdapterError),
     Semantic(SemanticError),
     InvalidConfig(String),
     Ledger(String),
@@ -870,6 +872,11 @@ pub struct PtrRuntime {
     policy_authority_ready: bool,
     revoked_sessions: BTreeSet<ptr_types::SessionId>,
     egress_refusals: egress::EgressRefusalWindows,
+    /// Promoted adapters and improvement-cycle counts, projected from committed events.
+    adapters: adapter::AdapterProjection,
+    /// The digest of the one forgetting-gate configuration whose reports a promotion accepts,
+    /// pinned by the host. Runtime configuration, not committed history: none by default.
+    pinned_promotion_gate: Option<[u8; 32]>,
     hypotheses: BTreeMap<String, PodHypothesis>,
     tier_journal: TierJournalProjection,
     experts: expert::ExpertRegistryProjection,
@@ -970,6 +977,8 @@ impl PtrRuntime {
             policy_authority_ready: false,
             revoked_sessions: BTreeSet::new(),
             egress_refusals: egress::EgressRefusalWindows::default(),
+            adapters: adapter::AdapterProjection::new(),
+            pinned_promotion_gate: None,
             hypotheses: BTreeMap::new(),
             tier_journal: TierJournalProjection::default(),
             experts: expert::ExpertRegistryProjection::default(),
@@ -1685,7 +1694,7 @@ impl PtrRuntime {
         let raw_taint = self.input_kv_taint(&request_id, &raw_text);
         let _revision = self.ingest_text(request_id.clone(), raw_text)?;
         let model_run = infer(self.snapshot().semantic_context())
-            .map_err(|error| RuntimeError::Model(error.0))?;
+            .map_err(|error| RuntimeError::Model(error.message().to_owned()))?;
         // The only place a ModelRun becomes a ResumableRun (KV taint is recorded here).
         let run = self.ingest_model_run_with_input(&request_id, raw_taint, &model_run)?;
         if model_run
@@ -1739,7 +1748,7 @@ impl PtrRuntime {
                 semantic_context: self.snapshot().semantic_context(),
                 raw_text,
             })
-            .map_err(|error| RuntimeError::Model(error.0))?;
+            .map_err(|error| RuntimeError::Model(error.message().to_owned()))?;
         // Approximate input: the request, the generated text and every action are recorded
         // taint-first before the events are returned (and so before any Pod output of the
         // request can be promoted). Exact input appends nothing.
@@ -3387,6 +3396,12 @@ impl PtrRuntime {
                 old,
                 new,
             } => self.validate_pod_head_advance(project, identity, old.as_ref(), new),
+            // Replay repeats the generation rules against the lifecycle as of this point; the
+            // weights digest cannot be recomputed without the weights, so replay holds the
+            // record to its shape and to the generation order (see the `adapter` module).
+            LedgerEvent::AdapterPromoted { .. }
+            | LedgerEvent::AdapterRevoked { .. }
+            | LedgerEvent::ImprovementCycleRecorded { .. } => self.validate_adapter_event(event),
         }
     }
 
@@ -3682,6 +3697,11 @@ impl PtrRuntime {
                 self.pod_heads
                     .set(project.clone(), identity.clone(), new.clone());
             }
+            LedgerEvent::AdapterPromoted { .. }
+            | LedgerEvent::AdapterRevoked { .. }
+            | LedgerEvent::ImprovementCycleRecorded { .. } => {
+                self.apply_adapter_event(&committed.event);
+            }
         }
 
         self.state.apply(committed);
@@ -3779,6 +3799,22 @@ fn hypothesis_output(event: &LedgerEvent) -> Option<ptr_pods::PodOutput> {
 }
 
 fn validate_new_record(event: &LedgerEvent) -> Result<(), RuntimeError> {
+    // The adapter lifecycle namespace is reserved for new capsules only. A ledger that already
+    // holds a capsule with this prefix still replays (it is applied as the capsule it is);
+    // `validate_adapter_event` keeps an adapter off a key such a capsule owns.
+    // The same holds for the generic lifecycle records that would move or revoke a key in the
+    // namespace: only `promote_adapter` and `revoke_adapter` write there.
+    let reserved = match event {
+        LedgerEvent::CapsuleCommitted { capsule, .. }
+        | LedgerEvent::CapsuleSuperseded { capsule, .. } => Some(capsule.to_string()),
+        LedgerEvent::Revoked { subject, .. } => Some(subject.clone()),
+        _ => None,
+    };
+    if let Some(target) = reserved {
+        if target.starts_with(adapter::ADAPTER_KEY_PREFIX) {
+            return Err(RuntimeError::ReservedTargetNamespace { target });
+        }
+    }
     // A new hypothesis record carries the version-2 output digest only; the version-1 digest
     // (ambiguous, issue #141) is accepted for records already in a log, on replay and restore.
     if let (LedgerEvent::PodHypothesisCommitted { output_digest, .. }, Some(output)) =
@@ -3798,6 +3834,9 @@ fn validate_new_record(event: &LedgerEvent) -> Result<(), RuntimeError> {
             | LedgerEvent::ExpertAuthorityChanged { .. }
             | LedgerEvent::KvTaintCommitted { .. }
             | LedgerEvent::EgressRefused { .. }
+            | LedgerEvent::AdapterPromoted { .. }
+            | LedgerEvent::AdapterRevoked { .. }
+            | LedgerEvent::ImprovementCycleRecorded { .. }
     ) {
         return Err(RuntimeError::StructuralRecordOutsideAdmissionPath);
     }

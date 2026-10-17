@@ -284,7 +284,7 @@ impl KvReusingBackend for PrefixBackend {
                     total,
                     hint.policy,
                 )
-                .map_err(|e| ModelError(e.to_string()))?,
+                .map_err(|e| ModelError::new(e.to_string()))?,
             ),
             None => None,
         };

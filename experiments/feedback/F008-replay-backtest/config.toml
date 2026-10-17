@@ -1,0 +1,11 @@
+version = 1
+kind = "workspace-area"
+name = "F008-replay-backtest"
+path = "experiments/feedback/F008-replay-backtest"
+tests_dir = "tests"
+
+# Pinned before the experiment leaves planned and never loosened after a pilot.
+[design]
+error_bound = 0.05
+min_within_bound = 2
+min_within_fraction = 0.5

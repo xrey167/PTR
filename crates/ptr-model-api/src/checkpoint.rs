@@ -77,7 +77,7 @@ impl fmt::Display for CheckpointError {
                 "checkpoint recorded revision {} but context is at {}",
                 recorded.0, supplied.0
             ),
-            Self::Resume(error) => write!(f, "resume failed: {}", error.0),
+            Self::Resume(error) => write!(f, "resume failed: {}", error.message()),
         }
     }
 }

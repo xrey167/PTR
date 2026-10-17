@@ -159,6 +159,10 @@ pub enum GateViolation {
         observed: f64,
         limit: f64,
     },
+    /// A promotion was evaluated without a serving score for the public suite. A candidate
+    /// is never compared with a missing baseline as if the baseline were zero: the absence
+    /// is itself the failure, so nothing without a baseline can pass.
+    MissingBaseline,
 }
 
 /// The outcome of a gate. Only [`ForgettingGate::evaluate`] produces one,
@@ -186,9 +190,20 @@ pub struct GateReport {
     /// Digest of the gate configuration that produced this verdict, stored by
     /// [`ForgettingGate::evaluate`] so a report cannot be bound to another gate.
     gate_config_digest: [u8; 32],
+    /// Whether [`ForgettingGate::evaluate_promotion`] produced this report. It is not part of
+    /// the canonical encoding or the digest, so a decoded report never has it: a promotion is
+    /// justified only by a report evaluated here, in this process.
+    promotion_evaluated: bool,
 }
 
 impl GateReport {
+    /// Whether this report came from [`ForgettingGate::evaluate_promotion`], the one path that
+    /// can say a baseline is missing. A report from [`ForgettingGate::evaluate`] (whose serving
+    /// score cannot be absent) or one decoded from bytes is not, and cannot justify a promotion.
+    pub fn promotion_evaluated(&self) -> bool {
+        self.promotion_evaluated
+    }
+
     /// The adapter named when this report was evaluated.
     pub fn adapter(&self) -> &AdapterId {
         &self.adapter
@@ -283,6 +298,11 @@ impl BoundGateReport {
         self.report.passed()
     }
 
+    /// See [`GateReport::promotion_evaluated`].
+    pub fn promotion_evaluated(&self) -> bool {
+        self.report.promotion_evaluated()
+    }
+
     /// SHA-256 over the domain tag, the subject, the gate configuration
     /// digest, the adapter id and the violations, each length-prefixed or
     /// fixed-width so no two reports share an encoding.
@@ -330,6 +350,7 @@ impl BoundGateReport {
                     h.update(canonical_bits(*observed));
                     h.update(canonical_bits(*limit));
                 }
+                GateViolation::MissingBaseline => h.update([4u8]),
             }
         }
         h.finalize().into()
@@ -397,7 +418,8 @@ impl BoundGateReport {
     /// operation_id[32] | artifact_digest[32] | base_model_digest[32] | eval_manifest_digest[32]
     /// | gate_config_digest[32] | adapter (u32 length, UTF-8) | violation count u32 |
     /// violations | passed u8 | digest[32]`. A violation is a tag byte (0 AverageForgetting,
-    /// 1 TaskForgetting, 2 BackwardTransfer, 3 PublicRegression), for TaskForgetting the task as
+    /// 1 TaskForgetting, 2 BackwardTransfer, 3 PublicRegression, 4 MissingBaseline, which has
+    /// no fields), for TaskForgetting the task as
     /// `u64`, then `observed` and `limit` as the little-endian bits of an `f64`, `-0.0` as
     /// `0.0` and every NaN as one pattern (the bits [`BoundGateReport::digest`] hashes). `passed`
     /// is 1 exactly when there is no violation, and `digest` is [`BoundGateReport::digest`].
@@ -445,6 +467,7 @@ impl BoundGateReport {
                     out.extend_from_slice(&canonical_bits(*observed));
                     out.extend_from_slice(&canonical_bits(*limit));
                 }
+                GateViolation::MissingBaseline => out.push(4),
             }
         }
         out.push(u8::from(self.passed()));
@@ -487,9 +510,9 @@ impl BoundGateReport {
             Err(_) => return malformed("adapter is not UTF-8"),
         };
         let count = r.u32()? as usize;
-        // Every violation takes at least 17 bytes, so a count the input cannot hold is refused
-        // before anything is allocated for it.
-        if count > r.bytes.len() / 17 {
+        // Every violation takes at least one byte (a missing baseline is its tag alone), so a
+        // count the input cannot hold is refused before anything is allocated for it.
+        if count > r.bytes.len() {
             return malformed("violation count exceeds the input");
         }
         let mut violations = Vec::with_capacity(count);
@@ -517,6 +540,7 @@ impl BoundGateReport {
                     observed: r.f64()?,
                     limit: r.f64()?,
                 },
+                4 => GateViolation::MissingBaseline,
                 _ => return malformed("unknown violation tag"),
             });
         }
@@ -529,6 +553,7 @@ impl BoundGateReport {
             adapter: AdapterId(adapter),
             violations,
             gate_config_digest,
+            promotion_evaluated: false,
         }
         .bind(subject);
         if passed != u8::from(report.passed()) {
@@ -574,6 +599,20 @@ fn canonical_bits(value: f64) -> [u8; 8] {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PublicSuite {
     pub serving: f64,
+    pub candidate: f64,
+}
+
+/// Public-suite scores for a promotion, where the serving score may be absent.
+///
+/// [`PublicSuite`] always holds a serving score, so a caller that has none must invent one,
+/// and an invented zero turns "no baseline" into "any candidate is at least as good". This
+/// type lets the absence be said: [`ForgettingGate::evaluate_promotion`] reports
+/// [`GateViolation::MissingBaseline`] for it and passes nothing.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PromotionSuite {
+    /// Score of the model that serves now (the base model for a first adapter) on the
+    /// public suite, or `None` when it was not measured.
+    pub serving: Option<f64>,
     pub candidate: f64,
 }
 
@@ -635,9 +674,42 @@ impl ForgettingGate {
         matrix: &AccuracyMatrix,
         public: PublicSuite,
     ) -> Result<GateReport, LineageError> {
+        self.evaluate_scores(
+            adapter,
+            matrix,
+            Some(public.serving),
+            public.candidate,
+            false,
+        )
+    }
+
+    /// Like [`ForgettingGate::evaluate`] for a promotion, whose serving baseline may be
+    /// missing: an absent serving score is the violation
+    /// [`GateViolation::MissingBaseline`] (in place of a public-regression comparison), so
+    /// the report cannot pass.
+    ///
+    /// # Errors
+    /// The refusals of [`ForgettingGate::evaluate`], for whichever scores are present.
+    pub fn evaluate_promotion(
+        &self,
+        adapter: &AdapterId,
+        matrix: &AccuracyMatrix,
+        suite: PromotionSuite,
+    ) -> Result<GateReport, LineageError> {
+        self.evaluate_scores(adapter, matrix, suite.serving, suite.candidate, true)
+    }
+
+    fn evaluate_scores(
+        &self,
+        adapter: &AdapterId,
+        matrix: &AccuracyMatrix,
+        serving: Option<f64>,
+        candidate: f64,
+        promotion_evaluated: bool,
+    ) -> Result<GateReport, LineageError> {
         self.check()?;
         let gate_config_digest = self.config_digest()?;
-        if !(public.serving.is_finite() && public.candidate.is_finite()) {
+        if !(serving.is_none_or(f64::is_finite) && candidate.is_finite()) {
             return Err(LineageError::NonFinite {
                 field: "public suite score",
             });
@@ -666,17 +738,23 @@ impl ForgettingGate {
                 limit: self.min_backward_transfer,
             });
         }
-        let regression = public.serving - public.candidate;
-        if regression.is_nan() || regression > self.max_public_regression {
-            violations.push(GateViolation::PublicRegression {
-                observed: regression,
-                limit: self.max_public_regression,
-            });
+        match serving {
+            None => violations.push(GateViolation::MissingBaseline),
+            Some(serving) => {
+                let regression = serving - candidate;
+                if regression.is_nan() || regression > self.max_public_regression {
+                    violations.push(GateViolation::PublicRegression {
+                        observed: regression,
+                        limit: self.max_public_regression,
+                    });
+                }
+            }
         }
         Ok(GateReport {
             adapter: adapter.clone(),
             violations,
             gate_config_digest,
+            promotion_evaluated,
         })
     }
 }

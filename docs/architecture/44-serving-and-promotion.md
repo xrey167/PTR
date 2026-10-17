@@ -1,0 +1,256 @@
+# 44 — Serving and promotion
+
+Status: partially implemented. The adapter ledger events, the promotion rule, the improvement-cycle budget, the
+adaptive batcher, the replica router and the replay backtest exist and are tested; the serving path does not use the
+batcher yet, nothing measures it, and no experiment of this document has run.
+
+Work package 5 of the research integration. Decision: [ADR-0025](../../research/decisions/ADR-0025-adapter-promotion-and-improvement-budget-are-ledger-events.md).
+Related: [35 Agentic substrate](35-agentic-substrate.md) (adapter lineage), [37 Pod-MoE](37-pod-moe.md) (expert
+authority), invariants 3, 7, 8, 11, 12, 14 and 17 of [INVARIANTS](../INVARIANTS.md).
+
+## 1. What this document decides
+
+1. Which adapter generation may serve is a fact of the ledger (`AdapterPromoted`, `AdapterRevoked`), not a row of the
+   lineage registry, and a use is checked against it every time.
+2. A promotion needs a gate report with a serving baseline. A missing baseline is a violation, never a zero.
+3. The runtime recomputes the weights digest the gate was bound to instead of trusting the recorded one.
+4. How many self-improvement cycles may run per day is counted from the ledger, and an aborted cycle spends budget.
+5. A batcher and a replica router sit in front of any inference backend under the same traits, bounded and
+   deadline-aware, but they do not take effect in `ptrd` until the server stops serializing the model call.
+
+## 2. Adapter promotion and revocation (`ptr-lineage`, `ptr-ledger`, `ptr-runtime`)
+
+```mermaid
+flowchart LR
+    G[ForgettingGate::evaluate_promotion] -->|GateReport| B[bind GateSubject]
+    B --> P[PromotionProposal::new]
+    P --> R[PtrRuntime::promote_adapter]
+    W[weights bytes] --> R
+    S[frozen split manifest] --> R
+    R -->|recompute SHA-256, compare, check split lock| L[(AdapterPromoted, tag 39)]
+    L --> V[serving state: lifecycle key ptr-adapter:project/adapter]
+    X[revoke_adapter] --> RV[(AdapterRevoked, tag 40)] --> V
+    V --> U[check_adapter_use at every use]
+```
+
+**Events.** `AdapterPromoted { project, adapter, generation, base, artifact_sha256, gate_report_digest }` (tag 39),
+`AdapterRevoked { project, adapter, generation, reason }` (tag 40). The codec holds both to one canonical form:
+names of 1 to 256 bytes without control characters, whitespace or `/`, a non-zero generation, no all-zero digest, a
+reason of at most 512 bytes. The same check runs in the decoder and in `check_encodable`. The public
+`PtrRuntime::commit` refuses both, and a new capsule named `ptr-adapter:...` is refused (a ledger that already holds one replays it as a capsule, and an
+adapter is refused on a key a capsule owns), so only `promote_adapter` and
+`revoke_adapter` write them.
+
+**Keys are project-scoped.** The lifecycle key is `ptr-adapter:<project>/<adapter>`. Because the ledger refuses a `/` in
+either name, two pairs never share a key. One project's adapter of the same name is neither served nor revoked by
+another's events.
+
+**The gate.** `GateViolation::MissingBaseline` (canonical tag 4) is what `ForgettingGate::evaluate_promotion` reports
+when `PromotionSuite::serving` is `None`. The Research original compared with `baseline.get(x, 0)`, so a missing
+baseline turned every candidate into an improvement; here the absence is the failure.
+`PromotionProposal::new` refuses such a report (`LineageError::MissingBaseline`), a failing one (`GateFailed`) and a
+report bound to another adapter, weights digest or base model than the record's (`SubjectMismatch`).
+
+**Digest recomputed.** `promote_adapter` hashes the weights it is handed and compares with the digest the report was
+bound to (`ArtifactDigestMismatch`, nothing appended). The lineage still records the trainer's digest without reading
+it, and says so; the check is the runtime's. The split lock is checked the same way: the runtime takes the canonical bytes of the frozen split manifest, hashes
+them itself and compares with the report's `eval_manifest_digest` (`SplitLockMismatch`, `EmptySplitManifest`); a digest
+computed by the caller is not accepted.
+
+**The gate is pinned.** A report vouches only as far as the gate that produced it is the gate the runtime trusts. The host
+pins the digest of one forgetting-gate configuration (`PtrRuntime::pin_promotion_gate`, runtime configuration and not
+committed history); the pin is set once (the same digest again changes nothing, a different one is `GatePinConflict`). `promote_adapter` compares `gate_config_digest` of the report with it and refuses with
+`NoPinnedPromotionGate` when nothing is pinned and `GateConfigurationMismatch` for another configuration, before
+anything is committed.
+
+**Serving state is derived.** Promotion sets the live generation of the key and the binding (base, weights digest,
+report digest); revocation adds a tombstone. A generation must advance, and a revoked generation is never promoted
+again. `serving_adapter` and `check_adapter_use` read the lifecycle on every call, so a revocation, a supersession or
+a replay is seen at the next use (invariant 3). The runtime holds at most 4096 adapters. Revocation tombstones are kept per adapter like the promotion history (the highest 64 generations; the current generation's revocation is the highest and always kept; a compacted older one is below the live generation and reads as superseded), on replay as live. `begin_improvement_cycle` refuses a project the ledger could not record (`InvalidProject`) before anything is counted.
+
+**KV entries follow the adapter.** A KV prefix entry recorded under an adapter depends on `KvDependency::adapter(key,
+generation, digest)`, where the identity is the lifecycle key. Committing `AdapterPromoted` supersedes the adapter
+dependencies under that key below the promoted generation, and `AdapterRevoked` invalidates exactly the revoked
+generation; both cancel pinned forks and retire the entries, scoped to the adapter kind so no other kind or other
+adapter key is touched. `ImprovementCycleRecorded` invalidates nothing. The reference KV backend's own liveness follows the same events (its revocation tombstones are pruned per adapter: whatever is below the supersession floor goes and at most 64 stay, the current generation's always): an adapter-kind
+dependency in the lifecycle namespace is live only at the exact promoted generation, and a host that serves promoted adapters
+calls `require_promoted_adapters` once, after which that holds for every adapter-kind dependency whatever its identity; the
+backend arms itself the same way on the first `AdapterPromoted` or `AdapterRevoked` it applies, so a host fed adapter lifecycle
+events is fail-closed without the call. A backend that never sees such an event stays standalone and keeps ledger-free adapters
+live unless revoked (the frozen R009 harness and the reference tests run in it).
+
+**Weights are bound to the promoted artifact.** Identity and generation alone do not admit an adapter: the backend keeps, per
+adapter key, the promoted generation and the `artifact_sha256` of that `AdapterPromoted`, and a bound adapter is live only if
+its identity, generation and weight digest all match. The weight digest of an adapter of the reference stack is defined
+explicitly: the SHA-256 of its canonical bytes (`ReferenceKvReuseBackend::adapter_artifact_bytes`: a domain tag, then identity,
+generation, kind, first layer, rank, scale and the exact bits of every low-rank pair, each variable part framed by its length),
+available as `adapter_artifact_digest`. That is the same digest the KV catalog already records as the adapter's content digest,
+and it is what a promotion of such an adapter must name: `promote_adapter` hashes the artifact bytes it is handed, so the
+artifact handed to it is these canonical bytes. The promotion also binds the base model: the backend keeps the `base` of each `AdapterPromoted` and an adapter is live only when it
+equals the backend's own base identity, `ReferenceKvReuseBackend::base_digest`, the SHA-256 of a domain tag, the chain id, the full stack configuration, the generation limit and every weight of the stack. The chain (the cache compatibility key) stops at the final layer's K/V projections, so it cannot tell apart two stacks that differ only in the LM head, the final norm or the last layer's query, output and MLP weights; the promotion digest can (`the_promotion_digest_covers_what_the_chain_does_not`), and it also differs for a different RoPE scaling (`a_promotion_for_an_unscaled_base_is_refused_on_a_base_that_differs_only_in_rope_scaling`); the
+`base_digest` of a `PromotionProposal` for such an adapter must be that value. A training export of another adapter format has no mapping yet; until one is
+defined, such an adapter cannot be served by this backend under a promotion.
+
+**Limits.**
+
+- No compacted snapshot layout carries the bindings or the cycle counts. `export_compacted_snapshot` refuses while
+  they exist (`AdapterError::CompactionUnsupported`) rather than drop them silently; a runtime with adapters cannot
+  compact its log until a snapshot section carries them.
+- The runtime proves that the weights it was given hash to the digest the gate was bound to. It does not prove they are
+  the artifact in `ptr-storage`, and the gate subject's digests are the trusted evaluator's claim.
+- `PromotionProposal` accepts only a report produced by `evaluate_promotion` in this process
+  (`GateReport::promotion_evaluated`, a flag outside the canonical encoding): a passing report from the plain `evaluate`
+  path, where a placeholder serving score is possible, and a decoded report are `BaselineNotChecked`. The project is bound
+  into the digested subject through its operation id, `promotion_operation_id(project, adapter)`, and `promote_adapter`
+  refuses a proposal evaluated for another project (`ProjectMismatch`).
+- Nothing routes a request to an adapter yet. The first adapter's baseline (the base model's public-suite score) is
+  supplied by the caller.
+- The Postgres mapping (`ptr-pg`) of the new events compiles and shares the `ptr-state` projection; it was not run
+  against a live PostgreSQL in this change.
+
+## 3. The improvement-cycle budget (`ptr-feedback`, `ptr-ledger`, `ptr-runtime`)
+
+A self-improvement cycle proposes a change to the system's own adaptation and measures it. `ImprovementCycleBudget
+{ per_day }` is the rule; the count comes from the ledger.
+
+- `begin_improvement_cycle` admits a cycle for a project, on the day the runtime clock reports, and returns a ticket that
+  counts as in flight until it is recorded. `record_improvement_cycle` commits `ImprovementCycleRecorded` (tag 41),
+  `Completed` or `Aborted { reason }`.
+- The day's count is the committed events plus the open tickets. An aborted cycle, a running cycle and a ticket that
+  was dropped without a record all spend budget; a replayed runtime counts the same.
+- With no budget configured nothing is admitted; a budget of zero admits nothing. The budget is set once
+  (`set_improvement_budget`): the same value again changes nothing (clock included) and any other, tighter or looser, is
+  `BudgetPinConflict`.
+- The caller does not choose the day. The runtime reads a `CycleClock` (days since the epoch; an unreadable clock admits
+  nothing, `ClockUnavailable`). A project's high-water day is the latest day it has a cycle admitted or recorded for; a
+  day before it is refused (`ClockRegressed`). So going to the next day and back does not reopen the first day, counting
+  `day` upwards is impossible, and a history from the future refuses cycles until the clock passes it. A replayed
+  runtime rebuilds the same counts and high-water days from the ledger. At most 1024 projects and 1024 open
+  admissions are tracked, on replay as in live admission. A ticket names the runtime that admitted it and its open
+  admission: another runtime's ticket, an expired one (7 days, judged against the clock at record time; an unreadable
+  clock refuses the record) or a used one is refused and commits nothing. Expired admissions of every project are swept
+  before the global bound is checked, and recorded cycles are counted per project and day for the retention window, so
+  a cycle recorded out of day order is counted on its own day, live and on replay. An
+  admitted-but-unrecorded cycle is adapter state: it blocks a compacted snapshot like a promotion does.
+
+**Limit.** An admitted cycle whose process crashes before it is recorded is not counted after the restart. The budget
+bounds recorded and running cycles, not crashed ones.
+
+### Replay backtest (`training/src/ptr_training/replay`)
+
+`HistoryPool` is append-only and chronological (a repeated name or an order that does not advance is refused before
+anything changes; 256 generations at most). Generation orders, outcome counts and integer decision levels are integers below 2**53 (in absolute value for levels), anything else is a `HistoryError`. A categorical value is at most 256 characters and 1024 UTF-8 bytes and must be encodable text (an unpaired surrogate is a `HistoryError`). The predictive rule compares the count of correct predictions with the pinned fraction exactly (a rational read from the fraction's decimal form, so 7 of 100 passes a 0.07 rule). A decision the history never named is unidentified and counts as extrapolation whatever its value (0 and `False` included). A decision keeps the kind (categorical or numeric) of its first admission; a later generation, or a policy asked about, with the other kind is a `HistoryError`. `ReplaySimulator` fits an intercept and one response coefficient per
+decision from consecutive generations in which exactly one decision moved; a transition that moves two is ambiguous
+and charged to neither. `backtest(pool, error_bound=...)` holds each generation out and predicts it from the rest:
+
+- a generation whose decisions the remaining history does not identify is skipped with `not_identified`, never counted;
+- `degenerate` is set when the model has at least as many parameters as the history has generations, which is when the
+  in-sample fit is arithmetic;
+- `pipeline_ran` (the backtest completed) and `predictive` (at least `min_within_bound` generations predicted out of sample, and at least `min_within_fraction` of the predictable ones, each with every
+  family within the bound) are separate claims;
+- the categorical encoding of a fold is rebuilt from the generations that fold keeps: a category seen only in the held-out generation never
+  takes a position in the training levels (the held-out generation's edges are skipped as before);
+- a string decision is one categorical decision (its level is the position of the value in order of first appearance;
+  the first value is level 0 if the decision is in the pool's first generation, so an alternating history anchors its
+  intercept, otherwise 0 means not set and values start at 1), so `mode` off to on is one decision moving by one level; more than two values are
+  treated as linear in that order, a stated limit; an unseen value is extrapolation;
+- the within-bound decision uses the exact errors; only the report rounds; a step or slope that is not a finite number
+  (a step of 5e-324 overflows the slope) leaves the decision unidentified and no NaN or infinity reaches a prediction
+  or the report;
+- `choose_winner` takes the pool and the pinned rule, not a simulator and not the report's verdict: it recomputes the
+  backtest from the pool with the pinned parameters, compares the report passed in with it (any difference, a forged
+  `predictive` included, is a `HistoryError`) and rebuilds the full simulator itself, so no fold-fitted, edited or forged
+  state can enter;
+- `choose_winner` aborts with `NotPredictive` on a history that predicted nothing, and with `ExtrapolationAbort` when
+  the best policy asks for a decision level the history never showed.
+
+The error bound has no default. It is to be pinned by whoever enrols the claim in `experiments/preregistration.toml` (F008 is a registered, planned experiment and is not enrolled yet) and is not changed after a pilot. No
+simulator training happens in PTR until `predictive` has been true on a real generation history at least once.
+
+## 4. Adaptive batcher and replica router (`ptr-model-api`)
+
+`AdaptiveBatcher<B>` implements `InferenceBackend` (and `ResumableInferenceBackend` when `B` does) over a
+`BatchInferenceBackend`, whose provided `infer_batch` runs requests one by one: a backend gains only if it overrides it.
+
+- **Bounded (invariant 8).** The queue holds at most `queue_capacity` requests (65536 at most), and one principal at most `max_queued_per_principal` of them (between 1 and `queue_capacity`; requests without a principal share one anonymous bucket): a principal over it is refused with `overloaded` while others are still served, and its cancelled waiters are reclaimed first. A full queue answers
+  `ModelError::overloaded()` before anything grows, but only after the requests whose cancel flag is set have been removed from the queue and answered with `cancelled` (they would otherwise hold their slots until their group is served, and live requests would be refused meanwhile; the scan is linear in the queue and runs only when it is full).
+- **Keys.** Requests are grouped by `BatchKey { project, adapter, principal, generation }`; different keys never share a model
+  call. The plain `infer` uses the unscoped key; `infer_with` takes a `BatchAdmission` with the key, an optional
+  deadline and an optional `CancelFlag`.
+- **Dispatch.** A group goes when it holds `max_batch` requests, when its oldest request has waited `max_wait`, or when
+  its tightest deadline is within `deadline_margin`. The ready group with the oldest request goes first.
+- **Deadlines.** A request whose deadline has passed is answered without a model call, at the door or in the queue. The
+  clock is Unix milliseconds; if it cannot be read it answers `u64::MAX`, so nothing with a deadline is served on a time
+  nobody knows.
+- **Generation at use (invariant 3).** A `BatchGate` is asked about the key of every batch immediately before the model
+  runs; a revoked generation is refused at that use (`ModelError::revoked()`), not only when it was queued. A key that
+  names an adapter is refused when the batcher was built without a gate (there is no admit-all default). A resume
+  goes through an opaque `Continuation`: `infer_scoped` returns the answer with one (not `Clone`, no public constructor, an
+  unguessable 128-bit id from two OS-keyed hashers over a counter, `Debug` prints nothing of it). The batcher keeps the whole
+  resume context in a table of at most `MAX_OPEN_CONTINUATIONS` (4096) with a quota of `MAX_CONTINUATIONS_PER_PRINCIPAL` (256) per `BatchKey.principal`, keyed by
+  that id: `BatchKey`, request id, semantic context and the round. `resume_continuation(continuation, key, observation)`
+  consumes the handle and the entry, refuses a `key` other than the entry's (`ModelErrorKind::ScopeMismatch`, as for an unknown,
+  evicted or used continuation), asks the gate about the entry's key and builds the `ModelResumeRequest` itself from the stored
+  request id, semantic context and round plus the caller's observation; the answer carries the continuation of the next round.
+  The observation is new caller input under the continuation's scope: the gate checks exactly that scope, as for a fresh
+  `infer` under it, and the batcher cannot see where the caller's bytes came from and does not need to. What it guarantees is
+  that no stale state is resumed: context, round and scope come only from the table entry, which belongs to exactly one
+  scope, so a continuation from a revoked generation is refused whatever key or other continuation the caller holds. `infer_scoped` reserves a slot of the global capacity before the model runs (entries plus reservations never exceed the bound, so two
+  concurrent calls are never both promised the last slot; a reservation is charged to the opening principal, whose in-flight
+  reservations may not exceed its own quota of 256, so one principal's slow calls cannot take the capacity of others) and applies the principal's quota only when a continuation is committed:
+  an error, a cancellation, an expired deadline, a gate refusal or a `Finished` run releases the reservation and evicts nothing. A
+  principal at its quota then evicts its own oldest. `infer_scoped` checks before it dispatches that the successor can be committed (the principal's entries and reservations, this call included, exceed the quota only by entries no resume is running on, which a commit evicts); if not it is refused with `overloaded` before the backend runs, so a finished model call is not thrown away (a resume starting on an evictable entry in the meantime can still make the commit fail). When the table is full, entries whose deadline has passed or whose
+  cancel flag is set are swept first; if it is still full the new `infer_scoped` is refused with `overloaded` before the model
+  runs, and nothing of anyone else is evicted. The trade-off is stated: existing continuations are never lost to another
+  principal's load (a crowd of principals cannot push a victim out), at the price that opens can be refused while the table
+  is full of live continuations. An evicted (own quota) continuation fails closed. The queue keeps readiness incrementally (a group per key and ordered schedules by oldest arrival and tightest deadline), so a push and a
+  take cost a logarithmic number of schedule operations, not a walk of the queue; a cancelled request leaves when its group is dispatched,
+  an expired one on time. Queue age (`max_wait`) is measured on a monotonic clock (`Instant`), so a wall clock that steps cannot stretch or shrink a wait;
+  absolute deadlines stay on the batcher clock (Unix milliseconds). Dropping a `Continuation` releases its entry (the handle holds a weak reference to the table, no cycle), so abandoned handles do not
+  hold slots, and a run that ended with `Finished` opens none. A running resume keeps its entry reserved (in flight: not
+  resumable twice, never evicted or swept) and moves it in place to the next round under a new id, so a successful resume of a
+  still-open run always has its successor and another principal cannot take the slot meanwhile. The entry
+  also keeps the admission's deadline and cancel flag, and every resume path (continuation and trait) is refused once the
+  batcher is closed, past its deadline or cancelled, before and after the gate (the closed check is repeated right before the
+  backend call, for a batch as for a resume; `AdaptiveBatcher::close` closes a batcher without dropping it and, under the queue lock, answers every queued caller with `closed` itself, so none waits on a worker stuck in a slow or hanging backend call; `infer_scoped` checks `closed` before it reserves capacity, so a closed batcher with a full table says `closed` and not `overloaded`). A resume is reserved under the lock `close` takes, immediately before the backend call (`AdaptiveBatcher::resuming` counts it): it is refused as closed or in flight before `close` takes effect, and none is reserved afterwards. A continuation whose stored deadline passed or whose cancel flag was set while the backend ran gets its answer but no successor. A request id is *live* from `infer_scoped` (the reservation, while the model runs) until its continuation ends, is dropped, evicted or swept, or the run finished or failed; a resume in flight and the successor keep it live. A second `infer_scoped` under a live id, under any scope, is refused with `ModelError::duplicate_request` before the backend runs, because every resume of the continuation rebuilds the same (request id, context, round). Plain
+  `infer` and `infer_with` open no continuation. The unscoped
+  `resume` of the trait is served only by a batcher built without a gate (which serves no adapter) and is refused when a
+  gate is configured. A gate that panics has not admitted the key (refused as revoked, counted); a worker that ends for
+  any reason closes the batcher and answers every queued caller with `closed`. Resume has the same panic containment as a batch. Deadlines and cancellations are checked again after the gate, immediately before the backend call.
+- **Failure containment.** A backend panic or a wrong-length answer fails its batch and the batcher keeps serving; every
+  caller gets exactly one answer, also on drop. Request text is never printed by `Debug`.
+
+`ReplicaRouter` rotates over 1 to 64 interchangeable replicas and fails over to at most `max_failover` others, each tried
+once, by an allowlist on the typed `ModelErrorKind`: only overload and backend failure (`ModelError::allows_failover`).
+A refusal of the request itself (kind `Other`, the default of `ModelError::new`), a passed deadline, a cancellation, a
+revoked generation and a closed backend end the request; the message is never read. A `resume` tries one replica unless
+`ResumeFailover::Interchangeable` declares the replicas interchangeable for it, and `infer_placed` returns the answer with a per-invocation `Placement` (not `Clone`; an unguessable token bound, in a table of at most 4096 open placements, to the router, the request id and the semantic context; a full table refuses the call before any replica runs and dropping a placement releases its entry; `infer_placed` takes `PlacementOptions { principal }`, and each principal, with the calls that name none sharing one anonymous bucket, holds at most `MAX_PLACEMENTS_PER_PRINCIPAL` = 256 live invocations, reservations of running calls included: a principal at its quota is refused with `overloaded` and nothing of another's is taken) (and none at all when the run ended with `Finished`: `placement` is an `Option`) that `resume_placed` checks (a placement of another router, another request id or another context is a `ScopeMismatch`) and consumes, and answers with the placement of the replica that served it, so every round keeps its affinity: under `Never` the resume goes to exactly that replica, once. A request id is *live* from `infer_placed` until its run finishes or fails or its placement is dropped (a resume in flight included); a second `infer_placed` under a live id is refused router-wide with `ModelError::duplicate_request` (`ModelErrorKind::DuplicateRequest`, not failed over) before any replica runs, because the router forwards the caller's id unchanged and a stateful backend could not tell two live invocations under one id apart. Refusing was chosen over minting backend-unique ids: the backend, its resume and its checkpoints are keyed by the id the caller sent, so rewriting it would need a reverse mapping on every path; the check is router-wide, stricter than per replica, because failover decides the replica only after the call. The plain trait `resume` carries no placement and takes the rotation's replica. Counters per replica:
+attempts, failures, failovers. `ReplicaRouter(AdaptiveBatcher(backend))` composes.
+
+**Not done, and why.** `ptr-server` serializes requests behind the runtime lock, so a batcher in front of it would only
+queue. The restructuring (model call outside the lock, commit inside, the generation checked at the commit) is more
+than one small, safe step and was not attempted; wiring `[model.batch]` and `[model.replicas]` into `ptr-config` and
+`ptrd` waits on it. `ModelRequest` was not extended with a deadline and a key: that would touch about 70 struct
+literals in 40 files. The scoped path is `infer_with`.
+
+## 5. Evidence and experiments
+
+| Claim | Evidence now | What would measure it |
+|---|---|---|
+| Promotion without a baseline is refused, the digest is recomputed, a revocation is seen at the next use | unit and integration tests (`ptr-lineage`, `ptr-runtime`, `ptr-ledger`) | tests are the evidence of the mechanism; no experiment needed |
+| The improvement budget binds and aborted cycles spend it | integration tests (`ptr-runtime`, `ptr-feedback`) | as above |
+| The backtest is a valid instrument | `training/tests/test_replay_backtest.py` (mechanism only) | **F008-replay-backtest** (planned): seeded synthetic histories with a known response, positive, negative and interaction controls, the in-sample scorer as the baseline, persistence as the naive predictor, the oracle as the ceiling, noise and bound ladders, ablations of chronology, identification and the extrapolation abort; confirmatory seeds 17, 29, 43, 71, 101 never run, pilot and smoke seeds 1001 and above explorative |
+| Batching raises throughput at equal deadline compliance | none: the default `infer_batch` is sequential | **E014-adaptive-batching** (planned; E009 to E013 are reserved by [42](42-pod-data-plane.md); no entrypoint and not freezable until the server calls the model outside its runtime lock; confirmatory seeds 17, 29, 43, 71, 101 never run, pilot seeds 1001 and above explorative): baseline no batcher; arms batch-size and deadline ablations; a batch-cost sensitivity control (fixed against marginal cost per request); an oracle ceiling that batches with perfect arrival knowledge; falsified if the throughput gain at equal deadline drops is below 1.2 times at any confirmatory seed |
+| Gated adapter lineage beats a naive chain | none | **R004** stays planned; its harness, preregistration pins and entrypoint do not exist |
+| Serving reproduces the evaluation numbers (parity) | none | a parity run for an `adapter-serving` candidate; not registered in this change |
+
+Nothing in this document is a model-quality claim. The backends the batcher is tested with are recording and echo
+stubs.
+
+## 6. Open items
+
+- Move the model call out of the server lock, then wire the batcher and the router into `ptrd`.
+- A snapshot section for adapter bindings and cycle counts, so compaction works with adapters.
+- A request router that uses `BatchKey` and `check_adapter_use` at dispatch.
+- Build E014 (after the server-lock restructuring), R004 and F008 up to `prepared`.
+- A real batched forward in one backend.

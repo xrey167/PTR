@@ -207,7 +207,7 @@ impl PtrRuntime {
         };
         let pending = backend
             .infer(&request)
-            .map_err(|error| RuntimeError::Model(error.0))?;
+            .map_err(|error| RuntimeError::Model(error.message().to_owned()))?;
         Ok(SteppedRun {
             request_id,
             project: project.clone(),
@@ -386,7 +386,7 @@ impl PtrRuntime {
                 round: round as u32 + 1,
                 observation,
             })
-            .map_err(|error| RuntimeError::Model(error.0))?;
+            .map_err(|error| RuntimeError::Model(error.message().to_owned()))?;
         run.round = round + 1;
         Ok(RunStep::Pending)
     }
@@ -503,7 +503,7 @@ mod tests {
         };
         let mut pending = backend
             .infer(&request)
-            .map_err(|error| RuntimeError::Model(error.0))?;
+            .map_err(|error| RuntimeError::Model(error.message().to_owned()))?;
         let mut run = ResumableRun {
             kv_taint: input_taint,
             ..ResumableRun::default()
@@ -608,7 +608,7 @@ mod tests {
                     round: round as u32 + 1,
                     observation,
                 })
-                .map_err(|error| RuntimeError::Model(error.0))?;
+                .map_err(|error| RuntimeError::Model(error.message().to_owned()))?;
         }
         Err(RuntimeError::ModelResumeLimit { max_rounds })
     }
@@ -623,7 +623,7 @@ mod tests {
         }
 
         fn infer(&self, _: &ModelRequest) -> Result<Vec<ModelEvent>, ModelError> {
-            self.0[0].clone().ok_or_else(|| ModelError("infer".into()))
+            self.0[0].clone().ok_or_else(|| ModelError::new("infer"))
         }
     }
 
@@ -633,7 +633,7 @@ mod tests {
                 .get(request.round as usize)
                 .cloned()
                 .unwrap_or(Some(vec![ModelEvent::Finished]))
-                .ok_or_else(|| ModelError("resume".into()))
+                .ok_or_else(|| ModelError::new("resume"))
         }
     }
 

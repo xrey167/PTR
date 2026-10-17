@@ -393,6 +393,38 @@ pub fn projection_entries(committed: &CommittedEvent) -> Vec<(String, String)> {
             new.canonical_uri()
                 .unwrap_or_else(|_| POD_HEAD_UNRENDERABLE.to_owned()),
         )],
+        // The promoted generation and the digest of its weights, per project and adapter; the
+        // serving decision itself is the runtime's, from the same committed events.
+        LedgerEvent::AdapterPromoted {
+            project,
+            adapter,
+            generation,
+            artifact_sha256,
+            ..
+        } => vec![
+            (
+                format!("ptr-adapter:{project}/{adapter}:generation"),
+                generation.0.to_string(),
+            ),
+            (
+                format!("ptr-adapter:{project}/{adapter}:artifact_sha256"),
+                hex_digest(artifact_sha256),
+            ),
+        ],
+        LedgerEvent::AdapterRevoked {
+            project,
+            adapter,
+            generation,
+            ..
+        } => vec![(
+            // One row per revoked generation, so revoking generation 3 and then 2 leaves 3
+            // revoked: the runtime and ptr-pg keep a set of (key, generation) tombstones.
+            format!("revoked:ptr-adapter:{project}/{adapter}:{}", generation.0),
+            generation.0.to_string(),
+        )],
+        // The cycle count is derived from the ledger by the runtime; the projection keeps no
+        // row per cycle, which would grow without bound.
+        LedgerEvent::ImprovementCycleRecorded { .. } => Vec::new(),
     }
 }
 

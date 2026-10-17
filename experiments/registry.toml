@@ -546,6 +546,16 @@ path = "feedback/F007-v2-vcw-loop"
 status = "planned"
 
 [[experiment]]
+id = "F008"
+path = "feedback/F008-replay-backtest"
+status = "planned"
+
+[[experiment]]
+id = "E014"
+path = "system/E014-adaptive-batching"
+status = "planned"
+
+[[experiment]]
 id = "R015"
 path = "runtime/R015-dragonfly-pod-addressing"
 status = "planned"

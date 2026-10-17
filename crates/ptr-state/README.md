@@ -9,8 +9,8 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-10-13  
-**Code footprint:** 1 Rust source files · 1222 nonblank source lines · 4 integration-test files · 21 test markers (`#[test]`, `#[tokio::test]`)
+**Last reviewed:** 2026-10-16  
+**Code footprint:** 1 Rust source files · 1254 nonblank source lines · 4 integration-test files · 23 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -37,6 +37,7 @@
 - Projection of ExpertAuthorityChanged (ledger tag 31, R011 WP4): expert-authority:<kind name> (gate-config or evaluator) holds <epoch>:<hex identity digest>:<class name>:<fence count>:<hex fence digest> and records the latest change of that kind; parse_expert_authority_key and parse_expert_authority_entry are the strict inverses a compacted-snapshot restore checks the authority state against. The experts the change fenced are not in the event; the runtime writes their expert: keys
 - projection_entries maps PodHeadAdvanced to `pod-head:<project>/<identity>` (pod_head_key(project, identity)) holding the canonical revision address of the new head (pod_head_key, POD_HEAD_PREFIX), so replay, the Postgres projection and a compacted snapshot reproduce the head
 - A PodHeadAdvanced whose address cannot be rendered projects POD_HEAD_UNRENDERABLE instead of an empty head, which no reader parses, so a restore of that state fails closed
+- Projection of the adapter events: AdapterPromoted sets ptr-adapter:<project>/<adapter>:generation and :artifact_sha256, AdapterRevoked sets one row per revoked generation, revoked:ptr-adapter:<project>/<adapter>:<generation>, so a later revocation of an earlier generation leaves the later one revoked (the runtime and ptr-pg keep a set of tombstones), ImprovementCycleRecorded projects nothing (the count is the ledger's, and a row per cycle would grow without bound)
 
 ### Missing for the target architecture
 
@@ -85,6 +86,7 @@
 - tests/pod_head.rs: a head move projects the canonical address under the identity key; replaying two moves leaves the last head in the materialized state
 - tests/pod_head.rs: an address that does not render projects the unrenderable marker, which does not parse as a revision address
 - tests/pod_head.rs: the_same_identity_in_two_projects_projects_to_two_keys
+- tests/replay.rs adapter_events_project_scoped_rows_and_cycles_project_none: the exact rows of both adapter events and no row for a cycle; revoking generation 3 and then 2 leaves both revoked
 
 <!-- PTR:STATUS:END -->
 

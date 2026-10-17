@@ -119,7 +119,28 @@ pub fn lifecycle_change(committed: &CommittedEvent) -> LifecycleChange {
         // A refusal changes no lifecycle row; the projection keeps the latest per Pod.
         | LedgerEvent::EgressRefused { .. }
         // A pod head is a `pod-head:` projection entry, not a lifecycle row.
-        | LedgerEvent::PodHeadAdvanced { .. } => LifecycleChange::None,
+        | LedgerEvent::PodHeadAdvanced { .. }
+        // The cycle count is derived from the ledger, not kept as a row.
+        | LedgerEvent::ImprovementCycleRecorded { .. } => LifecycleChange::None,
+        LedgerEvent::AdapterPromoted {
+            project,
+            adapter,
+            generation,
+            ..
+        } => LifecycleChange::SetLive {
+            target: format!("ptr-adapter:{project}/{adapter}"),
+            generation: *generation,
+            project: None,
+        },
+        LedgerEvent::AdapterRevoked {
+            project,
+            adapter,
+            generation,
+            ..
+        } => LifecycleChange::Tombstone {
+            subject: format!("ptr-adapter:{project}/{adapter}"),
+            generation: *generation,
+        },
     }
 }
 
@@ -159,6 +180,9 @@ pub fn event_topic(event: &LedgerEvent) -> &'static str {
         LedgerEvent::ExpertAuthorityChanged { .. } => "expert.authority_changed",
         LedgerEvent::EgressRefused { .. } => "egress.refused",
         LedgerEvent::PodHeadAdvanced { .. } => "pod.head_advanced",
+        LedgerEvent::AdapterPromoted { .. } => "adapter.promoted",
+        LedgerEvent::AdapterRevoked { .. } => "adapter.revoked",
+        LedgerEvent::ImprovementCycleRecorded { .. } => "improvement.cycle_recorded",
     }
 }
 
@@ -260,6 +284,15 @@ pub fn event_subject(committed: &CommittedEvent) -> String {
         LedgerEvent::PodHeadAdvanced {
             project, identity, ..
         } => format!("pod-head:{project}/{identity}"),
+        LedgerEvent::AdapterPromoted {
+            project, adapter, ..
+        }
+        | LedgerEvent::AdapterRevoked {
+            project, adapter, ..
+        } => format!("adapter:{project}/{adapter}"),
+        LedgerEvent::ImprovementCycleRecorded { project, .. } => {
+            format!("improvement:{project}")
+        }
     }
 }
 

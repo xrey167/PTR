@@ -9,8 +9,8 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-10-15  
-**Code footprint:** 9 Rust source files · 9608 nonblank source lines · 17 integration-test files · 212 test markers (`#[test]`, `#[tokio::test]`)
+**Last reviewed:** 2026-10-16  
+**Code footprint:** 9 Rust source files · 9970 nonblank source lines · 17 integration-test files · 215 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -89,6 +89,7 @@
 - ExpertAuthorityChanged at tag 31 (R011 WP4), the change of an evidence authority: ExpertAuthorityKind (code 0 GateConfig, 1 Evaluator), a 32-byte identity digest, a non-zero epoch, ExpertAuthorityClass (code 0 Revoke, 1 TighteningRotation, 2 NonTightening), a u32 fence count and a fence digest. A Revoke or TighteningRotation fences the experts admitted under an earlier epoch of that kind in the same record, committed to by count and digest only like tag 30; the codec refuses a zero epoch, a zero identity or fence digest, and a NonTightening change with a non-zero count. The crate cannot check that the epoch advances or that the count and digest are the fence set; the runtime does both on commit and on replay, and the public commit refuses the event
 - LedgerEvent::PodHeadAdvanced { project, identity, old, new } (tag 38; the project is written before the identity, and a record whose project differs from the project of any address it names, or is empty or holds a '/', is refused on append and on decode with PTR_LEDGER_POD_HEAD_PROJECT): compare-and-swap record of the head of a stable pod identity. The codec encodes the project, namespace and pod of each revision address, the semantic revision and the generation, and refuses on encode and decode an empty identity, an invalid or zero-revision address, and a non-rising generation when an old head is named (PTR_LEDGER_POD_HEAD_*). Whether `old` is the current head is the runtime's check
 - Raft storage keeps the poisoned refusal first: record_snapshot refuses a poisoned storage before it counts the log, so an install that failed after persisting SnapshotPending (poisoned and unaccounted) answers PTR_RAFT_STORAGE_POISONED rather than PTR_RAFT_SNAPSHOT_UNACCOUNTED (test: tests/raft_storage_crash.rs an_error_installing_a_snapshot_past_the_state_write_poisons_and_a_restart_finishes, features raft-rs-backend and failpoints)
+- AdapterPromoted (tag 39: project, adapter name, generation, base-model digest, weights SHA-256, gate-report digest), AdapterRevoked (tag 40: project, adapter name, generation, reason) and ImprovementCycleRecorded (tag 41: project, day, outcome Completed or Aborted{reason}, policy digest) with canonical codecs; one shape check per event, called by the decoder and by check_encodable alike: names of 1 to 256 bytes without control characters, whitespace or '/' (so a project and an adapter never share a lifecycle key), a non-zero generation, no all-zero digest, reasons of 1 to 512 bytes without control characters; an unknown cycle outcome tag, a truncated or padded record is refused; the ledger stores the records and cannot check any digest in them
 
 ### Missing for the target architecture
 
@@ -104,6 +105,7 @@
 - Distributed snapshot/compaction protocols and cross-node cutover
 - Retention schedule/policy engine and durable snapshot lifecycle tracking; PTR does not enumerate or reclaim host-retained snapshots
 - Storage-residue and model-derived-state erasure, so no all-state-deleted declaration is available
+- The ledger does not check that an AdapterPromoted weights digest is the digest of any weights, that a generation advances, or that a cycle day never goes back; ptr-runtime's promote_adapter, revoke_adapter and begin_improvement_cycle do, and a replayed record is held only to its shape and the generation order
 
 ### Next milestones
 
@@ -128,6 +130,7 @@
 - [ADR-0002-authority-hierarchy.md](../../research/decisions/ADR-0002-authority-hierarchy.md)
 - [ADR-0009-consensus-ledger-state-separation.md](../../research/decisions/ADR-0009-consensus-ledger-state-separation.md)
 - [ADR-0020-only-the-runtime-merges-an-agent-branch.md](../../research/decisions/ADR-0020-only-the-runtime-merges-an-agent-branch.md)
+- [ADR-0025-adapter-promotion-and-improvement-budget-are-ledger-events.md](../../research/decisions/ADR-0025-adapter-promotion-and-improvement-budget-are-ledger-events.md)
 
 ### Current automated checks
 
@@ -184,6 +187,7 @@
 - authority_change_round_trips_under_tag_31_and_the_codes_are_pinned (every prefix and trailing byte refused), authority_change_refuses_every_non_canonical_form (zero epoch, zero identity, zero fence digest, a non-tightening change that fences: each refused by check_encodable and the decoder) and authority_change_refuses_an_unknown_kind_or_class (effect_record_tests in src/lib.rs)
 - src/lib.rs unit tests: PodHeadAdvanced round-trips under tag 38 with and without an old head, every prefix and a trailing byte are refused, every non-canonical form is refused on encode and decode, an unknown presence byte is refused; tests/pod_head.rs: both moves survive a durable reopen and a non-rising move is refused before any byte is appended
 - src/lib.rs unit tests: a PodHeadAdvanced whose project differs from the project of its new or old address, or is empty, is refused on encode and decode; tests/pod_head.rs the_same_identity_in_two_projects_round_trips_as_two_independent_records
+- adapter_event_tests in src/lib.rs: the three events round-trip under tags 39, 40 and 41, every prefix and a padded record are refused, each malformed field (empty, '/', whitespace, over-long name, zero generation, zero digest, control character in a reason, unknown outcome tag) is refused by check_encodable and by the decoder
 
 <!-- PTR:STATUS:END -->
 

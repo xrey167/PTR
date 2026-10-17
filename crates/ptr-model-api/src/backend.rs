@@ -1,8 +1,156 @@
 use crate::{ModelEvent, ModelRequest, ModelResumeRequest};
 use ptr_types::{ActionIr, CapabilityId, Effect, Generation, TypeId};
+use std::fmt;
 
+/// What kind of failure a [`ModelError`] is. Routing decisions (failover) read the kind and
+/// never the message.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum ModelErrorKind {
+    /// A bounded queue was full; nothing was run.
+    Overloaded,
+    /// The request's deadline had passed before the model was called.
+    DeadlineExceeded,
+    /// The caller withdrew the request before the model was called.
+    Cancelled,
+    /// The adapter or principal generation the request was admitted under is no longer admitted,
+    /// or no gate vouches for it.
+    Revoked,
+    /// The backend was shut down.
+    Closed,
+    /// A resume was presented under a scope other than the one its answer was produced under.
+    ScopeMismatch,
+    /// A request id was presented while another invocation under it is still live; nothing was
+    /// run. Not retried on another replica.
+    DuplicateRequest,
+    /// The backend failed for a reason that is not the request's (a panic, a malformed batch
+    /// answer, an unreachable replica).
+    BackendFailure,
+    /// Any other failure, including a refusal of the request itself (validation, policy). The
+    /// default of [`ModelError::new`].
+    Other,
+}
+
+/// A failed model call: a kind, which decides what may be done about it, and a message for
+/// people.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ModelError(pub String);
+pub struct ModelError {
+    kind: ModelErrorKind,
+    message: String,
+}
+
+impl fmt::Display for ModelError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ModelError {}
+
+impl ModelError {
+    /// An error of kind [`ModelErrorKind::Other`]: it is not retried on another replica.
+    pub fn new(message: impl Into<String>) -> Self {
+        Self::with_kind(ModelErrorKind::Other, message)
+    }
+
+    pub fn with_kind(kind: ModelErrorKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+        }
+    }
+
+    pub fn kind(&self) -> ModelErrorKind {
+        self.kind
+    }
+
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    pub fn overloaded() -> Self {
+        Self::with_kind(ModelErrorKind::Overloaded, "model backend overloaded")
+    }
+
+    pub fn deadline_exceeded() -> Self {
+        Self::with_kind(
+            ModelErrorKind::DeadlineExceeded,
+            "request deadline exceeded",
+        )
+    }
+
+    pub fn cancelled() -> Self {
+        Self::with_kind(ModelErrorKind::Cancelled, "request cancelled")
+    }
+
+    pub fn revoked() -> Self {
+        Self::with_kind(
+            ModelErrorKind::Revoked,
+            "adapter generation no longer admitted",
+        )
+    }
+
+    pub fn closed() -> Self {
+        Self::with_kind(ModelErrorKind::Closed, "model backend closed")
+    }
+
+    /// A resume named a scope (or a request) other than the one its answer is bound to.
+    pub fn scope_mismatch() -> Self {
+        Self::with_kind(
+            ModelErrorKind::ScopeMismatch,
+            "resume scope differs from the scope its answer was produced under",
+        )
+    }
+
+    /// A placed invocation named a request id that another live invocation already holds.
+    pub fn duplicate_request() -> Self {
+        Self::with_kind(
+            ModelErrorKind::DuplicateRequest,
+            "request id already names a live invocation",
+        )
+    }
+
+    pub fn is_duplicate_request(&self) -> bool {
+        self.kind == ModelErrorKind::DuplicateRequest
+    }
+
+    pub fn is_scope_mismatch(&self) -> bool {
+        self.kind == ModelErrorKind::ScopeMismatch
+    }
+
+    pub fn backend_failure() -> Self {
+        Self::with_kind(ModelErrorKind::BackendFailure, "model backend failed")
+    }
+
+    pub fn is_overloaded(&self) -> bool {
+        self.kind == ModelErrorKind::Overloaded
+    }
+
+    pub fn is_deadline_exceeded(&self) -> bool {
+        self.kind == ModelErrorKind::DeadlineExceeded
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.kind == ModelErrorKind::Cancelled
+    }
+
+    pub fn is_revoked(&self) -> bool {
+        self.kind == ModelErrorKind::Revoked
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.kind == ModelErrorKind::Closed
+    }
+
+    /// Whether another replica may be tried: only for overload and for a backend failure, the
+    /// two kinds a different replica can change. Every other kind, a refusal of the request
+    /// itself included, ends the request.
+    pub fn allows_failover(&self) -> bool {
+        matches!(
+            self.kind,
+            ModelErrorKind::Overloaded | ModelErrorKind::BackendFailure
+        )
+    }
+}
 
 pub trait InferenceBackend: Send + Sync {
     fn name(&self) -> &'static str;

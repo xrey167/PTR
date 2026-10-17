@@ -135,7 +135,7 @@ impl InferenceBackend for GatedBackend {
             .lock()
             .unwrap()
             .recv_timeout(Duration::from_secs(30))
-            .map_err(|_| ModelError("gate never released".into()))?;
+            .map_err(|_| ModelError::new("gate never released"))?;
         ReferenceEchoBackend.infer(request)
     }
 }

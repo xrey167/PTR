@@ -269,7 +269,7 @@ impl KvBackend {
         text: &str,
     ) -> Result<ModelRun, ModelError> {
         let contract = |error: ptr_model_api::TokenContractError| {
-            ModelError(format!("segmented request refused: {error}"))
+            ModelError::new(format!("segmented request refused: {error}"))
         };
         let segment =
             PromptSegment::raw_from_text(self.tokenizer.as_ref(), text).map_err(contract)?;

@@ -367,7 +367,7 @@ impl From<TokenContractError> for ReferenceKvError {
 
 impl From<ReferenceKvError> for ModelError {
     fn from(error: ReferenceKvError) -> Self {
-        ModelError(error.to_string())
+        ModelError::new(error.to_string())
     }
 }
 
@@ -547,12 +547,30 @@ pub(crate) enum CacheUse {
     Enabled,
 }
 
+/// What a committed `AdapterPromoted` named for one adapter key.
+#[derive(Clone, Copy, Debug)]
+struct PromotedEntry {
+    generation: Generation,
+    artifact: [u8; 32],
+    base: [u8; 32],
+}
+
 /// Liveness as this backend knows it: an input is live unless it was revoked or its
 /// generation is below the floor a supersession set for its identity.
 #[derive(Debug, Default)]
 pub(crate) struct RevokedInputs {
     revoked: BTreeSet<(String, Generation)>,
     floors: BTreeMap<String, Generation>,
+    /// The one generation each promoted adapter key serves: an adapter dependency is live only
+    /// at exactly this generation, not at any generation above the floor.
+    adapter_current: BTreeMap<String, PromotedEntry>,
+    /// Identity of this backend's base model (`ReferenceKvReuseBackend::base_digest`): a
+    /// promoted adapter is live only for the base it was promoted for.
+    base: Option<[u8; 32]>,
+    /// Set once, by `require_promoted_adapters` or by the first adapter lifecycle event this
+    /// backend applies: every adapter-kind dependency, whatever its identity, is then live only
+    /// at the generation a committed promotion named. Never cleared.
+    strict_adapters: bool,
     /// Expert identities with a committed fence epoch: an expert dependency recorded below it
     /// (or with none) is not live.
     fences: BTreeMap<String, u64>,
@@ -615,7 +633,100 @@ impl RevokedInputs {
                 kind: InputInvalidationKind::Superseded { new_generation, .. },
                 ..
             } => self.raise_floor(input.clone(), *new_generation),
-            _ => {}
+            // An adapter's dependency identity is its lifecycle key (as in the catalog
+            // mapping): a revocation kills that generation, a promotion supersedes every
+            // generation below the promoted one.
+            LedgerEvent::AdapterRevoked {
+                project,
+                adapter,
+                generation,
+                ..
+            } => {
+                // Fed adapter lifecycle events from a ledger, the backend is ledger-anchored
+                // from here on (see `strict_adapters`).
+                self.strict_adapters = true;
+                let key = crate::adapter::adapter_key(project, adapter);
+                self.revoked.insert((key.clone(), *generation));
+                self.prune_adapter(&key);
+            }
+            LedgerEvent::AdapterPromoted {
+                project,
+                adapter,
+                generation,
+                artifact_sha256,
+                base,
+                ..
+            } => {
+                self.strict_adapters = true;
+                let key = crate::adapter::adapter_key(project, adapter);
+                let key_for_prune = key.clone();
+                self.raise_floor(key.clone(), *generation);
+                // The promoted generation, the digest of the weights it was promoted with and the
+                // base model it was promoted for.
+                let promoted = PromotedEntry {
+                    generation: *generation,
+                    artifact: *artifact_sha256,
+                    base: *base,
+                };
+                let current = self.adapter_current.entry(key).or_insert(promoted);
+                if *generation >= current.generation {
+                    *current = promoted;
+                }
+                self.prune_adapter(&key_for_prune);
+            }
+            // Every other kind leaves no input dead. Listed, not wildcarded, so a new event
+            // kind cannot be ignored here without someone deciding it.
+            LedgerEvent::SemanticDeltaCommitted { .. }
+            | LedgerEvent::VerifierAttested { .. }
+            | LedgerEvent::SnapshotCommitted { .. }
+            | LedgerEvent::EffectAttempted { .. }
+            | LedgerEvent::EffectSettled { .. }
+            | LedgerEvent::EffectReconciled { .. }
+            | LedgerEvent::ScopeLifecycle(_)
+            | LedgerEvent::ProtectedStateCommitted { .. }
+            | LedgerEvent::MeshTunnelLifecycle { .. }
+            | LedgerEvent::ExecutionManifestAdmitted { .. }
+            | LedgerEvent::ExecutionManifestRevoked { .. }
+            | LedgerEvent::PolicyBundleActivated { .. }
+            | LedgerEvent::PolicyBundleRevoked { .. }
+            | LedgerEvent::SessionRevoked { .. }
+            | LedgerEvent::TierBackendLifecycle { .. }
+            | LedgerEvent::TierObjectCommitted { .. }
+            | LedgerEvent::TierReplicaLifecycle { .. }
+            | LedgerEvent::PodEvidenceCommitted { .. }
+            | LedgerEvent::PodOutputAdmitted { .. }
+            | LedgerEvent::PodHypothesisCommitted { .. }
+            | LedgerEvent::KvTaintCommitted { .. }
+            | LedgerEvent::ExpertAuthorityChanged { .. }
+            | LedgerEvent::EgressRefused { .. }
+            | LedgerEvent::PodHeadAdvanced { .. }
+            | LedgerEvent::ImprovementCycleRecorded { .. } => {}
+        }
+    }
+
+    /// Bound the revocation tombstones of one adapter key. Whatever is below the supersession
+    /// floor is already not live and goes; at most `MAX_GENERATIONS_PER_ADAPTER` stay, the
+    /// highest, so the revocation of the current generation is always kept.
+    fn prune_adapter(&mut self, key: &str) {
+        let floor = self.floors.get(key).copied();
+        let kept: Vec<Generation> = self
+            .revoked
+            .range((key.to_owned(), Generation(0))..=(key.to_owned(), Generation(u64::MAX)))
+            .map(|(_, generation)| *generation)
+            .collect();
+        let mut live = Vec::new();
+        for generation in kept {
+            if floor.is_some_and(|floor| generation < floor) {
+                self.revoked.remove(&(key.to_owned(), generation));
+            } else {
+                live.push(generation);
+            }
+        }
+        let max = crate::adapter::MAX_GENERATIONS_PER_ADAPTER;
+        if live.len() > max {
+            for old in &live[..live.len() - max] {
+                self.revoked.remove(&(key.to_owned(), *old));
+            }
         }
     }
 
@@ -648,6 +759,38 @@ impl RevokedInputs {
                 .floors
                 .get(&dependency.identity)
                 .is_none_or(|floor| dependency.generation >= *floor)
+            && self.adapter_is_current(dependency)
+    }
+
+    /// Adapter-kind dependencies fail closed. In the lifecycle namespace (`ptr-adapter:`) one is
+    /// live only when a committed promotion named its key and the generation is exactly that
+    /// one; a key no promotion named is not live at any generation. After
+    /// [`ReferenceKvReuseBackend::require_promoted_adapters`], or once the backend has applied
+    /// its first `AdapterPromoted` or `AdapterRevoked`, that holds for every adapter-kind
+    /// dependency whatever its identity. A backend that never saw such an event is a
+    /// standalone one (the reference backend's own, ledger-free mode): an adapter outside the
+    /// namespace is live unless revoked. The decision is by dependency kind, never by the shape of the identity alone.
+    fn adapter_is_current(&self, dependency: &KvDependency) -> bool {
+        if dependency.kind != KvDependencyKind::Adapter {
+            return true;
+        }
+        let namespaced = dependency
+            .identity
+            .starts_with(crate::adapter::ADAPTER_KEY_PREFIX);
+        if !(namespaced || self.strict_adapters) {
+            return true;
+        }
+        // Identity, generation and the digest of the weights must all be the promoted entry's
+        // (other weights under a promoted identity and generation are not that adapter), and it
+        // must have been promoted for this backend's own base model.
+        self.adapter_current
+            .get(&dependency.identity)
+            .is_some_and(|promoted| {
+                promoted.generation == dependency.generation
+                    && promoted.artifact == dependency.content_digest
+                    // A backend with no base identity cannot vouch for any promotion: not live.
+                    && self.base.is_some_and(|base| base == promoted.base)
+            })
     }
 }
 
@@ -776,6 +919,81 @@ fn derive_chain(
     ))
 }
 
+/// See [`ReferenceKvReuseBackend::base_digest`].
+///
+/// This is the identity a promotion binds to, and it is not the cache compatibility key. The
+/// chain covers what shapes the KV rows (embedding, every layer up to the final layer's K/V
+/// projections, RoPE settings, tokenizer, build) and stops there: the final layer's query,
+/// output and MLP weights, the final norm and the LM head change the model's answers without
+/// changing a cached row. What an adapter was evaluated on is the whole model, so this digest
+/// frames the chain, the full stack configuration, the generation limit that fixes the
+/// admission regime, and every weight of the stack.
+fn promotion_base_digest(
+    chain: &KvChainId,
+    stack: &Qwen2PagedStack,
+    max_new_tokens: usize,
+) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    fn floats(hasher: &mut Sha256, values: &[f32]) {
+        hasher.update((values.len() as u64).to_le_bytes());
+        for value in values {
+            hasher.update(value.to_bits().to_le_bytes());
+        }
+    }
+    fn linear(hasher: &mut Sha256, weights: &ptr_pods::Qwen2LinearWeights) {
+        hasher.update((weights.output_size as u64).to_le_bytes());
+        hasher.update((weights.input_size as u64).to_le_bytes());
+        floats(hasher, &weights.weight);
+        match &weights.bias {
+            Some(bias) => {
+                hasher.update([1u8]);
+                floats(hasher, bias);
+            }
+            None => hasher.update([0u8]),
+        }
+    }
+    fn optional(hasher: &mut Sha256, values: &Option<Vec<f32>>) {
+        match values {
+            Some(values) => {
+                hasher.update([1u8]);
+                floats(hasher, values);
+            }
+            None => hasher.update([0u8]),
+        }
+    }
+    let rendered = format!("{:?}", stack.config());
+    let mut hasher = Sha256::new();
+    hasher.update(b"ptr.kv.promotion-base.v2\0");
+    hasher.update(chain.0);
+    hasher.update((rendered.len() as u64).to_le_bytes());
+    hasher.update(rendered.as_bytes());
+    hasher.update((max_new_tokens as u64).to_le_bytes());
+    let weights = stack.weights();
+    floats(&mut hasher, &weights.embedding);
+    hasher.update((weights.layers.len() as u64).to_le_bytes());
+    for layer in &weights.layers {
+        let decoder = &layer.decoder;
+        floats(&mut hasher, &decoder.input_layernorm);
+        for part in [
+            &decoder.query,
+            &decoder.key,
+            &decoder.value,
+            &decoder.output,
+            &decoder.gate,
+            &decoder.up,
+            &decoder.down,
+        ] {
+            linear(&mut hasher, part);
+        }
+        floats(&mut hasher, &decoder.post_attention_layernorm);
+        optional(&mut hasher, &layer.query_norm);
+        optional(&mut hasher, &layer.key_norm);
+    }
+    floats(&mut hasher, &weights.final_norm);
+    linear(&mut hasher, &weights.lm_head);
+    hasher.finalize().into()
+}
+
 impl ReferenceKvReuseBackend {
     /// A backend with the R005 reference weights (`REFERENCE_KV_WEIGHT_SEED`).
     pub fn new(
@@ -864,6 +1082,7 @@ impl ReferenceKvReuseBackend {
         let catalog = KvPrefixCatalog::new(authority, limits.catalog)
             .map_err(ReferenceKvError::Catalog)?
             .with_retirer(Arc::new(paged.clone()));
+        let base = promotion_base_digest(&chain, &stack, limits.max_new_tokens);
         Ok(Self {
             stack,
             tokenizer,
@@ -882,7 +1101,12 @@ impl ReferenceKvReuseBackend {
                 open_sessions: 0,
                 next_session: 0,
             }),
-            liveness: ReferenceKvLiveness::default(),
+            liveness: ReferenceKvLiveness {
+                inner: Arc::new(Mutex::new(RevokedInputs {
+                    base: Some(base),
+                    ..RevokedInputs::default()
+                })),
+            },
             oneshot: Mutex::new(()),
             positional: None,
         })
@@ -1166,6 +1390,51 @@ impl ReferenceKvReuseBackend {
             CacheUse::Disabled,
             &StackBinding::base(),
         )
+    }
+
+    /// Identity of this backend's base model for promotions: the SHA-256 of a domain tag, the
+    /// chain id (actual stack weights, tokenizer, build identity), the full stack configuration
+    /// and every weight of the stack, and the generation limit. It differs from the cache
+    /// compatibility chain, which stops at the final layer's K/V projections: backends that
+    /// differ only in the LM head, the final norm or the last layer's other weights share a
+    /// chain but not this digest. An `AdapterPromoted` must name exactly this digest as its `base` for the
+    /// adapter to be live here; a promotion for another base never serves on this backend.
+    pub fn base_digest(&self) -> [u8; 32] {
+        promotion_base_digest(&self.chain, &self.stack, self.limits.max_new_tokens)
+    }
+
+    /// The canonical bytes of `adapter` as an artifact of this stack, and the SHA-256 of them
+    /// ([`Self::adapter_artifact_digest`]): what a promotion of this adapter must hash to. The
+    /// serialization is a domain tag, then identity, generation, kind, first layer, rank, scale
+    /// and the exact bits of every low-rank pair, each variable part framed by its length.
+    pub fn adapter_artifact_bytes(&self, adapter: &ptr_pods::Qwen2Adapter) -> Vec<u8> {
+        crate::kv_infer_layered::adapter_canonical_bytes(adapter, self.stack.config().num_layers)
+    }
+
+    /// The `artifact_sha256` a promotion of `adapter` must carry to admit exactly these weights.
+    pub fn adapter_artifact_digest(&self, adapter: &ptr_pods::Qwen2Adapter) -> [u8; 32] {
+        crate::kv_infer_layered::adapter_content_digest(adapter, self.stack.config().num_layers)
+    }
+
+    /// Switch to ledger-anchored adapters, once and for good: from now on an adapter binding is
+    /// live only if a committed `AdapterPromoted` (applied through
+    /// [`Self::apply_committed_event`]) named its key and generation exactly, whatever its
+    /// identity. A host that serves promoted adapters can call this at construction; the
+    /// backend also arms itself on the first `AdapterPromoted` or `AdapterRevoked` it applies,
+    /// so a host fed adapter lifecycle events is fail-closed without it. A backend that never
+    /// sees such an event stays in the standalone mode in which an adapter outside the
+    /// lifecycle namespace is live unless revoked (the R009 harness and the reference tests
+    /// run in it).
+    ///
+    /// # Errors
+    /// [`ReferenceKvError::Poisoned`].
+    pub fn require_promoted_adapters(&self) -> Result<(), ReferenceKvError> {
+        self.liveness
+            .inner
+            .lock()
+            .map_err(|_| ReferenceKvError::Poisoned)?
+            .strict_adapters = true;
+        Ok(())
     }
 
     /// The backend's own liveness oracle (the fallback when no ledger-anchored one is
@@ -1779,6 +2048,57 @@ mod tests {
     }
 
     #[test]
+    fn the_promotion_digest_covers_what_the_chain_does_not() {
+        let config = stack_config(&ReferenceKvLimits::default(), Qwen2RopeScaling::None);
+        let a = Qwen2PagedStack::reference(config.clone(), 1).unwrap();
+        let digest = |stack: &Qwen2PagedStack| {
+            promotion_base_digest(
+                &chain_of(stack),
+                stack,
+                ReferenceKvLimits::default().max_new_tokens,
+            )
+        };
+        assert_eq!(digest(&a), digest(&a.clone()));
+        let last = a.weights().layers.len() - 1;
+        type Perturb = fn(&mut ptr_pods::Qwen2StackWeights, usize);
+        let perturbations: [(&str, Perturb); 4] = [
+            ("lm_head", |w, _| w.lm_head.weight[0] += 1.0),
+            ("final_norm", |w, _| w.final_norm[0] += 1.0),
+            ("last layer query", |w, last| {
+                w.layers[last].decoder.query.weight[0] += 1.0
+            }),
+            ("last layer mlp", |w, last| {
+                w.layers[last].decoder.down.weight[0] += 1.0
+            }),
+        ];
+        for (name, perturb) in perturbations {
+            let mut weights = a.weights().clone();
+            perturb(&mut weights, last);
+            let other = Qwen2PagedStack::new(config.clone(), weights).unwrap();
+            assert_eq!(
+                chain_of(&a),
+                chain_of(&other),
+                "{name}: the chain cannot tell"
+            );
+            assert_ne!(
+                digest(&a),
+                digest(&other),
+                "{name}: the promotion digest can"
+            );
+        }
+        // The configuration is framed too.
+        let scaled_config = stack_config(
+            &ReferenceKvLimits::default(),
+            Qwen2RopeScaling::DynamicNtk {
+                factor: 4.0,
+                original_max_position_embeddings: 16,
+            },
+        );
+        let scaled = Qwen2PagedStack::reference(scaled_config, 1).unwrap();
+        assert_ne!(digest(&a), digest(&scaled));
+    }
+
+    #[test]
     fn build_identity_changes_the_chain() {
         let config = stack_config(&ReferenceKvLimits::default(), Qwen2RopeScaling::None);
         let stack = Qwen2PagedStack::reference(config, 1).unwrap();
@@ -1808,5 +2128,73 @@ mod tests {
             ReferenceKvReuseBackend::new(ReferenceKvLimits::default(), blank),
             Err(ReferenceKvError::InvalidScope)
         ));
+    }
+
+    #[test]
+    fn adapter_revocation_tombstones_are_bounded_and_the_current_one_stays_refused() {
+        let mut inputs = RevokedInputs::default();
+        let project = ProjectId::from("alpha");
+        let key = crate::adapter::adapter_key(&project, "coder");
+        for generation in 1..=100u64 {
+            inputs.note_event(&LedgerEvent::AdapterPromoted {
+                project: project.clone(),
+                adapter: "coder".into(),
+                generation: Generation(generation),
+                base: [1; 32],
+                artifact_sha256: [2; 32],
+                gate_report_digest: [3; 32],
+            });
+            inputs.note_event(&LedgerEvent::AdapterRevoked {
+                project: project.clone(),
+                adapter: "coder".into(),
+                generation: Generation(generation),
+                reason: "revoked".into(),
+            });
+        }
+        // Everything below the supersession floor is already not live and was dropped; at most
+        // 64 stay, the current generation's among them.
+        let kept = inputs
+            .revoked
+            .iter()
+            .filter(|(identity, _)| *identity == key)
+            .count();
+        assert!(
+            kept <= crate::adapter::MAX_GENERATIONS_PER_ADAPTER,
+            "{kept} kept"
+        );
+        assert!(inputs.revoked.contains(&(key.clone(), Generation(100))));
+        let current = KvDependency::adapter(&key, Generation(100), [2; 32]);
+        assert!(
+            !inputs.is_live(&current),
+            "the current revoked generation is refused"
+        );
+        let old = KvDependency::adapter(&key, Generation(1), [2; 32]);
+        assert!(
+            !inputs.is_live(&old),
+            "a pruned old generation is still not live"
+        );
+    }
+
+    #[test]
+    fn a_liveness_with_no_base_identity_serves_no_promoted_adapter() {
+        let mut inputs = RevokedInputs::default();
+        assert!(inputs.base.is_none());
+        let project = ProjectId::from("alpha");
+        let key = crate::adapter::adapter_key(&project, "coder");
+        inputs.note_event(&LedgerEvent::AdapterPromoted {
+            project,
+            adapter: "coder".into(),
+            generation: Generation(2),
+            base: [1; 32],
+            artifact_sha256: [2; 32],
+            gate_report_digest: [3; 32],
+        });
+        // Armed by the event, promoted with matching generation and weights, but there is no
+        // base to compare with: not live.
+        assert!(inputs.strict_adapters);
+        assert!(!inputs.is_live(&KvDependency::adapter(&key, Generation(2), [2; 32])));
+        // With the base set to the promoted one it serves.
+        inputs.base = Some([1; 32]);
+        assert!(inputs.is_live(&KvDependency::adapter(&key, Generation(2), [2; 32])));
     }
 }

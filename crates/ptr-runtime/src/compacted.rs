@@ -2120,6 +2120,12 @@ impl PtrRuntime {
                 items: overflow.items,
             });
         }
+        // No snapshot layout carries the adapter bindings or the improvement-cycle counts, and
+        // compaction discards the records they are rebuilt from, so a snapshot taken now would
+        // drop them silently. Refuse instead (see the `adapter` module).
+        if !self.adapters.is_empty() {
+            return Err(crate::adapter::AdapterError::CompactionUnsupported.into());
+        }
         let floor = self.journal_anchor()?;
         if self.state.last_applied != floor.index.0 {
             return Err(invalid(CompactedError::StateMismatch));

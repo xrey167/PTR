@@ -9,8 +9,8 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-10-14  
-**Code footprint:** 11 Rust source files · 4740 nonblank source lines · 7 integration-test files · 99 test markers (`#[test]`, `#[tokio::test]`)
+**Last reviewed:** 2026-10-16  
+**Code footprint:** 12 Rust source files · 4876 nonblank source lines · 7 integration-test files · 102 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -27,6 +27,7 @@
 - TrajectoryLog::append rolls back a line whose write, flush or sync failed: under the lock shared by clones it cuts the file back to its length before the call (or to empty after a rotation), so a retry does not duplicate the trajectory and a reopen does not resurrect it; the cut is synced through the same write handle, and if the cut or its sync fails the log (all clones) returns LogError::Poisoned until it is reopened; the failure paths are exercised through a cfg(test) fault seam, not a real disk fault
 - TrajectoryLog rotation is failure-atomic: the oldest generation is staged (base.rotating) instead of deleted, each shift moves into a just-vacated slot, a failing rename undoes the completed moves and restores the staged file (so a retry loses no retained generation), a failed undo poisons the log, and the staged file is deleted only after every move succeeded; the append rollback cuts the file through a fresh write handle because an append-only handle cannot set_len on Windows (not run on Windows here); injected rename failures at every step are tested for keep 1 to 3
 - Tournament::select rejects more than MAX_TOURNAMENT_WINNERS (4096) requested winners with SelectionError::TooManyWinners before allocating (winners are drawn with replacement, so the input size does not bound them)
+- ImprovementCycleBudget { per_day } with check_budget(day, history) over CycleRecord { day, outcome }: a completed, an aborted and an in-flight cycle each spend one unit of the day's budget, records of other days are ignored, a budget of zero admits nothing; the crate takes the history as plain records and depends on no ledger type (ptr-runtime derives them from ImprovementCycleRecorded events and from admitted-but-unrecorded cycles)
 
 ### Missing for the target architecture
 
@@ -34,6 +35,7 @@
 - Semantic (embedding) similarity for clustering; the fingerprints are lexical only
 - A training or GEPA consumer of the persisted trajectory records, and wiring of selection into the runtime or router; nothing outside this crate calls the new modules yet
 - Multi-verifier objectives fed from several reports; the standard objective space uses one report's score, a caller-supplied cost and text length
+- No improvement cycle is driven from this crate: the budget is a rule, the admission and the ledger record are ptr-runtime's (begin_improvement_cycle, record_improvement_cycle)
 
 ### Next milestones
 
@@ -45,6 +47,7 @@
 
 - [F001](../../experiments/feedback/F001-generate-verify-repair/README.md) — `frozen`
 - [E001](../../experiments/system/E001-end-to-end/README.md) — `planned`
+- [F008](../../experiments/feedback/F008-replay-backtest/README.md) — `planned`
 
 ### Technology evaluations
 
@@ -53,6 +56,7 @@
 ### Decision records
 
 - [ADR-0004-backend-independence.md](../../research/decisions/ADR-0004-backend-independence.md)
+- [ADR-0025-adapter-promotion-and-improvement-budget-are-ledger-events.md](../../research/decisions/ADR-0025-adapter-promotion-and-improvement-budget-are-ledger-events.md)
 
 ### Current automated checks
 
@@ -61,6 +65,7 @@
 - unit and integration tests of the loop: acceptance only through Candidate::passes, each candidate verified once, the call and round budgets, Exhausted returns no candidate, Unknown/Disputed/contradicting reports are rewritten, a declined repair becomes a fresh draw, trajectory content, with the real ActionContractVerifier
 - unit and integration tests: near-duplicate clustering and representative choice, hand-checked Pareto fronts and crowding (boundaries infinite), seed-deterministic tournaments, Invariant 11 for selection, trajectory record round trip, rotation, corruption and redaction, a RepairLoop run driven by the prompted adaptors and a scripted model
 - workspace fmt/check/test/clippy
+- src/cycle.rs tests: a zero budget admits nothing; aborted and in-flight cycles spend budget like completed ones; other days do not spend this day's budget
 
 <!-- PTR:STATUS:END -->
 

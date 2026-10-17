@@ -7,6 +7,7 @@
 
 mod candidate;
 mod cluster;
+mod cycle;
 mod json;
 mod log;
 mod prompted;
@@ -17,6 +18,7 @@ mod select;
 mod text;
 
 pub use candidate::{Candidate, Critique, Population};
+pub use cycle::{BudgetExhausted, CycleOutcomeKind, CycleRecord, ImprovementCycleBudget};
 pub use repair::{
     Decision, ExhaustionReason, Generator, Origin, Outcome, RepairBudget, RepairError, RepairLoop,
     RepairPolicy, RepairRun, Repairer, RewriteReason, Step, Trajectory, Usage,

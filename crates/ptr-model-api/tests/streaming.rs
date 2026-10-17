@@ -212,7 +212,7 @@ fn adapter_surfaces_backend_error_and_zero_chunk_is_rejected() {
             "failing"
         }
         fn infer(&self, _: &ModelRequest) -> Result<Vec<ModelEvent>, ModelError> {
-            Err(ModelError("down".into()))
+            Err(ModelError::new("down"))
         }
     }
     let adapter = InferenceStreamAdapter::new(Failing, 4).unwrap();
@@ -220,8 +220,8 @@ fn adapter_surfaces_backend_error_and_zero_chunk_is_rejected() {
         .open_stream(&request("x"), StreamOptions::default())
         .err()
         .unwrap();
-    assert_eq!(error, GenerationError::Backend(ModelError("down".into())));
-    assert_eq!(ModelError::from(error), ModelError("down".into()));
+    assert_eq!(error, GenerationError::Backend(ModelError::new("down")));
+    assert_eq!(ModelError::from(error), ModelError::new("down"));
     assert!(matches!(
         InferenceStreamAdapter::new(ReferenceEchoBackend, 0),
         Err(GenerationError::InvalidLimits(_))
