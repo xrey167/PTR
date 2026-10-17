@@ -60,6 +60,56 @@ Metrics per arm: `routing_accuracy` (labelled probes routed to their pod over la
 `false_route_rate` (probes routed to a wrong pod, or to any pod when none is meant, over all probes), each also as an
 integer permille rounded down.
 
+## 4a. Reflex and failover: two further claims
+
+Work package 2 adds a runtime fallback (ADR-0023, [43 — Pod linking](../../../docs/architecture/43-pod-linking.md)):
+when the primary path misses (an abstention, a pod without a learned address, a pod that fails), an explicit
+default pod may serve the request through the same verifier path. The harness measures it in a `reflex` block:
+the `learned` arm is put behind the runtime's real failover path, with a fallback plan naming the lexically
+smallest pod id as the default (fixed here, before any run; its lifecycle generation is live), and each of the
+43 probes is dispatched as a Pod request. The harness host admits exactly the activated
+representations the router's store holds (the runtime fails closed for a sampler that admits none). Two claims, one metric each, kept apart:
+
+- `reflex_failover_coverage` (mechanism). Metric `reflex.failover_coverage_permille`: failovers over misses,
+  integer permille rounded down. Claim: every miss of the learned router is caught by the default pod
+  (1000 permille). It says the plumbing holds. It says nothing about the default answering correctly: a probe
+  that names no pod is "served" by the default as well. Baseline: the same probes with no fallback plan,
+  executed as an arm of its own (`reflex.baseline_*`); it must see the same misses and catch none of them. Sensitivity
+  control: the same plan naming a live generation of the default that the registry does not hold, the registry and so
+  every routing decision unchanged (`reflex.stale_*`); it sees the same misses, serves none and refuses every one as
+  a stale fallback. Both controls are validity rules in
+  `criteria.toml` (a seed in which they misbehave is INVALID for this claim), their counters are reported. Failure
+  criterion: below 1000 permille on any seed.
+- `reflex_dispatch_hits` (benefit). Metric `reflex.dispatch_precision_gap_permille`: of the dispatches the
+  learned router makes itself (the reflex hits), the share sent to the pod the probe names, minus the same
+  share for description cosine, which dispatches all 43 probes; signed permille, rounded down. Claim: the gap
+  is at least 1. Baseline: `cosine_only`, the best non-learned router here. "Send everything to the default"
+  is reported (`reflex.default_only_correct`) and not judged: it would be a strawman, since the default is one
+  pod of six. Failure criterion: a gap below 1 on any seed. Ablations and sensitivity: the same probes are
+  dispatched through the same reflex path (fallback plan, admission, counters) with the router changed in one
+  respect each, executed as arms of their own: `reflex.dispatch_no_bias_*` (every bias 0),
+  `reflex.dispatch_no_abstain_*` (both thresholds 0) and `reflex.dispatch_sensitivity_*` (the sweep point
+  (600, 200), both thresholds above the treatment's (500, 150)); each reports requests, hits, misses, correct
+  hits and the same precision metric (correct hits over hits, permille). They are reported, not judged, with a
+  validity rule: each arm must have run over every probe (`requests == probes`) and printed an integer
+  precision, or the seed is INVALID for this claim. Reason for not judging them: like the routing ablations they
+  say where the benefit comes from (bias, abstention, thresholds), and judging them would add failure criteria
+  that were not preregistered with a margin; a router that matches the treatment without its bias is a finding
+  to report, not a falsifier of the benefit over cosine.
+
+The harness counts a request only when the counters account for its outcome (one hit, or one miss caught by the default, or one miss nothing covered); any other runtime error is a harness failure (exit 2), not a counted miss, so `reflex.requests` can be compared with the probe count. Both are guarded against the vacuous pass. "Every miss was caught" holds trivially with no miss, and a router
+that never dispatches has no precision, so a seed with `reflex.misses` below 1 (claim 1) or
+`reflex.dispatch_hits` below 1 (claim 2), or with any `reflex.inconsistent` recording, is INVALID for that claim:
+no result, not a pass. A seed that is INVALID or failing for one claim says nothing about the other or about the
+routing claim of section 5; each claim has its own verdict (`criteria.toml`, `[claims.*]`). A world the lifecycle
+cannot hold (a registered pod without a namespace or at generation 0, which no capsule commit can make live) cannot
+run the reflex arms: the harness then prints an unexercised reflex block (every metric 0, `reflex.exercised` false)
+and the coverage rules (`reflex.requests == probes`) make the seed INVALID, in the same way as a world without
+pods, instead of exiting 2 before the validity decision. The faults a
+failover must be refused for (revoked or superseded default generation, a default outside the registry, an
+effect beyond read, a verifier contradiction) are held by the runtime's own tests, not by this harness. The
+counters are telemetry (not ledger records), and the harness reads them only to report.
+
 ## 5. Decision and stop rules
 
 The rules are in `criteria.toml`, in a fixed grammar, and are all that judges.
@@ -71,14 +121,25 @@ The rules are in `criteria.toml`, in a fixed grammar, and are all that judges.
 - Validity controls (coverage): the oracle reaches the ceiling (accuracy 1000 permille, no false route), the
   constant-score router does not beat description cosine, every representation passed its activation gate and was
   learned for the project, namespace, pod and generation of the world entry that names it, every probe label names
-  a registered pod, and the probe counts are those of the design. A seed missing one is INVALID: the verdict is "no result", the cause is fixed
+  a registered pod, and the probe counts are exactly those of the design (43 probes, 36 labelled, 6 pods: `==` in
+  `criteria.toml`, since more is a different experiment, not extra evidence). A seed missing one is INVALID: the verdict is "no result", the cause is fixed
   under a successor experiment, and the seed is not reused.
 - Stop: all five seeds are run, in order, once. If a seed is INVALID the series stops there and the verdict is "no
   result"; if a seed fails the primary rules the series still completes, so the negative result is complete.
+- The two reflex claims (section 4a) follow the same seed rules (all five seeds, each run once, every seed must
+  pass) and give a verdict of their own each. Their INVALID seeds do not stop the routing series and do not
+  invalidate it: the run is one run, the verdicts are three.
 - Reported, not judged: the ablations, the sweep, the oracle and the constant-score rates. If the ablations show the
   gain comes from the bias or from abstention alone, that is reported as such. No threshold is chosen from the sweep.
 
 ## 6. Disclosures
+
+- Chronology of the reflex claims (section 4a), 2026-10-14: they were added to this text and to `criteria.toml`
+  before any confirmatory run and before the freeze. The explorative run of 2026-10-13 predates the `reflex`
+  block. The block was run once on pilot seed 1001 with the stand-in encoder to see that it prints; those
+  numbers are no evidence. That output showed the first draft of claim 3, whose baseline was "send everything
+  to the default", to be a strawman (6 of 36 labelled probes against 34), so the baseline was changed to
+  description cosine before the freeze. Nothing else was chosen from that run.
 
 - The experiment was registered before the encoder was chosen; the pin is a freeze prerequisite.
 - The synthetic world is small by design (six pods); the criteria are absolute counts on 43 probes per seed, so a

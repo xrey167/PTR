@@ -2,6 +2,7 @@ mod attention_schema;
 mod candidate;
 mod constraints;
 mod degradation;
+mod fallback;
 mod findings;
 mod learned;
 mod learning;
@@ -30,6 +31,11 @@ pub use constraints::{
 pub use degradation::{
     Alternative, AvailabilityView, BackendState, DegradationEscalation, DegradationLevel,
     FallbackPlan, FallbackPlanner, Resolution, StageChain, StaticAvailability,
+};
+pub use fallback::{
+    DefaultPodPlan, DefaultPodPlanError, FailoverCoverage, LatencySample, LatencyWindow,
+    MissReason, ReflexCounters, ReflexOutcome, UncoveredReason, LATENCY_WINDOW,
+    MAX_FALLBACK_ATTEMPTS,
 };
 pub use findings::{
     classify, Accepted, AdmissibleScorer, CodeRoute, EligibilitySnapshot, EscalationReason,

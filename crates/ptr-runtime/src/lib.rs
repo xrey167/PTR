@@ -29,6 +29,7 @@ pub mod pod_head;
 pub mod pod_representation;
 pub mod policy;
 pub mod protected_state;
+pub mod reflex;
 pub mod routing;
 pub mod sandbox;
 pub mod scopes;
@@ -126,6 +127,7 @@ pub use policy::{
     SignedPolicyBundle,
 };
 pub use protected_state::ProtectedStateCoordinator;
+pub use reflex::{FallbackConfigError, SetFallbackPlan, MAX_FALLBACK_PLANS};
 pub use routing::{EmbeddingSampler, EmbeddingSamplerError, PodSampler, QueryEmbedder, RouteQuery};
 pub use sandbox::{
     ExternalSandboxExecutor, NativeSandboxExecutor, NetworkMode, SandboxBackend, SandboxError,
@@ -458,7 +460,6 @@ use ptr_model_api::{
 };
 use ptr_pods::{EvidenceVerifier, PodEvidenceBundle, PodHypothesis, PodOutputKind, PodRegistry};
 use ptr_protocol::TypedPayload;
-use ptr_router::PodRouter;
 use ptr_security::{
     ActionAuthorization, AuthorizationDecision, AuthorizationDenial, PermissionSet,
 };
@@ -542,6 +543,14 @@ pub enum RuntimeError {
     PodUnavailable {
         capability: String,
         input_type: String,
+    },
+    /// A fallback plan was refused (see [`reflex::FallbackConfigError`]).
+    FallbackConfig(reflex::FallbackConfigError),
+    /// The primary path missed and the configured fallback was refused. Names the miss and why
+    /// the default pod could not serve; never a pod.
+    FailoverRefused {
+        miss: ptr_router::MissReason,
+        reason: ptr_router::UncoveredReason,
     },
     /// The routing boundary failed while candidates may exist. The reason is a fixed string that
     /// never names a Pod.
@@ -882,6 +891,8 @@ pub struct PtrRuntime {
     /// Head of each stable pod identity, projected from the committed `PodHeadAdvanced`
     /// records.
     pod_heads: pod_head::PodHeads,
+    /// Fallback plans and reflex counters: host configuration and telemetry, not history.
+    reflex: reflex::ReflexState,
 }
 
 impl PtrRuntime {
@@ -975,6 +986,7 @@ impl PtrRuntime {
             semantic_edits: kv_prefix::SemanticEdits::default(),
             taint: kv_taint::TaintRegistry::default(),
             pod_heads: pod_head::PodHeads::default(),
+            reflex: reflex::ReflexState::default(),
         })
     }
 
@@ -1782,42 +1794,29 @@ impl PtrRuntime {
 
             // A Pod in another project is unavailable in exactly the same
             // words as a Pod that does not exist. Saying which it was would
-            // answer, across the boundary, whether that Pod exists.
-            let pod = PodRouter
-                .select(pods, project, &capability, &input_type)
-                .and_then(|route| pods.get(project, &route.pod_id))
-                .ok_or_else(|| RuntimeError::PodUnavailable {
-                    capability: capability.to_string(),
-                    input_type: input_type.to_string(),
-                })?;
-
-            if pod
-                .manifest()
-                .effects
-                .iter()
-                .any(|effect| !matches!(effect, ptr_types::Effect::Pure | ptr_types::Effect::Read))
-            {
-                return Err(RuntimeError::PodEffectRequiresActionBoundary {
-                    pod: pod.manifest().id.to_string(),
-                });
-            }
-
-            self.emit(RuntimeEvent::PodInvoked(pod.manifest().id.to_string()));
-            let output = pod
-                .invoke(TypedPayload {
-                    type_id: input_type,
-                    bytes: payload,
-                })
-                .map_err(RuntimeError::Pod)?;
-
-            self.promote_verified_pod_output(&request_id, pod.manifest(), &output, verifier)?;
+            // answer, across the boundary, whether that Pod exists. The input
+            // taint was recorded by `run_model_once`.
+            let dispatched = self.dispatch_pod(
+                &routing::PodSelection::Plain,
+                &reflex::PodRequest {
+                    pods,
+                    project,
+                    request_id: &request_id,
+                    capability: &capability,
+                    input_type: &input_type,
+                    payload: &payload,
+                },
+                None,
+                verifier,
+            )?;
+            let output = dispatched.output;
             outputs.push(output);
         }
 
         Ok(outputs)
     }
 
-    /// Convenience wrapper that selects Pods with the plain, unsampled [`PodRouter::select`].
+    /// Convenience wrapper that selects Pods with the plain, unsampled [`ptr_router::PodRouter::select`].
     /// It records no draw, propensity, nonce or key identity; the production path is
     /// [`PtrRuntime::run_resumable_with_pods_using_router`] with a [`PodSampler`].
     pub fn run_resumable_with_pods<B, V>(

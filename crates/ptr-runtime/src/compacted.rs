@@ -262,6 +262,10 @@ pub enum CompactedError {
     /// An effect or outcome tag this build does not define. Refused rather than
     /// guessed: an obligation whose kind is unknown cannot be honoured.
     UnknownTag,
+    /// A `pod:<project>/<namespace>/<pod>` lifecycle target that replaying its
+    /// commit would refuse: live at generation 0, or committed by another
+    /// project than the one it names.
+    InvalidPodTarget,
 }
 
 impl CompactedError {
@@ -277,6 +281,7 @@ impl CompactedError {
             Self::NoncanonicalSection => "PTR_COMPACTED_NONCANONICAL_SECTION",
             Self::SectionLimit => "PTR_COMPACTED_SECTION_LIMIT",
             Self::UnknownTag => "PTR_COMPACTED_UNKNOWN_TAG",
+            Self::InvalidPodTarget => "PTR_COMPACTED_INVALID_POD_TARGET",
         }
     }
 }
@@ -665,6 +670,7 @@ impl LifecycleState {
             check_ascending(&mut previous, &key)?;
             state.capsule_projects.insert(key, value);
         }
+        state.check_pod_targets()?;
         let mut previous: Option<(String, Generation)> = None;
         for _ in 0..reader.count()? {
             let subject = reader.text()?;
@@ -1260,6 +1266,26 @@ fn decode_fence_block(
 impl LifecycleState {
     /// The registry and the materialized `expert:` keys describe the same experts, entry for
     /// entry. A PTRCS004 section carries no registry, so it must hold no such key.
+    /// A restored snapshot holds no pod lifecycle target that replaying its
+    /// `CapsuleCommitted` would refuse (generation 0, or another project than
+    /// the one the target names), so a snapshot written before those checks
+    /// cannot make such a target live.
+    fn check_pod_targets(&self) -> Result<(), RuntimeError> {
+        for (target, generation) in &self.live_generations {
+            if super::pod_head::pod_capsule_project(target).is_some() && generation.0 == 0 {
+                return Err(invalid(CompactedError::InvalidPodTarget));
+            }
+        }
+        for (target, project) in &self.capsule_projects {
+            if super::pod_head::pod_capsule_project(target)
+                .is_some_and(|embedded| embedded != project)
+            {
+                return Err(invalid(CompactedError::InvalidPodTarget));
+            }
+        }
+        Ok(())
+    }
+
     fn check_experts(&self, layout: Layout) -> Result<(), RuntimeError> {
         // The marks a version 3 record and a compound invalidation project exist only in a
         // history whose snapshot carries the dependency block.
@@ -3614,5 +3640,43 @@ mod scope_block_tests {
         runtime
             .check_execution_section_growth(&settle(6, Some(large)))
             .unwrap();
+    }
+}
+
+#[cfg(test)]
+mod pod_target_tests {
+    use super::*;
+
+    fn state(target: &str, generation: u64, project: &str) -> LifecycleState {
+        let mut state = LifecycleState::default();
+        state
+            .live_generations
+            .insert(target.to_owned(), Generation(generation));
+        state
+            .capsule_projects
+            .insert(target.to_owned(), project.to_owned());
+        state
+    }
+
+    fn restore(state: &LifecycleState) -> Result<LifecycleState, RuntimeError> {
+        LifecycleState::decode(&state.encode().unwrap(), Layout::Evidence)
+    }
+
+    #[test]
+    fn a_snapshot_cannot_restore_a_pod_target_that_replay_would_refuse() {
+        // The forms replay accepts restore.
+        restore(&state("pod:demo/ns/alpha", 1, "demo")).unwrap();
+        // A target that is not of the pod form keeps generation 0 as before.
+        assert!(restore(&state("capsule-a", 0, "other")).is_ok());
+
+        for refused in [
+            state("pod:demo/ns/alpha", 0, "demo"),
+            state("pod:demo/ns/alpha", 1, "other"),
+        ] {
+            assert_eq!(
+                restore(&refused).err(),
+                Some(RuntimeError::Compacted(CompactedError::InvalidPodTarget))
+            );
+        }
     }
 }

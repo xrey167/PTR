@@ -12,13 +12,13 @@ use ptr_protocol::TypedPayload;
 use ptr_router::{
     CheckedRouter, EncoderRef, GateReport, LearnedPodRouter, LearnedRouterConfig, NonceSequence,
     PodRepresentation, PodRepresentationParts, PolicyFailure, RepresentationStore, RouteError,
-    SamplingKey, ScoreWeights,
+    RouteFeatures, RouteRequest, RoutedChoice, RoutedError, SamplingKey, ScoreWeights,
 };
 use ptr_runtime::neural::{Denial, NeuralError, NeuralState, NeuralStateCache, StateDeclaration};
 use ptr_runtime::{
     pod_lifecycle_target, BindPodRepresentation, EmbeddingSampler, EmbeddingSamplerError,
-    PodRepresentationError, PtrRuntime, QueryEmbedder, RepresentationDenial, RepresentationRefusal,
-    RouteQuery, RuntimeError,
+    PodRepresentationError, PodSampler, PtrRuntime, QueryEmbedder, RepresentationDenial,
+    RepresentationRefusal, RouteQuery, RuntimeError,
 };
 use ptr_types::{
     CapabilityId, CapsuleId, ClusterKey, CodebookVersion, Effect, EvidenceId, Generation,
@@ -479,8 +479,12 @@ impl Verifier<TypedPayload> for Pass {
 }
 
 fn echo(id: &str) -> Arc<Echo> {
+    echo_in("demo", id)
+}
+
+fn echo_in(project: &str, id: &str) -> Arc<Echo> {
     Arc::new(Echo(PodManifest {
-        project: ProjectId::from("demo"),
+        project: ProjectId::from(project),
         id: PodId::from(id),
         capabilities: vec![CapabilityId::from("Echo<Text>")],
         accepts: vec![TypeId::from("Text")],
@@ -1009,4 +1013,94 @@ fn a_representation_cannot_become_live_through_a_commit_of_another_project() {
         codebook: CodebookVersion::V1,
     });
     assert!(bound.is_err());
+}
+
+/// Any sampler, any project.
+fn run_using(
+    runtime: &mut PtrRuntime,
+    project: &str,
+    payload: &'static [u8],
+    sampler: &dyn PodSampler,
+    registry: &PodRegistry,
+) -> Result<(), RuntimeError> {
+    runtime
+        .run_resumable_with_pods_using_router(
+            "request-1".into(),
+            &ProjectId::from(project),
+            "go",
+            &Ask(payload),
+            registry,
+            sampler,
+            &Pass,
+            2,
+        )
+        .map(|_| ())
+}
+
+/// A custom sampler that supplies the query vector but names no admitted representations.
+struct VectorOnly(CheckedRouter<LearnedPodRouter>);
+impl PodSampler for VectorOnly {
+    fn route(&self, request: &RouteRequest<'_>) -> Result<Option<RoutedChoice>, RoutedError> {
+        self.0.route(request)
+    }
+
+    fn key_id(&self) -> [u8; 8] {
+        self.0.key_id()
+    }
+
+    fn features(&self, query: &RouteQuery<'_>) -> Result<RouteFeatures, RouteError> {
+        RouteFeatures::new().with_vector(AxisEmbedder.embed(query)?)
+    }
+}
+
+#[test]
+fn a_sampler_that_names_no_admitted_representations_admits_none() {
+    let mut runtime = runtime();
+    let bound = cache(&runtime);
+    let admitted = runtime.admitted_representations(encoder(), &bound);
+    assert!(admitted.refused.is_empty());
+    let sampler = VectorOnly(CheckedRouter::new(
+        LearnedPodRouter::new(admitted.store, LearnedRouterConfig::default()).unwrap(),
+        SamplingKey::from_bytes([9; 32]),
+        NonceSequence::starting_at([4; 8], 0),
+    ));
+    // The store holds alpha's live representation and the question matches it, but nothing was
+    // admitted for this request: the router scores no representation.
+    assert_eq!(
+        run_using(&mut runtime, "demo", b"alpha question", &sampler, &pods()).unwrap_err(),
+        RuntimeError::RouteFailed {
+            reason: "routing has no learned representation"
+        }
+    );
+    // Still after a revocation the cached representation stays out.
+    runtime
+        .commit(LedgerEvent::Revoked {
+            subject: pod_lifecycle_target(&address("alpha", 1)),
+            generation: Generation(1),
+        })
+        .unwrap();
+    assert!(run_using(&mut runtime, "demo", b"alpha question", &sampler, &pods()).is_err());
+    assert!(routed_pods(&runtime).is_empty());
+}
+
+#[test]
+fn representations_admitted_for_another_project_do_not_run_the_encoder() {
+    let mut runtime = runtime();
+    let sampler = live_sampler(&runtime);
+    // Representations are admitted for `demo` only; `other` has pods but none of its own.
+    let mut other = PodRegistry::default();
+    other.register_at(
+        NamespaceId::from("ns"),
+        Generation(1),
+        echo_in("other", "alpha"),
+    );
+    // `AxisEmbedder` fails for this payload: had it run, the answer would be a policy failure
+    // instead of the miss the empty admission for `other` means.
+    assert_eq!(
+        run_using(&mut runtime, "other", b"anything else", &sampler, &other).unwrap_err(),
+        RuntimeError::RouteFailed {
+            reason: "routing has no learned representation"
+        }
+    );
+    assert!(routed_pods(&runtime).is_empty());
 }
