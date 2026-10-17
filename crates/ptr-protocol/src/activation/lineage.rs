@@ -23,8 +23,9 @@
 
 use super::{
     read_chain, write_chain, ActivationChunk, AllowlistedView, BoundaryDtype, ChunkView, Reader,
-    SchemaError, SplitPolicy, UpstreamChain, ACTIVATION_CHUNK_TYPE, MAX_CHUNKS_PER_FRAME,
-    MAX_FRAME_BYTES, MAX_FRAME_TOKENS, MAX_FRAME_WIDTH, MAX_IDENTITY_BYTES, SPLIT_POLICY_TYPE,
+    SchemaError, SplitPolicy, UpstreamChain, ACTIVATION_CHUNK_TYPE, MAX_CHAIN_ELEMENTS,
+    MAX_CHUNKS_PER_FRAME, MAX_FRAME_BYTES, MAX_FRAME_TOKENS, MAX_FRAME_WIDTH, MAX_IDENTITY_BYTES,
+    SPLIT_POLICY_TYPE,
 };
 use crate::TypedPayload;
 use ptr_types::TypeId;
@@ -102,6 +103,17 @@ impl LineageInput {
     fn sort_key(&self) -> (u8, &[u8], u64) {
         (self.kind.code(), self.identity.as_bytes(), self.generation)
     }
+
+    /// The sort key and the digest: the order [`InputLineage::canonical`] sorts by, so that
+    /// fully identical inputs are adjacent and two digests of one key stay visible.
+    fn full_key(&self) -> (u8, &[u8], u64, &[u8; 32]) {
+        (
+            self.kind.code(),
+            self.identity.as_bytes(),
+            self.generation,
+            &self.digest,
+        )
+    }
 }
 
 /// What the activations were computed from: the typed inputs and the ordered Raw ancestry.
@@ -117,11 +129,14 @@ pub struct InputLineage {
 }
 
 impl InputLineage {
-    /// A lineage in canonical order: `inputs` sorted and de-duplicated, `raw_ancestry` kept
-    /// in the order given.
+    /// A lineage in canonical order: `inputs` sorted, with fully identical inputs (same kind,
+    /// identity, generation **and** digest) collapsed, `raw_ancestry` kept in the order given.
+    /// Two inputs with one (kind, identity, generation) and different digests are both kept:
+    /// the lineage then fails [`ActivationFrameV2::validate`] with
+    /// [`SchemaError::ConflictingLineageDigests`] instead of silently choosing one.
     pub fn canonical(mut inputs: Vec<LineageInput>, raw_ancestry: Vec<[u8; 32]>) -> Self {
-        inputs.sort_by(|a, b| a.sort_key().cmp(&b.sort_key()));
-        inputs.dedup_by(|a, b| a.sort_key() == b.sort_key());
+        inputs.sort_by(|a, b| a.full_key().cmp(&b.full_key()));
+        inputs.dedup();
         Self {
             inputs,
             raw_ancestry,
@@ -387,7 +402,44 @@ impl ActivationFrameV2 {
     /// [`Self::from_bytes`] over [`Self::to_bytes`], so a frame that passes here cannot be
     /// refused by the first receiver that decodes its bytes.
     pub fn validate(&self) -> Result<(), SchemaError> {
+        self.check_in_memory_bounds()?;
         Self::from_bytes(&self.to_bytes()).map(|_| ())
+    }
+
+    /// The bounds and the shape of the frame, checked on the fields in memory **before** any
+    /// byte is produced, so an oversized frame is refused without serialising it (and a count
+    /// that would wrap its `u32` length prefix is refused before it is written). The order and
+    /// the errors are those of [`Self::from_bytes`]; the canonical lineage order and the mode
+    /// against the taint are left to the decode.
+    fn check_in_memory_bounds(&self) -> Result<(), SchemaError> {
+        if self.tokens > MAX_FRAME_TOKENS {
+            return Err(SchemaError::OverBound("tokens"));
+        }
+        if self.width > MAX_FRAME_WIDTH {
+            return Err(SchemaError::OverBound("width"));
+        }
+        if self.positions.len() > MAX_FRAME_TOKENS as usize {
+            return Err(SchemaError::OverBound("positions"));
+        }
+        check_chain_bounds(&self.upstream_chain)?;
+        check_lineage_bounds(&self.input_lineage)?;
+        if self.tensor.len() as u64 > MAX_FRAME_BYTES {
+            return Err(SchemaError::OverBound("tensor"));
+        }
+        let expected = u64::from(self.tokens) * u64::from(self.width) * self.dtype.size();
+        if expected != self.tensor.len() as u64 {
+            return Err(SchemaError::ShapeMismatch {
+                expected,
+                found: self.tensor.len() as u64,
+            });
+        }
+        if self.positions.len() != self.tokens as usize {
+            return Err(SchemaError::PositionsLength {
+                tokens: self.tokens,
+                positions: self.positions.len() as u32,
+            });
+        }
+        Ok(())
     }
 
     /// The digest of the canonical bytes ([`frame_digest_v2`]).
@@ -556,6 +608,43 @@ pub fn decode_chunk_view_v2(bytes: &[u8]) -> Result<ChunkViewV2<'_>, SchemaError
     })
 }
 
+fn check_identity_bound(identity: &str) -> Result<(), SchemaError> {
+    if identity.is_empty() {
+        return Err(SchemaError::BadIdentity);
+    }
+    if identity.len() > MAX_IDENTITY_BYTES {
+        return Err(SchemaError::OverBound("identity"));
+    }
+    Ok(())
+}
+
+fn check_chain_bounds(chain: &UpstreamChain) -> Result<(), SchemaError> {
+    check_identity_bound(&chain.stage.identity)?;
+    check_identity_bound(&chain.base_model.identity)?;
+    for list in [&chain.adapters, &chain.experts] {
+        if list.len() > MAX_CHAIN_ELEMENTS {
+            return Err(SchemaError::OverBound("chain elements"));
+        }
+        for element in list {
+            check_identity_bound(&element.identity)?;
+        }
+    }
+    Ok(())
+}
+
+fn check_lineage_bounds(lineage: &InputLineage) -> Result<(), SchemaError> {
+    if lineage.inputs.len() > MAX_LINEAGE_INPUTS {
+        return Err(SchemaError::OverBound("lineage inputs"));
+    }
+    for input in &lineage.inputs {
+        check_identity_bound(&input.identity)?;
+    }
+    if lineage.raw_ancestry.len() > MAX_RAW_ANCESTRY {
+        return Err(SchemaError::OverBound("raw ancestry"));
+    }
+    Ok(())
+}
+
 fn write_lineage(out: &mut Vec<u8>, lineage: &InputLineage) {
     out.extend_from_slice(&(lineage.inputs.len() as u32).to_le_bytes());
     for input in &lineage.inputs {
@@ -596,6 +685,9 @@ fn read_lineage(reader: &mut Reader<'_>) -> Result<InputLineage, SchemaError> {
             digest: reader.array32()?,
         };
         if let Some(previous) = inputs.last() {
+            if previous.sort_key() == input.sort_key() && previous.digest != input.digest {
+                return Err(SchemaError::ConflictingLineageDigests);
+            }
             if previous.sort_key() >= input.sort_key() {
                 return Err(SchemaError::NonCanonicalLineage);
             }
@@ -1065,6 +1157,95 @@ mod tests {
             duplicate.input_lineage.raw_ancestry.clone(),
         );
         assert_eq!(rebuilt, frame(1, 1).input_lineage);
+    }
+
+    #[test]
+    fn conflicting_digests_for_one_input_are_refused_not_collapsed() {
+        let mut conflicting = frame(1, 1);
+        let mut twin = conflicting.input_lineage.inputs[0].clone();
+        twin.digest = [0xEE; 32];
+        let mut inputs = conflicting.input_lineage.inputs.clone();
+        inputs.push(twin);
+        // Fully identical inputs still collapse; conflicting ones are both kept.
+        let identical = conflicting.input_lineage.inputs[0].clone();
+        let mut with_identical = conflicting.input_lineage.inputs.clone();
+        with_identical.push(identical);
+        assert_eq!(
+            InputLineage::canonical(with_identical, vec![]).inputs,
+            conflicting.input_lineage.inputs
+        );
+        conflicting.input_lineage = InputLineage::canonical(inputs, vec![]);
+        assert_eq!(
+            conflicting.input_lineage.inputs.len(),
+            frame(1, 1).input_lineage.inputs.len() + 1
+        );
+        assert_eq!(
+            conflicting.validate(),
+            Err(SchemaError::ConflictingLineageDigests)
+        );
+        assert_eq!(
+            ActivationFrameV2::from_bytes(&conflicting.to_bytes()),
+            Err(SchemaError::ConflictingLineageDigests)
+        );
+    }
+
+    #[test]
+    fn an_oversized_frame_is_refused_before_it_is_serialised() {
+        let ok = frame(1, 1);
+        assert_eq!(ok.check_in_memory_bounds(), Ok(()));
+        let mut many = frame(1, 1);
+        many.input_lineage.raw_ancestry = vec![[1; 32]; MAX_RAW_ANCESTRY + 1];
+        assert_eq!(
+            many.check_in_memory_bounds(),
+            Err(SchemaError::OverBound("raw ancestry"))
+        );
+        let mut inputs = frame(1, 1);
+        inputs.input_lineage.inputs = (0..MAX_LINEAGE_INPUTS + 1)
+            .map(|index| LineageInput {
+                kind: LineageKind::Memory,
+                identity: format!("m{index:03}"),
+                generation: 1,
+                digest: [1; 32],
+            })
+            .collect();
+        assert_eq!(
+            inputs.check_in_memory_bounds(),
+            Err(SchemaError::OverBound("lineage inputs"))
+        );
+        let mut adapters = frame(1, 1);
+        adapters.upstream_chain.adapters = vec![element("a", 1); MAX_CHAIN_ELEMENTS + 1];
+        assert_eq!(
+            adapters.check_in_memory_bounds(),
+            Err(SchemaError::OverBound("chain elements"))
+        );
+        let mut long = frame(1, 1);
+        long.upstream_chain.stage.identity = "x".repeat(MAX_IDENTITY_BYTES + 1);
+        assert_eq!(
+            long.check_in_memory_bounds(),
+            Err(SchemaError::OverBound("identity"))
+        );
+        let mut tokens = frame(1, 1);
+        tokens.tokens = MAX_FRAME_TOKENS + 1;
+        assert_eq!(
+            tokens.check_in_memory_bounds(),
+            Err(SchemaError::OverBound("tokens"))
+        );
+        let mut tensor = frame(1, 1);
+        tensor.tensor = vec![0; MAX_FRAME_BYTES as usize + 1];
+        assert_eq!(tensor.validate(), Err(SchemaError::OverBound("tensor")));
+        // validate() answers from the bounds before it decodes any byte: a frame that is both
+        // over a bound and non-canonical is refused for the bound, which a decode of its
+        // serialised bytes would reach only after the lineage order.
+        let mut both = frame(1, 1);
+        both.input_lineage.inputs.reverse();
+        both.input_lineage.raw_ancestry = vec![[1; 32]; MAX_RAW_ANCESTRY + 1];
+        assert_eq!(both.validate(), Err(SchemaError::OverBound("raw ancestry")));
+        let mut shape = frame(1, 1);
+        shape.tensor.pop();
+        assert!(matches!(
+            shape.check_in_memory_bounds(),
+            Err(SchemaError::ShapeMismatch { .. })
+        ));
     }
 
     #[test]

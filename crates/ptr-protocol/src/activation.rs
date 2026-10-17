@@ -235,6 +235,10 @@ pub enum SchemaError {
     /// A version 2 lineage whose typed inputs are not strictly increasing by (kind, identity,
     /// generation): the bytes of a lineage are canonical or they are refused.
     NonCanonicalLineage,
+    /// A version 2 lineage that names one (kind, identity, generation) with two different
+    /// digests: the input cannot be both, so the lineage is refused rather than resolved in
+    /// favour of either.
+    ConflictingLineageDigests,
 }
 
 impl fmt::Display for SchemaError {

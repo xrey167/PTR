@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-15  
-**Code footprint:** 5 Rust source files · 5847 nonblank source lines · 5 integration-test files · 114 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 5 Rust source files · 5902 nonblank source lines · 5 integration-test files · 115 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -62,6 +62,7 @@
 - Fix round 4 of the assembler: register_principal for a principal id the assembler has not seen, with a (verifying key, stage identity) pair an existing table holds (the same upstream runtime behind a new endpoint identity, as after a process restart), hands the new table the unexpired completion and abandonment tombstones of the tables holding that pair (merged per tuple, the longer retention wins, cut to max_frame_tombstones_per_principal keeping the longest retained), so a captured frame replayed under the new id is still FrameReplayed or FrameAbandoned; a different key or stage inherits nothing, policies and incomplete frames are never inherited, and the tombstones are in memory (not durable across a receiver restart, where a replay is bounded by the signed deadline plus skew); tests: inheritance, no inheritance for another key or stage, expiry and the bound
 - Fix round 5 of the assembler (Codex P1 on PR #167): the copy at registration alone missed a frame that completes under the old principal id after the new one registered; offer now also consults the tombstones of every table holding the same (key, stage identity) when the principal's own table has none for the tuple (a completion wins over an abandonment), so replay state is shared by (key, stage identity) in either direction; expired tombstones are swept from every table at each tick, so presence decides; test: a frame completed under the old id after the new one registered is FrameReplayed under the new id, and one abandoned under the new id is FrameAbandoned under the old
 - With podwire-backend the crate re-exports ptr_net::PeerBook, the address book a PodClient dials through, so a harness that already depends on this crate with the backend (the E008 Part B loopback harness in ptr-bench, feature podwire-experiments) builds the PeerAddress of a host without a second direct dependency on the transport crate; the harness feeds each served chunk to a FrameAssembler under the peer id PodHost::serve_once reports for the authenticated connection
+- Fix round 6 of the assembler (Codex P2 on PR #167): when a chunk is refused because a sibling principal id of the same (key, stage identity) holds a tombstone for the tuple, the partial assembly this table holds for that tuple is removed and its chunks are reported as released (through expire) before the rejection returns, without a local tombstone, so its capacity (buffered bytes, incomplete-frame slot) is free at once instead of at the deadline sweep; test: a_sibling_tombstone_releases_the_local_partial_assembly_at_once
 
 ### Missing for the target architecture
 

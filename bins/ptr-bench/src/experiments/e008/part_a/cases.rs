@@ -22,9 +22,10 @@ use ptr_config::PtrConfig;
 use ptr_core::action_head::ActionIr;
 use ptr_ledger::LedgerEvent;
 use ptr_model_api::{KvReuseMode, KvReusePolicy, KvReuseTaint};
+use ptr_protocol::activation::ActivationFrameV2;
 use ptr_runtime::{
-    admit_frame_v2, prefix_key_v2, AdmittedFrameV2, DownstreamKey, FrameFault, PersistFault,
-    PersistOp, PtrRuntime, RuntimeError, SplitStageCacheV2, UseFaultV2,
+    admit_frame_v2, prefix_key_v2, AdmissionRequestV2, AdmittedFrameV2, DownstreamKey, FrameFault,
+    PersistFault, PersistOp, PtrRuntime, RuntimeError, SplitStageCacheV2, UseFaultV2,
 };
 use ptr_types::{CapabilityId, CapsuleId, Effect, Generation, ProjectId, RequestId, TypeId};
 use std::collections::BTreeSet;
@@ -79,23 +80,41 @@ pub fn raw_ancestry_cases(tally: &mut Tally, seed: u64, cases: u64) -> Res<()> {
         let live = world.live();
         let own = world.own_chain();
         let mut cache: SplitStageCacheV2<Vec<f32>> = SplitStageCacheV2::new(params::CACHE_CAPACITY);
-        let admitted = admit_frame_v2(&full, KvReusePolicy::ExactOnly, &live, &live)
-            .map_err(fail("admitting the full frame"))?;
-        let reduced_admitted = admit_frame_v2(&reduced, KvReusePolicy::ExactOnly, &live, &live)
-            .map_err(fail("admitting the reduced frame"))?;
+        let admitted = admit_frame_v2(
+            AdmissionRequestV2 {
+                frame: &full,
+                policy: KvReusePolicy::ExactOnly,
+                expected_start: 0,
+            },
+            &live,
+            &live,
+        )
+        .map_err(fail("admitting the full frame"))?;
+        let reduced_admitted = admit_frame_v2(
+            AdmissionRequestV2 {
+                frame: &reduced,
+                policy: KvReusePolicy::ExactOnly,
+                expected_start: 0,
+            },
+            &live,
+            &live,
+        )
+        .map_err(fail("admitting the reduced frame"))?;
         let key = cache
             .store(&[&admitted], &own, derive(&admitted), &live, &live)
             .map_err(fail("storing the entry"))?;
-        if cache.lookup(&key, &live, &live).is_err() {
-            tally.add("verdict_mismatches", 1);
+        match cache.lookup(&key, &live, &live) {
+            Ok(served) => {
+                let _ = cache.abandon_use(served);
+            }
+            Err(_) => tally.add("verdict_mismatches", 1),
         }
         let probe = prefix_key_v2(&[&reduced_admitted], &own);
-        if cache.lookup(&probe, &live, &live).is_ok() {
+        if let Ok(served) = cache.lookup(&probe, &live, &live) {
+            let _ = cache.abandon_use(served);
             tally.add("reuse_after_raw_ancestor_removed", 1);
         }
-        if cache.begin_use(&probe, &live, &live).is_ok() {
-            tally.add("reuse_after_raw_ancestor_removed", 1);
-        }
+        position_checks(tally, &full, &live);
 
         // The control: a cache whose key has no lineage and no raw ancestry.
         let mut keyless: BTreeSet<[u8; 32]> = BTreeSet::new();
@@ -177,14 +196,38 @@ pub fn mode_cases(tally: &mut Tally, seed: u64, cases: u64) -> Res<()> {
         tally.add("approximate_frame_downstream_exact_lookup_cases", 1);
 
         // An Approximate frame is admitted only when the policy allows it.
-        match admit_frame_v2(&approximate, KvReusePolicy::ExactOnly, &live, &live) {
+        match admit_frame_v2(
+            AdmissionRequestV2 {
+                frame: &approximate,
+                policy: KvReusePolicy::ExactOnly,
+                expected_start: 0,
+            },
+            &live,
+            &live,
+        ) {
             Err(FrameFault::ApproximateNotAllowed) => {}
             _ => tally.add("approximate_frames_served_to_exact", 1),
         }
-        let approx = admit_frame_v2(&approximate, KvReusePolicy::AllowApproximate, &live, &live)
-            .map_err(fail("admitting the Approximate frame"))?;
-        let exact = admit_frame_v2(&exact_twin, KvReusePolicy::ExactOnly, &live, &live)
-            .map_err(fail("admitting the Exact twin"))?;
+        let approx = admit_frame_v2(
+            AdmissionRequestV2 {
+                frame: &approximate,
+                policy: KvReusePolicy::AllowApproximate,
+                expected_start: 0,
+            },
+            &live,
+            &live,
+        )
+        .map_err(fail("admitting the Approximate frame"))?;
+        let exact = admit_frame_v2(
+            AdmissionRequestV2 {
+                frame: &exact_twin,
+                policy: KvReusePolicy::ExactOnly,
+                expected_start: 0,
+            },
+            &live,
+            &live,
+        )
+        .map_err(fail("admitting the Exact twin"))?;
 
         let mut cache: SplitStageCacheV2<Vec<f32>> = SplitStageCacheV2::new(params::CACHE_CAPACITY);
         let approx_key = cache
@@ -203,9 +246,8 @@ pub fn mode_cases(tally: &mut Tally, seed: u64, cases: u64) -> Res<()> {
             digest: approx_key.digest,
         };
         for probe in [&twin_key, &forged] {
-            if cache.lookup(probe, &live, &live).is_ok()
-                || cache.begin_use(probe, &live, &live).is_ok()
-            {
+            if let Ok(served) = cache.lookup(probe, &live, &live) {
+                let _ = cache.abandon_use(served);
                 tally.add("approximate_frames_served_to_exact", 1);
             }
         }
@@ -220,30 +262,44 @@ pub fn mode_cases(tally: &mut Tally, seed: u64, cases: u64) -> Res<()> {
             tally.add("verdict_mismatches", 1);
         }
         match cache.lookup(&twin_stored, &live, &live) {
-            Ok(served) if served.taint == KvReuseTaint::Exact => {}
-            _ => tally.add("verdict_mismatches", 1),
+            Ok(served) => {
+                if served.taint() != KvReuseTaint::Exact {
+                    tally.add("verdict_mismatches", 1);
+                }
+                let _ = cache.abandon_use(served);
+            }
+            Err(_) => tally.add("verdict_mismatches", 1),
         }
         if at_boundary(&runtime, &action, KvReuseTaint::Exact) != Boundary::Allowed {
             tally.add("verdict_mismatches", 1);
         }
 
         // The output of an Approximate hit carries the taint, and the boundary refuses it.
-        let ticket = cache
-            .begin_use(&approx_key, &live, &live)
+        let served = cache
+            .lookup(&approx_key, &live, &live)
             .map_err(fail("beginning the Approximate use"))?;
-        let released = cache.finish_use(ticket, &live, &live);
+        let output = served.value().iter().sum::<f32>();
+        let released = cache.finish_use(served, output, &live, &live);
         match released {
-            Ok(taint) if taint.is_approximate() && taint == approx.taint() => {
-                if at_boundary(&runtime, &action, taint) != Boundary::RefusedAsApproximate {
+            Ok(released) => {
+                let taint = released.taint();
+                if taint.is_approximate() && taint == approx.taint() {
+                    if at_boundary(&runtime, &action, taint) != Boundary::RefusedAsApproximate {
+                        tally.add("untainted_outputs_from_approximate_frames", 1);
+                    }
+                } else {
                     tally.add("untainted_outputs_from_approximate_frames", 1);
                 }
             }
-            Ok(_) => tally.add("untainted_outputs_from_approximate_frames", 1),
             Err(_) => tally.add("verdict_mismatches", 1),
         }
         match cache.lookup(&approx_key, &live, &live) {
-            Ok(served) if served.taint == approx.taint() => {}
-            Ok(_) => tally.add("untainted_outputs_from_approximate_frames", 1),
+            Ok(served) => {
+                if served.taint() != approx.taint() {
+                    tally.add("untainted_outputs_from_approximate_frames", 1);
+                }
+                let _ = cache.abandon_use(served);
+            }
             Err(_) => tally.add("verdict_mismatches", 1),
         }
 
@@ -261,6 +317,52 @@ pub fn mode_cases(tally: &mut Tally, seed: u64, cases: u64) -> Res<()> {
     Ok(())
 }
 
+/// The admission of positions against the downstream's next position: the frame's own
+/// start is admitted, a replayed, overlapping or skipping start is refused with its typed
+/// fault. A deviation counts as a verdict mismatch.
+fn position_checks(tally: &mut Tally, frame: &ActivationFrameV2, live: &super::world::Live<'_>) {
+    let first = u64::from(frame.positions.first().copied().unwrap_or(0));
+    let last = u64::from(frame.positions.last().copied().unwrap_or(0));
+    let at = |expected_start: u64| {
+        admit_frame_v2(
+            AdmissionRequestV2 {
+                frame,
+                policy: KvReusePolicy::ExactOnly,
+                expected_start,
+            },
+            live,
+            live,
+        )
+    };
+    let mut ok = at(first).is_ok();
+    ok &= matches!(at(last + 1), Err(FrameFault::PositionsStale { .. }));
+    ok &= matches!(at(last), Err(FrameFault::PositionsOverlap { .. }));
+    ok &= matches!(at(first + 1), Err(FrameFault::PositionsOverlap { .. }));
+    if first > 0 {
+        ok &= matches!(at(first - 1), Err(FrameFault::PositionsSkipped { .. }));
+    }
+    let mut gapped = frame.clone();
+    if let Some(position) = gapped.positions.last_mut() {
+        *position += 1;
+    }
+    ok &= gapped.positions.len() < 2
+        || matches!(
+            admit_frame_v2(
+                AdmissionRequestV2 {
+                    frame: &gapped,
+                    policy: KvReusePolicy::ExactOnly,
+                    expected_start: first,
+                },
+                live,
+                live,
+            ),
+            Err(FrameFault::PositionsNotContiguous { .. })
+        );
+    if !ok {
+        tally.add("verdict_mismatches", 1);
+    }
+}
+
 /// A4.
 pub fn persistence_cases(tally: &mut Tally, seed: u64, cases: u64) -> Res<()> {
     for index in 0..cases {
@@ -272,15 +374,21 @@ pub fn persistence_cases(tally: &mut Tally, seed: u64, cases: u64) -> Res<()> {
         let live = world.live();
         let own = world.own_chain();
         let exact = admit_frame_v2(
-            &world.frame(&FrameSpec::exact(raw.clone(), tensor_seed)),
-            KvReusePolicy::ExactOnly,
+            AdmissionRequestV2 {
+                frame: &world.frame(&FrameSpec::exact(raw.clone(), tensor_seed)),
+                policy: KvReusePolicy::ExactOnly,
+                expected_start: 0,
+            },
             &live,
             &live,
         )
         .map_err(fail("admitting the Exact frame"))?;
         let approximate = admit_frame_v2(
-            &world.frame(&FrameSpec::approximate(raw, tensor_seed)),
-            KvReusePolicy::AllowApproximate,
+            AdmissionRequestV2 {
+                frame: &world.frame(&FrameSpec::approximate(raw, tensor_seed)),
+                policy: KvReusePolicy::AllowApproximate,
+                expected_start: 0,
+            },
             &live,
             &live,
         )
@@ -312,7 +420,7 @@ pub fn persistence_cases(tally: &mut Tally, seed: u64, cases: u64) -> Res<()> {
         }
         // A use is open across the restart.
         let open = cache
-            .begin_use(&keys[0], &live, &live)
+            .lookup(&keys[0], &live, &live)
             .map_err(fail("beginning a use"))?;
         // Restart one: the process dies and a new cache starts. Nothing brings an entry back.
         let mut restarted: SplitStageCacheV2<Vec<f32>> =
@@ -323,12 +431,12 @@ pub fn persistence_cases(tally: &mut Tally, seed: u64, cases: u64) -> Res<()> {
                 tally.add("downstream_restore_attempts_admitted", 1);
             }
         }
-        if restarted.finish_use(open, &live, &live).is_ok() {
+        if restarted.finish_use(open, (), &live, &live).is_ok() {
             tally.add("downstream_restore_attempts_admitted", 1);
         }
         // Restart two: the same cache cleared.
         let open = cache
-            .begin_use(&keys[1], &live, &live)
+            .lookup(&keys[1], &live, &live)
             .map_err(fail("beginning a use"))?;
         cache.clear();
         tally.add(
@@ -340,7 +448,7 @@ pub fn persistence_cases(tally: &mut Tally, seed: u64, cases: u64) -> Res<()> {
                 tally.add("downstream_restore_attempts_admitted", 1);
             }
         }
-        match cache.finish_use(open, &live, &live) {
+        match cache.finish_use(open, (), &live, &live) {
             Err(UseFaultV2::UnknownTicket) => {}
             Ok(_) => tally.add("downstream_restore_attempts_admitted", 1),
             Err(_) => tally.add("verdict_mismatches", 1),

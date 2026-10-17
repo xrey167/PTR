@@ -19,14 +19,17 @@
 //! * the kind checker: every element of every frame built maps to exactly one matrix kind and
 //!   every kind is reached (`matrix_frame_bijection_violations`).
 //!
-//! The exit status. Precedence, highest first (validity first):
+//! The exit status, as [`Report::exit_status`] and `run_standing` implement it:
 //!
-//! 1. 2 when a validity counter fired (the procedure differs from the planned one);
-//! 2. with every validity counter at 0: 1 when a falsifier is tripped by an *observed* product
-//!    violation, even if a case could not run or a control did not trip in the same run;
-//! 3. 2 when the harness is otherwise at fault: a case that cannot run, a control that does
-//!    not trip;
-//! 4. 1 when a coverage prerequisite is unmet (a vacuous run), 0 when every rule holds.
+//! * 2 (the run is broken or vacuous, whatever else fired) when a case could not run, a
+//!   validity counter fired (the procedure differs from the planned one), a coverage
+//!   prerequisite is unmet, a metric has a gap, or a control did not trip (a dead control
+//!   proves nothing);
+//! * 1 only when a falsifier is tripped by an observed product violation and nothing in the
+//!   first list applies; the one exception is a dead control beside an observed product
+//!   violation with every validity counter at 0, which does not become 2 (controls come
+//!   after falsifiers);
+//! * 0 when every rule holds.
 
 pub mod cases;
 pub mod controls;

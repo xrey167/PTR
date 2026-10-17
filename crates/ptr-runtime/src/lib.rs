@@ -143,9 +143,10 @@ pub use split_stage::{
     UseTicket, OPEN_USES_PER_ENTRY,
 };
 pub use split_stage_v2::{
-    admit_frame_v2, admit_frame_v2_in, input_target, prefix_key_v2, AdmittedFrameV2, DownstreamKey,
-    FrameFault, InputLiveness, PersistFault, PersistOp, RuntimeInputLiveness, Served,
-    SplitStageCacheV2, StoreErrorV2, UseFaultV2, UseTicketV2, OPEN_USES_PER_ENTRY_V2,
+    admit_frame_v2, admit_frame_v2_in, input_target, prefix_key_v2, AdmissionRequestV2,
+    AdmittedFrameV2, DownstreamKey, FrameFault, InputLiveness, PersistFault, PersistOp,
+    RuntimeInputLiveness, ServedUseV2, SplitStageCacheV2, StoreErrorV2, Tainted, UseFaultV2,
+    OPEN_USES_PER_ENTRY_V2,
 };
 pub use stepped::{CancelPolicy, CancelledRun, RunStep, StepResources, SteppedRun};
 pub use tensor_kv::{

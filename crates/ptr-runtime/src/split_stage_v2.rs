@@ -43,6 +43,7 @@ use sha2::{Digest as _, Sha256};
 use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 const KEY_DOMAIN: &[u8] = b"ptr.split.downstream-key.v2\0";
 const PROJECT_KEY_DOMAIN: &[u8] = b"ptr.split.downstream-key.v2.project\0";
@@ -127,6 +128,22 @@ pub enum FrameFault {
     /// The frame, built in memory, would not decode: its bytes break the canonical lineage
     /// order, a bound or the tensor shape ([`ActivationFrameV2::validate`]).
     Malformed(SchemaError),
+    /// The frame's positions lie wholly before the downstream KV state's next position: a
+    /// stale or replayed frame.
+    PositionsStale {
+        expected_start: u64,
+        first: u64,
+        last: u64,
+    },
+    /// The frame starts before the downstream's next position but reaches it: it would
+    /// overwrite KV entries the downstream already holds.
+    PositionsOverlap { expected_start: u64, first: u64 },
+    /// The frame starts after the downstream's next position: the positions in between were
+    /// never received, so the KV state would have a hole.
+    PositionsSkipped { expected_start: u64, first: u64 },
+    /// The frame's own positions are not consecutive: `index` is the first row whose position
+    /// is not its predecessor plus one.
+    PositionsNotContiguous { index: usize },
 }
 
 impl From<ChainFault> for FrameFault {
@@ -313,34 +330,78 @@ impl AdmittedFrameV2 {
     }
 }
 
+/// What a downstream stage asks to admit: the frame, the reuse policy and the position the
+/// downstream KV state expects the frame to start at.
+#[derive(Clone, Copy, Debug)]
+pub struct AdmissionRequestV2<'a> {
+    pub frame: &'a ActivationFrameV2,
+    pub policy: KvReusePolicy,
+    /// The next token position of the downstream's KV state: the frame's positions must be
+    /// exactly `expected_start`, `expected_start + 1`, ... (contiguous, no overlap, no skip,
+    /// not stale).
+    pub expected_start: u64,
+}
+
+fn check_positions(positions: &[u32], expected_start: u64) -> Result<(), FrameFault> {
+    let (Some(&first), Some(&last)) = (positions.first(), positions.last()) else {
+        return Ok(());
+    };
+    let (first, last) = (u64::from(first), u64::from(last));
+    if last < expected_start {
+        return Err(FrameFault::PositionsStale {
+            expected_start,
+            first,
+            last,
+        });
+    }
+    if first < expected_start {
+        return Err(FrameFault::PositionsOverlap {
+            expected_start,
+            first,
+        });
+    }
+    if first > expected_start {
+        return Err(FrameFault::PositionsSkipped {
+            expected_start,
+            first,
+        });
+    }
+    for (index, pair) in positions.windows(2).enumerate() {
+        if u64::from(pair[1]) != u64::from(pair[0]) + 1 {
+            return Err(FrameFault::PositionsNotContiguous { index: index + 1 });
+        }
+    }
+    Ok(())
+}
+
 /// Admit a version 2 frame for compute: the whole upstream chain, the placement epoch and
 /// every typed input of the lineage are revalidated now. A frame that ran under an
 /// Approximate mode is admitted only when `policy` allows it, and then only into the
 /// Approximate namespace. The activations must be finite.
 ///
+/// The frame's positions must start at the request's `expected_start` and run consecutively
+/// (see [`AdmissionRequestV2`]).
+///
 /// The placement epoch is read in the legacy single-project namespace; a caller that serves a
 /// project uses [`admit_frame_v2_in`].
 pub fn admit_frame_v2(
-    frame: &ActivationFrameV2,
-    policy: KvReusePolicy,
+    request: AdmissionRequestV2<'_>,
     live: &dyn StageLiveness,
     inputs: &dyn InputLiveness,
 ) -> Result<AdmittedFrameV2, FrameFault> {
-    admit_scoped(PlacementScope::Legacy, frame, policy, live, inputs)
+    admit_scoped(PlacementScope::Legacy, request, live, inputs)
 }
 
 /// [`admit_frame_v2`] for `project`: the placement epoch is read for that project.
 pub fn admit_frame_v2_in(
     project: &ProjectId,
-    frame: &ActivationFrameV2,
-    policy: KvReusePolicy,
+    request: AdmissionRequestV2<'_>,
     live: &dyn StageLiveness,
     inputs: &dyn InputLiveness,
 ) -> Result<AdmittedFrameV2, FrameFault> {
     admit_scoped(
         PlacementScope::Project(project.clone()),
-        frame,
-        policy,
+        request,
         live,
         inputs,
     )
@@ -348,11 +409,15 @@ pub fn admit_frame_v2_in(
 
 fn admit_scoped(
     scope: PlacementScope,
-    frame: &ActivationFrameV2,
-    policy: KvReusePolicy,
+    request: AdmissionRequestV2<'_>,
     live: &dyn StageLiveness,
     inputs: &dyn InputLiveness,
 ) -> Result<AdmittedFrameV2, FrameFault> {
+    let AdmissionRequestV2 {
+        frame,
+        policy,
+        expected_start,
+    } = request;
     if (frame.mode == FrameMode::Approximate) != frame.taint.is_approximate() {
         return Err(FrameFault::ModeTaintMismatch);
     }
@@ -361,6 +426,7 @@ fn admit_scoped(
     }
     // A frame built in memory is held to what its bytes would be held to on the wire.
     frame.validate().map_err(FrameFault::Malformed)?;
+    check_positions(&frame.positions, expected_start)?;
     revalidate_scoped(&scope, &frame.upstream_chain, frame.placement_epoch, live)?;
     for input in &frame.input_lineage.inputs {
         revalidate_input(input, inputs)?;
@@ -483,7 +549,7 @@ pub enum UseFaultV2 {
 /// An open use of an entry, bound to the cache instance that issued it: a ticket of another
 /// cache never ends a use here (it would launder that cache's taint onto this one's output).
 #[derive(Debug, Eq, PartialEq)]
-pub struct UseTicketV2 {
+pub(crate) struct UseTicketV2 {
     cache: u64,
     id: u64,
 }
@@ -491,11 +557,55 @@ pub struct UseTicketV2 {
 /// Process-wide source of cache instance identities; never reused, never zero.
 static NEXT_CACHE_INSTANCE: AtomicU64 = AtomicU64::new(1);
 
-/// What a hit serves: the value and the taint every output derived from it carries.
+/// A hit, bound to the open use that [`SplitStageCacheV2::lookup`] began with it: the value
+/// (private, readable only by borrow), the taint every output derived from it carries, and the
+/// ticket of the use. There is no way to take the value out bare or to end the use without
+/// revalidation: the output of a computation over [`value`](Self::value) is released only
+/// through [`SplitStageCacheV2::finish_use`], which returns it as a [`Tainted`], or the use is
+/// given up with [`SplitStageCacheV2::abandon_use`]. Not `Clone`, so a use is ended once.
+#[must_use = "a hit is an open use: end it with finish_use or abandon_use"]
+#[derive(Debug)]
+pub struct ServedUseV2<V> {
+    ticket: UseTicketV2,
+    value: Arc<V>,
+    taint: KvReuseTaint,
+}
+
+impl<V> ServedUseV2<V> {
+    /// The cached value, borrowed for the computation of the output.
+    pub fn value(&self) -> &V {
+        &self.value
+    }
+
+    /// The taint every output derived from this hit carries.
+    pub fn taint(&self) -> KvReuseTaint {
+        self.taint
+    }
+}
+
+/// An output released from a use, together with the taint of the hit it derives from. It can be
+/// built only by [`SplitStageCacheV2::finish_use`], so an output of an Approximate hit cannot
+/// be presented as Exact.
+#[must_use = "the taint travels with the output"]
 #[derive(Debug, Eq, PartialEq)]
-pub struct Served<'a, V> {
-    pub value: &'a V,
-    pub taint: KvReuseTaint,
+pub struct Tainted<O> {
+    value: O,
+    taint: KvReuseTaint,
+}
+
+impl<O> Tainted<O> {
+    pub fn value(&self) -> &O {
+        &self.value
+    }
+
+    pub fn taint(&self) -> KvReuseTaint {
+        self.taint
+    }
+
+    /// The output and its taint, never one without the other.
+    pub fn into_parts(self) -> (O, KvReuseTaint) {
+        (self.value, self.taint)
+    }
 }
 
 /// A way to put an entry somewhere other than this cache's memory. Every one is refused.
@@ -520,7 +630,7 @@ struct Entry<V> {
     inputs: Vec<LineageInput>,
     placement_epoch: u64,
     taint: KvReuseTaint,
-    value: V,
+    value: Arc<V>,
 }
 
 fn entry_fault<V>(
@@ -646,7 +756,7 @@ impl<V> SplitStageCacheV2<V> {
                 inputs: typed,
                 placement_epoch: first.placement_epoch,
                 taint: first.taint(),
-                value,
+                value: Arc::new(value),
             },
         );
         Ok(key)
@@ -707,28 +817,19 @@ impl<V> SplitStageCacheV2<V> {
             .ok_or(UseFaultV2::Miss)
     }
 
-    /// The value under `key`, with the taint its outputs carry, if the entry is live now.
+    /// The hit under `key`, if the entry is live now, with the use it opened: the value is
+    /// readable only by borrow from the returned [`ServedUseV2`], whose use is registered so
+    /// an invalidation during the computation cancels it. The output is released only by
+    /// [`finish_use`](Self::finish_use). An entry that is not live is evicted on the spot.
     pub fn lookup(
         &mut self,
         key: &DownstreamKey,
         live: &dyn StageLiveness,
         inputs: &dyn InputLiveness,
-    ) -> Result<Served<'_, V>, UseFaultV2> {
-        self.live_entry(key, live, inputs).map(|entry| Served {
-            value: &entry.value,
-            taint: entry.taint,
-        })
-    }
-
-    /// Begin using the entry under `key`: revalidated now, and registered so an invalidation
-    /// during the use cancels it.
-    pub fn begin_use(
-        &mut self,
-        key: &DownstreamKey,
-        live: &dyn StageLiveness,
-        inputs: &dyn InputLiveness,
-    ) -> Result<UseTicketV2, UseFaultV2> {
-        self.live_entry(key, live, inputs)?;
+    ) -> Result<ServedUseV2<V>, UseFaultV2> {
+        let (value, taint) = self
+            .live_entry(key, live, inputs)
+            .map(|entry| (Arc::clone(&entry.value), entry.taint))?;
         if self.uses.len() >= self.max_open_uses() {
             return Err(UseFaultV2::TooManyUses {
                 limit: self.max_open_uses(),
@@ -744,21 +845,28 @@ impl<V> SplitStageCacheV2<V> {
                 cancelled: false,
             },
         );
-        Ok(UseTicketV2 {
-            cache: self.instance,
-            id,
+        Ok(ServedUseV2 {
+            ticket: UseTicketV2 {
+                cache: self.instance,
+                id,
+            },
+            value,
+            taint,
         })
     }
 
-    /// End a use. The output of the use may be released only when this returns `Ok`, and it
-    /// carries the returned taint: the entry must still exist, the use must not have been
-    /// cancelled, and everything the entry depends on must be live at this moment too.
-    pub fn finish_use(
+    /// End a use and release `output`, computed from the hit. It is released only when this
+    /// returns `Ok`, and it carries the taint of the hit: the entry must still exist, the use
+    /// must not have been cancelled, and everything the entry depends on must be live at this
+    /// moment too.
+    pub fn finish_use<O>(
         &mut self,
-        ticket: UseTicketV2,
+        served: ServedUseV2<V>,
+        output: O,
         live: &dyn StageLiveness,
         inputs: &dyn InputLiveness,
-    ) -> Result<KvReuseTaint, UseFaultV2> {
+    ) -> Result<Tainted<O>, UseFaultV2> {
+        let ServedUseV2 { ticket, .. } = served;
         if ticket.cache != self.instance {
             return Err(UseFaultV2::UnknownTicket);
         }
@@ -773,11 +881,15 @@ impl<V> SplitStageCacheV2<V> {
             namespace: open.namespace,
             digest: open.key,
         };
-        self.live_entry(&key, live, inputs).map(|entry| entry.taint)
+        self.live_entry(&key, live, inputs).map(|entry| Tainted {
+            value: output,
+            taint: entry.taint,
+        })
     }
 
     /// Give a use up without releasing any output.
-    pub fn abandon_use(&mut self, ticket: UseTicketV2) -> Result<(), UseFaultV2> {
+    pub fn abandon_use(&mut self, served: ServedUseV2<V>) -> Result<(), UseFaultV2> {
+        let ServedUseV2 { ticket, .. } = served;
         if ticket.cache != self.instance {
             return Err(UseFaultV2::UnknownTicket);
         }
@@ -1020,8 +1132,24 @@ mod tests {
         live
     }
 
+    fn admit_at(
+        live: &Live,
+        frame: &ActivationFrameV2,
+        expected_start: u64,
+    ) -> Result<AdmittedFrameV2, FrameFault> {
+        admit_frame_v2(
+            AdmissionRequestV2 {
+                frame,
+                policy: KvReusePolicy::AllowApproximate,
+                expected_start,
+            },
+            live,
+            live,
+        )
+    }
+
     fn admit(live: &Live, frame: &ActivationFrameV2) -> Result<AdmittedFrameV2, FrameFault> {
-        admit_frame_v2(frame, KvReusePolicy::AllowApproximate, live, live)
+        admit_at(live, frame, 0)
     }
 
     #[test]
@@ -1092,8 +1220,11 @@ mod tests {
         let live = live();
         assert_eq!(
             admit_frame_v2(
-                &approximate_frame(vec![]),
-                KvReusePolicy::ExactOnly,
+                AdmissionRequestV2 {
+                    frame: &approximate_frame(vec![]),
+                    policy: KvReusePolicy::ExactOnly,
+                    expected_start: 0,
+                },
                 &live,
                 &live
             ),
@@ -1183,6 +1314,69 @@ mod tests {
         assert_eq!(digest(LineageKind::Derived), None);
     }
 
+    fn frame_at(positions: Vec<u32>) -> ActivationFrameV2 {
+        let mut frame = frame(vec![], 1.0);
+        frame.positions = positions;
+        frame
+    }
+
+    #[test]
+    fn positions_that_continue_the_downstream_kv_state_exactly_are_admitted() {
+        let live = live();
+        assert!(admit_at(&live, &frame_at(vec![0, 1]), 0).is_ok());
+        assert!(admit_at(&live, &frame_at(vec![7, 8]), 7).is_ok());
+    }
+
+    #[test]
+    fn a_stale_frame_wholly_before_the_expected_position_is_refused() {
+        let live = live();
+        assert_eq!(
+            admit_at(&live, &frame_at(vec![0, 1]), 2),
+            Err(FrameFault::PositionsStale {
+                expected_start: 2,
+                first: 0,
+                last: 1
+            })
+        );
+    }
+
+    #[test]
+    fn an_overlapping_frame_is_refused() {
+        let live = live();
+        assert_eq!(
+            admit_at(&live, &frame_at(vec![0, 1]), 1),
+            Err(FrameFault::PositionsOverlap {
+                expected_start: 1,
+                first: 0
+            })
+        );
+    }
+
+    #[test]
+    fn a_frame_that_skips_positions_is_refused() {
+        let live = live();
+        assert_eq!(
+            admit_at(&live, &frame_at(vec![3, 4]), 2),
+            Err(FrameFault::PositionsSkipped {
+                expected_start: 2,
+                first: 3
+            })
+        );
+    }
+
+    #[test]
+    fn a_frame_whose_own_positions_are_not_consecutive_is_refused() {
+        let live = live();
+        assert_eq!(
+            admit_at(&live, &frame_at(vec![0, 2]), 0),
+            Err(FrameFault::PositionsNotContiguous { index: 1 })
+        );
+        assert_eq!(
+            admit_at(&live, &frame_at(vec![0, 0]), 0),
+            Err(FrameFault::PositionsNotContiguous { index: 1 })
+        );
+    }
+
     #[test]
     fn non_finite_activations_are_refused() {
         let live = live();
@@ -1236,7 +1430,8 @@ mod tests {
         let mut cache = SplitStageCacheV2::new(8);
         let key = stored(&live, &mut cache, &frame(vec![[1; 32]], 1.0), 7);
         let served = cache.lookup(&key, &live, &live).unwrap();
-        assert_eq!((*served.value, served.taint), (7, KvReuseTaint::Exact));
+        assert_eq!((*served.value(), served.taint()), (7, KvReuseTaint::Exact));
+        cache.abandon_use(served).unwrap();
         for name in [
             "stage", "model", "adapter", "expert", "down", "sem", "mem", "drv",
         ] {
@@ -1264,33 +1459,43 @@ mod tests {
         let live = live();
         let mut cache = SplitStageCacheV2::new(8);
         let key = stored(&live, &mut cache, &approximate_frame(vec![]), 3);
-        let ticket = cache.begin_use(&key, &live, &live).unwrap();
+        // The hit is an open use; the output is released only with the taint.
+        let served = cache.lookup(&key, &live, &live).unwrap();
+        assert_eq!(cache.open_uses(), 1);
         assert_eq!(
-            cache.finish_use(ticket, &live, &live),
-            Ok(KvReuseTaint::Approximate {
+            served.taint(),
+            KvReuseTaint::Approximate {
                 report_digest: [8; 32]
-            })
+            }
         );
+        let output = *served.value() + 1;
+        let released = cache.finish_use(served, output, &live, &live).unwrap();
+        assert_eq!(
+            released.into_parts(),
+            (
+                4,
+                KvReuseTaint::Approximate {
+                    report_digest: [8; 32]
+                }
+            )
+        );
+        assert_eq!(cache.open_uses(), 0);
         // Invalidated under the use with the Revoke message dropped: refused at release.
-        let ticket = cache.begin_use(&key, &live, &live).unwrap();
+        let served = cache.lookup(&key, &live, &live).unwrap();
         live.set("sem", 1, Validity::Revoked);
         assert!(matches!(
-            cache.finish_use(ticket, &live, &live),
+            cache.finish_use(served, 0, &live, &live),
             Err(UseFaultV2::Stale(FrameFault::InputNotLive { .. }))
         ));
         live.set("sem", 1, Validity::Live);
         // The message delivered: the use is cancelled.
         let key = stored(&live, &mut cache, &approximate_frame(vec![]), 3);
-        let ticket = cache.begin_use(&key, &live, &live).unwrap();
+        let served = cache.lookup(&key, &live, &live).unwrap();
         assert_eq!(cache.invalidate_dependency("mem", Generation(1)), 1);
-        assert_eq!(
-            cache.finish_use(ticket, &live, &live),
+        assert!(matches!(
+            cache.finish_use(served, 0, &live, &live),
             Err(UseFaultV2::Cancelled)
-        );
-        assert_eq!(
-            cache.abandon_use(UseTicketV2 { cache: 0, id: 99 }),
-            Err(UseFaultV2::UnknownTicket)
-        );
+        ));
     }
 
     #[test]
@@ -1308,7 +1513,7 @@ mod tests {
         let mut cache = SplitStageCacheV2::new(8);
         let admitted = admit(&live, &frame(vec![], 1.0)).unwrap();
         let key = cache.store(&[&admitted], &own, 7, &live, &live).unwrap();
-        let ticket = cache.begin_use(&key, &live, &live).unwrap();
+        let served = cache.lookup(&key, &live, &live).unwrap();
         // Fenced: the generation stays live, only the committed epoch moves.
         live.fence.borrow_mut().insert("own-expert".to_owned(), 3);
         let stale = FrameFault::Chain(ChainFault::StaleFence {
@@ -1316,9 +1521,12 @@ mod tests {
             recorded: 2,
             current: Some(3),
         });
-        assert_eq!(
-            cache.finish_use(ticket, &live, &live),
-            Err(UseFaultV2::Stale(stale))
+        assert!(
+            matches!(
+                cache.finish_use(served, 0, &live, &live),
+                Err(UseFaultV2::Stale(ref fault)) if *fault == stale
+            ),
+            "refused with the stale fence"
         );
         // The stale entry was evicted on the spot.
         assert!(matches!(
@@ -1364,25 +1572,51 @@ mod tests {
         let mut approximate = SplitStageCacheV2::new(8);
         let exact_key = stored(&live, &mut exact, &frame(vec![], 1.0), 1);
         let approximate_key = stored(&live, &mut approximate, &approximate_frame(vec![]), 2);
-        let mine = exact.begin_use(&exact_key, &live, &live).unwrap();
-        let theirs = approximate
-            .begin_use(&approximate_key, &live, &live)
-            .unwrap();
+        let mine = exact.lookup(&exact_key, &live, &live).unwrap();
+        let theirs = approximate.lookup(&approximate_key, &live, &live).unwrap();
         // Both are the first use of their cache, so the ids collide; the cache does not.
-        assert_eq!(mine.id, theirs.id);
-        assert_eq!(
-            exact.finish_use(theirs, &live, &live),
+        assert_eq!(mine.ticket.id, theirs.ticket.id);
+        assert!(matches!(
+            exact.finish_use(theirs, 0, &live, &live),
             Err(UseFaultV2::UnknownTicket)
-        );
+        ));
         assert_eq!(exact.open_uses(), 1);
-        let theirs = approximate
-            .begin_use(&approximate_key, &live, &live)
-            .unwrap();
+        let theirs = approximate.lookup(&approximate_key, &live, &live).unwrap();
         assert_eq!(exact.abandon_use(theirs), Err(UseFaultV2::UnknownTicket));
-        assert_eq!(
-            exact.finish_use(mine, &live, &live),
-            Ok(KvReuseTaint::Exact)
-        );
+        let released = exact.finish_use(mine, 0, &live, &live).unwrap();
+        assert_eq!(released.taint(), KvReuseTaint::Exact);
+    }
+
+    #[test]
+    fn an_approximate_hit_is_released_only_through_finish_use_and_keeps_its_taint() {
+        let live = live();
+        let mut cache = SplitStageCacheV2::new(8);
+        let key = stored(&live, &mut cache, &approximate_frame(vec![]), 5);
+        // The hit is the only handle on the value: it is an open use until it is ended.
+        let served = cache.lookup(&key, &live, &live).unwrap();
+        assert_eq!(cache.open_uses(), 1);
+        assert!(served.taint().is_approximate());
+        // A computation over the borrowed value; the release revalidates first, and an
+        // invalidation between lookup and finish_use refuses the release.
+        let output = served.value().to_string();
+        live.set("mem", 1, Validity::Revoked);
+        assert!(matches!(
+            cache.finish_use(served, output, &live, &live),
+            Err(UseFaultV2::Stale(FrameFault::InputNotLive { .. }))
+        ));
+        assert_eq!(cache.open_uses(), 0);
+        live.set("mem", 1, Validity::Live);
+        // Released output carries the Approximate taint; it cannot become Exact.
+        let key = stored(&live, &mut cache, &approximate_frame(vec![]), 5);
+        let served = cache.lookup(&key, &live, &live).unwrap();
+        let output = served.value().to_string();
+        let released = cache.finish_use(served, output, &live, &live).unwrap();
+        assert!(released.taint().is_approximate());
+        assert_eq!(released.value(), "5");
+        // An abandoned hit releases nothing and frees the use.
+        let served = cache.lookup(&key, &live, &live).unwrap();
+        cache.abandon_use(served).unwrap();
+        assert_eq!(cache.open_uses(), 0);
     }
 
     #[test]
@@ -1401,10 +1635,6 @@ mod tests {
         };
         assert!(matches!(
             cache.lookup(&forged, &live, &live),
-            Err(UseFaultV2::Miss)
-        ));
-        assert!(matches!(
-            cache.begin_use(&forged, &live, &live),
             Err(UseFaultV2::Miss)
         ));
         // An Exact frame never populates or hits the Approximate namespace either.
@@ -1515,7 +1745,7 @@ mod tests {
                 assert_eq!(cache.persist(op, key).unwrap_err(), PersistFault { op });
             }
         }
-        let ticket = cache.begin_use(&exact, &live, &live).unwrap();
+        let served = cache.lookup(&exact, &live, &live).unwrap();
         cache.clear();
         assert!(cache.is_empty());
         assert_eq!(cache.open_uses(), 0);
@@ -1523,10 +1753,10 @@ mod tests {
             cache.lookup(&exact, &live, &live),
             Err(UseFaultV2::Miss)
         ));
-        assert_eq!(
-            cache.finish_use(ticket, &live, &live),
+        assert!(matches!(
+            cache.finish_use(served, 0, &live, &live),
             Err(UseFaultV2::UnknownTicket)
-        );
+        ));
         // A new cache (a restart) starts empty.
         let fresh: SplitStageCacheV2<u32> = SplitStageCacheV2::new(8);
         assert!(fresh.is_empty());

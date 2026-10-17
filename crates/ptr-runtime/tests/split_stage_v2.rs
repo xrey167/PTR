@@ -28,10 +28,10 @@ use ptr_runtime::expert::{
     ExpertFenceGrant, ExpertFenceRequest,
 };
 use ptr_runtime::{
-    admit_frame_v2, input_target, ChainFault, DeviceHealth, DeviceRecord, DownstreamKey,
-    FrameFault, InputLiveness, NodeHealth, NodeRecord, PersistOp, PodPlacementController,
-    PtrRuntime, RuntimeInputLiveness, RuntimeStageLiveness, SplitStageCacheV2, StageLiveness,
-    UseFaultV2,
+    admit_frame_v2, input_target, AdmissionRequestV2, ChainFault, DeviceHealth, DeviceRecord,
+    DownstreamKey, FrameFault, InputLiveness, NodeHealth, NodeRecord, PersistOp,
+    PodPlacementController, PtrRuntime, RuntimeInputLiveness, RuntimeStageLiveness,
+    SplitStageCacheV2, StageLiveness, UseFaultV2,
 };
 use ptr_types::{
     ArtifactId, CapsuleId, CommitIndex, DeviceId, Generation, NodeId, PodId, ProjectId, Timestamp,
@@ -459,19 +459,29 @@ fn an_invalidation_the_cache_was_never_told_of_ends_the_entry_for_every_dependen
             let mut cache: SplitStageCacheV2<&str> = SplitStageCacheV2::new(4);
             let key = {
                 let live = live(&world);
-                let admitted =
-                    admit_frame_v2(&exact(&world), KvReusePolicy::ExactOnly, &live, &live).unwrap();
+                let admitted = admit_frame_v2(
+                    AdmissionRequestV2 {
+                        frame: &exact(&world),
+                        policy: KvReusePolicy::ExactOnly,
+                        expected_start: 0,
+                    },
+                    &live,
+                    &live,
+                )
+                .unwrap();
                 cache
                     .store(&[&admitted], &own_chain(), "kv", &live, &live)
                     .unwrap()
             };
             {
                 let live = live(&world);
-                assert_eq!(cache.lookup(&key, &live, &live).unwrap().value, &"kv");
+                let served = cache.lookup(&key, &live, &live).unwrap();
+                assert_eq!(*served.value(), "kv");
+                cache.abandon_use(served).unwrap();
             }
             invalidate(&mut world, subject, supersede);
             let live = live(&world);
-            let verdict = cache.begin_use(&key, &live, &live);
+            let verdict = cache.lookup(&key, &live, &live);
             assert!(
                 matches!(verdict, Err(UseFaultV2::Stale(_))),
                 "{subject} supersede={supersede}: {verdict:?}"
@@ -479,8 +489,16 @@ fn an_invalidation_the_cache_was_never_told_of_ends_the_entry_for_every_dependen
             assert!(cache.is_empty());
             // A frame of the same lineage is refused as well, except when only the
             // downstream stage's own generation moved (the frame does not name it).
-            let refused =
-                admit_frame_v2(&exact(&world), KvReusePolicy::ExactOnly, &live, &live).is_err();
+            let refused = admit_frame_v2(
+                AdmissionRequestV2 {
+                    frame: &exact(&world),
+                    policy: KvReusePolicy::ExactOnly,
+                    expected_start: 0,
+                },
+                &live,
+                &live,
+            )
+            .is_err();
             assert_eq!(refused, subject != "down", "{subject}");
         }
     }
@@ -495,15 +513,23 @@ fn a_fenced_expert_ends_the_entry_and_a_readmission_never_revives_it() {
         let live = live(&world);
         // The runtime answers the epoch the chain recorded.
         assert_eq!(live.fence_epoch(EXPERT), Some(1));
-        let admitted =
-            admit_frame_v2(&exact(&world), KvReusePolicy::ExactOnly, &live, &live).unwrap();
+        let admitted = admit_frame_v2(
+            AdmissionRequestV2 {
+                frame: &exact(&world),
+                policy: KvReusePolicy::ExactOnly,
+                expected_start: 0,
+            },
+            &live,
+            &live,
+        )
+        .unwrap();
         cache
             .store(&[&admitted], &own_chain(), 1, &live, &live)
             .unwrap()
     };
-    let ticket = {
+    let served = {
         let live = live(&world);
-        cache.begin_use(&key, &live, &live).unwrap()
+        cache.lookup(&key, &live, &live).unwrap()
     };
     let old_frame = exact(&world);
     // The expert is fenced through the authority path while the use runs.
@@ -516,13 +542,21 @@ fn a_fenced_expert_ends_the_entry_and_a_readmission_never_revives_it() {
         "a fenced expert serves nowhere"
     );
     assert!(matches!(
-        cache.finish_use(ticket, &live, &live),
+        cache.finish_use(served, 0, &live, &live),
         Err(UseFaultV2::Stale(FrameFault::Chain(
             ChainFault::StaleFence { current: None, .. }
         )))
     ));
     assert!(matches!(
-        admit_frame_v2(&old_frame, KvReusePolicy::ExactOnly, &live, &live),
+        admit_frame_v2(
+            AdmissionRequestV2 {
+                frame: &old_frame,
+                policy: KvReusePolicy::ExactOnly,
+                expected_start: 0
+            },
+            &live,
+            &live
+        ),
         Err(FrameFault::Chain(ChainFault::StaleFence { .. }))
     ));
 }
@@ -534,7 +568,15 @@ fn a_chain_expert_is_admitted_only_at_the_committed_epoch() {
     let mut wrong = exact(&world);
     wrong.upstream_chain.experts[0].fence_epoch = 5;
     assert!(matches!(
-        admit_frame_v2(&wrong, KvReusePolicy::ExactOnly, &live, &live),
+        admit_frame_v2(
+            AdmissionRequestV2 {
+                frame: &wrong,
+                policy: KvReusePolicy::ExactOnly,
+                expected_start: 0
+            },
+            &live,
+            &live
+        ),
         Err(FrameFault::Chain(ChainFault::StaleFence {
             recorded: 5,
             current: Some(1),
@@ -544,7 +586,15 @@ fn a_chain_expert_is_admitted_only_at_the_committed_epoch() {
     let mut unrecorded = exact(&world);
     unrecorded.upstream_chain.experts[0].fence_epoch = 0;
     assert!(matches!(
-        admit_frame_v2(&unrecorded, KvReusePolicy::ExactOnly, &live, &live),
+        admit_frame_v2(
+            AdmissionRequestV2 {
+                frame: &unrecorded,
+                policy: KvReusePolicy::ExactOnly,
+                expected_start: 0
+            },
+            &live,
+            &live
+        ),
         Err(FrameFault::Chain(ChainFault::StaleFence {
             recorded: 0,
             ..
@@ -554,7 +604,16 @@ fn a_chain_expert_is_admitted_only_at_the_committed_epoch() {
     for identity in ["expert:proj/unknown", "expert:proj", "x"] {
         assert_eq!(live.fence_epoch(identity), None, "{identity}");
     }
-    assert!(admit_frame_v2(&exact(&world), KvReusePolicy::ExactOnly, &live, &live).is_ok());
+    assert!(admit_frame_v2(
+        AdmissionRequestV2 {
+            frame: &exact(&world),
+            policy: KvReusePolicy::ExactOnly,
+            expected_start: 0
+        },
+        &live,
+        &live
+    )
+    .is_ok());
 }
 
 #[test]
@@ -562,17 +621,37 @@ fn an_approximate_frame_lives_in_its_own_namespace_and_its_taint_reaches_the_out
     let world = world();
     let live = live(&world);
     assert_eq!(
-        admit_frame_v2(&approximate(&world), KvReusePolicy::ExactOnly, &live, &live),
+        admit_frame_v2(
+            AdmissionRequestV2 {
+                frame: &approximate(&world),
+                policy: KvReusePolicy::ExactOnly,
+                expected_start: 0
+            },
+            &live,
+            &live
+        ),
         Err(FrameFault::ApproximateNotAllowed)
     );
     let approximate = admit_frame_v2(
-        &approximate(&world),
-        KvReusePolicy::AllowApproximate,
+        AdmissionRequestV2 {
+            frame: &approximate(&world),
+            policy: KvReusePolicy::AllowApproximate,
+            expected_start: 0,
+        },
         &live,
         &live,
     )
     .unwrap();
-    let exact = admit_frame_v2(&exact(&world), KvReusePolicy::ExactOnly, &live, &live).unwrap();
+    let exact = admit_frame_v2(
+        AdmissionRequestV2 {
+            frame: &exact(&world),
+            policy: KvReusePolicy::ExactOnly,
+            expected_start: 0,
+        },
+        &live,
+        &live,
+    )
+    .unwrap();
     let mut cache: SplitStageCacheV2<&str> = SplitStageCacheV2::new(4);
     let approx_key = cache
         .store(&[&approximate], &own_chain(), "approx", &live, &live)
@@ -593,21 +672,64 @@ fn an_approximate_frame_lives_in_its_own_namespace_and_its_taint_reaches_the_out
         Err(UseFaultV2::Miss)
     ));
     // The Approximate hit carries the taint to the released output.
-    let ticket = cache.begin_use(&approx_key, &live, &live).unwrap();
+    let served = cache.lookup(&approx_key, &live, &live).unwrap();
+    let released = cache.finish_use(served, "out", &live, &live).unwrap();
     assert_eq!(
-        cache.finish_use(ticket, &live, &live),
-        Ok(KvReuseTaint::Approximate {
-            report_digest: [6; 32]
-        })
+        released.into_parts(),
+        (
+            "out",
+            KvReuseTaint::Approximate {
+                report_digest: [6; 32]
+            }
+        )
     );
     let stored = cache
         .store(&[&exact], &own_chain(), "exact", &live, &live)
         .unwrap();
     let served = cache.lookup(&stored, &live, &live).unwrap();
     assert_eq!(
-        (*served.value, served.taint),
+        (*served.value(), served.taint()),
         ("exact", KvReuseTaint::Exact)
     );
+    cache.abandon_use(served).unwrap();
+}
+
+#[test]
+fn an_approximate_hit_cannot_be_released_after_an_invalidation_between_lookup_and_finish() {
+    let mut world = world();
+    let mut cache: SplitStageCacheV2<&str> = SplitStageCacheV2::new(4);
+    let key = {
+        let live = live(&world);
+        let approximate = admit_frame_v2(
+            AdmissionRequestV2 {
+                frame: &approximate(&world),
+                policy: KvReusePolicy::AllowApproximate,
+                expected_start: 0,
+            },
+            &live,
+            &live,
+        )
+        .unwrap();
+        cache
+            .store(&[&approximate], &own_chain(), "approx", &live, &live)
+            .unwrap()
+    };
+    // The hit is an open use that owns the only handle on the value; the taint is readable.
+    let served = {
+        let live = live(&world);
+        cache.lookup(&key, &live, &live).unwrap()
+    };
+    assert!(served.taint().is_approximate());
+    assert_eq!(cache.open_uses(), 1);
+    let output = served.value().to_uppercase();
+    // A source is invalidated without the Revoke message reaching the cache.
+    invalidate(&mut world, "sem", false);
+    let live = live(&world);
+    assert!(matches!(
+        cache.finish_use(served, output, &live, &live),
+        Err(UseFaultV2::Stale(FrameFault::InputNotLive { .. }))
+    ));
+    assert_eq!(cache.open_uses(), 0);
 }
 
 #[test]
@@ -625,8 +747,26 @@ fn a_removed_raw_ancestor_is_a_miss_with_every_typed_input_chain_and_position_eq
     assert_eq!(long.upstream_chain, short.upstream_chain);
     assert_eq!(long.input_lineage.inputs, short.input_lineage.inputs);
     let mut cache: SplitStageCacheV2<u8> = SplitStageCacheV2::new(4);
-    let long = admit_frame_v2(&long, KvReusePolicy::ExactOnly, &live, &live).unwrap();
-    let short = admit_frame_v2(&short, KvReusePolicy::ExactOnly, &live, &live).unwrap();
+    let long = admit_frame_v2(
+        AdmissionRequestV2 {
+            frame: &long,
+            policy: KvReusePolicy::ExactOnly,
+            expected_start: 0,
+        },
+        &live,
+        &live,
+    )
+    .unwrap();
+    let short = admit_frame_v2(
+        AdmissionRequestV2 {
+            frame: &short,
+            policy: KvReusePolicy::ExactOnly,
+            expected_start: 0,
+        },
+        &live,
+        &live,
+    )
+    .unwrap();
     cache
         .store(&[&long], &own_chain(), 1, &live, &live)
         .unwrap();
@@ -664,14 +804,32 @@ fn two_input_kinds_of_one_identity_are_two_lifecycle_targets() {
     let validity = |kind| InputLiveness::validity(&live, kind, "sem", Generation(1));
     assert_eq!(validity(LineageKind::Memory), Some(Validity::Revoked));
     assert_eq!(validity(LineageKind::Semantic), Some(Validity::Live));
-    assert!(admit_frame_v2(&exact(&world), KvReusePolicy::ExactOnly, &live, &live).is_ok());
+    assert!(admit_frame_v2(
+        AdmissionRequestV2 {
+            frame: &exact(&world),
+            policy: KvReusePolicy::ExactOnly,
+            expected_start: 0
+        },
+        &live,
+        &live
+    )
+    .is_ok());
 }
 
 #[test]
 fn nothing_persists_and_a_restart_drops_every_entry() {
     let world = world();
     let live = live(&world);
-    let admitted = admit_frame_v2(&exact(&world), KvReusePolicy::ExactOnly, &live, &live).unwrap();
+    let admitted = admit_frame_v2(
+        AdmissionRequestV2 {
+            frame: &exact(&world),
+            policy: KvReusePolicy::ExactOnly,
+            expected_start: 0,
+        },
+        &live,
+        &live,
+    )
+    .unwrap();
     let mut cache: SplitStageCacheV2<u8> = SplitStageCacheV2::new(4);
     let key = cache
         .store(&[&admitted], &own_chain(), 1, &live, &live)
@@ -719,7 +877,16 @@ fn a_frame_crosses_the_v2_wire_and_is_admitted_with_its_lineage_intact() {
     assert!(received.header.matches_frame(&decoded));
     assert_eq!(decoded, frame);
     let live = live(&world);
-    assert!(admit_frame_v2(&decoded, KvReusePolicy::AllowApproximate, &live, &live).is_ok());
+    assert!(admit_frame_v2(
+        AdmissionRequestV2 {
+            frame: &decoded,
+            policy: KvReusePolicy::AllowApproximate,
+            expected_start: 0
+        },
+        &live,
+        &live
+    )
+    .is_ok());
     // The frame holds an element of every matrix kind, and every one is classified once.
     assert_eq!(bijection_violations(&[&decoded]), 0);
     assert_eq!(DependencyKind::ALL.len(), 7);

@@ -513,6 +513,13 @@ impl FrameAssembler {
         // completed after this one was registered) refuses the tuple here too.
         let (key, stage) = (table.key, table.stage_identity.clone());
         if let Some(tombstone) = self.sibling_tombstone(principal, &key, &stage, tuple) {
+            // The tuple is closed under a sibling identity: a partial assembly this table
+            // holds for it can never complete, so its chunks and capacity are released now
+            // rather than at the deadline sweep.
+            if let Some(table) = self.tables.get_mut(principal) {
+                self.released
+                    .extend(release_assembly(table, principal, tuple));
+            }
             return Err(match tombstone {
                 Tombstone::Completed { .. } => Rejection::FrameReplayed,
                 Tombstone::Abandoned { .. } => Rejection::FrameAbandoned,
@@ -886,6 +893,31 @@ fn abandon_assembly(
         },
     );
     released
+}
+
+/// Remove the assembly of `tuple` and return the ids of its chunks, writing no tombstone: the
+/// tuple is already refused by a tombstone of a sibling identity.
+fn release_assembly(
+    table: &mut PrincipalTable,
+    principal: &str,
+    tuple: (u64, u64),
+) -> Vec<ChunkId> {
+    table
+        .assemblies
+        .remove(&tuple)
+        .map(|assembly| {
+            assembly
+                .chunks
+                .keys()
+                .map(|index| ChunkId {
+                    principal: principal.to_owned(),
+                    parent_operation_id: tuple.0,
+                    frame_id: tuple.1,
+                    chunk_index: *index,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Where a frame is going and until when.
@@ -1955,6 +1987,31 @@ mod tests {
             offer(&mut assembler, 5, &other[1]),
             Err(Rejection::FrameAbandoned)
         );
+    }
+
+    #[test]
+    fn a_sibling_tombstone_releases_the_local_partial_assembly_at_once() {
+        let mut assembler = assembler();
+        let frame = chunks(1, 0);
+        // The old identity holds a partial assembly of the frame.
+        offer(&mut assembler, 0, &frame[0]).unwrap();
+        assert_eq!(assembler.incomplete_frames(PRINCIPAL), 1);
+        assert!(assembler.buffered_bytes() > 0);
+        // The same runtime under a new identity completes it, tombstoning the tuple there.
+        assembler.register_principal("reborn", key().verifying_key(), "stage-a");
+        for chunk in &frame {
+            offer_as(&mut assembler, "reborn", 1, chunk).unwrap();
+        }
+        // The next chunk under the old identity is a replay, and its capacity is freed now.
+        assert_eq!(
+            offer(&mut assembler, 2, &frame[1]),
+            Err(Rejection::FrameReplayed)
+        );
+        assert_eq!(assembler.incomplete_frames(PRINCIPAL), 0);
+        assert_eq!(assembler.buffered_bytes(), 0);
+        // The released chunk is reported once.
+        assert_eq!(assembler.expire(3).len(), 1);
+        assert!(assembler.expire(4).is_empty());
     }
 
     #[test]

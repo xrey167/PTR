@@ -37,7 +37,8 @@ use crate::experiments::rng::Rng;
 use ptr_model_api::KvReusePolicy;
 use ptr_protocol::activation::{ActivationFrameV2, DependencyKind, Invalidation};
 use ptr_runtime::{
-    admit_frame_v2, AdmittedFrameV2, ChainFault, FrameFault, SplitStageCacheV2, UseFaultV2,
+    admit_frame_v2, AdmissionRequestV2, AdmittedFrameV2, ChainFault, FrameFault, SplitStageCacheV2,
+    UseFaultV2,
 };
 use ptr_types::Generation;
 
@@ -205,8 +206,16 @@ fn run_case(
     let own = world.own_chain();
     let (buffered, key) = {
         let live = world.live();
-        let admitted = admit_frame_v2(&frame, KvReusePolicy::ExactOnly, &live, &live)
-            .map_err(fail("admitting the live frame"))?;
+        let admitted = admit_frame_v2(
+            AdmissionRequestV2 {
+                frame: &frame,
+                policy: KvReusePolicy::ExactOnly,
+                expected_start: 0,
+            },
+            &live,
+            &live,
+        )
+        .map_err(fail("admitting the live frame"))?;
         let key = cache
             .store(
                 &[&admitted],
@@ -222,8 +231,13 @@ fn run_case(
     {
         let live = world.live();
         match cache.lookup(&key, &live, &live) {
-            Ok(served) if *served.value == derive(&buffered) => {}
-            _ => tally.add("verdict_mismatches", 1),
+            Ok(served) => {
+                if *served.value() != derive(&buffered) {
+                    tally.add("verdict_mismatches", 1);
+                }
+                let _ = cache.abandon_use(served);
+            }
+            Err(_) => tally.add("verdict_mismatches", 1),
         }
     }
 
@@ -238,28 +252,21 @@ fn run_case(
                 tally.add("revoke_messages_dropped_or_delayed", 1);
             }
             let live = world.live();
-            let ticket = cache.begin_use(&key, &live, &live);
-            let lookup_ok = cache.lookup(&key, &live, &live).is_ok();
-            stale_served = ticket.is_ok() || lookup_ok;
-            if let Ok(ticket) = ticket {
-                released |= cache.finish_use(ticket, &live, &live).is_ok();
+            let hit = cache.lookup(&key, &live, &live);
+            stale_served = hit.is_ok();
+            if let Ok(served) = hit {
+                released |= cache.finish_use(served, (), &live, &live).is_ok();
             }
             if message == Message::Delayed {
                 cache.invalidate_dependency(target, target_generation);
             }
         }
         Path::InFlight => {
-            let (ticket, snapshot) = {
+            let served = {
                 let live = world.live();
-                let ticket = cache
-                    .begin_use(&key, &live, &live)
-                    .map_err(fail("beginning the use"))?;
-                let snapshot = cache
+                cache
                     .lookup(&key, &live, &live)
                     .map_err(fail("the lookup of the use"))?
-                    .value
-                    .clone();
-                (ticket, snapshot)
             };
             // The use is running; the dependency is invalidated under it.
             invalidate(&mut world, cell, target)?;
@@ -268,9 +275,9 @@ fn run_case(
             } else {
                 tally.add("revoke_messages_dropped_or_delayed", 1);
             }
-            let _output: f32 = snapshot.iter().sum();
+            let output: f32 = served.value().iter().sum();
             let live = world.live();
-            match cache.finish_use(ticket, &live, &live) {
+            match cache.finish_use(served, output, &live, &live) {
                 Ok(_) => released = true,
                 Err(UseFaultV2::Stale(_)) | Err(UseFaultV2::Cancelled) => {}
                 Err(_) => tally.add("verdict_mismatches", 1),
@@ -288,7 +295,15 @@ fn run_case(
     // A zombie of the old generation sends the frame again.
     {
         let live = world.live();
-        match admit_frame_v2(&frame, KvReusePolicy::ExactOnly, &live, &live) {
+        match admit_frame_v2(
+            AdmissionRequestV2 {
+                frame: &frame,
+                policy: KvReusePolicy::ExactOnly,
+                expected_start: 0,
+            },
+            &live,
+            &live,
+        ) {
             Err(fault) if expected_refusal(cell, &fault) => {}
             Err(_) => tally.add("verdict_mismatches", 1),
             Ok(_) => {
@@ -315,21 +330,29 @@ fn run_case(
         }
         let next = world.frame(&FrameSpec::exact(vec![[7; 32]], rng.next_u64()));
         let live = world.live();
-        let served = admit_frame_v2(&next, KvReusePolicy::ExactOnly, &live, &live)
-            .ok()
-            .and_then(|admitted| {
-                let key = cache
-                    .store(
-                        &[&admitted],
-                        &world.own_chain(),
-                        derive(&admitted),
-                        &live,
-                        &live,
-                    )
-                    .ok()?;
-                let ok = cache.lookup(&key, &live, &live).is_ok();
-                ok.then_some(())
-            });
+        let served = admit_frame_v2(
+            AdmissionRequestV2 {
+                frame: &next,
+                policy: KvReusePolicy::ExactOnly,
+                expected_start: 0,
+            },
+            &live,
+            &live,
+        )
+        .ok()
+        .and_then(|admitted| {
+            let key = cache
+                .store(
+                    &[&admitted],
+                    &world.own_chain(),
+                    derive(&admitted),
+                    &live,
+                    &live,
+                )
+                .ok()?;
+            let served = cache.lookup(&key, &live, &live).ok()?;
+            cache.abandon_use(served).ok()
+        });
         if served.is_none() {
             tally.add("verdict_mismatches", 1);
         }

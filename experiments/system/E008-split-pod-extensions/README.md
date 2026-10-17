@@ -45,6 +45,9 @@ The fence epoch of an expert is the runtime's own (`RuntimeStageLiveness::fence_
 - collapse `namespace_index` to one table, or `namespace_of` to Exact (single namespace);
 - drop the cancel flag in `drop_entry` (an in-flight use survives the Revoke message);
 - `finish_use` without revalidation (an output released after the invalidation);
-- `finish_use` returning an Exact taint (taint dropped on release);
+- `finish_use` returning a `Tainted` with an Exact taint (taint dropped on release); `lookup` not beginning the use (no cancellation of an in-flight hit);
+- skip `check_positions` in `admit_scoped` (a stale, overlapping or skipped frame is admitted; killed by `position_checks` in the raw-ancestry cases, which counts a verdict mismatch), or `InputLineage::canonical` collapsing by the sort key again (a conflicting digest is no longer refused);
 - `clear()` keeping entries (restart);
 - `RuntimeStageLiveness::fence_epoch` answering the recorded epoch for any expert (the fence cells).
+
+The downstream stage now admits a frame against the position its KV state expects (`AdmissionRequestV2::expected_start`) and a cache hit is a `ServedUseV2` that can only be released through `finish_use` as a `Tainted` output (Codex P1s on PR #167, fixed). Part A passes the frame's own start and checks the four refusals; Part B does not admit v2 frames (it uses the v1 admission over the socket).
