@@ -83,7 +83,7 @@ fn unknown_supersession_and_cross_project_reuse_fail_before_commit() {
 #[test]
 fn reserved_lifecycle_namespaces_cannot_be_impersonated_by_capsules() {
     let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
-    for name in ["constraint:no-network", "procedure:work"] {
+    for name in ["constraint:no-network", "procedure:work", "expert:p/x"] {
         assert!(matches!(
             runtime.commit(LedgerEvent::CapsuleCommitted {
                 project: ProjectId::from("p"),

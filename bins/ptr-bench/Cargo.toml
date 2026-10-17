@@ -28,6 +28,13 @@ ledger-experiments = [
     "ptr-ledger/raft-engine-failpoints",
     "ptr-ledger/raft-rs-backend",
 ]
+# The E008 Part B harness (the chunked activation frames of E007 between a PodHost and PodClient
+# endpoints over loopback iroh). It turns on the iroh composition of ptr-podwire and needs a tokio
+# runtime to drive the endpoints. Loopback only; the default binary and its MSRV are unchanged.
+podwire-experiments = [
+    "dep:tokio",
+    "ptr-podwire/podwire-backend",
+]
 # Adds the Turso projection as a third L004 oracle. Turso needs the stable
 # toolchain, as its own CI job does.
 turso-oracle = ["postgres-experiments", "ptr-state/turso-backend"]

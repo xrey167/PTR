@@ -52,6 +52,12 @@ pub use frame::{
 #[cfg(feature = "podwire-backend")]
 mod endpoint;
 
+/// The deployment's address book, re-exported so a caller that already depends on this crate
+/// with the backend can build the `PeerAddress` a `PodClient` dials without a second, direct
+/// dependency on the transport crate.
+#[cfg(feature = "podwire-backend")]
+pub use ptr_net::PeerBook;
+
 #[cfg(feature = "podwire-backend")]
 pub use endpoint::{
     ExecutionManifestResolver, PodClient, PodHost, PodSession, PodWireError, PodWireV2Binding,

@@ -288,7 +288,10 @@ fn the_downstream_stage_revoked_ends_its_own_entry() {
 }
 
 #[test]
-fn a_chain_with_an_expert_is_refused_because_the_runtime_keeps_no_expert_fence() {
+fn a_chain_expert_that_is_no_registry_expert_is_refused_fail_closed() {
+    // Renamed: the runtime now answers fence epochs from its expert registry, so an expert chain
+    // is refused when the identity is no registry key (here a plain capsule name), not for all.
+    // The positive and fenced cases are in tests/split_stage_v2.rs.
     let world = world();
     let mut expert = chain_element("model");
     expert.fence_epoch = 3;

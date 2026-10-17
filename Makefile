@@ -294,8 +294,11 @@ ci-execution-wire:
 ci-pod-wire:
 	cargo +stable test -p ptr-podwire --features podwire-backend --locked
 	cargo +stable clippy -p ptr-podwire --features podwire-backend --all-targets --locked -- -D warnings
+	cargo +stable test -p ptr-bench --features podwire-experiments --locked e008::part_b
+	cargo +stable clippy -p ptr-bench --features podwire-experiments --all-targets --locked -- -D warnings
 	rustup toolchain install 1.99.0 --profile minimal
 	cargo +1.99.0 test -p ptr-podwire --features podwire-backend --locked
+	cargo +1.99.0 test -p ptr-bench --features podwire-experiments --locked e008::part_b
 
 ci-fabric-shm:
 	cargo +stable test -p ptr-fabric --features shm-backend --locked

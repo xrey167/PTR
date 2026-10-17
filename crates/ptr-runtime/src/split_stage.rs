@@ -16,9 +16,11 @@
 //! Nothing here installs KV from a wire either: an [`AdmittedFrame`] holds activations and
 //! positions and the cache stores what the caller computed from them.
 
+use crate::expert::ExpertEntry;
 use crate::placement::PlacementScope;
 use crate::{PodPlacementController, PtrRuntime};
 use ptr_model_api::KvReuseMode;
+use ptr_pods::ExpertState;
 use ptr_protocol::activation::{
     chain_bytes, frame_digest, ActivationFrame, ChainElement, UpstreamChain,
 };
@@ -65,12 +67,63 @@ pub struct RuntimeStageLiveness<'a> {
     pub manifests: &'a BTreeMap<(String, u64), [u8; 32]>,
 }
 
+impl RuntimeStageLiveness<'_> {
+    /// The registry entry behind an `expert:{project}/{pod}` identity. `None` for an identity
+    /// that is no registry key and for an expert the registry does not hold.
+    fn expert_entry(&self, identity: &str) -> Option<&ExpertEntry> {
+        // Project and pod ids never contain `/`, so the key has exactly one split; the same
+        // idiom as the registry's own parser (`highest_fenced_epoch`).
+        let (project, pod) = identity
+            .strip_prefix(ptr_state::EXPERT_PREFIX)?
+            .split_once('/')?;
+        self.runtime
+            .expert_registry()
+            .get(&ProjectId::from(project), &ptr_types::PodId::from(pod))
+    }
+}
+
+/// The standing of `generation` of an expert, from its registry entry alone. The current
+/// generation is live while the expert is admitted (`Serving`, `Frozen`, or `Fenced`, which
+/// the fence epoch refuses on its own), superseded or revoked when the registry says so; an
+/// older generation is superseded; anything else is unknown.
+fn expert_validity(entry: &ExpertEntry, generation: Generation) -> Option<Validity> {
+    if generation.0 < entry.generation.0 {
+        return Some(Validity::Superseded);
+    }
+    if generation != entry.generation {
+        return None;
+    }
+    match entry.state {
+        ExpertState::Serving | ExpertState::Frozen | ExpertState::Fenced => Some(Validity::Live),
+        ExpertState::Superseded => Some(Validity::Superseded),
+        ExpertState::Retired(_) => Some(Validity::Revoked),
+        ExpertState::Candidate | ExpertState::Gated => None,
+    }
+}
+
 impl StageLiveness for RuntimeStageLiveness<'_> {
+    /// An `expert:{project}/{pod}` identity is answered from the expert registry alone (its
+    /// generation, state and manifest digest are the same entry the fence epoch comes from); an
+    /// expert identity the registry does not hold is unknown. Everything else is a capsule
+    /// generation of the runtime's lifecycle state.
     fn validity(&self, target: &str, generation: Generation) -> Option<Validity> {
+        if target.starts_with(ptr_state::EXPERT_PREFIX) {
+            return self
+                .expert_entry(target)
+                .and_then(|entry| expert_validity(entry, generation));
+        }
         self.runtime.generation_validity(target, generation)
     }
 
+    /// An expert's digest is its registry manifest digest at its current generation; every
+    /// other target's digest is the one the host admitted (`manifests`).
     fn manifest_digest(&self, target: &str, generation: Generation) -> Option<[u8; 32]> {
+        if target.starts_with(ptr_state::EXPERT_PREFIX) {
+            return self
+                .expert_entry(target)
+                .filter(|entry| entry.generation == generation)
+                .map(|entry| *entry.manifest_digest.as_bytes());
+        }
         self.manifests
             .get(&(target.to_owned(), generation.0))
             .copied()
@@ -90,11 +143,18 @@ impl StageLiveness for RuntimeStageLiveness<'_> {
             .map(|placement| placement.epoch.0)
     }
 
-    /// The runtime keeps no per-expert fence epoch for a split stage, so this answers `None`
-    /// and a chain that lists an expert is refused (fails closed, [`ChainFault::StaleFence`]).
-    /// The expert matrix rows belong to E008.
-    fn fence_epoch(&self, _expert: &str) -> Option<u64> {
-        None
+    /// The fence epoch the expert serves under now, from the runtime's expert registry (which
+    /// is rebuilt from the ledger on replay and carried by compacted snapshots). The identity
+    /// is the registry's `expert:{project}/{pod}` key, so the answer is scoped to the project it
+    /// names. The epoch is the expert's committed state version: it moves at every fence,
+    /// escalation and readmission (so a frame computed before a quarantine never revives) and
+    /// at any other state change, which only ever invalidates more. `None` for an identity that
+    /// is no registry key and for an expert that is not serving (`Serving` or `Frozen`), so a
+    /// fenced, retired or unknown expert fails closed ([`ChainFault::StaleFence`]).
+    fn fence_epoch(&self, expert: &str) -> Option<u64> {
+        let entry = self.expert_entry(expert)?;
+        matches!(entry.state, ExpertState::Serving | ExpertState::Frozen)
+            .then_some(entry.state_version)
     }
 }
 
@@ -136,8 +196,21 @@ fn entry_fault<V>(entry: &Entry<V>, live: &dyn StageLiveness) -> Option<ChainFau
 fn revalidate_own(own: &UpstreamChain, live: &dyn StageLiveness) -> Result<(), ChainFault> {
     revalidate_element(&own.stage, live)?;
     revalidate_element(&own.base_model, live)?;
-    for element in own.adapters.iter().chain(&own.experts) {
+    for element in &own.adapters {
         revalidate_element(element, live)?;
+    }
+    // An own expert is fenced like an upstream one: a fence leaves its generation live, so the
+    // recorded epoch must still be the committed one (fail closed on an unrecorded epoch 0).
+    for expert in &own.experts {
+        revalidate_element(expert, live)?;
+        let current = live.fence_epoch(&expert.identity);
+        if expert.fence_epoch == 0 || current != Some(expert.fence_epoch) {
+            return Err(ChainFault::StaleFence {
+                identity: expert.identity.clone(),
+                recorded: expert.fence_epoch,
+                current,
+            });
+        }
     }
     Ok(())
 }
@@ -854,6 +927,27 @@ mod tests {
             admit_frame(&frame(with(4), 5, 1.0), KvReuseMode::Exact, &live),
             Err(ChainFault::StaleFence { current: None, .. })
         ));
+    }
+
+    #[test]
+    fn a_fenced_expert_of_the_own_chain_ends_a_v1_entry_without_the_revoke_message() {
+        let live = live();
+        live.commit("own-expert", 1);
+        live.fence.borrow_mut().insert("own-expert".to_owned(), 2);
+        let own = UpstreamChain {
+            experts: vec![ChainElement {
+                fence_epoch: 2,
+                ..element("own-expert", 1)
+            }],
+            ..own_chain()
+        };
+        let first = admitted(&live, 1.0);
+        let mut cache: SplitStageCache<&str> = SplitStageCache::new(4);
+        let key = cache.store(&[&first], &own, "kv", &live).unwrap();
+        assert_eq!(cache.lookup(&key, &live), Ok(&"kv"));
+        // Fenced: the generation stays live, only the committed epoch moves.
+        live.fence.borrow_mut().insert("own-expert".to_owned(), 3);
+        assert!(cache.lookup(&key, &live).is_err());
     }
 
     #[test]

@@ -245,8 +245,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo +stable test -p ptr-podwire --features podwire-backend --locked
       - run: cargo +stable clippy -p ptr-podwire --features podwire-backend --all-targets --locked -- -D warnings
+      - run: cargo +stable test -p ptr-bench --features podwire-experiments --locked e008::part_b
+      - run: cargo +stable clippy -p ptr-bench --features podwire-experiments --all-targets --locked -- -D warnings
       - run: rustup toolchain install 1.99.0 --profile minimal
       - run: cargo +1.99.0 test -p ptr-podwire --features podwire-backend --locked
+      - run: cargo +1.99.0 test -p ptr-bench --features podwire-experiments --locked e008::part_b
 
   fabric-shm:
     runs-on: ubuntu-latest

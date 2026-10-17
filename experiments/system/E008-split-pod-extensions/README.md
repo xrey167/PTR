@@ -14,3 +14,40 @@ Each part is invalid (vacuous) and counts as falsified if any coverage prerequis
 
 ## Rule
 Record matched baselines, hardware, seeds and negative results. Do not change success criteria after observing results.
+
+## Harness
+Part A has a CPU harness in `bins/ptr-bench/src/experiments/e008/part_a/`. One seed is one run and prints exactly one JSON object on stdout:
+
+```
+cargo run -p ptr-bench --locked --release -- split-pod-extensions <seed>
+```
+
+`split-pod-extensions <cases> <seed>` is the form the mutation checker uses: `<cases>` scales the three seeded case families (raw ancestry, modes, persistence) and the record then says `"scale":"custom"` and is no evidence; the 45 matrix cells and the three controls always run in full. Exit status: 0 when every rule holds, 1 for a tripped falsifier (a product finding), 2 for a harness failure: a validity violation, an unmet coverage prerequisite, a metric gap, a case that cannot run or a control that does not trip. Seeds not listed in `experiment.toml` print a dry-run note on stderr.
+
+The harness prints every Part A metric of this manifest (`reuse_after_raw_ancestor_removed` through `outputs_after_upstream_invalidation`, with `invalidation_matrix_cases` and `invalidation_matrix_stale_hits` per cell as `<kind>_<path>_<type>`), `control_trips` per control, a top-level mirror `stale_hits_in_<cell>` of every cell for the mutation checker, and its own reading of the coverage, falsifier and validity rules. E008 is `planned`: those lists are for the head to pin in the preregistration, and no part of this harness is frozen. Parts B and C are other harnesses.
+
+The three controls are external baselines (small caches written for the harness), not the product with one mechanism removed: a control that trips shows the probe can see the failure it names. `matrix_frame_bijection_violations` is mainly a coverage check (the slot/kind mapping is a bijection and every kind is reached by a frame the harness builds), not a falsifier of a stale or tainted serve.
+
+### Notes for the mutation plan (draft, not part of any freeze)
+The harness prints `procedure.scale` and `procedure.seed_is_declared` but does not judge them: a custom-scale run or an undeclared seed can exit 0. As in E007 (`aggregate.py`), the E008 aggregate must refuse such a record as invalid (Codex P1 on PR #167, assigned to the aggregate of the registration package).
+
+Part B's replay case registers the new endpoint identity only after the old frame completed, so it exercises the tombstones copied at registration and would still pass without the cross-identity check (`sibling_tombstone`); the preregistration adds a case that registers the new identity while the old one holds an incomplete frame, completes it under the old identity and replays it under the new one (Codex P2 on PR #167).
+
+Part B's `REJECTION_KINDS` does not list the assembler's `deadline_too_far` and `frame_too_large`, so a regression of either over the socket is not a coverage failure; the preregistration adds both kinds with a network case each (Codex P2 on PR #167).
+
+Every matrix frame carries the current digests and the invalidation also ends the generation's validity, so validity refuses before a digest comparison decides: removing `InputDigestMismatch` or the upstream manifest-digest check alone would keep all 45 cells green. The preregistration needs a digest-only sensitivity case (a live generation whose authoritative digest changed, or a forged frame digest) before those two mutations can be killed (Codex P2 on PR #167).
+
+The fence epoch of an expert is the runtime's own (`RuntimeStageLiveness::fence_epoch`, the expert registry's committed state version), and the harness fences and readmits its experts through the real authority path.
+
+`prefix_key_v2` repeats the mode, the taint, the Raw ancestry and the typed lineage on purpose, but the frame digest it also hashes already covers all of them. Removing one of those explicit terms alone changes no key, so it is an **equivalent mutant** and cannot be killed; planting it needs the digest's coverage removed too (an `also` edit). The killable mutations are in the digest, the admission and the use paths:
+- skip `write_lineage` or `write_mode_taint` in `ActivationFrameV2::to_bytes` (the digest stops covering them; the explicit key terms then still hold, so pair it with the key term for the Raw cells);
+- skip `revalidate_input` in `entry_fault`, or skip `entry_fault` in `live_entry` (lineage and chain revalidation at use);
+- collapse `namespace_index` to one table, or `namespace_of` to Exact (single namespace);
+- drop the cancel flag in `drop_entry` (an in-flight use survives the Revoke message);
+- `finish_use` without revalidation (an output released after the invalidation);
+- `finish_use` returning a `Tainted` with an Exact taint (taint dropped on release); `lookup` not beginning the use (no cancellation of an in-flight hit);
+- skip `check_positions` in `admit_scoped` (a stale, overlapping or skipped frame is admitted; killed by `position_checks` in the raw-ancestry cases, which counts a verdict mismatch), or `InputLineage::canonical` collapsing by the sort key again (a conflicting digest is no longer refused);
+- `clear()` keeping entries (restart);
+- `RuntimeStageLiveness::fence_epoch` answering the recorded epoch for any expert (the fence cells).
+
+The downstream stage now admits a frame against the position its KV state expects (`AdmissionRequestV2::expected_start`) and a cache hit is a `ServedUseV2` that can only be released through `finish_use` as a `Tainted` output (Codex P1s on PR #167, fixed). Part A passes the frame's own start and checks the four refusals; Part B does not admit v2 frames (it uses the v1 admission over the socket).
