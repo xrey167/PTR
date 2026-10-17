@@ -1,12 +1,12 @@
 # 43 — Pod linking: stable identity, committed head, advisory learned address
 
-Status: **identity, head resolver and the learned-address loader are implemented; the routing
-claim is not shown.** Experiment R015 has a harness and no frozen result. The Symlink-LoRA idea is
-design only.
+Status: **identity, head resolver, the learned-address loader and the reflex failover with its
+counters are implemented; the routing claim and the two reflex claims are not shown.** Experiment
+R015 has a harness and no frozen result. The Symlink-LoRA idea is design only.
 
 Plan: [`../RESEARCH_INTEGRATION_PLAN_20261013.md`](../RESEARCH_INTEGRATION_PLAN_20261013.md)
-(work package 1). Decision: [ADR-0023](../../research/decisions/ADR-0023-learned-pod-addresses-advisory.md).
-Owners: `ptr-types`, `ptr-pods`, `ptr-ledger`, `ptr-state`, `ptr-runtime`, `ptr-router`,
+(work packages 1 and 2). Decision: [ADR-0023](../../research/decisions/ADR-0023-learned-pod-addresses-advisory.md).
+Owners: `ptr-types`, `ptr-pods`, `ptr-ledger`, `ptr-state`, `ptr-runtime`, `ptr-router`, `ptr-events`,
 `training/` (Python).
 
 ## The problem
@@ -111,7 +111,7 @@ score is below 0.5, `SmallMargin` when the runner-up is within 0.15, and `Partia
 some candidate has no address, because ranking only the covered ones would pick among part of the
 field. `NoRepresentation` means no candidate had an address. The default `PodRouter` remains the router when none is
 configured. The runtime reports an abstention as `RouteFailed { reason: "routing abstained" }`
-without naming a pod; the fallback and counters are work package 2.
+without naming a pod unless the host set a fallback plan for the request (see "Reflex and failover").
 
 **Query vector.** `PodSampler::features` supplies `RouteFeatures::vector`; `EmbeddingSampler`
 wraps a `CheckedRouter` with a `QueryEmbedder`. PTR has no Rust encoder: the host provides one.
@@ -144,8 +144,8 @@ it: an address in another namespace does not bind (`NamespaceMismatch`), and a b
 target of the same pod id in another namespace is refused on admission, so revoking a
 representation's own target cannot be bypassed through a sibling namespace.
 A sampled Pod request without an eligible registry candidate answers `PodUnavailable` before the
-query encoder runs, and with no representation admitted the encoder is not run either (the request
-is a `NoRepresentation` route failure).
+query encoder runs, and with no representation admitted for the request's project the encoder is
+not run either (the request is a `NoRepresentation` route failure).
 
 The registry names the lifecycle namespace of each registered implementation
 (`PodRegistry::register_in_namespace`, read with `PodRegistry::namespace`), and the learned router
@@ -160,7 +160,9 @@ pod, so the generations of one pod id in two namespaces are never ordered agains
 Per-request admission is bounded: the sampler refuses an admission cache larger than one store
 (`MAX_REPRESENTATIONS`), reads each payload in place, and refuses state that names no
 representation digest before parsing it. Generation 0 is refused for pod lifecycle targets, pod
-heads and learned representations, since no pod revision has it.
+heads and learned representations, since no pod revision has it; a compacted snapshot that holds
+a pod target live at generation 0, or committed by another project than the one it names, is
+refused on restore (`CompactedError::InvalidPodTarget`), as replaying its commit would be.
 
 The store itself holds no binding, so admission is repeated for every request instead of once at
 load time. `EmbeddingSampler::new(router, embedder, admission_cache)` keeps the bound states, and
@@ -171,7 +173,95 @@ each). A representation outside that set does not take part in scoring, so a rev
 pod generation that was committed after the store was built stops it with the very next request
 (the pod is uncovered: partial coverage, or no representation). The set can only narrow what is
 scored; eligibility stays with the registry. Without the runtime (`PodSampler::features`) the set
-is empty: fail closed.
+is empty: fail closed. The runtime enforces the same for any sampler: features returned without an
+admission set are routed with an empty one, so a custom sampler that supplies only a query vector
+scores no representation.
+
+## Reflex and failover (`ptr-router`, `ptr-runtime`, `ptr-events`)
+
+A router may decline, have nothing to score, or pick a pod that then fails. Work package 2 says what
+happens next, and counts it without claiming more than happened. Research source: the reflex channel
+of `PTR-Research` (`neural_pods/reflex.py`), carried over to PTR types, not ported.
+
+**Miss.** Every Pod request goes through one `dispatch_pod`. The primary path misses (`MissReason`)
+when the registry has no candidate (`NoCandidate`), the learned router abstains (`Abstained` with
+its `AbstentionReason`, so a partial-coverage abstention is told from a low score), no candidate had
+a learned address (`NoRepresentation`, nothing was scored), or the routed pod fails when invoked
+(`DispatchError`). A failure of the router itself (an invalid distribution, an ineligible choice, a
+policy error) is not a miss and is never covered: a broken router is not hidden by a fallback.
+
+**Plan.** `DefaultPodPlan { default_pod, max_attempts }` is host configuration, set per
+`(project, capability)` with `PtrRuntime::set_fallback_plan` together with the
+`PodRevisionAddress` of the default pod. It is not a ledger record: a restarted or replayed runtime
+has no plan and fails closed (a miss fails the request as before). `max_attempts` counts dispatch
+attempts per request including the routed one, so a failing primary pod with `max_attempts = 1`
+leaves nothing for the default, while an abstention (nothing dispatched yet) can still be served.
+
+**The default is a joint, not a shortcut.** It is checked at every use, not once at configuration:
+
+1. a registry candidate of the request's project, capability and input type (Pods of another
+   project are never candidates);
+2. its revision is not revoked and is the generation the lifecycle authority holds live
+   (invariant 3); a pod the lifecycle never made live fails closed, and a revocation or a new live
+   generation committed after the plan was set stops the failover with the next request;
+3. the registry holds exactly the implementation that revision names (`PodRegistry::register_at`: the
+   same namespace and generation), so the generation that was checked is the code that runs; a
+   default registered at another generation or without one is `StaleFallback` and is not invoked;
+4. no effect beyond `Pure` or `Read`, checked before it is invoked (invariant 7);
+5. not the pod that just failed, and the attempt budget is not spent;
+6. its output goes through `promote_verified_pod_output`, the same verifier path as any pod output,
+   so a deterministic contradiction is never promoted (invariants 7 and 11). The reflex substitutes
+   a pod; the verifier commits.
+
+A refused failover is `RuntimeError::FailoverRefused { miss, reason }` and names no pod; a default
+that fails when invoked (`DefaultFailed`) or whose answer is not promoted (`DefaultRejected`: the
+verifier contradicted it, or a taint or type check refused it) is refused the same way, with the
+original miss, and not with the default pod's own error, which could name it. Only judgements of the
+answer are refused so; a failure of the runtime itself (a ledger error, a fenced runtime) while
+promoting or recording the taint is propagated unchanged and leaves the miss uncovered. The miss stays counted
+and uncovered. A failover is not a
+sampled decision, so it logs no `PodRouted` propensity.
+
+**Counters.** `PtrRuntime::reflex_counters()` returns a snapshot of `ReflexCounters`: hits, misses,
+failovers, answers the verifier refused (neither hit nor miss), the miss and uncovered reasons, and
+a latency window of the last 1024 requests that times failures too. They are telemetry: not ledger
+records, not persisted (a restarted runtime starts at zero), and nothing in the runtime reads them
+to decide. The events `ReflexHit`, `ReflexMiss` and `ReflexFailover` (`ptr-events`) are the
+observable trace; `ReflexFailover` is emitted only after the default's output was promoted.
+Everything is bounded: the plan table (1024), the latency window, the miss and uncovered reason
+maps (closed enums).
+
+**What a counter may say.** A miss is counted when it happens and settles as a failover or as an
+uncovered miss with its reason; a path that ends unsettled leaves it open, which can only make the
+counters look worse. A failover is counted only against an open miss, otherwise it is an
+inconsistency and never coverage. `coverage()` is `NoObservations`, `NoMisses`, `Covered` or
+`Uncovered`, and `all_misses_covered()` is false with nothing observed (the research gate that
+stayed green at zero hits is the reason). True with no miss at all is vacuous, and `coverage()` says
+so; the failover path was then never exercised.
+
+```mermaid
+flowchart LR
+    R["router / PodRouter"] -->|pod| P["dispatch + verifier"]
+    R -->|"miss: abstained, no representation, no candidate"| F{"plan for (project, capability)?"}
+    P -->|dispatch error| F
+    F -->|no plan or no default| E["request fails as before"]
+    F -->|"candidate, live generation, Pure/Read, attempts left"| D["default pod"]
+    D --> V["same verifier path"]
+    V -->|promoted| C["ReflexFailover, covered"]
+    V -->|contradiction| U["not promoted, uncovered"]
+```
+
+**Experiment.** R015 measures two separate claims over the same harness, each with its own verdict
+and a guard against the vacuous pass: `reflex_failover_coverage` (mechanism: every miss of the
+learned router is caught by the default; INVALID when a seed has no miss; a no-plan baseline arm and a
+stale-default sensitivity arm run over the same probes and must see the same misses and serve none) and
+`reflex_dispatch_hits`
+(benefit: the precision of the router's own dispatches beats description cosine; INVALID when it
+dispatches nothing or when one of its ablation arms (no bias, no abstention) or its sensitivity arm
+(a stricter sweep point) did not run over every probe; their precisions are reported, not judged).
+A world the lifecycle cannot hold (a pod at generation 0 or without a namespace) is reported as an
+unexercised reflex block, so the coverage rules make the seed INVALID instead of the harness failing. The faults a failover must be refused for are held by
+`crates/ptr-runtime/tests/reflex.rs`, not by the harness. R015 stays `planned`.
 
 ## What is not here
 
@@ -185,6 +275,9 @@ is empty: fail closed.
   `CheckedRouter` needs a key and nonce source the runtime does not own, and stays open in
   `ptr-router`'s `component.toml`. The production path (`..._using_router`) is already checked.
 - **A Rust encoder, a `ptrd` wiring of the learned router, a frozen R015 result.**
-- **Failover and counters** for misses (work package 2).
+- **Durable plans and counters.** The fallback plan and the counters are host configuration and
+  telemetry, not ledger records, and the registered `PodManifest` carries no generation: the
+  default's generation is checked through the revision the plan names. One default per
+  `(project, capability)`, no chain of defaults, no fallback for other router failures.
 - Postgres tests of the new event need `PTR_PG_TEST_DSN`; the projection mapping itself is
   unit-tested.

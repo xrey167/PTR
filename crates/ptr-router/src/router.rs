@@ -249,7 +249,7 @@ impl fmt::Display for PolicyFailure {
 }
 
 /// Why a learned router abstained.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum AbstentionReason {
     /// The best candidate scored below the abstention threshold.
     LowScore,

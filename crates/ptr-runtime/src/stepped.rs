@@ -37,6 +37,7 @@
 //! finishing (livelock). Generation staleness is deliberately not a trigger: a lifecycle record
 //! moves no semantic revision and the boundary refuses the action.
 
+use crate::reflex::{DispatchedPod, PodRequest};
 use crate::routing::PodSelection;
 use crate::{PodSampler, PtrRuntime, ResumableRun, RuntimeError};
 use ptr_events::RuntimeEvent;
@@ -334,42 +335,21 @@ impl PtrRuntime {
         // A Pod in another project is unavailable in exactly the same words as a Pod that does
         // not exist. Saying which it was would answer, across the boundary, whether that Pod
         // exists.
-        let pod = self.select_pod(
+        let DispatchedPod {
+            pod,
+            output,
+            revision,
+        } = self.dispatch_pod(
             &selection,
-            resources.pods,
-            &run.project,
-            &run.request_id,
-            &capability,
-            &input_type,
-            &payload,
-        )?;
-
-        if pod
-            .manifest()
-            .effects
-            .iter()
-            .any(|effect| !matches!(effect, ptr_types::Effect::Pure | ptr_types::Effect::Read))
-        {
-            return Err(RuntimeError::PodEffectRequiresActionBoundary {
-                pod: pod.manifest().id.to_string(),
-            });
-        }
-
-        // Approximate input: the Request subject is recorded before any Pod output of this
-        // request is promoted, so promotion (which checks the request subject) refuses it.
-        self.record_input_request_taint(&run.request_id, run.run.kv_taint)?;
-        self.emit(RuntimeEvent::PodInvoked(pod.manifest().id.to_string()));
-        let output = pod
-            .invoke(TypedPayload {
-                type_id: input_type,
-                bytes: payload,
-            })
-            .map_err(RuntimeError::Pod)?;
-
-        let revision = self.promote_verified_pod_output(
-            &run.request_id,
-            pod.manifest(),
-            &output,
+            &PodRequest {
+                pods: resources.pods,
+                project: &run.project,
+                request_id: &run.request_id,
+                capability: &capability,
+                input_type: &input_type,
+                payload: &payload,
+            },
+            Some(run.run.kv_taint),
             resources.verifier,
         )?;
         // The promotion is the run's own write: rebase, so only a write by somebody else makes
@@ -799,10 +779,22 @@ mod tests {
         Observed {
             outcome,
             revision: runtime.revision(),
+            // The loop this test copies predates the reflex counters, so their telemetry events
+            // are left out and the rest is compared in order (renumbered, because the reflex
+            // events took sequence numbers).
             events: runtime
                 .events()
                 .iter()
-                .map(|envelope| format!("{} {:?}", envelope.sequence, envelope.event))
+                .filter(|envelope| {
+                    !matches!(
+                        envelope.event,
+                        RuntimeEvent::ReflexHit { .. }
+                            | RuntimeEvent::ReflexMiss { .. }
+                            | RuntimeEvent::ReflexFailover { .. }
+                    )
+                })
+                .enumerate()
+                .map(|(position, envelope)| format!("{position} {:?}", envelope.event))
                 .collect(),
             ledger: runtime.committed_events().len(),
         }

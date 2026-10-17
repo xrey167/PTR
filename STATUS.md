@@ -14,7 +14,7 @@ Sources: component count from [docs/components/STATUS.md](docs/components/STATUS
 
 ## Research integration
 
-Plan and per-package status: [docs/RESEARCH_INTEGRATION_PLAN_20261013.md](docs/RESEARCH_INTEGRATION_PLAN_20261013.md). WP1 pod linking (identity, ledger-committed head, advisory learned addresses): in review, implemented at library level ([doc 43](docs/architecture/43-pod-linking.md)); experiment R015 has a harness and no frozen result. WP2 to WP5: planned.
+Plan and per-package status: [docs/RESEARCH_INTEGRATION_PLAN_20261013.md](docs/RESEARCH_INTEGRATION_PLAN_20261013.md). WP1 pod linking (identity, ledger-committed head, advisory learned addresses): in review, implemented at library level ([doc 43](docs/architecture/43-pod-linking.md)); experiment R015 has a harness and no frozen result. WP2 reflex failover to an explicit default pod with honest counters (the default is checked at every use: registry candidate, live generation, no effect beyond read, same verifier path; counters are telemetry and say nothing without data): in review, builds on WP1; the two reflex claims of R015 are not shown. WP3 to WP5: see the plan.
 
 ## Implemented and validated
 

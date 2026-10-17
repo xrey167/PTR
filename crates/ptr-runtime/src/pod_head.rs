@@ -186,7 +186,7 @@ impl PtrRuntime {
     /// authority holds live for the pod, as neural-state admission requires of a bound
     /// generation. A generation that is not live (superseded, ahead of the lifecycle, or a pod
     /// unknown to it) fails closed.
-    fn pod_head_is_current(&self, head: &PodRevisionAddress) -> bool {
+    pub(crate) fn pod_head_is_current(&self, head: &PodRevisionAddress) -> bool {
         let target = pod_lifecycle_target(head);
         // The capsule must have been committed by the head's own project, whatever its id says.
         self.capsule_projects.get(&target).map(String::as_str)
