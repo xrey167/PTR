@@ -100,15 +100,19 @@ class SecurityWorkspaceTests(unittest.TestCase):
 
     def test_audit_exceptions_are_scoped_to_the_frozen_a0_lockfile(self):
         self.assertEqual(set(security.AUDIT_EXCEPTIONS), {'model/burn-a0/Cargo.toml'})
-        for exception in security.AUDIT_EXCEPTIONS.values():
+        entries = security.AUDIT_EXCEPTIONS['model/burn-a0/Cargo.toml']
+        self.assertEqual([e['package'] for e in entries],
+                         [('rustls', '0.23.45'), ('zip', '0.6.6')])
+        for exception in entries:
             self.assertTrue(exception['reason'])
             self.assertTrue(all(a.startswith('RUSTSEC-') for a in exception['advisories']))
+        self.assertEqual(entries[1]['advisories'],
+                         ('RUSTSEC-2026-0367', 'RUSTSEC-2026-0368', 'RUSTSEC-2026-0369'))
         root = security.scanner_command('audit', ROOT / 'Cargo.toml', ROOT)
         self.assertNotIn('--ignore', root)
         a0 = security.scanner_command('audit', ROOT / 'model/burn-a0/Cargo.toml', ROOT)
         ignored = [a0[i + 1] for i, arg in enumerate(a0) if arg == '--ignore']
-        self.assertEqual(tuple(ignored),
-                         security.AUDIT_EXCEPTIONS['model/burn-a0/Cargo.toml']['advisories'])
+        self.assertEqual(tuple(ignored), entries[0]['advisories'] + entries[1]['advisories'])
         deny = security.scanner_command('deny', ROOT / 'model/burn-a0/Cargo.toml', ROOT)
         self.assertNotIn('--ignore', deny)
 
@@ -120,10 +124,25 @@ class SecurityWorkspaceTests(unittest.TestCase):
             root = Path(tmp)
             (root / 'model/burn-a0').mkdir(parents=True)
             (root / 'model/burn-a0/Cargo.lock').write_text(
-                'version = 4\n\n[[package]]\nname = "rustls"\nversion = "0.23.46"\n')
+                'version = 4\n\n[[package]]\nname = "rustls"\nversion = "0.23.46"\n'
+                '\n[[package]]\nname = "zip"\nversion = "0.6.6"\n')
             stale = security.stale_audit_exceptions(root)
             self.assertEqual(len(stale), 1)
             self.assertIn('rustls 0.23.45 is no longer locked', stale[0])
+
+    def test_one_stale_entry_does_not_hide_the_other(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'model/burn-a0').mkdir(parents=True)
+            (root / 'model/burn-a0/Cargo.lock').write_text(
+                'version = 4\n\n[[package]]\nname = "rustls"\nversion = "0.23.45"\n'
+                '\n[[package]]\nname = "zip"\nversion = "0.6.6"\n'
+                '\n[[package]]\nname = "zip"\nversion = "9.2.2"\n')
+            stale = security.stale_audit_exceptions(root)
+            self.assertEqual(len(stale), 1)
+            self.assertIn('zip is also locked at', stale[0])
+            (root / 'model/burn-a0/Cargo.lock').write_text('version = 4\n')
+            self.assertEqual(len(security.stale_audit_exceptions(root)), 2)
 
     def test_audit_exception_goes_stale_when_a_second_version_is_locked(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -131,7 +150,8 @@ class SecurityWorkspaceTests(unittest.TestCase):
             (root / 'model/burn-a0').mkdir(parents=True)
             (root / 'model/burn-a0/Cargo.lock').write_text(
                 'version = 4\n\n[[package]]\nname = "rustls"\nversion = "0.23.45"\n'
-                '\n[[package]]\nname = "rustls"\nversion = "0.23.40"\n')
+                '\n[[package]]\nname = "rustls"\nversion = "0.23.40"\n'
+                '\n[[package]]\nname = "zip"\nversion = "0.6.6"\n')
             stale = security.stale_audit_exceptions(root)
             self.assertEqual(len(stale), 1)
             self.assertIn('also locked at', stale[0])
@@ -145,13 +165,19 @@ class SecurityWorkspaceTests(unittest.TestCase):
         self.assertEqual(security.reachable_audit_exceptions(ROOT, run=unreachable), [])
         self.assertIn('--all-features', calls[0])
         self.assertEqual(calls[0][calls[0].index('--target') + 1], 'all')
-        self.assertEqual(calls[0][-1], 'rustls@0.23.45')
+        self.assertEqual([c[-1] for c in calls], ['rustls@0.23.45', 'zip@0.6.6'])
         def reachable(command, **kwargs):
             return SimpleNamespace(returncode=0, stdout='rustls v0.23.45\n└── some-dep\n', stderr='')
-        self.assertEqual(len(security.reachable_audit_exceptions(ROOT, run=reachable)), 1)
+        self.assertEqual(len(security.reachable_audit_exceptions(ROOT, run=reachable)), 2)
+        def zip_only(command, **kwargs):
+            found = command[-1].startswith('zip@')
+            return SimpleNamespace(returncode=0, stdout='zip v0.6.6\n' if found else '', stderr='')
+        found = security.reachable_audit_exceptions(ROOT, run=zip_only)
+        self.assertEqual(len(found), 1)
+        self.assertIn('zip 0.6.6 is reachable', found[0])
         def failed(command, **kwargs):
             return SimpleNamespace(returncode=101, stdout='', stderr='error')
-        self.assertEqual(len(security.reachable_audit_exceptions(ROOT, run=failed)), 1)
+        self.assertEqual(len(security.reachable_audit_exceptions(ROOT, run=failed)), 2)
         # Newer Cargo reports a locked package outside the resolved graph as an
         # unmatched package ID instead of printing nothing; that is unreachable.
         def unmatched(command, **kwargs):

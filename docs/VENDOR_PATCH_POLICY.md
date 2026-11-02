@@ -43,7 +43,10 @@ whose graph carries an advisory is blocked unless a patch of the classes above
 is cheap; it never gets an ignore entry (`evaluations/SPIKE.md`). The one kind of
 ignore entry allowed is `AUDIT_EXCEPTIONS` in `scripts/security_workspaces.py`: cargo-audit
 only, for a lockfile that frozen experiment records pin, and only for an exact locked
-package that no target or feature of that workspace builds. Every audit run checks both:
+package that no target or feature of that workspace builds. A workspace may hold several
+entries, each with its own package, advisories and reason; today `model/burn-a0` holds
+`rustls` 0.23.45 and `zip` 0.6.6 (RUSTSEC-2026-0367/0368/0369). Every audit run checks
+each entry:
 the scan fails once the lockfile no longer pins that package or pins a second version of it
 (cargo-audit ignores by advisory ID for the whole lockfile), and fails once
 `cargo tree --target all --all-features -i <package>` finds a path to it. cargo-deny

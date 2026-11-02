@@ -267,12 +267,6 @@
       "upstream_retire_when": "satisfied",
       "blocked_by": [
         {
-          "name": "candle-core",
-          "version": "0.11.0",
-          "requirement": "^0.22.0",
-          "in_lockfile": true
-        },
-        {
           "name": "ptr-pods",
           "version": "0.1.0",
           "requirement": "=0.22.2",
